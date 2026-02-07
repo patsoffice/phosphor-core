@@ -19,6 +19,15 @@ impl M6809 {
         self.set_flag(CcFlag::C, carry);
     }
 
+    /// Helper to set N, Z, V, C flags for 16-bit arithmetic
+    #[inline]
+    fn set_flags_arithmetic16(&mut self, result: u16, overflow: bool, carry: bool) {
+        self.set_flag(CcFlag::N, result & 0x8000 != 0);
+        self.set_flag(CcFlag::Z, result == 0);
+        self.set_flag(CcFlag::V, overflow);
+        self.set_flag(CcFlag::C, carry);
+    }
+
     /// The alu_imm function is a generic helper method designed to reduce code duplication for Immediate Addressing Mode ALU instructions (like ADDA #$10, ANDB #$FF, etc.).
     ///
     /// In the Motorola 6809, immediate mode instructions always follow a specific pattern.
@@ -41,6 +50,62 @@ impl M6809 {
             operation(self, operand);
             // 4. Return to Fetch state for the next instruction
             self.state = ExecState::Fetch;
+        }
+    }
+
+    /// ADDD immediate (0xC3): Adds a 16-bit immediate value to the D register.
+    /// N set if result bit 15 is set. Z set if result is zero.
+    /// V set if signed overflow occurred. C set if unsigned carry out of bit 15.
+    pub(crate) fn op_addd_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, opcode: u8, cycle: u8, bus: &mut B, master: BusMaster) {
+        match cycle {
+            0 => { // Fetch high byte of operand
+                let high = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = high << 8;
+                self.state = ExecState::Execute(opcode, 1);
+            }
+            1 => { // Fetch low byte, execute
+                let low = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                let operand = self.temp_addr | low;
+
+                let d = self.get_d();
+                let (result, carry) = d.overflowing_add(operand);
+                let overflow = (d ^ operand) & 0x8000 == 0 && (d ^ result) & 0x8000 != 0;
+
+                self.set_d(result);
+                self.set_flags_arithmetic16(result, overflow, carry);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
+    /// SUBD immediate (0x83): Subtracts a 16-bit immediate value from the D register.
+    /// N set if result bit 15 is set. Z set if result is zero.
+    /// V set if signed overflow occurred. C set if unsigned borrow occurred.
+    pub(crate) fn op_subd_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, opcode: u8, cycle: u8, bus: &mut B, master: BusMaster) {
+        match cycle {
+            0 => { // Fetch high byte of operand
+                let high = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = high << 8;
+                self.state = ExecState::Execute(opcode, 1);
+            }
+            1 => { // Fetch low byte, execute
+                let low = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                let operand = self.temp_addr | low;
+
+                let d = self.get_d();
+                let (result, borrow) = d.overflowing_sub(operand);
+                let overflow = (d ^ operand) & 0x8000 != 0 && (d ^ result) & 0x8000 != 0;
+
+                self.set_d(result);
+                self.set_flags_arithmetic16(result, overflow, borrow);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
         }
     }
 

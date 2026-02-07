@@ -4,7 +4,7 @@
 
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-40%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-42%20passing-brightgreen.svg)](tests/)
 
 A modular emulator framework for retro CPUs, designed for extensibility and educational purposes. Features a trait-based architecture that allows easy addition of new CPUs, peripherals, and complete systems.
 
@@ -12,7 +12,7 @@ A modular emulator framework for retro CPUs, designed for extensibility and educ
 
 **Current Focus:** Motorola 6809 CPU emulation
 
-**Status:** 🔨 Early development (44/280 opcodes implemented, 100% tested)
+**Status:** 🔨 Early development (46/280 opcodes implemented, 100% tested)
 
 ### Features
 
@@ -26,12 +26,12 @@ A modular emulator framework for retro CPUs, designed for extensibility and educ
 
 ### What Works Now
 
-- Motorola 6809 CPU with 44 instructions (including ALU logical/arithmetic/unary ops)
+- Motorola 6809 CPU with 46 instructions (including ALU logical/arithmetic/unary/16-bit ops)
 - Condition code flag enum (CcFlag) for readable flag manipulation
 - Simple 6809 system with 32KB RAM + 32KB ROM
 - DMA arbitration and halt signal support
 - Interrupt framework (NMI, IRQ, FIRQ)
-- Full test suite (40 integration tests)
+- Full test suite (42 integration tests)
 
 ## Quick Start
 
@@ -55,8 +55,8 @@ cargo test
 #   test test_load_accumulator_immediate ... ok
 #   test test_reset ... ok
 #   test test_store_accumulator_direct ... ok
-#   ... (32 tests total)
-#   test result: ok. 32 passed; 0 failed
+#   ... (42 tests total)
+#   test result: ok. 42 passed; 0 failed
 ```
 
 ### Try It Out
