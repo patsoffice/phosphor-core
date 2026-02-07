@@ -28,7 +28,6 @@ pub struct M6809 {
     // Internal state (generic enough to support TSC/RDY logic)
     state: ExecState,
     opcode: u8,
-    micro_cycle: u8,
     pub(crate) temp_addr: u16,
     #[allow(dead_code)]
     resume_delay: u8,  // For TSC/RDY release timing
@@ -39,7 +38,7 @@ pub(crate) enum ExecState {
     Fetch,
     Execute(u8, u8),  // (opcode, cycle)
     #[allow(dead_code)]
-    Halted { return_state: Box<ExecState>, saved_cycle: u8 },
+    Halted { return_state: Box<ExecState> },
     // ... etc
 }
 
@@ -49,7 +48,6 @@ impl M6809 {
             a: 0, b: 0, x: 0, y: 0, u: 0, s: 0, pc: 0, cc: 0,
             state: ExecState::Fetch,
             opcode: 0,
-            micro_cycle: 0,
             temp_addr: 0,
             resume_delay: 0,
         }
@@ -67,7 +65,6 @@ impl M6809 {
             if !matches!(self.state, ExecState::Halted { .. }) {
                 self.state = ExecState::Halted {
                     return_state: Box::new(self.state.clone()),
-                    saved_cycle: self.micro_cycle,
                 };
             }
             return;
@@ -84,7 +81,6 @@ impl M6809 {
                 self.opcode = bus.read(master, self.pc);
                 self.pc = self.pc.wrapping_add(1);
                 self.state = ExecState::Execute(self.opcode, 0);
-                self.micro_cycle = 0;
             }
             ExecState::Execute(op, cyc) => {
                 self.execute_instruction(op, cyc, bus, master);
@@ -97,6 +93,13 @@ impl M6809 {
             // ALU instructions
             0x3D => self.op_mul(cycle),
             0x80 => self.op_suba_imm(cycle, bus, master),
+            0x81 => self.op_cmpa_imm(cycle, bus, master),
+            0x82 => self.op_sbca_imm(cycle, bus, master),
+            0x84 => self.op_anda_imm(cycle, bus, master),
+            0x85 => self.op_bita_imm(cycle, bus, master),
+            0x88 => self.op_eora_imm(cycle, bus, master),
+            0x89 => self.op_adca_imm(cycle, bus, master),
+            0x8A => self.op_ora_imm(cycle, bus, master),
             0x8B => self.op_adda_imm(cycle, bus, master),
 
             // Load/store instructions
