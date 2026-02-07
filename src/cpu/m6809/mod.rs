@@ -92,6 +92,8 @@ impl M6809 {
         match opcode {
             // ALU instructions
             0x3D => self.op_mul(cycle),
+            0x40 => self.op_nega(cycle),
+            0x43 => self.op_coma(cycle),
             0x80 => self.op_suba_imm(cycle, bus, master),
             0x81 => self.op_cmpa_imm(cycle, bus, master),
             0x82 => self.op_sbca_imm(cycle, bus, master),
@@ -103,6 +105,8 @@ impl M6809 {
             0x8B => self.op_adda_imm(cycle, bus, master),
 
             // ALU instructions (B register)
+            0x50 => self.op_negb(cycle),
+            0x53 => self.op_comb(cycle),
             0xC0 => self.op_subb_imm(cycle, bus, master),
             0xC1 => self.op_cmpb_imm(cycle, bus, master),
             0xC2 => self.op_sbcb_imm(cycle, bus, master),

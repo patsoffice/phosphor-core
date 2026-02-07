@@ -41,6 +41,10 @@ fn test_sbca_immediate() {
     // SBCA #$01 -> A = FF - 01 - 1 = FD
     sys.tick(); sys.tick();
     assert_eq!(sys.get_cpu_state().a, 0xFD);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::N as u8), CcFlag::N as u8);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::Z as u8), 0);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::V as u8), 0);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::C as u8), 0);
 }
 
 #[test]
@@ -54,13 +58,20 @@ fn test_logical_ops() {
     sys.tick(); sys.tick(); // ANDA #$F0 -> C0
     assert_eq!(sys.get_cpu_state().a, 0xC0);
     assert_eq!(sys.get_cpu_state().cc & (CcFlag::N as u8), CcFlag::N as u8); // C0 is neg
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::Z as u8), 0);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::V as u8), 0);
 
     sys.tick(); sys.tick(); // ORA #$03 -> C3
     assert_eq!(sys.get_cpu_state().a, 0xC3);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::N as u8), CcFlag::N as u8);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::Z as u8), 0);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::V as u8), 0);
 
     sys.tick(); sys.tick(); // EORA #$FF -> 3C
     assert_eq!(sys.get_cpu_state().a, 0x3C);
     assert_eq!(sys.get_cpu_state().cc & (CcFlag::N as u8), 0);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::Z as u8), 0);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::V as u8), 0);
 }
 
 #[test]
@@ -74,9 +85,13 @@ fn test_bita_immediate() {
     sys.tick(); sys.tick(); // BITA #$00 -> Z=1
     assert_eq!(sys.get_cpu_state().a, 0xFF);
     assert_eq!(sys.get_cpu_state().cc & (CcFlag::Z as u8), CcFlag::Z as u8);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::N as u8), 0);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::V as u8), 0);
 
     sys.tick(); sys.tick(); // BITA #$80 -> N=1
     assert_eq!(sys.get_cpu_state().cc & (CcFlag::N as u8), CcFlag::N as u8);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::Z as u8), 0);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::V as u8), 0);
 }
 
 #[test]
@@ -100,12 +115,23 @@ fn test_b_register_alu() {
 
     sys.tick(); sys.tick(); // LDB
     assert_eq!(sys.get_cpu_state().b, 0x10);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::N as u8), 0);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::Z as u8), 0);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::V as u8), 0);
 
     sys.tick(); sys.tick(); // ADDB
     assert_eq!(sys.get_cpu_state().b, 0x20);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::N as u8), 0);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::Z as u8), 0);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::V as u8), 0);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::C as u8), 0);
 
     sys.tick(); sys.tick(); // SUBB
     assert_eq!(sys.get_cpu_state().b, 0x1B);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::N as u8), 0);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::Z as u8), 0);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::V as u8), 0);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::C as u8), 0);
 }
 
 #[test]
@@ -148,6 +174,10 @@ fn test_sbcb_immediate() {
     // SBCB #$01 -> B = FF - 01 - 1 = FD
     sys.tick(); sys.tick();
     assert_eq!(sys.get_cpu_state().b, 0xFD);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::N as u8), CcFlag::N as u8);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::Z as u8), 0);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::V as u8), 0);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::C as u8), 0);
 }
 
 #[test]
@@ -161,13 +191,20 @@ fn test_logical_ops_b() {
     sys.tick(); sys.tick(); // ANDB #$F0 -> C0
     assert_eq!(sys.get_cpu_state().b, 0xC0);
     assert_eq!(sys.get_cpu_state().cc & (CcFlag::N as u8), CcFlag::N as u8); // C0 is neg
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::Z as u8), 0);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::V as u8), 0);
 
     sys.tick(); sys.tick(); // ORB #$03 -> C3
     assert_eq!(sys.get_cpu_state().b, 0xC3);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::N as u8), CcFlag::N as u8);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::Z as u8), 0);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::V as u8), 0);
 
     sys.tick(); sys.tick(); // EORB #$FF -> 3C
     assert_eq!(sys.get_cpu_state().b, 0x3C);
     assert_eq!(sys.get_cpu_state().cc & (CcFlag::N as u8), 0);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::Z as u8), 0);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::V as u8), 0);
 }
 
 #[test]
@@ -181,9 +218,13 @@ fn test_bitb_immediate() {
     sys.tick(); sys.tick(); // BITB #$00 -> Z=1
     assert_eq!(sys.get_cpu_state().b, 0xFF);
     assert_eq!(sys.get_cpu_state().cc & (CcFlag::Z as u8), CcFlag::Z as u8);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::N as u8), 0);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::V as u8), 0);
 
     sys.tick(); sys.tick(); // BITB #$80 -> N=1
     assert_eq!(sys.get_cpu_state().cc & (CcFlag::N as u8), CcFlag::N as u8);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::Z as u8), 0);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::V as u8), 0);
 }
 
 #[test]
@@ -197,4 +238,8 @@ fn test_adcb_immediate() {
 
     sys.tick(); sys.tick(); // ADCB #$00 -> 00 + 00 + 1 = 01
     assert_eq!(sys.get_cpu_state().b, 0x01);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::N as u8), 0);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::Z as u8), 0);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::V as u8), 0);
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::C as u8), 0);
 }

@@ -270,4 +270,48 @@ impl M6809 {
             cpu.set_flags_arithmetic(result, overflow, carry);
         });
     }
+
+    /// NEGA inherent (0x40): Negate A (A = 0 - A)
+    pub(crate) fn op_nega(&mut self, cycle: u8) {
+        if cycle == 0 {
+            let (result, borrow) = (0u8).overflowing_sub(self.a);
+            // Overflow occurs if A was 0x80 (-128), because -(-128) = +128 is not representable in i8
+            let overflow = self.a == 0x80;
+            self.a = result;
+            self.set_flags_arithmetic(result, overflow, borrow);
+            self.state = ExecState::Fetch;
+        }
+    }
+
+    /// NEGB inherent (0x50): Negate B (B = 0 - B)
+    pub(crate) fn op_negb(&mut self, cycle: u8) {
+        if cycle == 0 {
+            let (result, borrow) = (0u8).overflowing_sub(self.b);
+            let overflow = self.b == 0x80;
+            self.b = result;
+            self.set_flags_arithmetic(result, overflow, borrow);
+            self.state = ExecState::Fetch;
+        }
+    }
+
+    /// COMA inherent (0x43): Complement A (A = ~A)
+    pub(crate) fn op_coma(&mut self, cycle: u8) {
+        if cycle == 0 {
+            self.a = !self.a;
+            // COM sets N, Z, clears V, and sets C=1
+            self.set_flags_logical(self.a);
+            self.set_flag(CcFlag::C, true);
+            self.state = ExecState::Fetch;
+        }
+    }
+
+    /// COMB inherent (0x53): Complement B (B = ~B)
+    pub(crate) fn op_comb(&mut self, cycle: u8) {
+        if cycle == 0 {
+            self.b = !self.b;
+            self.set_flags_logical(self.b);
+            self.set_flag(CcFlag::C, true);
+            self.state = ExecState::Fetch;
+        }
+    }
 }

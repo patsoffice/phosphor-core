@@ -1,4 +1,5 @@
 use phosphor_core::machine::simple6809::Simple6809System;
+use phosphor_core::cpu::m6809::CcFlag;
 
 #[test]
 fn test_load_accumulator_immediate() {
@@ -14,6 +15,9 @@ fn test_load_accumulator_immediate() {
     // Verify A register loaded with immediate value
     assert_eq!(sys.get_cpu_state().a, 0x42, "A register should be 0x42 after LDA #$42");
     assert_eq!(sys.get_cpu_state().pc, 2, "PC should be at 0x02 after LDA");
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::N as u8), 0, "Negative should be clear");
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::Z as u8), 0, "Zero should be clear");
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::V as u8), 0, "Overflow should be clear");
 }
 
 #[test]
@@ -31,6 +35,9 @@ fn test_reset() {
     // Verify the CPU state after execution
     // After LDA #$FF, the A register should contain 0xFF
     assert_eq!(sys.get_cpu_state().a, 0xFF, "A register should be 0xFF after LDA #$FF");
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::N as u8), CcFlag::N as u8, "Negative should be set");
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::Z as u8), 0, "Zero should be clear");
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::V as u8), 0, "Overflow should be clear");
 
     // After STA $00, RAM[0] should contain 0xFF
     assert_eq!(sys.read_ram(0), 0xFF, "RAM[0] should be 0xFF after STA $00");
@@ -56,6 +63,9 @@ fn test_store_accumulator_direct() {
     assert_eq!(sys.get_cpu_state().a, 0x55, "A register should be 0x55");
     assert_eq!(sys.read_ram(0x10), 0x55, "RAM[0x10] should be 0x55 after store");
     assert_eq!(sys.get_cpu_state().pc, 4, "PC should be at 0x04");
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::N as u8), 0, "Negative should be clear");
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::Z as u8), 0, "Zero should be clear");
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::V as u8), 0, "Overflow should be clear");
 }
 
 #[test]
@@ -79,4 +89,7 @@ fn test_multiple_loads_and_stores() {
     assert_eq!(sys.read_ram(0x00), 0x11, "RAM[0x00] should be 0x11");
     assert_eq!(sys.read_ram(0x01), 0x22, "RAM[0x01] should be 0x22");
     assert_eq!(sys.get_cpu_state().pc, 8, "PC should be at 0x08 after all instructions");
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::N as u8), 0, "Negative should be clear");
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::Z as u8), 0, "Zero should be clear");
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::V as u8), 0, "Overflow should be clear");
 }
