@@ -1,10 +1,10 @@
-# Rust Emulator
+# Phosphor Core
 
-> A cycle-accurate retro CPU emulator framework written in Rust
+> Core emulation library for the Phosphor retro CPU emulator framework
 
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-4%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-15%20passing-brightgreen.svg)](tests/)
 
 A modular emulator framework for retro CPUs, designed for extensibility and educational purposes. Features a trait-based architecture that allows easy addition of new CPUs, peripherals, and complete systems.
 
@@ -12,7 +12,7 @@ A modular emulator framework for retro CPUs, designed for extensibility and educ
 
 **Current Focus:** Motorola 6809 CPU emulation
 
-**Status:** 🔨 Early development (2/59 instructions implemented, 100% tested)
+**Status:** 🔨 Early development (6/280 opcodes implemented, 100% tested)
 
 ### Features
 
@@ -26,11 +26,12 @@ A modular emulator framework for retro CPUs, designed for extensibility and educ
 
 ### What Works Now
 
-- Motorola 6809 CPU with 2 instructions (LDA immediate, STA direct)
+- Motorola 6809 CPU with 6 instructions (LDA, LDB, STA, ADDA, SUBA, MUL)
+- Condition code flag enum (CcFlag) for readable flag manipulation
 - Simple 6809 system with 32KB RAM + 32KB ROM
 - DMA arbitration and halt signal support
 - Interrupt framework (NMI, IRQ, FIRQ)
-- Full test suite (4 integration tests)
+- Full test suite (15 integration tests)
 
 ## Quick Start
 
@@ -44,7 +45,7 @@ A modular emulator framework for retro CPUs, designed for extensibility and educ
 ```bash
 # Clone and build
 git clone <repository-url>
-cd rust-emu
+cd phosphor-core
 cargo build
 
 # Run all tests
@@ -54,14 +55,14 @@ cargo test
 #   test test_load_accumulator_immediate ... ok
 #   test test_reset ... ok
 #   test test_store_accumulator_direct ... ok
-#   test test_multiple_loads_and_stores ... ok
-#   test result: ok. 4 passed; 0 failed
+#   ... (15 tests total)
+#   test result: ok. 15 passed; 0 failed
 ```
 
 ### Try It Out
 
 ```rust
-use rust_emu::machine::simple6809::Simple6809System;
+use phosphor_core::machine::simple6809::Simple6809System;
 
 fn main() {
     let mut sys = Simple6809System::new();
@@ -87,22 +88,24 @@ fn main() {
 | Component | Status | Notes |
 |-----------|--------|-------|
 | **Core Framework** | ✅ Complete | Bus trait, component system, arbitration |
-| **M6809 CPU** | ⚠️ Partial | State machine working, only 2 instructions |
+| **M6809 CPU** | ⚠️ Partial | State machine working, 6 instructions |
 | **M6502 CPU** | ❌ Placeholder | Structure exists, no implementation |
 | **PIA 6820** | ❌ Placeholder | Stub only |
 | **Simple6809 System** | ✅ Complete | RAM/ROM, testing utilities |
-| **Test Suite** | ✅ Complete | 4 integration tests passing |
+| **Test Suite** | ✅ Complete | 15 integration tests passing |
 
 ### Implemented 6809 Instructions
 
-Currently only **2 of 59** 6809 instructions are implemented:
+Currently **6 of ~280** documented 6809 opcodes are implemented (across 3 opcode pages: ~233 on page 0, ~38 on page 1/0x10, ~9 on page 2/0x11):
 
-| Opcode | Mnemonic | Description | Total Cycles* |
-|--------|----------|-------------|---------------|
-| 0x86   | LDA #nn  | Load A with immediate value | 2 (fetch + execute) |
-| 0x97   | STA nn   | Store A to direct address (zero page) | 2 (fetch + 2 execute) |
-
-**\*Cycles** include the initial opcode fetch. Execution is cycle-accurate to hardware.
+| Category   | Implemented | Examples        |
+|------------|-------------|-----------------|
+| ALU        | 3           | ADDA, SUBA, MUL |
+| Load/Store | 3           | LDA, LDB, STA   |
+| Branch     | 0           |                 |
+| Transfer   | 0           |                 |
+| Misc       | 0           |                 |
+| Page 2/3   | 0           |                 |
 
 ## Architecture
 
@@ -122,11 +125,13 @@ The emulator is organized into four main layers:
 
 #### 2. `cpu/` - CPU Implementations ⚠️
 
-- **`m6809.rs`** ✅ - Motorola 6809 with fetch/execute state machine
+- **`m6809/`** ✅ - Motorola 6809 (directory module, split by instruction category)
+  - `mod.rs` - Struct, state machine, opcode dispatch table
+  - `alu.rs` - Arithmetic instructions (ADDA, SUBA, MUL)
+  - `load_store.rs` - Load/store instructions (LDA, LDB, STA)
   - All 8 registers (A, B, X, Y, U, S, PC, CC)
   - Explicit state machine (Fetch, Execute, Halted)
   - Cycle-accurate multi-cycle instruction execution
-  - 2 instructions implemented (LDA immediate, STA direct)
 - **`m6502.rs`** ❌ - Placeholder for future 6502 support
 - **`mod.rs`** - Generic `Cpu` trait definition
 
@@ -142,27 +147,10 @@ The emulator is organized into four main layers:
   - DMA arbitration support
   - Testing utilities (load_rom, get_cpu_state, read/write_ram)
 
-### Test Coverage
-
-Four comprehensive integration tests in `tests/simple_6809_test.rs`:
-
-1. **`test_load_accumulator_immediate`** - Single instruction (LDA #$42)
-2. **`test_reset`** - Sequential instructions (LDA + STA) with memory verification
-3. **`test_store_accumulator_direct`** - Store operations to different addresses
-4. **`test_multiple_loads_and_stores`** - Complex multi-instruction sequence
-
-All tests verify:
-
-- ✅ Correct CPU register state after execution
-- ✅ Proper memory read/write operations
-- ✅ Program counter advancement
-- ✅ Instruction state machine transitions
-- ✅ Cycle-accurate timing
-
 ## Project Structure
 
 ```text
-rust-emu/
+phosphor-core/
 ├── Cargo.toml                      # Project manifest
 ├── README.md                       # This file
 ├── src/
@@ -173,7 +161,10 @@ rust-emu/
 │   │   ├── component.rs            #    Component traits
 │   │   └── mod.rs                  #    Module exports
 │   ├── cpu/                        # ⚠️  CPU implementations (partial)
-│   │   ├── m6809.rs                # ✅ Working M6809 (2 instructions)
+│   │   ├── m6809/                  # ✅ Working M6809 (6 opcodes)
+│   │   │   ├── mod.rs              #    Struct, state machine, dispatch
+│   │   │   ├── alu.rs              #    ADDA, SUBA, MUL
+│   │   │   └── load_store.rs       #    LDA, LDB, STA
 │   │   ├── m6502.rs                # ❌ Placeholder only
 │   │   └── mod.rs                  # ✅ Cpu trait definition
 │   ├── device/                     # ❌ Peripheral devices (stubs)
@@ -183,7 +174,8 @@ rust-emu/
 │       ├── simple6809.rs           # ✅ Minimal 6809 system with RAM/ROM
 │       └── mod.rs                  #    Module exports
 ├── tests/
-│   └── simple_6809_test.rs        # ✅ 4 integration tests (all passing)
+│   ├── m6809_alu_test.rs           # ✅ 11 ALU tests (add, sub, mul)
+│   └── m6809_load_store_test.rs    # ✅ 4 load/store tests
 └── target/                         # Build artifacts (gitignored)
 
 Legend: ✅ Complete | ⚠️ Partial | ❌ Placeholder/Stub
@@ -266,7 +258,7 @@ This separation allows video chips to tick without bus access, while CPUs get ex
 The `Simple6809System` provides a complete testable environment:
 
 ```rust
-use rust_emu::machine::simple6809::Simple6809System;
+use phosphor_core::machine::simple6809::Simple6809System;
 
 let mut sys = Simple6809System::new();
 
@@ -302,16 +294,16 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 
 ### Phase 1: Complete 6809 CPU (Current Focus)
 
-- [ ] Arithmetic instructions (ADD, SUB, MUL, DIV)
+- [x] Arithmetic instructions (ADDA, SUBA, MUL)
 - [ ] Logical instructions (AND, OR, EOR, COM)
 - [ ] Branch instructions (BRA, BEQ, BNE, etc.)
 - [ ] Jump/call instructions (JMP, JSR, RTS)
 - [ ] Stack operations (PSHS, PULS, PSHU, PULU)
 - [ ] All addressing modes (indexed, extended, inherent)
-- [ ] Complete condition code (CC) flag implementation
+- [x] Condition code (CC) flag enum (CcFlag)
 - [ ] 16-bit operations (LDD, STD, ADDD, etc.)
 
-**Progress:** 2/59 instructions implemented (3.4%)
+**Progress:** 6/~280 opcodes implemented (2.1%)
 
 ### Phase 2: Core Infrastructure
 
@@ -328,6 +320,10 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
   - [ ] 6502 addressing modes
   - [ ] 6502 instruction set
   - [ ] BCD arithmetic mode
+- [ ] Zilog Z-80 CPU
+  - [ ] 8-bit data bus, 16-bit address space
+  - [ ] Instruction prefixes (CB, DD, ED, FD)
+  - [ ] Alternate register set
 - [ ] Motorola 68000 CPU
   - [ ] 32-bit address space
   - [ ] 16-bit data bus
@@ -340,9 +336,7 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 - [ ] 6840 PTM (timer)
 - [ ] Memory mappers and bank switching
 - [ ] Real system implementations:
-  - [ ] TRS-80 Color Computer
-  - [ ] Commodore 64
-  - [ ] Arcade boards (Defender, Robotron)
+  - [ ] Arcade boards (Williams games first)
 
 ### Phase 5: Developer Tools
 
@@ -476,7 +470,7 @@ impl BusMasterComponent for M6809 {
 ```text
 thread 'test_load_accumulator_immediate' panicked at 'assertion failed: `(left == right)`
   left: `1`,
- right: `2`', tests/simple_6809_test.rs:16:5
+ right: `2`', tests/m6809_load_store_test.rs:16:5
 ```
 
 **Solution:** Check cycle count - you may need more `tick()` calls. Each instruction takes 2-4 cycles.
@@ -502,21 +496,24 @@ This is an educational emulator project. We welcome contributions!
 
 1. **Adding 6809 Instructions**
 
-   - Add opcode case in `src/cpu/m6809.rs::execute_instruction()`
+   - Add an `op_*` method in the appropriate submodule (`alu.rs`, `load_store.rs`, etc.)
+   - Add the dispatch entry in `src/cpu/m6809/mod.rs::execute_instruction()`
    - Implement cycle-accurate execution (use match on `cycle`)
-   - Update README instruction table
-   - Add integration test in `tests/simple_6809_test.rs`
+   - Add integration test in the matching `tests/m6809_*_test.rs` file
 
-   Example:
+   Example (adding a method in `alu.rs`):
    ```rust
-   // ADD immediate (0x8B)
-   0x8B => {
+   pub(crate) fn op_anda_imm<B: Bus<Address=u16, Data=u8> + ?Sized>(
+       &mut self, cycle: u8, bus: &mut B, master: BusMaster
+   ) {
        match cycle {
            0 => {
                let operand = bus.read(master, self.pc);
                self.pc = self.pc.wrapping_add(1);
-               self.a = self.a.wrapping_add(operand);
-               // Update CC flags (Z, N, C, V)
+               self.a &= operand;
+               self.set_flag(CcFlag::N, self.a & 0x80 != 0);
+               self.set_flag(CcFlag::Z, self.a == 0);
+               self.set_flag(CcFlag::V, false);
                self.state = ExecState::Fetch;
            }
            _ => {}
@@ -526,7 +523,7 @@ This is an educational emulator project. We welcome contributions!
 
 2. **Implementing New CPUs**
 
-   - Create new file in `src/cpu/` (e.g., `m6502.rs`)
+   - Create a new module directory in `src/cpu/` (e.g., `m6502/`)
    - Implement `Component`, `BusMasterComponent`, and `Cpu` traits
    - Define registers and state machine
    - Add module export in `src/cpu/mod.rs`
@@ -557,8 +554,7 @@ This is an educational emulator project. We welcome contributions!
 
 ### Areas Needing Help
 
-- 🔴 **High Priority:** More 6809 instructions (ADD, SUB, JMP, BRA, etc.)
-- 🔴 **High Priority:** Condition code (CC) flag handling
+- 🔴 **High Priority:** More 6809 instructions (JMP, BRA, AND, OR, etc.)
 - 🟡 **Medium Priority:** 6502 CPU implementation
 - 🟡 **Medium Priority:** Indexed addressing modes for 6809
 - 🟢 **Low Priority:** Peripheral devices
@@ -597,7 +593,7 @@ A: Rust provides zero-cost abstractions, memory safety, and excellent performanc
 
 **Q: Can this run commercial ROMs?**
 
-A: Not yet. Only 2 instructions are implemented. This is an educational project in early development.
+A: Not yet. Only 6 instructions are implemented. This is an educational project in early development.
 
 **Q: Why use `unsafe` in an emulator?**
 
@@ -612,10 +608,10 @@ A: Yes, planned in Phase 5. The explicit state machine makes breakpoints and ste
 A: Yes! Add to `Cargo.toml`:
 ```toml
 [dependencies]
-rust-emu = { path = "../rust-emu" }
+phosphor-core = { path = "../phosphor-core" }
 ```
 
-Then use the prelude: `use rust_emu::prelude::*;`
+Then use the prelude: `use phosphor_core::prelude::*;`
 
 **Q: How accurate is the timing?**
 

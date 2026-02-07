@@ -8,7 +8,7 @@ pub struct Simple6809System {
     ram: [u8; 0x8000],
     rom: [u8; 0x8000],
     pia: Pia6820,
-    
+
     // Bus arbitration state
     dma_request: bool,
     clock: u64,
@@ -25,35 +25,35 @@ impl Simple6809System {
             clock: 0,
         }
     }
-    
+
     pub fn run_frame(&mut self) {
         // 1MHz CPU, 60Hz
         for _ in 0..16667 {
             self.tick();
         }
     }
-    
+
     pub fn tick(&mut self) {
         // PIA or other devices can request the bus (assert TSC)
         if self.pia.dma_requested() {
             self.dma_request = true;
         }
-        
+
         // Execute one CPU cycle manually to avoid borrow checker issues
         if !self.dma_request {
             // Split the borrow: execute_cycle needs &mut M6809 and &mut Bus
             // We need to separate accessing cpu from accessing bus
             let bus_ptr: *mut Self = self;
-            
+
             unsafe {
                 let bus = &mut *bus_ptr as &mut dyn Bus<Address = u16, Data = u8>;
                 self.cpu.execute_cycle(bus, BusMaster::Cpu(0));
             }
         }
-        
+
         self.clock += 1;
     }
-    
+
     /// Load code into RAM at the specified address (for testing)
     /// In a real system, this would load ROM, but for testing we load into RAM
     pub fn load_rom(&mut self, offset: usize, data: &[u8]) {
@@ -61,7 +61,7 @@ impl Simple6809System {
             self.ram[offset..offset+data.len()].copy_from_slice(data);
         }
     }
-    
+
     /// Get a copy of the current CPU state for testing/debugging
     pub fn get_cpu_state(&self) -> CpuState {
         CpuState {
@@ -75,7 +75,7 @@ impl Simple6809System {
             cc: self.cpu.cc,
         }
     }
-    
+
     /// Read a byte from RAM
     pub fn read_ram(&self, addr: usize) -> u8 {
         if addr < self.ram.len() {
@@ -84,7 +84,7 @@ impl Simple6809System {
             0
         }
     }
-    
+
     /// Write a byte to RAM
     pub fn write_ram(&mut self, addr: usize, data: u8) {
         if addr < self.ram.len() {
@@ -108,20 +108,20 @@ pub struct CpuState {
 impl Bus for Simple6809System {
     type Address = u16;
     type Data = u8;
-    
+
     fn read(&mut self, _master: BusMaster, addr: u16) -> u8 {
         match addr {
             0x0000..=0x7FFF => self.ram[addr as usize],
             0x8000..=0xFFFF => self.rom[(addr - 0x8000) as usize],
         }
     }
-    
+
     fn write(&mut self, _master: BusMaster, addr: u16, data: u8) {
         if addr < 0x8000 {
             self.ram[addr as usize] = data;
         }
     }
-    
+
     fn is_halted_for(&self, master: BusMaster) -> bool {
         // Only CPU 0 can be halted by TSC/DMA in this simple system
         if master == BusMaster::Cpu(0) {
@@ -130,7 +130,7 @@ impl Bus for Simple6809System {
             false
         }
     }
-    
+
     fn check_interrupts(&self, _target: BusMaster) -> InterruptState {
         InterruptState {
             nmi: false,

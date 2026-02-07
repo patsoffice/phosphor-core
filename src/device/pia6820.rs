@@ -13,11 +13,11 @@ impl Pia6820 {
             port_b: 0,
         }
     }
-    
+
     pub fn dma_requested(&self) -> bool {
         false
     }
-    
+
     pub fn do_dma_cycle<B: crate::core::Bus + ?Sized>(&mut self, _bus: &mut B) {
         // Placeholder
     }
