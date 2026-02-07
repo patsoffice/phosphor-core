@@ -102,6 +102,17 @@ impl M6809 {
             0x8A => self.op_ora_imm(cycle, bus, master),
             0x8B => self.op_adda_imm(cycle, bus, master),
 
+            // ALU instructions (B register)
+            0xC0 => self.op_subb_imm(cycle, bus, master),
+            0xC1 => self.op_cmpb_imm(cycle, bus, master),
+            0xC2 => self.op_sbcb_imm(cycle, bus, master),
+            0xC4 => self.op_andb_imm(cycle, bus, master),
+            0xC5 => self.op_bitb_imm(cycle, bus, master),
+            0xC8 => self.op_eorb_imm(cycle, bus, master),
+            0xC9 => self.op_adcb_imm(cycle, bus, master),
+            0xCA => self.op_orb_imm(cycle, bus, master),
+            0xCB => self.op_addb_imm(cycle, bus, master),
+
             // Load/store instructions
             0x86 => self.op_lda_imm(cycle, bus, master),
             0x97 => self.op_sta_direct(opcode, cycle, bus, master),

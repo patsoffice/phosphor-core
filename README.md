@@ -4,7 +4,7 @@
 
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-20%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-26%20passing-brightgreen.svg)](tests/)
 
 A modular emulator framework for retro CPUs, designed for extensibility and educational purposes. Features a trait-based architecture that allows easy addition of new CPUs, peripherals, and complete systems.
 
@@ -26,12 +26,12 @@ A modular emulator framework for retro CPUs, designed for extensibility and educ
 
 ### What Works Now
 
-- Motorola 6809 CPU with 13 instructions (including ALU logical/arithmetic ops)
+- Motorola 6809 CPU with 22 instructions (including ALU logical/arithmetic ops)
 - Condition code flag enum (CcFlag) for readable flag manipulation
 - Simple 6809 system with 32KB RAM + 32KB ROM
 - DMA arbitration and halt signal support
 - Interrupt framework (NMI, IRQ, FIRQ)
-- Full test suite (20 integration tests)
+- Full test suite (26 integration tests)
 
 ## Quick Start
 
@@ -55,8 +55,8 @@ cargo test
 #   test test_load_accumulator_immediate ... ok
 #   test test_reset ... ok
 #   test test_store_accumulator_direct ... ok
-#   ... (20 tests total)
-#   test result: ok. 20 passed; 0 failed
+#   ... (26 tests total)
+#   test result: ok. 26 passed; 0 failed
 ```
 
 ### Try It Out
@@ -453,6 +453,7 @@ error[E0277]: the trait bound `dyn Bus<Address = u16, Data = u8>: Sized` is not 
 ```
 
 **Solution:** Ensure trait objects use `?Sized` bound:
+
 ```rust
 impl BusMasterComponent for M6809 {
     type Bus = dyn Bus<Address = u16, Data = u8>;  // Note: trait object
@@ -484,6 +485,7 @@ thread 'test_load_accumulator_immediate' panicked at 'assertion failed: `(left =
 **Problem:** Infinite loop - emulator never completes
 
 **Solution:** The 6809 doesn't auto-halt. Implement a halt instruction or limit cycle count:
+
 ```rust
 for _ in 0..100 { sys.tick(); }  // Limit execution
 ```
@@ -502,6 +504,7 @@ This is an educational emulator project. We welcome contributions!
    - Add integration test in the matching `tests/m6809_*_test.rs` file
 
    Example (adding a method in `alu.rs`):
+
    ```rust
    pub(crate) fn op_anda_imm<B: Bus<Address=u16, Data=u8> + ?Sized>(
        &mut self, cycle: u8, bus: &mut B, master: BusMaster
@@ -579,6 +582,7 @@ This is an educational emulator project. We welcome contributions!
 ### Benchmarks (Future Work)
 
 Once more instructions are implemented, we'll benchmark:
+
 - Cycles per second on modern hardware
 - Comparison to reference emulators
 - Optimization opportunities
@@ -606,6 +610,7 @@ A: Yes, planned in Phase 5. The explicit state machine makes breakpoints and ste
 **Q: Can I use this as a library?**
 
 A: Yes! Add to `Cargo.toml`:
+
 ```toml
 [dependencies]
 phosphor-core = { path = "../phosphor-core" }
