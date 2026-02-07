@@ -45,6 +45,9 @@ impl M6809 {
     }
 
     /// SUBA immediate (0x80): Subtracts the immediate operand from accumulator A.
+    /// N set if result bit 7 is set. Z set if result is zero.
+    /// V set if signed overflow occurred (operands had different signs and result sign differs from A).
+    /// C set if unsigned borrow occurred (operand > A). H set if borrow from bit 4.
     pub(crate) fn op_suba_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, cycle: u8, bus: &mut B, master: BusMaster) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
             let (result, borrow) = cpu.a.overflowing_sub(operand);
@@ -57,6 +60,9 @@ impl M6809 {
     }
 
     /// ADDA immediate (0x8B): Adds the immediate operand to accumulator A.
+    /// N set if result bit 7 is set. Z set if result is zero.
+    /// V set if signed overflow occurred (operands had same sign and result sign differs).
+    /// C set if unsigned carry out of bit 7. H set if carry from bit 3 to bit 4.
     pub(crate) fn op_adda_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, cycle: u8, bus: &mut B, master: BusMaster) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
             let (result, carry) = cpu.a.overflowing_add(operand);
@@ -69,6 +75,7 @@ impl M6809 {
     }
 
     /// MUL inherent (0x3D): Multiplies A and B (unsigned), result in D (A=high, B=low).
+    /// Z set if 16-bit result is zero. C set if bit 7 of B (low byte) is set.
     pub(crate) fn op_mul(&mut self, cycle: u8) {
         match cycle {
             0 => {
@@ -84,6 +91,9 @@ impl M6809 {
     }
 
     /// CMPA immediate (0x81): Compares accumulator A with the immediate operand (A - M).
+    /// Performs subtraction but discards the result; only flags are updated.
+    /// N set if result bit 7 is set. Z set if A == operand.
+    /// V set if signed overflow occurred. C set if unsigned borrow occurred (operand > A).
     pub(crate) fn op_cmpa_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, cycle: u8, bus: &mut B, master: BusMaster) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
             let (result, borrow) = cpu.a.overflowing_sub(operand);
@@ -93,6 +103,9 @@ impl M6809 {
     }
 
     /// SBCA immediate (0x82): Subtracts the immediate operand and carry from accumulator A.
+    /// A = A - M - C. Used for multi-byte subtraction chains.
+    /// N set if result bit 7 is set. Z set if result is zero.
+    /// V set if signed overflow occurred. C set if unsigned borrow occurred.
     pub(crate) fn op_sbca_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, cycle: u8, bus: &mut B, master: BusMaster) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
             let carry = if cpu.cc & (CcFlag::C as u8) != 0 { 1 } else { 0 };
@@ -113,6 +126,7 @@ impl M6809 {
     }
 
     /// ANDA immediate (0x84): Performs bitwise AND of accumulator A with the immediate operand.
+    /// N set if result bit 7 is set. Z set if result is zero. V always cleared.
     pub(crate) fn op_anda_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, cycle: u8, bus: &mut B, master: BusMaster) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
             cpu.a &= operand;
@@ -120,7 +134,8 @@ impl M6809 {
         });
     }
 
-    /// BITA immediate (0x85): Performs bitwise AND of accumulator A with the immediate operand, updating flags but discarding result.
+    /// BITA immediate (0x85): Bit test A — performs A AND operand, updates flags but discards result.
+    /// N set if result bit 7 is set. Z set if result is zero. V always cleared.
     pub(crate) fn op_bita_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, cycle: u8, bus: &mut B, master: BusMaster) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
             let result = cpu.a & operand;
@@ -129,6 +144,7 @@ impl M6809 {
     }
 
     /// EORA immediate (0x88): Performs bitwise Exclusive OR of accumulator A with the immediate operand.
+    /// N set if result bit 7 is set. Z set if result is zero. V always cleared.
     pub(crate) fn op_eora_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, cycle: u8, bus: &mut B, master: BusMaster) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
             cpu.a ^= operand;
@@ -137,6 +153,10 @@ impl M6809 {
     }
 
     /// ADCA immediate (0x89): Adds the immediate operand and carry to accumulator A.
+    /// A = A + M + C. Used for multi-byte addition chains.
+    /// N set if result bit 7 is set. Z set if result is zero.
+    /// V set if signed overflow occurred. C set if unsigned carry out of bit 7.
+    /// H set if carry from bit 3 to bit 4.
     pub(crate) fn op_adca_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, cycle: u8, bus: &mut B, master: BusMaster) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
             let carry_in = if cpu.cc & (CcFlag::C as u8) != 0 { 1 } else { 0 };
@@ -159,6 +179,7 @@ impl M6809 {
     }
 
     /// ORA immediate (0x8A): Performs bitwise OR of accumulator A with the immediate operand.
+    /// N set if result bit 7 is set. Z set if result is zero. V always cleared.
     pub(crate) fn op_ora_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, cycle: u8, bus: &mut B, master: BusMaster) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
             cpu.a |= operand;
@@ -167,6 +188,9 @@ impl M6809 {
     }
 
     /// SUBB immediate (0xC0): Subtracts the immediate operand from accumulator B.
+    /// N set if result bit 7 is set. Z set if result is zero.
+    /// V set if signed overflow occurred (operands had different signs and result sign differs from B).
+    /// C set if unsigned borrow occurred (operand > B).
     pub(crate) fn op_subb_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, cycle: u8, bus: &mut B, master: BusMaster) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
             let (result, borrow) = cpu.b.overflowing_sub(operand);
@@ -177,6 +201,9 @@ impl M6809 {
     }
 
     /// CMPB immediate (0xC1): Compares accumulator B with the immediate operand (B - M).
+    /// Performs subtraction but discards the result; only flags are updated.
+    /// N set if result bit 7 is set. Z set if B == operand.
+    /// V set if signed overflow occurred. C set if unsigned borrow occurred (operand > B).
     pub(crate) fn op_cmpb_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, cycle: u8, bus: &mut B, master: BusMaster) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
             let (result, borrow) = cpu.b.overflowing_sub(operand);
@@ -186,6 +213,9 @@ impl M6809 {
     }
 
     /// SBCB immediate (0xC2): Subtracts the immediate operand and carry from accumulator B.
+    /// B = B - M - C. Used for multi-byte subtraction chains.
+    /// N set if result bit 7 is set. Z set if result is zero.
+    /// V set if signed overflow occurred. C set if unsigned borrow occurred.
     pub(crate) fn op_sbcb_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, cycle: u8, bus: &mut B, master: BusMaster) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
             let carry = if cpu.cc & (CcFlag::C as u8) != 0 { 1 } else { 0 };
@@ -206,6 +236,7 @@ impl M6809 {
     }
 
     /// ANDB immediate (0xC4): Performs bitwise AND of accumulator B with the immediate operand.
+    /// N set if result bit 7 is set. Z set if result is zero. V always cleared.
     pub(crate) fn op_andb_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, cycle: u8, bus: &mut B, master: BusMaster) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
             cpu.b &= operand;
@@ -213,7 +244,8 @@ impl M6809 {
         });
     }
 
-    /// BITB immediate (0xC5): Performs bitwise AND of accumulator B with the immediate operand, updating flags but discarding result.
+    /// BITB immediate (0xC5): Bit test B — performs B AND operand, updates flags but discards result.
+    /// N set if result bit 7 is set. Z set if result is zero. V always cleared.
     pub(crate) fn op_bitb_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, cycle: u8, bus: &mut B, master: BusMaster) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
             let result = cpu.b & operand;
@@ -222,6 +254,7 @@ impl M6809 {
     }
 
     /// EORB immediate (0xC8): Performs bitwise Exclusive OR of accumulator B with the immediate operand.
+    /// N set if result bit 7 is set. Z set if result is zero. V always cleared.
     pub(crate) fn op_eorb_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, cycle: u8, bus: &mut B, master: BusMaster) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
             cpu.b ^= operand;
@@ -230,6 +263,10 @@ impl M6809 {
     }
 
     /// ADCB immediate (0xC9): Adds the immediate operand and carry to accumulator B.
+    /// B = B + M + C. Used for multi-byte addition chains.
+    /// N set if result bit 7 is set. Z set if result is zero.
+    /// V set if signed overflow occurred. C set if unsigned carry out of bit 7.
+    /// H set if carry from bit 3 to bit 4.
     pub(crate) fn op_adcb_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, cycle: u8, bus: &mut B, master: BusMaster) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
             let carry_in = if cpu.cc & (CcFlag::C as u8) != 0 { 1 } else { 0 };
@@ -252,6 +289,7 @@ impl M6809 {
     }
 
     /// ORB immediate (0xCA): Performs bitwise OR of accumulator B with the immediate operand.
+    /// N set if result bit 7 is set. Z set if result is zero. V always cleared.
     pub(crate) fn op_orb_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, cycle: u8, bus: &mut B, master: BusMaster) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
             cpu.b |= operand;
@@ -260,6 +298,9 @@ impl M6809 {
     }
 
     /// ADDB immediate (0xCB): Adds the immediate operand to accumulator B.
+    /// N set if result bit 7 is set. Z set if result is zero.
+    /// V set if signed overflow occurred (operands had same sign and result sign differs).
+    /// C set if unsigned carry out of bit 7. H set if carry from bit 3 to bit 4.
     pub(crate) fn op_addb_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, cycle: u8, bus: &mut B, master: BusMaster) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
             let (result, carry) = cpu.b.overflowing_add(operand);
@@ -271,7 +312,10 @@ impl M6809 {
         });
     }
 
-    /// NEGA inherent (0x40): Negate A (A = 0 - A)
+    /// NEGA inherent (0x40): Negate A (A = 0 - A, two's complement).
+    /// N set if result bit 7 is set. Z set if result is zero.
+    /// V set if A was 0x80 (-128), since -(-128) overflows signed 8-bit range.
+    /// C set if A was non-zero (borrow occurred from 0).
     pub(crate) fn op_nega(&mut self, cycle: u8) {
         if cycle == 0 {
             let (result, borrow) = (0u8).overflowing_sub(self.a);
@@ -283,7 +327,10 @@ impl M6809 {
         }
     }
 
-    /// NEGB inherent (0x50): Negate B (B = 0 - B)
+    /// NEGB inherent (0x50): Negate B (B = 0 - B, two's complement).
+    /// N set if result bit 7 is set. Z set if result is zero.
+    /// V set if B was 0x80 (-128), since -(-128) overflows signed 8-bit range.
+    /// C set if B was non-zero (borrow occurred from 0).
     pub(crate) fn op_negb(&mut self, cycle: u8) {
         if cycle == 0 {
             let (result, borrow) = (0u8).overflowing_sub(self.b);
@@ -294,7 +341,9 @@ impl M6809 {
         }
     }
 
-    /// COMA inherent (0x43): Complement A (A = ~A)
+    /// COMA inherent (0x43): Complement A (A = ~A, one's complement / bitwise NOT).
+    /// N set if result bit 7 is set. Z set if result is zero.
+    /// V always cleared. C always set.
     pub(crate) fn op_coma(&mut self, cycle: u8) {
         if cycle == 0 {
             self.a = !self.a;
@@ -305,12 +354,118 @@ impl M6809 {
         }
     }
 
-    /// COMB inherent (0x53): Complement B (B = ~B)
+    /// COMB inherent (0x53): Complement B (B = ~B, one's complement / bitwise NOT).
+    /// N set if result bit 7 is set. Z set if result is zero.
+    /// V always cleared. C always set.
     pub(crate) fn op_comb(&mut self, cycle: u8) {
         if cycle == 0 {
             self.b = !self.b;
             self.set_flags_logical(self.b);
             self.set_flag(CcFlag::C, true);
+            self.state = ExecState::Fetch;
+        }
+    }
+
+    /// CLRA inherent (0x4F): Clear A (A = 0).
+    /// Flags are always set to fixed values: N=0, Z=1, V=0, C=0.
+    pub(crate) fn op_clra(&mut self, cycle: u8) {
+        if cycle == 0 {
+            self.a = 0;
+            self.set_flag(CcFlag::N, false);
+            self.set_flag(CcFlag::Z, true);
+            self.set_flag(CcFlag::V, false);
+            self.set_flag(CcFlag::C, false);
+            self.state = ExecState::Fetch;
+        }
+    }
+
+    /// CLRB inherent (0x5F): Clear B (B = 0).
+    /// Flags are always set to fixed values: N=0, Z=1, V=0, C=0.
+    pub(crate) fn op_clrb(&mut self, cycle: u8) {
+        if cycle == 0 {
+            self.b = 0;
+            self.set_flag(CcFlag::N, false);
+            self.set_flag(CcFlag::Z, true);
+            self.set_flag(CcFlag::V, false);
+            self.set_flag(CcFlag::C, false);
+            self.state = ExecState::Fetch;
+        }
+    }
+
+    /// INCA inherent (0x4C): Increment A (A = A + 1).
+    /// N set if result bit 7 is set. Z set if result is zero.
+    /// V set if A was 0x7F before increment (positive-to-negative signed overflow).
+    /// C is not affected.
+    pub(crate) fn op_inca(&mut self, cycle: u8) {
+        if cycle == 0 {
+            let overflow = self.a == 0x7F;
+            self.a = self.a.wrapping_add(1);
+            self.set_flag(CcFlag::N, self.a & 0x80 != 0);
+            self.set_flag(CcFlag::Z, self.a == 0);
+            self.set_flag(CcFlag::V, overflow);
+            self.state = ExecState::Fetch;
+        }
+    }
+
+    /// INCB inherent (0x5C): Increment B (B = B + 1).
+    /// N set if result bit 7 is set. Z set if result is zero.
+    /// V set if B was 0x7F before increment (positive-to-negative signed overflow).
+    /// C is not affected.
+    pub(crate) fn op_incb(&mut self, cycle: u8) {
+        if cycle == 0 {
+            let overflow = self.b == 0x7F;
+            self.b = self.b.wrapping_add(1);
+            self.set_flag(CcFlag::N, self.b & 0x80 != 0);
+            self.set_flag(CcFlag::Z, self.b == 0);
+            self.set_flag(CcFlag::V, overflow);
+            self.state = ExecState::Fetch;
+        }
+    }
+
+    /// DECA inherent (0x4A): Decrement A (A = A - 1).
+    /// N set if result bit 7 is set. Z set if result is zero.
+    /// V set if A was 0x80 before decrement (negative-to-positive signed overflow).
+    /// C is not affected.
+    pub(crate) fn op_deca(&mut self, cycle: u8) {
+        if cycle == 0 {
+            let overflow = self.a == 0x80;
+            self.a = self.a.wrapping_sub(1);
+            self.set_flag(CcFlag::N, self.a & 0x80 != 0);
+            self.set_flag(CcFlag::Z, self.a == 0);
+            self.set_flag(CcFlag::V, overflow);
+            self.state = ExecState::Fetch;
+        }
+    }
+
+    /// DECB inherent (0x5A): Decrement B (B = B - 1).
+    /// N set if result bit 7 is set. Z set if result is zero.
+    /// V set if B was 0x80 before decrement (negative-to-positive signed overflow).
+    /// C is not affected.
+    pub(crate) fn op_decb(&mut self, cycle: u8) {
+        if cycle == 0 {
+            let overflow = self.b == 0x80;
+            self.b = self.b.wrapping_sub(1);
+            self.set_flag(CcFlag::N, self.b & 0x80 != 0);
+            self.set_flag(CcFlag::Z, self.b == 0);
+            self.set_flag(CcFlag::V, overflow);
+            self.state = ExecState::Fetch;
+        }
+    }
+
+    /// TSTA inherent (0x4D): Test A (set flags based on A, no modification).
+    /// N set if A bit 7 is set. Z set if A is zero. V always cleared.
+    pub(crate) fn op_tsta(&mut self, cycle: u8) {
+        if cycle == 0 {
+            self.set_flags_logical(self.a);
+            self.state = ExecState::Fetch;
+        }
+    }
+
+    /// TSTB inherent (0x5D): Test B (set flags based on B, no modification).
+    /// N set if B bit 7 is set. Z set if B is zero. V always cleared.
+    pub(crate) fn op_tstb(&mut self, cycle: u8) {
+        if cycle == 0 {
+            self.set_flags_logical(self.b);
             self.state = ExecState::Fetch;
         }
     }
