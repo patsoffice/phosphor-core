@@ -26,8 +26,8 @@ pub struct M6809 {
     pub cc: u8,
 
     // Internal state (generic enough to support TSC/RDY logic)
-    state: ExecState,
-    opcode: u8,
+    pub(crate) state: ExecState,
+    pub(crate) opcode: u8,
     pub(crate) temp_addr: u16,
     #[allow(dead_code)]
     resume_delay: u8,  // For TSC/RDY release timing

@@ -132,7 +132,7 @@ The emulator is organized into four main layers:
 
 - **`m6809/`** ✅ - Motorola 6809 (directory module, split by instruction category)
   - `mod.rs` - Struct, state machine, opcode dispatch table
-  - `alu.rs` - ALU instructions (ADD, SUB, CMP, SBC, ADC, AND, BIT, EOR, OR, MUL, NEG, COM, CLR, INC, DEC, TST, ASL, ASR, LSR, ROL, ROR + B variants, ADDD, SUBD, CMPX, LDD, LDX, LDU)
+  - `alu/` - ALU instructions split into `binary`, `unary`, `shift`, and `word` modules
   - `load_store.rs` - Load/store instructions (LDA, LDB, STA)
   - All 8 registers (A, B, X, Y, U, S, PC, CC)
   - Explicit state machine (Fetch, Execute, Halted)
@@ -168,7 +168,12 @@ phosphor-core/
 │   ├── cpu/                        # ⚠️  CPU implementations (partial)
 │   │   ├── m6809/                  # ✅ Working M6809 (50 opcodes)
 │   │   │   ├── mod.rs              #    Struct, state machine, dispatch
-│   │   │   ├── alu.rs              #    ALU ops (A/B immediate, unary, shift/rotate, 16-bit)
+│   │   │   ├── alu.rs              #    ALU helpers and module exports
+│   │   │   ├── alu/                #    ALU instruction modules
+│   │   │   │   ├── binary.rs       #    Binary ops (ADD, SUB, MUL, etc.)
+│   │   │   │   ├── shift.rs        #    Shift/Rotate ops
+│   │   │   │   ├── unary.rs        #    Unary ops (NEG, COM, etc.)
+│   │   │   │   └── word.rs         #    16-bit ops (ADDD, CMPX, LDD, etc.)
 │   │   │   └── load_store.rs       #    LDA, LDB, STA
 │   │   ├── m6502.rs                # ❌ Placeholder only
 │   │   └── mod.rs                  # ✅ Cpu trait definition
@@ -179,11 +184,11 @@ phosphor-core/
 │       ├── simple6809.rs           # ✅ Minimal 6809 system with RAM/ROM
 │       └── mod.rs                  #    Module exports
 ├── tests/
-│   ├── m6809_alu_test.rs           # ✅ 11 ALU tests (add, sub, mul)
+│   ├── m6809_alu_binary_test.rs    # ✅ 11 ALU tests (add, sub, mul)
 │   ├── m6809_alu_imm_test.rs       # ✅ 11 ALU immediate tests (cmp, sbc, adc, logical)
 │   ├── m6809_alu_unary_test.rs     # ✅ 6 unary ALU tests (neg, com, clr, inc, dec, tst)
-│   ├── m6809_alu16_test.rs         # ✅ 3 16-bit ALU tests (addd, subd, cmpx)
-│   ├── m6809_shift_rotate_test.rs  # ✅ 8 shift/rotate tests (asl, asr, lsr, rol, ror)
+│   ├── m6809_alu_word_test.rs      # ✅ 3 16-bit ALU tests (addd, subd, cmpx)
+│   ├── m6809_alu_shift_test.rs     # ✅ 8 shift/rotate tests (asl, asr, lsr, rol, ror)
 │   └── m6809_load_store_test.rs    # ✅ 5 load/store tests (lda, ldb, ldd, ldx, ldu, sta)
 └── target/                         # Build artifacts (gitignored)
 
