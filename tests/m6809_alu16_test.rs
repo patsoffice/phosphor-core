@@ -43,3 +43,24 @@ fn test_subd_immediate() {
     assert_eq!(state.cc & (CcFlag::V as u8), 0);
     assert_eq!(state.cc & (CcFlag::C as u8), 0);
 }
+
+#[test]
+fn test_cmpx_immediate() {
+    let mut sys = Simple6809System::new();
+    // LDX #$1000, CMPX #$1000, CMPX #$2000
+    sys.load_rom(0, &[0x8E, 0x10, 0x00, 0x8C, 0x10, 0x00, 0x8C, 0x20, 0x00]);
+
+    // LDX (3 cycles)
+    sys.tick(); sys.tick(); sys.tick();
+    assert_eq!(sys.get_cpu_state().x, 0x1000);
+
+    // CMPX #$1000 (4 cycles) -> Z=1
+    sys.tick(); sys.tick(); sys.tick(); sys.tick();
+    assert_eq!(sys.get_cpu_state().cc & (CcFlag::Z as u8), CcFlag::Z as u8);
+
+    // CMPX #$2000 (4 cycles) -> N=1, C=1
+    sys.tick(); sys.tick(); sys.tick(); sys.tick();
+    let state = sys.get_cpu_state();
+    assert_eq!(state.cc & (CcFlag::N as u8), CcFlag::N as u8);
+    assert_eq!(state.cc & (CcFlag::C as u8), CcFlag::C as u8);
+}

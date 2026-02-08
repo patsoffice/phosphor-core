@@ -93,3 +93,40 @@ fn test_multiple_loads_and_stores() {
     assert_eq!(sys.get_cpu_state().cc & (CcFlag::Z as u8), 0, "Zero should be clear");
     assert_eq!(sys.get_cpu_state().cc & (CcFlag::V as u8), 0, "Overflow should be clear");
 }
+
+#[test]
+fn test_load_16bit_immediate() {
+    let mut sys = Simple6809System::new();
+    // LDD #$1234, LDX #$5678, LDU #$9ABC
+    sys.load_rom(0, &[
+        0xCC, 0x12, 0x34,
+        0x8E, 0x56, 0x78,
+        0xCE, 0x9A, 0xBC
+    ]);
+
+    // LDD (3 cycles)
+    sys.tick(); sys.tick(); sys.tick();
+    let state = sys.get_cpu_state();
+    assert_eq!(state.a, 0x12);
+    assert_eq!(state.b, 0x34);
+    assert_eq!(state.cc & (CcFlag::N as u8), 0);
+    assert_eq!(state.cc & (CcFlag::Z as u8), 0);
+    assert_eq!(state.cc & (CcFlag::V as u8), 0);
+
+    // LDX (3 cycles)
+    sys.tick(); sys.tick(); sys.tick();
+    let state = sys.get_cpu_state();
+    assert_eq!(state.x, 0x5678);
+    assert_eq!(state.cc & (CcFlag::N as u8), 0);
+    assert_eq!(state.cc & (CcFlag::Z as u8), 0);
+    assert_eq!(state.cc & (CcFlag::V as u8), 0);
+
+    // LDU (3 cycles)
+    sys.tick(); sys.tick(); sys.tick();
+    let state = sys.get_cpu_state();
+    assert_eq!(state.u, 0x9ABC);
+    // 0x9ABC has bit 15 set, so N should be set
+    assert_eq!(state.cc & (CcFlag::N as u8), CcFlag::N as u8);
+    assert_eq!(state.cc & (CcFlag::Z as u8), 0);
+    assert_eq!(state.cc & (CcFlag::V as u8), 0);
+}

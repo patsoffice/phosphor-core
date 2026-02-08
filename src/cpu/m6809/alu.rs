@@ -28,6 +28,14 @@ impl M6809 {
         self.set_flag(CcFlag::C, carry);
     }
 
+    /// Helper to set N, Z, V (cleared) flags for 16-bit logical operations
+    #[inline]
+    fn set_flags_logical16(&mut self, result: u16) {
+        self.set_flag(CcFlag::N, result & 0x8000 != 0);
+        self.set_flag(CcFlag::Z, result == 0);
+        self.set_flag(CcFlag::V, false);
+    }
+
     /// The alu_imm function is a generic helper method designed to reduce code duplication for Immediate Addressing Mode ALU instructions (like ADDA #$10, ANDB #$FF, etc.).
     ///
     /// In the Motorola 6809, immediate mode instructions always follow a specific pattern.
@@ -103,6 +111,100 @@ impl M6809 {
 
                 self.set_d(result);
                 self.set_flags_arithmetic16(result, overflow, borrow);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
+    /// CMPX immediate (0x8C): Compare X with 16-bit immediate.
+    /// N set if result bit 15 is set. Z set if result is zero.
+    /// V set if signed overflow occurred. C set if unsigned borrow occurred.
+    pub(crate) fn op_cmpx_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, opcode: u8, cycle: u8, bus: &mut B, master: BusMaster) {
+        match cycle {
+            0 => {
+                let high = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = high << 8;
+                self.state = ExecState::Execute(opcode, 1);
+            }
+            1 => {
+                let low = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr |= low;
+                self.state = ExecState::Execute(opcode, 2);
+            }
+            2 => {
+                let operand = self.temp_addr;
+                let (result, borrow) = self.x.overflowing_sub(operand);
+                let overflow = (self.x ^ operand) & 0x8000 != 0 && (self.x ^ result) & 0x8000 != 0;
+                self.set_flags_arithmetic16(result, overflow, borrow);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
+    /// LDD immediate (0xCC): Load D with 16-bit immediate.
+    /// N set if result bit 15 is set. Z set if result is zero. V always cleared.
+    pub(crate) fn op_ldd_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, opcode: u8, cycle: u8, bus: &mut B, master: BusMaster) {
+        match cycle {
+            0 => {
+                let high = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = high << 8;
+                self.state = ExecState::Execute(opcode, 1);
+            }
+            1 => {
+                let low = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                let val = self.temp_addr | low;
+                self.set_d(val);
+                self.set_flags_logical16(val);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
+    /// LDX immediate (0x8E): Load X with 16-bit immediate.
+    /// N set if result bit 15 is set. Z set if result is zero. V always cleared.
+    pub(crate) fn op_ldx_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, opcode: u8, cycle: u8, bus: &mut B, master: BusMaster) {
+        match cycle {
+            0 => {
+                let high = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = high << 8;
+                self.state = ExecState::Execute(opcode, 1);
+            }
+            1 => {
+                let low = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                let val = self.temp_addr | low;
+                self.x = val;
+                self.set_flags_logical16(val);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
+    /// LDU immediate (0xCE): Load U with 16-bit immediate.
+    /// N set if result bit 15 is set. Z set if result is zero. V always cleared.
+    pub(crate) fn op_ldu_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, opcode: u8, cycle: u8, bus: &mut B, master: BusMaster) {
+        match cycle {
+            0 => {
+                let high = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = high << 8;
+                self.state = ExecState::Execute(opcode, 1);
+            }
+            1 => {
+                let low = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                let val = self.temp_addr | low;
+                self.u = val;
+                self.set_flags_logical16(val);
                 self.state = ExecState::Fetch;
             }
             _ => {}

@@ -53,6 +53,16 @@ impl M6809 {
         }
     }
 
+    pub(crate) fn get_d(&self) -> u16 {
+        u16::from_be_bytes([self.a, self.b])
+    }
+
+    pub(crate) fn set_d(&mut self, val: u16) {
+        let bytes = val.to_be_bytes();
+        self.a = bytes[0];
+        self.b = bytes[1];
+    }
+
     #[inline]
     pub(crate) fn set_flag(&mut self, flag: CcFlag, set: bool) {
         if set { self.cc |= flag as u8 } else { self.cc &= !(flag as u8) }
@@ -109,6 +119,8 @@ impl M6809 {
             0x83 => self.op_subd_imm(opcode, cycle, bus, master),
             0x84 => self.op_anda_imm(cycle, bus, master),
             0x85 => self.op_bita_imm(cycle, bus, master),
+            0x8C => self.op_cmpx_imm(opcode, cycle, bus, master),
+            0x8E => self.op_ldx_imm(opcode, cycle, bus, master),
             0x88 => self.op_eora_imm(cycle, bus, master),
             0x89 => self.op_adca_imm(cycle, bus, master),
             0x8A => self.op_ora_imm(cycle, bus, master),
@@ -132,6 +144,8 @@ impl M6809 {
             0xC3 => self.op_addd_imm(opcode, cycle, bus, master),
             0xC4 => self.op_andb_imm(cycle, bus, master),
             0xC5 => self.op_bitb_imm(cycle, bus, master),
+            0xCC => self.op_ldd_imm(opcode, cycle, bus, master),
+            0xCE => self.op_ldu_imm(opcode, cycle, bus, master),
             0xC8 => self.op_eorb_imm(cycle, bus, master),
             0xC9 => self.op_adcb_imm(cycle, bus, master),
             0xCA => self.op_orb_imm(cycle, bus, master),
