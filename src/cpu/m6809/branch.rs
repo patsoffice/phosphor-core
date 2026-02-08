@@ -227,4 +227,136 @@ impl M6809 {
         let v = (self.cc & (CcFlag::V as u8)) != 0;
         self.branch_short(opcode, cycle, bus, master, z || (n != v));
     }
+
+    /// BSR (0x8D): Branch to Subroutine.
+    /// Pushes return address (PC after offset byte) onto S stack,
+    /// then branches to PC + sign-extended 8-bit offset.
+    /// No flags affected. 7 cycles total (1 fetch + 6 execute).
+    pub(crate) fn op_bsr<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                // Read offset byte; PC is now the return address
+                let offset = bus.read(master, self.pc);
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = offset as u16;
+                self.state = ExecState::Execute(opcode, 1);
+            }
+            1 => {
+                // Internal
+                self.state = ExecState::Execute(opcode, 2);
+            }
+            2 => {
+                // Push PC low byte
+                self.s = self.s.wrapping_sub(1);
+                bus.write(master, self.s, self.pc as u8);
+                self.state = ExecState::Execute(opcode, 3);
+            }
+            3 => {
+                // Push PC high byte
+                self.s = self.s.wrapping_sub(1);
+                bus.write(master, self.s, (self.pc >> 8) as u8);
+                self.state = ExecState::Execute(opcode, 4);
+            }
+            4 => {
+                // Internal
+                self.state = ExecState::Execute(opcode, 5);
+            }
+            5 => {
+                // Add signed offset to PC
+                let offset = self.temp_addr as u8 as i8;
+                self.pc = self.pc.wrapping_add(offset as u16);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
+    /// JSR direct (0x9D): Jump to Subroutine (direct addressing).
+    /// Pushes return address onto S stack, then jumps to DP:offset.
+    /// No flags affected. 7 cycles total (1 fetch + 6 execute).
+    pub(crate) fn op_jsr_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                // Read address byte, form DP:addr target
+                let addr_low = bus.read(master, self.pc);
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = ((self.dp as u16) << 8) | (addr_low as u16);
+                self.state = ExecState::Execute(opcode, 1);
+            }
+            1 => {
+                // Internal
+                self.state = ExecState::Execute(opcode, 2);
+            }
+            2 => {
+                // Push PC low byte
+                self.s = self.s.wrapping_sub(1);
+                bus.write(master, self.s, self.pc as u8);
+                self.state = ExecState::Execute(opcode, 3);
+            }
+            3 => {
+                // Push PC high byte
+                self.s = self.s.wrapping_sub(1);
+                bus.write(master, self.s, (self.pc >> 8) as u8);
+                self.state = ExecState::Execute(opcode, 4);
+            }
+            4 => {
+                // Internal
+                self.state = ExecState::Execute(opcode, 5);
+            }
+            5 => {
+                // Jump to target
+                self.pc = self.temp_addr;
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
+    /// RTS (0x39): Return from Subroutine.
+    /// Pulls PC from S stack. No flags affected.
+    /// 5 cycles total (1 fetch + 4 execute).
+    pub(crate) fn op_rts<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                // Internal
+                self.state = ExecState::Execute(0x39, 1);
+            }
+            1 => {
+                // Pull PC high byte
+                let high = bus.read(master, self.s);
+                self.s = self.s.wrapping_add(1);
+                self.temp_addr = (high as u16) << 8;
+                self.state = ExecState::Execute(0x39, 2);
+            }
+            2 => {
+                // Pull PC low byte
+                let low = bus.read(master, self.s);
+                self.s = self.s.wrapping_add(1);
+                self.pc = self.temp_addr | (low as u16);
+                self.state = ExecState::Execute(0x39, 3);
+            }
+            3 => {
+                // Internal
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
 }

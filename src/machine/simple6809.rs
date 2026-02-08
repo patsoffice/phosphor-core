@@ -76,6 +76,11 @@ impl Simple6809System {
         }
     }
 
+    /// Set the CPU stack pointer (S register) for testing
+    pub fn set_cpu_s(&mut self, val: u16) {
+        self.cpu.s = val;
+    }
+
     /// Read a byte from RAM
     pub fn read_ram(&self, addr: usize) -> u8 {
         if addr < self.ram.len() {

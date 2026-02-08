@@ -153,6 +153,9 @@ impl M6809 {
             0x1E => self.op_exg(cycle, bus, master),
             0x1F => self.op_tfr(cycle, bus, master),
 
+            // Subroutine / Return
+            0x39 => self.op_rts(cycle, bus, master),
+
             // Stack operations
             0x34 => self.op_pshs(cycle, bus, master),
             0x35 => self.op_puls(cycle, bus, master),
@@ -160,6 +163,7 @@ impl M6809 {
             0x37 => self.op_pulu(cycle, bus, master),
 
             // Branch instructions (Short)
+            0x8D => self.op_bsr(opcode, cycle, bus, master),
             0x20 => self.op_bra(opcode, cycle, bus, master),
             0x21 => self.op_brn(opcode, cycle, bus, master),
             0x22 => self.op_bhi(opcode, cycle, bus, master),
@@ -218,6 +222,7 @@ impl M6809 {
             // Load/store instructions
             0x86 => self.op_lda_imm(cycle, bus, master),
             0x97 => self.op_sta_direct(opcode, cycle, bus, master),
+            0x9D => self.op_jsr_direct(opcode, cycle, bus, master),
             0xC6 => self.op_ldb_imm(cycle, bus, master),
 
             // Unknown opcode - just fetch next
