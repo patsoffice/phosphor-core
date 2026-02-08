@@ -1,4 +1,5 @@
 mod alu;
+mod branch;
 mod load_store;
 
 use crate::core::{Bus, BusMaster, bus::InterruptState, component::{BusMasterComponent, Component}};
@@ -113,6 +114,25 @@ impl M6809 {
             0x4C => self.op_inca(cycle),
             0x4D => self.op_tsta(cycle),
             0x4F => self.op_clra(cycle),
+
+            // Branch instructions (Short)
+            0x20 => self.op_bra(opcode, cycle, bus, master),
+            0x21 => self.op_brn(opcode, cycle, bus, master),
+            0x22 => self.op_bhi(opcode, cycle, bus, master),
+            0x23 => self.op_bls(opcode, cycle, bus, master),
+            0x24 => self.op_bcc(opcode, cycle, bus, master),
+            0x25 => self.op_bcs(opcode, cycle, bus, master),
+            0x26 => self.op_bne(opcode, cycle, bus, master),
+            0x27 => self.op_beq(opcode, cycle, bus, master),
+            0x28 => self.op_bvc(opcode, cycle, bus, master),
+            0x29 => self.op_bvs(opcode, cycle, bus, master),
+            0x2A => self.op_bpl(opcode, cycle, bus, master),
+            0x2B => self.op_bmi(opcode, cycle, bus, master),
+            0x2C => self.op_bge(opcode, cycle, bus, master),
+            0x2D => self.op_blt(opcode, cycle, bus, master),
+            0x2E => self.op_bgt(opcode, cycle, bus, master),
+            0x2F => self.op_ble(opcode, cycle, bus, master),
+
             0x80 => self.op_suba_imm(cycle, bus, master),
             0x81 => self.op_cmpa_imm(cycle, bus, master),
             0x82 => self.op_sbca_imm(cycle, bus, master),
