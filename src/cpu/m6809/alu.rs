@@ -1,9 +1,9 @@
+use super::{CcFlag, ExecState, M6809};
 use crate::core::{Bus, BusMaster};
-use super::{M6809, CcFlag, ExecState};
 
 mod binary;
-mod unary;
 mod shift;
+mod unary;
 mod word;
 
 impl M6809 {

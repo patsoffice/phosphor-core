@@ -1,4 +1,4 @@
-use crate::cpu::m6809::{M6809, CcFlag, ExecState};
+use crate::cpu::m6809::{CcFlag, ExecState, M6809};
 
 impl M6809 {
     /// NEGA inherent (0x40): Negate A (A = 0 - A, two's complement).

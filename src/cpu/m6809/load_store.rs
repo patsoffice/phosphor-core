@@ -1,9 +1,14 @@
+use super::{CcFlag, ExecState, M6809};
 use crate::core::{Bus, BusMaster};
-use super::{M6809, CcFlag, ExecState};
 
 impl M6809 {
     /// LDA immediate (0x86)
-    pub(crate) fn op_lda_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, cycle: u8, bus: &mut B, master: BusMaster) {
+    pub(crate) fn op_lda_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
         match cycle {
             0 => {
                 self.a = bus.read(master, self.pc);
@@ -18,7 +23,12 @@ impl M6809 {
     }
 
     /// LDB immediate (0xC6)
-    pub(crate) fn op_ldb_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, cycle: u8, bus: &mut B, master: BusMaster) {
+    pub(crate) fn op_ldb_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
         match cycle {
             0 => {
                 self.b = bus.read(master, self.pc);
@@ -33,7 +43,13 @@ impl M6809 {
     }
 
     /// STA direct (0x97)
-    pub(crate) fn op_sta_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, opcode: u8, cycle: u8, bus: &mut B, master: BusMaster) {
+    pub(crate) fn op_sta_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
         match cycle {
             0 => {
                 // Fetch address

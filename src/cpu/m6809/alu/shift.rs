@@ -1,4 +1,4 @@
-use crate::cpu::m6809::{M6809, CcFlag, ExecState};
+use crate::cpu::m6809::{CcFlag, ExecState, M6809};
 
 impl M6809 {
     /// ASLA/LSLA inherent (0x48): Arithmetic/Logical Shift Left A.

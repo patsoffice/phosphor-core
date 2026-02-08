@@ -1,19 +1,27 @@
 use crate::core::{Bus, BusMaster};
-use crate::cpu::m6809::{M6809, ExecState};
+use crate::cpu::m6809::{ExecState, M6809};
 
 impl M6809 {
     /// ADDD immediate (0xC3): Adds a 16-bit immediate value to the D register.
     /// N set if result bit 15 is set. Z set if result is zero.
     /// V set if signed overflow occurred. C set if unsigned carry out of bit 15.
-    pub(crate) fn op_addd_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, opcode: u8, cycle: u8, bus: &mut B, master: BusMaster) {
+    pub(crate) fn op_addd_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
         match cycle {
-            0 => { // Fetch high byte of operand
+            0 => {
+                // Fetch high byte of operand
                 let high = bus.read(master, self.pc) as u16;
                 self.pc = self.pc.wrapping_add(1);
                 self.temp_addr = high << 8;
                 self.state = ExecState::Execute(opcode, 1);
             }
-            1 => { // Fetch low byte, execute
+            1 => {
+                // Fetch low byte, execute
                 let low = bus.read(master, self.pc) as u16;
                 self.pc = self.pc.wrapping_add(1);
                 let operand = self.temp_addr | low;
@@ -33,15 +41,23 @@ impl M6809 {
     /// SUBD immediate (0x83): Subtracts a 16-bit immediate value from the D register.
     /// N set if result bit 15 is set. Z set if result is zero.
     /// V set if signed overflow occurred. C set if unsigned borrow occurred.
-    pub(crate) fn op_subd_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, opcode: u8, cycle: u8, bus: &mut B, master: BusMaster) {
+    pub(crate) fn op_subd_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
         match cycle {
-            0 => { // Fetch high byte of operand
+            0 => {
+                // Fetch high byte of operand
                 let high = bus.read(master, self.pc) as u16;
                 self.pc = self.pc.wrapping_add(1);
                 self.temp_addr = high << 8;
                 self.state = ExecState::Execute(opcode, 1);
             }
-            1 => { // Fetch low byte, execute
+            1 => {
+                // Fetch low byte, execute
                 let low = bus.read(master, self.pc) as u16;
                 self.pc = self.pc.wrapping_add(1);
                 let operand = self.temp_addr | low;
@@ -61,7 +77,13 @@ impl M6809 {
     /// CMPX immediate (0x8C): Compare X with 16-bit immediate.
     /// N set if result bit 15 is set. Z set if result is zero.
     /// V set if signed overflow occurred. C set if unsigned borrow occurred.
-    pub(crate) fn op_cmpx_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, opcode: u8, cycle: u8, bus: &mut B, master: BusMaster) {
+    pub(crate) fn op_cmpx_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
         match cycle {
             0 => {
                 let high = bus.read(master, self.pc) as u16;
@@ -88,7 +110,13 @@ impl M6809 {
 
     /// LDD immediate (0xCC): Load D with 16-bit immediate.
     /// N set if result bit 15 is set. Z set if result is zero. V always cleared.
-    pub(crate) fn op_ldd_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, opcode: u8, cycle: u8, bus: &mut B, master: BusMaster) {
+    pub(crate) fn op_ldd_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
         match cycle {
             0 => {
                 let high = bus.read(master, self.pc) as u16;
@@ -110,7 +138,13 @@ impl M6809 {
 
     /// LDX immediate (0x8E): Load X with 16-bit immediate.
     /// N set if result bit 15 is set. Z set if result is zero. V always cleared.
-    pub(crate) fn op_ldx_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, opcode: u8, cycle: u8, bus: &mut B, master: BusMaster) {
+    pub(crate) fn op_ldx_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
         match cycle {
             0 => {
                 let high = bus.read(master, self.pc) as u16;
@@ -132,7 +166,13 @@ impl M6809 {
 
     /// LDU immediate (0xCE): Load U with 16-bit immediate.
     /// N set if result bit 15 is set. Z set if result is zero. V always cleared.
-    pub(crate) fn op_ldu_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, opcode: u8, cycle: u8, bus: &mut B, master: BusMaster) {
+    pub(crate) fn op_ldu_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
         match cycle {
             0 => {
                 let high = bus.read(master, self.pc) as u16;

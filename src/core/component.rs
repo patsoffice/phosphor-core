@@ -7,7 +7,9 @@ pub trait Component {
     fn tick(&mut self) -> bool;
 
     /// Get the master clock cycles consumed per tick (for clock domain crossing).
-    fn clock_divider(&self) -> u64 { 1 }
+    fn clock_divider(&self) -> u64 {
+        1
+    }
 }
 
 /// Extension for components that act as bus masters (CPUs, DMA controllers)

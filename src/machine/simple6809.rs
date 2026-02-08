@@ -58,7 +58,7 @@ impl Simple6809System {
     /// In a real system, this would load ROM, but for testing we load into RAM
     pub fn load_rom(&mut self, offset: usize, data: &[u8]) {
         if offset + data.len() <= self.ram.len() {
-            self.ram[offset..offset+data.len()].copy_from_slice(data);
+            self.ram[offset..offset + data.len()].copy_from_slice(data);
         }
     }
 

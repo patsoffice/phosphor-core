@@ -1,8 +1,14 @@
 mod alu;
 mod branch;
 mod load_store;
+mod stack;
+mod transfer;
 
-use crate::core::{Bus, BusMaster, bus::InterruptState, component::{BusMasterComponent, Component}};
+use crate::core::{
+    Bus, BusMaster,
+    bus::InterruptState,
+    component::{BusMasterComponent, Component},
+};
 use crate::cpu::Cpu;
 
 #[repr(u8)]
@@ -20,9 +26,13 @@ pub enum CcFlag {
 
 pub struct M6809 {
     // Registers (a,b,x,y,u,s,pc,cc)
-    pub a: u8, pub b: u8,
-    pub x: u16, pub y: u16,
-    pub u: u16, pub s: u16,
+    pub a: u8,
+    pub b: u8,
+    pub dp: u8,
+    pub x: u16,
+    pub y: u16,
+    pub u: u16,
+    pub s: u16,
     pub pc: u16,
     pub cc: u8,
 
@@ -31,22 +41,32 @@ pub struct M6809 {
     pub(crate) opcode: u8,
     pub(crate) temp_addr: u16,
     #[allow(dead_code)]
-    resume_delay: u8,  // For TSC/RDY release timing
+    resume_delay: u8, // For TSC/RDY release timing
 }
 
 #[derive(Clone, Debug)]
 pub(crate) enum ExecState {
     Fetch,
-    Execute(u8, u8),  // (opcode, cycle)
+    Execute(u8, u8), // (opcode, cycle)
     #[allow(dead_code)]
-    Halted { return_state: Box<ExecState> },
+    Halted {
+        return_state: Box<ExecState>,
+    },
     // ... etc
 }
 
 impl M6809 {
     pub fn new() -> Self {
         Self {
-            a: 0, b: 0, x: 0, y: 0, u: 0, s: 0, pc: 0, cc: 0,
+            a: 0,
+            b: 0,
+            dp: 0,
+            x: 0,
+            y: 0,
+            u: 0,
+            s: 0,
+            pc: 0,
+            cc: 0,
             state: ExecState::Fetch,
             opcode: 0,
             temp_addr: 0,
@@ -66,11 +86,19 @@ impl M6809 {
 
     #[inline]
     pub(crate) fn set_flag(&mut self, flag: CcFlag, set: bool) {
-        if set { self.cc |= flag as u8 } else { self.cc &= !(flag as u8) }
+        if set {
+            self.cc |= flag as u8
+        } else {
+            self.cc &= !(flag as u8)
+        }
     }
 
     /// Execute one cycle - handles fetch/execute state machine
-    pub fn execute_cycle<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, bus: &mut B, master: BusMaster) {
+    pub fn execute_cycle<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
         // Check TSC via the generic bus
         if bus.is_halted_for(master) {
             if !matches!(self.state, ExecState::Halted { .. }) {
@@ -99,7 +127,13 @@ impl M6809 {
         }
     }
 
-    fn execute_instruction<B: Bus<Address = u16, Data = u8> + ?Sized>(&mut self, opcode: u8, cycle: u8, bus: &mut B, master: BusMaster) {
+    fn execute_instruction<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
         match opcode {
             // ALU instructions (A register inherent)
             0x3D => self.op_mul(cycle),
@@ -114,6 +148,16 @@ impl M6809 {
             0x4C => self.op_inca(cycle),
             0x4D => self.op_tsta(cycle),
             0x4F => self.op_clra(cycle),
+
+            // Transfer/Exchange
+            0x1E => self.op_exg(cycle, bus, master),
+            0x1F => self.op_tfr(cycle, bus, master),
+
+            // Stack operations
+            0x34 => self.op_pshs(cycle, bus, master),
+            0x35 => self.op_puls(cycle, bus, master),
+            0x36 => self.op_pshu(cycle, bus, master),
+            0x37 => self.op_pulu(cycle, bus, master),
 
             // Branch instructions (Short)
             0x20 => self.op_bra(opcode, cycle, bus, master),

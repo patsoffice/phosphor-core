@@ -1,5 +1,5 @@
-use phosphor_core::machine::simple6809::Simple6809System;
 use phosphor_core::cpu::m6809::CcFlag;
+use phosphor_core::machine::simple6809::Simple6809System;
 
 #[test]
 fn test_asl() {
@@ -7,29 +7,57 @@ fn test_asl() {
     // LDA #$55, ASLA, LDB #$80, ASLB
     sys.load_rom(0, &[0x86, 0x55, 0x48, 0xC6, 0x80, 0x58]);
 
-    sys.tick(); sys.tick(); // LDA #$55
+    sys.tick();
+    sys.tick(); // LDA #$55
 
     // ASLA: 0x55 (0101_0101) << 1 = 0xAA (1010_1010), C=0
-    sys.tick(); sys.tick();
+    sys.tick();
+    sys.tick();
     let state = sys.get_cpu_state();
     assert_eq!(state.a, 0xAA);
-    assert_eq!(state.cc & (CcFlag::C as u8), 0, "C should be clear (old bit 7 was 0)");
-    assert_eq!(state.cc & (CcFlag::N as u8), CcFlag::N as u8, "N should be set");
+    assert_eq!(
+        state.cc & (CcFlag::C as u8),
+        0,
+        "C should be clear (old bit 7 was 0)"
+    );
+    assert_eq!(
+        state.cc & (CcFlag::N as u8),
+        CcFlag::N as u8,
+        "N should be set"
+    );
     assert_eq!(state.cc & (CcFlag::Z as u8), 0, "Z should be clear");
     // V = N XOR C = 1 XOR 0 = 1
-    assert_eq!(state.cc & (CcFlag::V as u8), CcFlag::V as u8, "V should be set (N XOR C)");
+    assert_eq!(
+        state.cc & (CcFlag::V as u8),
+        CcFlag::V as u8,
+        "V should be set (N XOR C)"
+    );
 
-    sys.tick(); sys.tick(); // LDB #$80
+    sys.tick();
+    sys.tick(); // LDB #$80
 
     // ASLB: 0x80 (1000_0000) << 1 = 0x00, C=1
-    sys.tick(); sys.tick();
+    sys.tick();
+    sys.tick();
     let state = sys.get_cpu_state();
     assert_eq!(state.b, 0x00);
-    assert_eq!(state.cc & (CcFlag::C as u8), CcFlag::C as u8, "C should be set (old bit 7 was 1)");
-    assert_eq!(state.cc & (CcFlag::Z as u8), CcFlag::Z as u8, "Z should be set");
+    assert_eq!(
+        state.cc & (CcFlag::C as u8),
+        CcFlag::C as u8,
+        "C should be set (old bit 7 was 1)"
+    );
+    assert_eq!(
+        state.cc & (CcFlag::Z as u8),
+        CcFlag::Z as u8,
+        "Z should be set"
+    );
     assert_eq!(state.cc & (CcFlag::N as u8), 0, "N should be clear");
     // V = N XOR C = 0 XOR 1 = 1
-    assert_eq!(state.cc & (CcFlag::V as u8), CcFlag::V as u8, "V should be set (N XOR C)");
+    assert_eq!(
+        state.cc & (CcFlag::V as u8),
+        CcFlag::V as u8,
+        "V should be set (N XOR C)"
+    );
 }
 
 #[test]
@@ -38,23 +66,39 @@ fn test_asr() {
     // LDA #$81, ASRA, LDB #$40, ASRB
     sys.load_rom(0, &[0x86, 0x81, 0x47, 0xC6, 0x40, 0x57]);
 
-    sys.tick(); sys.tick(); // LDA #$81
+    sys.tick();
+    sys.tick(); // LDA #$81
 
     // ASRA: 0x81 (1000_0001) >> 1 = 0xC0 (1100_0000), sign preserved, C=1
-    sys.tick(); sys.tick();
+    sys.tick();
+    sys.tick();
     let state = sys.get_cpu_state();
     assert_eq!(state.a, 0xC0);
-    assert_eq!(state.cc & (CcFlag::C as u8), CcFlag::C as u8, "C should be set (old bit 0 was 1)");
-    assert_eq!(state.cc & (CcFlag::N as u8), CcFlag::N as u8, "N should be set (sign preserved)");
+    assert_eq!(
+        state.cc & (CcFlag::C as u8),
+        CcFlag::C as u8,
+        "C should be set (old bit 0 was 1)"
+    );
+    assert_eq!(
+        state.cc & (CcFlag::N as u8),
+        CcFlag::N as u8,
+        "N should be set (sign preserved)"
+    );
     assert_eq!(state.cc & (CcFlag::Z as u8), 0, "Z should be clear");
 
-    sys.tick(); sys.tick(); // LDB #$40
+    sys.tick();
+    sys.tick(); // LDB #$40
 
     // ASRB: 0x40 (0100_0000) >> 1 = 0x20 (0010_0000), C=0
-    sys.tick(); sys.tick();
+    sys.tick();
+    sys.tick();
     let state = sys.get_cpu_state();
     assert_eq!(state.b, 0x20);
-    assert_eq!(state.cc & (CcFlag::C as u8), 0, "C should be clear (old bit 0 was 0)");
+    assert_eq!(
+        state.cc & (CcFlag::C as u8),
+        0,
+        "C should be clear (old bit 0 was 0)"
+    );
     assert_eq!(state.cc & (CcFlag::N as u8), 0, "N should be clear");
     assert_eq!(state.cc & (CcFlag::Z as u8), 0, "Z should be clear");
 }
@@ -65,23 +109,39 @@ fn test_lsr() {
     // LDA #$01, LSRA, LDB #$80, LSRB
     sys.load_rom(0, &[0x86, 0x01, 0x44, 0xC6, 0x80, 0x54]);
 
-    sys.tick(); sys.tick(); // LDA #$01
+    sys.tick();
+    sys.tick(); // LDA #$01
 
     // LSRA: 0x01 >> 1 = 0x00, C=1
-    sys.tick(); sys.tick();
+    sys.tick();
+    sys.tick();
     let state = sys.get_cpu_state();
     assert_eq!(state.a, 0x00);
-    assert_eq!(state.cc & (CcFlag::C as u8), CcFlag::C as u8, "C should be set (old bit 0 was 1)");
-    assert_eq!(state.cc & (CcFlag::Z as u8), CcFlag::Z as u8, "Z should be set");
+    assert_eq!(
+        state.cc & (CcFlag::C as u8),
+        CcFlag::C as u8,
+        "C should be set (old bit 0 was 1)"
+    );
+    assert_eq!(
+        state.cc & (CcFlag::Z as u8),
+        CcFlag::Z as u8,
+        "Z should be set"
+    );
     assert_eq!(state.cc & (CcFlag::N as u8), 0, "N always clear for LSR");
 
-    sys.tick(); sys.tick(); // LDB #$80
+    sys.tick();
+    sys.tick(); // LDB #$80
 
     // LSRB: 0x80 >> 1 = 0x40, C=0
-    sys.tick(); sys.tick();
+    sys.tick();
+    sys.tick();
     let state = sys.get_cpu_state();
     assert_eq!(state.b, 0x40);
-    assert_eq!(state.cc & (CcFlag::C as u8), 0, "C should be clear (old bit 0 was 0)");
+    assert_eq!(
+        state.cc & (CcFlag::C as u8),
+        0,
+        "C should be clear (old bit 0 was 0)"
+    );
     assert_eq!(state.cc & (CcFlag::N as u8), 0, "N always clear for LSR");
     assert_eq!(state.cc & (CcFlag::Z as u8), 0, "Z should be clear");
 }
@@ -92,15 +152,25 @@ fn test_rol() {
     // LDA #$80, ROLA (C starts clear from reset)
     sys.load_rom(0, &[0x86, 0x80, 0x49]);
 
-    sys.tick(); sys.tick(); // LDA #$80
+    sys.tick();
+    sys.tick(); // LDA #$80
 
     // ROLA: 0x80 rotated left, old C=0 enters bit 0
     // Result: 0x00, C=1 (old bit 7)
-    sys.tick(); sys.tick();
+    sys.tick();
+    sys.tick();
     let state = sys.get_cpu_state();
     assert_eq!(state.a, 0x00);
-    assert_eq!(state.cc & (CcFlag::C as u8), CcFlag::C as u8, "C should be set (old bit 7 was 1)");
-    assert_eq!(state.cc & (CcFlag::Z as u8), CcFlag::Z as u8, "Z should be set");
+    assert_eq!(
+        state.cc & (CcFlag::C as u8),
+        CcFlag::C as u8,
+        "C should be set (old bit 7 was 1)"
+    );
+    assert_eq!(
+        state.cc & (CcFlag::Z as u8),
+        CcFlag::Z as u8,
+        "Z should be set"
+    );
     assert_eq!(state.cc & (CcFlag::N as u8), 0, "N should be clear");
 }
 
@@ -111,18 +181,30 @@ fn test_rol_with_carry() {
     // LDA #$80, ASLA (sets C=1), LDA #$55, ROLA
     sys.load_rom(0, &[0x86, 0x80, 0x48, 0x86, 0x55, 0x49]);
 
-    sys.tick(); sys.tick(); // LDA #$80
-    sys.tick(); sys.tick(); // ASLA: 0x80 << 1 = 0x00, C=1
-    sys.tick(); sys.tick(); // LDA #$55
+    sys.tick();
+    sys.tick(); // LDA #$80
+    sys.tick();
+    sys.tick(); // ASLA: 0x80 << 1 = 0x00, C=1
+    sys.tick();
+    sys.tick(); // LDA #$55
     // Now C=1 (still set from ASLA, LDA doesn't affect C)
 
     // ROLA: 0x55 (0101_0101) rotated left with C=1
     // Result: 0xAB (1010_1011), C=0 (old bit 7 of 0x55 was 0)
-    sys.tick(); sys.tick();
+    sys.tick();
+    sys.tick();
     let state = sys.get_cpu_state();
     assert_eq!(state.a, 0xAB);
-    assert_eq!(state.cc & (CcFlag::C as u8), 0, "C should be clear (old bit 7 was 0)");
-    assert_eq!(state.cc & (CcFlag::N as u8), CcFlag::N as u8, "N should be set");
+    assert_eq!(
+        state.cc & (CcFlag::C as u8),
+        0,
+        "C should be clear (old bit 7 was 0)"
+    );
+    assert_eq!(
+        state.cc & (CcFlag::N as u8),
+        CcFlag::N as u8,
+        "N should be set"
+    );
 }
 
 #[test]
@@ -131,16 +213,30 @@ fn test_ror() {
     // LDA #$01, RORA (C starts clear from reset)
     sys.load_rom(0, &[0x86, 0x01, 0x46]);
 
-    sys.tick(); sys.tick(); // LDA #$01
+    sys.tick();
+    sys.tick(); // LDA #$01
 
     // RORA: 0x01 rotated right, old C=0 enters bit 7
     // Result: 0x00, C=1 (old bit 0)
-    sys.tick(); sys.tick();
+    sys.tick();
+    sys.tick();
     let state = sys.get_cpu_state();
     assert_eq!(state.a, 0x00);
-    assert_eq!(state.cc & (CcFlag::C as u8), CcFlag::C as u8, "C should be set (old bit 0 was 1)");
-    assert_eq!(state.cc & (CcFlag::Z as u8), CcFlag::Z as u8, "Z should be set");
-    assert_eq!(state.cc & (CcFlag::N as u8), 0, "N should be clear (old C was 0)");
+    assert_eq!(
+        state.cc & (CcFlag::C as u8),
+        CcFlag::C as u8,
+        "C should be set (old bit 0 was 1)"
+    );
+    assert_eq!(
+        state.cc & (CcFlag::Z as u8),
+        CcFlag::Z as u8,
+        "Z should be set"
+    );
+    assert_eq!(
+        state.cc & (CcFlag::N as u8),
+        0,
+        "N should be clear (old C was 0)"
+    );
 }
 
 #[test]
@@ -149,17 +245,29 @@ fn test_ror_with_carry() {
     // LDA #$01, LSRA (sets C=1, A=0x00), LDB #$40, RORB
     sys.load_rom(0, &[0x86, 0x01, 0x44, 0xC6, 0x40, 0x56]);
 
-    sys.tick(); sys.tick(); // LDA #$01
-    sys.tick(); sys.tick(); // LSRA: 0x01 >> 1 = 0x00, C=1
-    sys.tick(); sys.tick(); // LDB #$40
+    sys.tick();
+    sys.tick(); // LDA #$01
+    sys.tick();
+    sys.tick(); // LSRA: 0x01 >> 1 = 0x00, C=1
+    sys.tick();
+    sys.tick(); // LDB #$40
 
     // RORB: 0x40 (0100_0000) rotated right with C=1
     // Result: 0xA0 (1010_0000), C=0 (old bit 0 of 0x40 was 0)
-    sys.tick(); sys.tick();
+    sys.tick();
+    sys.tick();
     let state = sys.get_cpu_state();
     assert_eq!(state.b, 0xA0);
-    assert_eq!(state.cc & (CcFlag::C as u8), 0, "C should be clear (old bit 0 was 0)");
-    assert_eq!(state.cc & (CcFlag::N as u8), CcFlag::N as u8, "N should be set (old C entered bit 7)");
+    assert_eq!(
+        state.cc & (CcFlag::C as u8),
+        0,
+        "C should be clear (old bit 0 was 0)"
+    );
+    assert_eq!(
+        state.cc & (CcFlag::N as u8),
+        CcFlag::N as u8,
+        "N should be set (old C entered bit 7)"
+    );
     assert_eq!(state.cc & (CcFlag::Z as u8), 0, "Z should be clear");
 }
 
@@ -169,13 +277,26 @@ fn test_asr_sign_extension() {
     // LDA #$FF, ASRA — shifting -1 right should stay -1
     sys.load_rom(0, &[0x86, 0xFF, 0x47]);
 
-    sys.tick(); sys.tick(); // LDA #$FF
+    sys.tick();
+    sys.tick(); // LDA #$FF
 
     // ASRA: 0xFF (1111_1111) >> 1 = 0xFF (sign extended), C=1
-    sys.tick(); sys.tick();
+    sys.tick();
+    sys.tick();
     let state = sys.get_cpu_state();
-    assert_eq!(state.a, 0xFF, "ASR of 0xFF should remain 0xFF (sign extension)");
-    assert_eq!(state.cc & (CcFlag::C as u8), CcFlag::C as u8, "C should be set (old bit 0 was 1)");
-    assert_eq!(state.cc & (CcFlag::N as u8), CcFlag::N as u8, "N should be set");
+    assert_eq!(
+        state.a, 0xFF,
+        "ASR of 0xFF should remain 0xFF (sign extension)"
+    );
+    assert_eq!(
+        state.cc & (CcFlag::C as u8),
+        CcFlag::C as u8,
+        "C should be set (old bit 0 was 1)"
+    );
+    assert_eq!(
+        state.cc & (CcFlag::N as u8),
+        CcFlag::N as u8,
+        "N should be set"
+    );
     assert_eq!(state.cc & (CcFlag::Z as u8), 0, "Z should be clear");
 }
