@@ -4,7 +4,7 @@
 
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-59%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-93%20passing-brightgreen.svg)](tests/)
 
 A modular emulator framework for retro CPUs, designed for extensibility and educational purposes. Features a trait-based architecture that allows easy addition of new CPUs, peripherals, and complete systems.
 
@@ -12,7 +12,7 @@ A modular emulator framework for retro CPUs, designed for extensibility and educ
 
 **Current Focus:** Motorola 6809 CPU emulation
 
-**Status:** 🔨 Early development (75/280 opcodes implemented, 100% tested)
+**Status:** 🔨 Early development (105/280 opcodes implemented, 100% tested)
 
 ### Features
 
@@ -26,12 +26,12 @@ A modular emulator framework for retro CPUs, designed for extensibility and educ
 
 ### What Works Now
 
-- Motorola 6809 CPU with 75 instructions (including ALU, branch, subroutine, stack, and transfer ops)
+- Motorola 6809 CPU with 105 instructions (including ALU, branch, subroutine, stack, transfer, and direct-page ops)
 - Condition code flag enum (CcFlag) for readable flag manipulation
 - Simple 6809 system with 32KB RAM + 32KB ROM
 - DMA arbitration and halt signal support
 - Interrupt framework (NMI, IRQ, FIRQ)
-- Full test suite (59 integration tests)
+- Full test suite (93 integration tests)
 
 ## Quick Start
 
@@ -89,24 +89,27 @@ fn main() {
 | Component | Status | Notes |
 |-----------|--------|-------|
 | **Core Framework** | ✅ Complete | Bus trait, component system, arbitration |
-| **M6809 CPU** | ⚠️ Partial | State machine working, 75 instructions |
+| **M6809 CPU** | ⚠️ Partial | State machine working, 105 instructions |
 | **M6502 CPU** | ❌ Placeholder | Structure exists, no implementation |
 | **PIA 6820** | ❌ Placeholder | Stub only |
 | **Simple6809 System** | ✅ Complete | RAM/ROM, testing utilities |
-| **Test Suite** | ✅ Complete | 59 integration tests passing |
+| **Test Suite** | ✅ Complete | 93 integration tests passing |
 
 ### Implemented 6809 Instructions
 
-Currently **75 of ~280** documented 6809 opcodes are implemented (across 3 opcode pages: ~233 on page 0, ~38 on page 1/0x10, ~9 on page 2/0x11):
+Currently **105 of ~280** documented 6809 opcodes are implemented (across 3 opcode pages: ~233 on page 0, ~38 on page 1/0x10, ~9 on page 2/0x11):
 
 | Category | Implemented | Examples |
 | --- | --- | --- |
-| ALU (A) | 9 | ADDA, SUBA, CMPA, SBCA, ADCA, ANDA, BITA, EORA, ORA |
-| ALU (B) | 9 | ADDB, SUBB, CMPB, SBCB, ADCB, ANDB, BITB, EORB, ORB |
-| ALU (16-bit) | 3 | ADDD, SUBD, CMPX |
+| ALU (A) imm | 9 | ADDA, SUBA, CMPA, SBCA, ADCA, ANDA, BITA, EORA, ORA |
+| ALU (A) direct | 9 | ADDA, SUBA, CMPA, SBCA, ADCA, ANDA, BITA, EORA, ORA |
+| ALU (B) imm | 9 | ADDB, SUBB, CMPB, SBCB, ADCB, ANDB, BITB, EORB, ORB |
+| ALU (B) direct | 9 | ADDB, SUBB, CMPB, SBCB, ADCB, ANDB, BITB, EORB, ORB |
+| ALU (16-bit) | 6 | ADDD, SUBD, CMPX (immediate + direct) |
 | ALU (Unary) | 13 | MUL, NEG, COM, CLR, INC, DEC, TST (A & B variants) |
 | Shift/Rotate | 10 | ASL, ASR, LSR, ROL, ROR (A & B variants) |
-| Load/Store | 6 | LDA, LDB, LDD, LDX, LDU, STA |
+| Load/Store imm | 6 | LDA, LDB, LDD, LDX, LDU, STA |
+| Load/Store direct | 10 | LDA, LDB, LDD, LDX, LDU, STA, STB, STD, STX, STU |
 | Branch | 16 | BRA, BRN, BHI, BLS, BCC, BCS, BNE, BEQ, BVC, BVS, BPL, BMI, BGE, BLT, BGT, BLE |
 | Jump/Subroutine | 3 | BSR, JSR (direct), RTS |
 | Transfer | 2 | TFR, EXG |
@@ -136,7 +139,7 @@ The emulator is organized into four main layers:
   - `mod.rs` - Struct, state machine, opcode dispatch table
   - `alu/` - ALU instructions split into `binary`, `unary`, `shift`, and `word` modules
   - `branch.rs` - Branch instructions (BRA, BEQ, BNE, etc.)
-  - `load_store.rs` - Load/store instructions (LDA, LDB, STA)
+  - `load_store.rs` - Load/store instructions (immediate + direct modes)
   - All 8 registers (A, B, X, Y, U, S, PC, CC)
   - Explicit state machine (Fetch, Execute, Halted)
   - Cycle-accurate multi-cycle instruction execution
@@ -169,7 +172,7 @@ phosphor-core/
 │   │   ├── component.rs            #    Component traits
 │   │   └── mod.rs                  #    Module exports
 │   ├── cpu/                        # ⚠️  CPU implementations (partial)
-│   │   ├── m6809/                  # ✅ Working M6809 (75 opcodes)
+│   │   ├── m6809/                  # ✅ Working M6809 (105 opcodes)
 │   │   │   ├── mod.rs              #    Struct, state machine, dispatch
 │   │   │   ├── alu.rs              #    ALU helpers and module exports
 │   │   │   ├── alu/                #    ALU instruction modules
@@ -325,12 +328,13 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 - [x] Jump/call instructions (BSR, JSR direct, RTS)
 - [x] Stack operations (PSHS, PULS, PSHU, PULU)
 - [x] Transfer/exchange (TFR, EXG)
-- [ ] All addressing modes (indexed, extended, inherent)
+- [x] Direct page (DP) addressing mode
+- [ ] All addressing modes (indexed, extended)
 - [x] Condition code (CC) flag enum (CcFlag)
-- [ ] 16-bit operations (STD, LDY, LDS, CMPD, CMPY, CMPU, CMPS, etc.)
-  - [x] LDD, LDX, LDU, ADDD, SUBD, CMPX
+- [ ] 16-bit operations (LDY, LDS, CMPD, CMPY, CMPU, CMPS, etc.)
+  - [x] LDD, LDX, LDU, STD, STX, STU, ADDD, SUBD, CMPX
 
-**Progress:** 75/~280 opcodes implemented (26.8%)
+**Progress:** 105/~280 opcodes implemented (37.5%)
 
 ### Phase 2: Core Infrastructure
 
@@ -624,7 +628,7 @@ A: Rust provides zero-cost abstractions, memory safety, and excellent performanc
 
 **Q: Can this run commercial ROMs?**
 
-A: Not yet. Only 75 instructions are implemented. This is an educational project in early development.
+A: Not yet. Only 105 instructions are implemented. This is an educational project in early development.
 
 **Q: Why use `unsafe` in an emulator?**
 

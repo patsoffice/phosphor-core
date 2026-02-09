@@ -191,4 +191,116 @@ impl M6809 {
             _ => {}
         }
     }
+
+    // --- Direct addressing mode (16-bit) ---
+
+    /// SUBD direct (0x93): Subtracts the 16-bit value at DP:addr from the D register.
+    /// N set if result bit 15 is set. Z set if result is zero.
+    /// V set if signed overflow occurred. C set if unsigned borrow occurred.
+    pub(crate) fn op_subd_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                let addr = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = ((self.dp as u16) << 8) | addr;
+                self.state = ExecState::Execute(opcode, 1);
+            }
+            1 => {
+                let high = bus.read(master, self.temp_addr) as u16;
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.opcode = high as u8; // reuse opcode field to store high byte temporarily
+                self.state = ExecState::Execute(opcode, 2);
+            }
+            2 => {
+                let low = bus.read(master, self.temp_addr) as u16;
+                let operand = ((self.opcode as u16) << 8) | low;
+                let d = self.get_d();
+                let (result, borrow) = d.overflowing_sub(operand);
+                let overflow = (d ^ operand) & 0x8000 != 0 && (d ^ result) & 0x8000 != 0;
+                self.set_d(result);
+                self.set_flags_arithmetic16(result, overflow, borrow);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
+    /// ADDD direct (0xD3): Adds the 16-bit value at DP:addr to the D register.
+    /// N set if result bit 15 is set. Z set if result is zero.
+    /// V set if signed overflow occurred. C set if unsigned carry out of bit 15.
+    pub(crate) fn op_addd_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                let addr = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = ((self.dp as u16) << 8) | addr;
+                self.state = ExecState::Execute(opcode, 1);
+            }
+            1 => {
+                let high = bus.read(master, self.temp_addr) as u16;
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.opcode = high as u8;
+                self.state = ExecState::Execute(opcode, 2);
+            }
+            2 => {
+                let low = bus.read(master, self.temp_addr) as u16;
+                let operand = ((self.opcode as u16) << 8) | low;
+                let d = self.get_d();
+                let (result, carry) = d.overflowing_add(operand);
+                let overflow = (d ^ operand) & 0x8000 == 0 && (d ^ result) & 0x8000 != 0;
+                self.set_d(result);
+                self.set_flags_arithmetic16(result, overflow, carry);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
+    /// CMPX direct (0x9C): Compare X with 16-bit value at DP:addr.
+    /// N set if result bit 15 is set. Z set if result is zero.
+    /// V set if signed overflow occurred. C set if unsigned borrow occurred.
+    pub(crate) fn op_cmpx_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                let addr = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = ((self.dp as u16) << 8) | addr;
+                self.state = ExecState::Execute(opcode, 1);
+            }
+            1 => {
+                let high = bus.read(master, self.temp_addr) as u16;
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.opcode = high as u8;
+                self.state = ExecState::Execute(opcode, 2);
+            }
+            2 => {
+                let low = bus.read(master, self.temp_addr) as u16;
+                let operand = ((self.opcode as u16) << 8) | low;
+                let (result, borrow) = self.x.overflowing_sub(operand);
+                let overflow =
+                    (self.x ^ operand) & 0x8000 != 0 && (self.x ^ result) & 0x8000 != 0;
+                self.set_flags_arithmetic16(result, overflow, borrow);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
 }

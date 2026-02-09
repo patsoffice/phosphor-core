@@ -67,6 +67,7 @@ impl Simple6809System {
         CpuState {
             a: self.cpu.a,
             b: self.cpu.b,
+            dp: self.cpu.dp,
             x: self.cpu.x,
             y: self.cpu.y,
             u: self.cpu.u,
@@ -79,6 +80,11 @@ impl Simple6809System {
     /// Set the CPU stack pointer (S register) for testing
     pub fn set_cpu_s(&mut self, val: u16) {
         self.cpu.s = val;
+    }
+
+    /// Set the CPU direct page register (DP) for testing
+    pub fn set_cpu_dp(&mut self, val: u8) {
+        self.cpu.dp = val;
     }
 
     /// Read a byte from RAM
@@ -102,6 +108,7 @@ impl Simple6809System {
 pub struct CpuState {
     pub a: u8,
     pub b: u8,
+    pub dp: u8,
     pub x: u16,
     pub y: u16,
     pub u: u16,

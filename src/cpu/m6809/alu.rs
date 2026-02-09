@@ -66,6 +66,36 @@ impl M6809 {
         }
     }
 
+    /// Generic helper for Direct Addressing Mode ALU instructions.
+    /// Two execute cycles: cycle 0 fetches the address byte and forms DP:addr,
+    /// cycle 1 reads the operand from the effective address and runs the operation.
+    #[inline]
+    pub(crate) fn alu_direct<B: Bus<Address = u16, Data = u8> + ?Sized, F>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+        operation: F,
+    ) where
+        F: FnOnce(&mut Self, u8),
+    {
+        match cycle {
+            0 => {
+                let addr = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = ((self.dp as u16) << 8) | addr;
+                self.state = ExecState::Execute(opcode, 1);
+            }
+            1 => {
+                let operand = bus.read(master, self.temp_addr);
+                operation(self, operand);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
     // --- Shift and Rotate instructions ---
 
     /// Helper to set N, Z, V, C flags for shift/rotate operations.

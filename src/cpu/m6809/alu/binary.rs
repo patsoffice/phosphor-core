@@ -375,4 +375,346 @@ impl M6809 {
             cpu.set_flags_arithmetic(result, overflow, carry);
         });
     }
+
+    // --- Direct addressing mode (A register) ---
+
+    /// SUBA direct (0x90): Subtracts the memory operand at DP:addr from accumulator A.
+    /// N set if result bit 7 is set. Z set if result is zero.
+    /// V set if signed overflow occurred. C set if unsigned borrow occurred. H set if borrow from bit 4.
+    pub(crate) fn op_suba_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
+            let (result, borrow) = cpu.a.overflowing_sub(operand);
+            let half_borrow = (cpu.a & 0x0F) < (operand & 0x0F);
+            let overflow = (cpu.a ^ operand) & 0x80 != 0 && (cpu.a ^ result) & 0x80 != 0;
+            cpu.a = result;
+            cpu.set_flag(CcFlag::H, half_borrow);
+            cpu.set_flags_arithmetic(result, overflow, borrow);
+        });
+    }
+
+    /// CMPA direct (0x91): Compares accumulator A with the memory operand at DP:addr.
+    /// Performs subtraction but discards the result; only flags are updated.
+    /// N set if result bit 7 is set. Z set if A == operand.
+    /// V set if signed overflow occurred. C set if unsigned borrow occurred.
+    pub(crate) fn op_cmpa_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
+            let (result, borrow) = cpu.a.overflowing_sub(operand);
+            let overflow = (cpu.a ^ operand) & 0x80 != 0 && (cpu.a ^ result) & 0x80 != 0;
+            cpu.set_flags_arithmetic(result, overflow, borrow);
+        });
+    }
+
+    /// SBCA direct (0x92): Subtracts the memory operand and carry from accumulator A.
+    /// A = A - M - C. N set if result bit 7 is set. Z set if result is zero.
+    /// V set if signed overflow occurred. C set if unsigned borrow occurred.
+    pub(crate) fn op_sbca_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
+            let carry = if cpu.cc & (CcFlag::C as u8) != 0 { 1 } else { 0 };
+            let a = cpu.a as u16;
+            let m = operand as u16;
+            let c = carry as u16;
+            let diff = a.wrapping_sub(m).wrapping_sub(c);
+            let result = diff as u8;
+            let borrow = a < m + c;
+            let overflow = (cpu.a ^ operand) & 0x80 != 0 && (cpu.a ^ result) & 0x80 != 0;
+            cpu.a = result;
+            cpu.set_flags_arithmetic(result, overflow, borrow);
+        });
+    }
+
+    /// ANDA direct (0x94): Performs bitwise AND of accumulator A with the memory operand at DP:addr.
+    /// N set if result bit 7 is set. Z set if result is zero. V always cleared.
+    pub(crate) fn op_anda_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
+            cpu.a &= operand;
+            cpu.set_flags_logical(cpu.a);
+        });
+    }
+
+    /// BITA direct (0x95): Bit test A — performs A AND operand at DP:addr, updates flags but discards result.
+    /// N set if result bit 7 is set. Z set if result is zero. V always cleared.
+    pub(crate) fn op_bita_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
+            let result = cpu.a & operand;
+            cpu.set_flags_logical(result);
+        });
+    }
+
+    /// EORA direct (0x98): Performs bitwise Exclusive OR of accumulator A with the memory operand at DP:addr.
+    /// N set if result bit 7 is set. Z set if result is zero. V always cleared.
+    pub(crate) fn op_eora_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
+            cpu.a ^= operand;
+            cpu.set_flags_logical(cpu.a);
+        });
+    }
+
+    /// ADCA direct (0x99): Adds the memory operand and carry to accumulator A.
+    /// A = A + M + C. N set if result bit 7 is set. Z set if result is zero.
+    /// V set if signed overflow occurred. C set if unsigned carry out of bit 7.
+    /// H set if carry from bit 3 to bit 4.
+    pub(crate) fn op_adca_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
+            let carry_in = if cpu.cc & (CcFlag::C as u8) != 0 { 1 } else { 0 };
+            let a_u16 = cpu.a as u16;
+            let m_u16 = operand as u16;
+            let c_u16 = carry_in as u16;
+            let sum = a_u16 + m_u16 + c_u16;
+            let result = sum as u8;
+            let carry_out = sum > 0xFF;
+            let half_carry = (cpu.a & 0x0F) + (operand & 0x0F) + carry_in > 0x0F;
+            let overflow = (cpu.a ^ operand) & 0x80 == 0 && (cpu.a ^ result) & 0x80 != 0;
+            cpu.a = result;
+            cpu.set_flag(CcFlag::H, half_carry);
+            cpu.set_flags_arithmetic(result, overflow, carry_out);
+        });
+    }
+
+    /// ORA direct (0x9A): Performs bitwise OR of accumulator A with the memory operand at DP:addr.
+    /// N set if result bit 7 is set. Z set if result is zero. V always cleared.
+    pub(crate) fn op_ora_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
+            cpu.a |= operand;
+            cpu.set_flags_logical(cpu.a);
+        });
+    }
+
+    /// ADDA direct (0x9B): Adds the memory operand at DP:addr to accumulator A.
+    /// N set if result bit 7 is set. Z set if result is zero.
+    /// V set if signed overflow occurred. C set if unsigned carry out of bit 7.
+    /// H set if carry from bit 3 to bit 4.
+    pub(crate) fn op_adda_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
+            let (result, carry) = cpu.a.overflowing_add(operand);
+            let half_carry = (cpu.a & 0x0F) + (operand & 0x0F) > 0x0F;
+            let overflow = (cpu.a ^ operand) & 0x80 == 0 && (cpu.a ^ result) & 0x80 != 0;
+            cpu.a = result;
+            cpu.set_flag(CcFlag::H, half_carry);
+            cpu.set_flags_arithmetic(result, overflow, carry);
+        });
+    }
+
+    // --- Direct addressing mode (B register) ---
+
+    /// SUBB direct (0xD0): Subtracts the memory operand at DP:addr from accumulator B.
+    /// N set if result bit 7 is set. Z set if result is zero.
+    /// V set if signed overflow occurred. C set if unsigned borrow occurred.
+    pub(crate) fn op_subb_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
+            let (result, borrow) = cpu.b.overflowing_sub(operand);
+            let overflow = (cpu.b ^ operand) & 0x80 != 0 && (cpu.b ^ result) & 0x80 != 0;
+            cpu.b = result;
+            cpu.set_flags_arithmetic(result, overflow, borrow);
+        });
+    }
+
+    /// CMPB direct (0xD1): Compares accumulator B with the memory operand at DP:addr.
+    /// Performs subtraction but discards the result; only flags are updated.
+    /// N set if result bit 7 is set. Z set if B == operand.
+    /// V set if signed overflow occurred. C set if unsigned borrow occurred.
+    pub(crate) fn op_cmpb_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
+            let (result, borrow) = cpu.b.overflowing_sub(operand);
+            let overflow = (cpu.b ^ operand) & 0x80 != 0 && (cpu.b ^ result) & 0x80 != 0;
+            cpu.set_flags_arithmetic(result, overflow, borrow);
+        });
+    }
+
+    /// SBCB direct (0xD2): Subtracts the memory operand and carry from accumulator B.
+    /// B = B - M - C. N set if result bit 7 is set. Z set if result is zero.
+    /// V set if signed overflow occurred. C set if unsigned borrow occurred.
+    pub(crate) fn op_sbcb_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
+            let carry = if cpu.cc & (CcFlag::C as u8) != 0 { 1 } else { 0 };
+            let b = cpu.b as u16;
+            let m = operand as u16;
+            let c = carry as u16;
+            let diff = b.wrapping_sub(m).wrapping_sub(c);
+            let result = diff as u8;
+            let borrow = b < m + c;
+            let overflow = (cpu.b ^ operand) & 0x80 != 0 && (cpu.b ^ result) & 0x80 != 0;
+            cpu.b = result;
+            cpu.set_flags_arithmetic(result, overflow, borrow);
+        });
+    }
+
+    /// ANDB direct (0xD4): Performs bitwise AND of accumulator B with the memory operand at DP:addr.
+    /// N set if result bit 7 is set. Z set if result is zero. V always cleared.
+    pub(crate) fn op_andb_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
+            cpu.b &= operand;
+            cpu.set_flags_logical(cpu.b);
+        });
+    }
+
+    /// BITB direct (0xD5): Bit test B — performs B AND operand at DP:addr, updates flags but discards result.
+    /// N set if result bit 7 is set. Z set if result is zero. V always cleared.
+    pub(crate) fn op_bitb_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
+            let result = cpu.b & operand;
+            cpu.set_flags_logical(result);
+        });
+    }
+
+    /// EORB direct (0xD8): Performs bitwise Exclusive OR of accumulator B with the memory operand at DP:addr.
+    /// N set if result bit 7 is set. Z set if result is zero. V always cleared.
+    pub(crate) fn op_eorb_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
+            cpu.b ^= operand;
+            cpu.set_flags_logical(cpu.b);
+        });
+    }
+
+    /// ADCB direct (0xD9): Adds the memory operand and carry to accumulator B.
+    /// B = B + M + C. N set if result bit 7 is set. Z set if result is zero.
+    /// V set if signed overflow occurred. C set if unsigned carry out of bit 7.
+    /// H set if carry from bit 3 to bit 4.
+    pub(crate) fn op_adcb_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
+            let carry_in = if cpu.cc & (CcFlag::C as u8) != 0 { 1 } else { 0 };
+            let b_u16 = cpu.b as u16;
+            let m_u16 = operand as u16;
+            let c_u16 = carry_in as u16;
+            let sum = b_u16 + m_u16 + c_u16;
+            let result = sum as u8;
+            let carry_out = sum > 0xFF;
+            let half_carry = (cpu.b & 0x0F) + (operand & 0x0F) + carry_in > 0x0F;
+            let overflow = (cpu.b ^ operand) & 0x80 == 0 && (cpu.b ^ result) & 0x80 != 0;
+            cpu.b = result;
+            cpu.set_flag(CcFlag::H, half_carry);
+            cpu.set_flags_arithmetic(result, overflow, carry_out);
+        });
+    }
+
+    /// ORB direct (0xDA): Performs bitwise OR of accumulator B with the memory operand at DP:addr.
+    /// N set if result bit 7 is set. Z set if result is zero. V always cleared.
+    pub(crate) fn op_orb_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
+            cpu.b |= operand;
+            cpu.set_flags_logical(cpu.b);
+        });
+    }
+
+    /// ADDB direct (0xDB): Adds the memory operand at DP:addr to accumulator B.
+    /// N set if result bit 7 is set. Z set if result is zero.
+    /// V set if signed overflow occurred. C set if unsigned carry out of bit 7.
+    /// H set if carry from bit 3 to bit 4.
+    pub(crate) fn op_addb_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
+            let (result, carry) = cpu.b.overflowing_add(operand);
+            let half_carry = (cpu.b & 0x0F) + (operand & 0x0F) > 0x0F;
+            let overflow = (cpu.b ^ operand) & 0x80 == 0 && (cpu.b ^ result) & 0x80 != 0;
+            cpu.b = result;
+            cpu.set_flag(CcFlag::H, half_carry);
+            cpu.set_flags_arithmetic(result, overflow, carry);
+        });
+    }
 }

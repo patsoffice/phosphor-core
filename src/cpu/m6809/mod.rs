@@ -181,18 +181,35 @@ impl M6809 {
             0x2E => self.op_bgt(opcode, cycle, bus, master),
             0x2F => self.op_ble(opcode, cycle, bus, master),
 
+            // ALU immediate (A register)
             0x80 => self.op_suba_imm(cycle, bus, master),
             0x81 => self.op_cmpa_imm(cycle, bus, master),
             0x82 => self.op_sbca_imm(cycle, bus, master),
             0x83 => self.op_subd_imm(opcode, cycle, bus, master),
             0x84 => self.op_anda_imm(cycle, bus, master),
             0x85 => self.op_bita_imm(cycle, bus, master),
-            0x8C => self.op_cmpx_imm(opcode, cycle, bus, master),
-            0x8E => self.op_ldx_imm(opcode, cycle, bus, master),
             0x88 => self.op_eora_imm(cycle, bus, master),
             0x89 => self.op_adca_imm(cycle, bus, master),
             0x8A => self.op_ora_imm(cycle, bus, master),
             0x8B => self.op_adda_imm(cycle, bus, master),
+            0x8C => self.op_cmpx_imm(opcode, cycle, bus, master),
+            0x8E => self.op_ldx_imm(opcode, cycle, bus, master),
+
+            // ALU/load/store direct (A register page)
+            0x90 => self.op_suba_direct(opcode, cycle, bus, master),
+            0x91 => self.op_cmpa_direct(opcode, cycle, bus, master),
+            0x92 => self.op_sbca_direct(opcode, cycle, bus, master),
+            0x93 => self.op_subd_direct(opcode, cycle, bus, master),
+            0x94 => self.op_anda_direct(opcode, cycle, bus, master),
+            0x95 => self.op_bita_direct(opcode, cycle, bus, master),
+            0x96 => self.op_lda_direct(opcode, cycle, bus, master),
+            0x98 => self.op_eora_direct(opcode, cycle, bus, master),
+            0x99 => self.op_adca_direct(opcode, cycle, bus, master),
+            0x9A => self.op_ora_direct(opcode, cycle, bus, master),
+            0x9B => self.op_adda_direct(opcode, cycle, bus, master),
+            0x9C => self.op_cmpx_direct(opcode, cycle, bus, master),
+            0x9E => self.op_ldx_direct(opcode, cycle, bus, master),
+            0x9F => self.op_stx_direct(opcode, cycle, bus, master),
 
             // ALU instructions (B register inherent)
             0x50 => self.op_negb(cycle),
@@ -206,24 +223,45 @@ impl M6809 {
             0x5C => self.op_incb(cycle),
             0x5D => self.op_tstb(cycle),
             0x5F => self.op_clrb(cycle),
+            // ALU immediate (B register)
             0xC0 => self.op_subb_imm(cycle, bus, master),
             0xC1 => self.op_cmpb_imm(cycle, bus, master),
             0xC2 => self.op_sbcb_imm(cycle, bus, master),
             0xC3 => self.op_addd_imm(opcode, cycle, bus, master),
             0xC4 => self.op_andb_imm(cycle, bus, master),
             0xC5 => self.op_bitb_imm(cycle, bus, master),
-            0xCC => self.op_ldd_imm(opcode, cycle, bus, master),
-            0xCE => self.op_ldu_imm(opcode, cycle, bus, master),
             0xC8 => self.op_eorb_imm(cycle, bus, master),
             0xC9 => self.op_adcb_imm(cycle, bus, master),
             0xCA => self.op_orb_imm(cycle, bus, master),
             0xCB => self.op_addb_imm(cycle, bus, master),
+            0xCC => self.op_ldd_imm(opcode, cycle, bus, master),
+            0xCE => self.op_ldu_imm(opcode, cycle, bus, master),
 
-            // Load/store instructions
+            // ALU/load/store direct (B register page)
+            0xD0 => self.op_subb_direct(opcode, cycle, bus, master),
+            0xD1 => self.op_cmpb_direct(opcode, cycle, bus, master),
+            0xD2 => self.op_sbcb_direct(opcode, cycle, bus, master),
+            0xD3 => self.op_addd_direct(opcode, cycle, bus, master),
+            0xD4 => self.op_andb_direct(opcode, cycle, bus, master),
+            0xD5 => self.op_bitb_direct(opcode, cycle, bus, master),
+            0xD6 => self.op_ldb_direct(opcode, cycle, bus, master),
+            0xD7 => self.op_stb_direct(opcode, cycle, bus, master),
+            0xD8 => self.op_eorb_direct(opcode, cycle, bus, master),
+            0xD9 => self.op_adcb_direct(opcode, cycle, bus, master),
+            0xDA => self.op_orb_direct(opcode, cycle, bus, master),
+            0xDB => self.op_addb_direct(opcode, cycle, bus, master),
+            0xDC => self.op_ldd_direct(opcode, cycle, bus, master),
+            0xDD => self.op_std_direct(opcode, cycle, bus, master),
+            0xDE => self.op_ldu_direct(opcode, cycle, bus, master),
+            0xDF => self.op_stu_direct(opcode, cycle, bus, master),
+
+            // Load/store immediate
             0x86 => self.op_lda_imm(cycle, bus, master),
+            0xC6 => self.op_ldb_imm(cycle, bus, master),
+
+            // Direct (existing)
             0x97 => self.op_sta_direct(opcode, cycle, bus, master),
             0x9D => self.op_jsr_direct(opcode, cycle, bus, master),
-            0xC6 => self.op_ldb_imm(cycle, bus, master),
 
             // Unknown opcode - just fetch next
             _ => {
