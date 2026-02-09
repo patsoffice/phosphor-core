@@ -1,15 +1,57 @@
 use crate::cpu::m6809::{CcFlag, ExecState, M6809};
 
 impl M6809 {
+    // --- Internal Shift/Rotate Helpers ---
+
+    #[inline]
+    fn perform_asl(&mut self, val: u8) -> u8 {
+        let carry = val & 0x80 != 0;
+        let result = val << 1;
+        self.set_flags_shift(result, carry);
+        result
+    }
+
+    #[inline]
+    fn perform_asr(&mut self, val: u8) -> u8 {
+        let carry = val & 0x01 != 0;
+        let result = ((val as i8) >> 1) as u8;
+        self.set_flags_shift(result, carry);
+        result
+    }
+
+    #[inline]
+    fn perform_lsr(&mut self, val: u8) -> u8 {
+        let carry = val & 0x01 != 0;
+        let result = val >> 1;
+        self.set_flags_shift(result, carry);
+        result
+    }
+
+    #[inline]
+    fn perform_rol(&mut self, val: u8) -> u8 {
+        let old_carry = self.cc & (CcFlag::C as u8) != 0;
+        let new_carry = val & 0x80 != 0;
+        let result = (val << 1) | (old_carry as u8);
+        self.set_flags_shift(result, new_carry);
+        result
+    }
+
+    #[inline]
+    fn perform_ror(&mut self, val: u8) -> u8 {
+        let old_carry = self.cc & (CcFlag::C as u8) != 0;
+        let new_carry = val & 0x01 != 0;
+        let result = (val >> 1) | ((old_carry as u8) << 7);
+        self.set_flags_shift(result, new_carry);
+        result
+    }
+
     /// ASLA/LSLA inherent (0x48): Arithmetic/Logical Shift Left A.
     /// Shifts all bits left one position. Bit 7 goes to C, 0 enters bit 0.
     /// N set if result bit 7 is set. Z set if result is zero.
     /// V = N XOR C (post-shift). C set to old bit 7.
     pub(crate) fn op_asla(&mut self, cycle: u8) {
         if cycle == 0 {
-            let carry = self.a & 0x80 != 0;
-            self.a = self.a << 1;
-            self.set_flags_shift(self.a, carry);
+            self.a = self.perform_asl(self.a);
             self.state = ExecState::Fetch;
         }
     }
@@ -20,9 +62,7 @@ impl M6809 {
     /// V = N XOR C (post-shift). C set to old bit 7.
     pub(crate) fn op_aslb(&mut self, cycle: u8) {
         if cycle == 0 {
-            let carry = self.b & 0x80 != 0;
-            self.b = self.b << 1;
-            self.set_flags_shift(self.b, carry);
+            self.b = self.perform_asl(self.b);
             self.state = ExecState::Fetch;
         }
     }
@@ -34,9 +74,7 @@ impl M6809 {
     /// V = N XOR C (post-shift). C set to old bit 0.
     pub(crate) fn op_asra(&mut self, cycle: u8) {
         if cycle == 0 {
-            let carry = self.a & 0x01 != 0;
-            self.a = ((self.a as i8) >> 1) as u8;
-            self.set_flags_shift(self.a, carry);
+            self.a = self.perform_asr(self.a);
             self.state = ExecState::Fetch;
         }
     }
@@ -48,9 +86,7 @@ impl M6809 {
     /// V = N XOR C (post-shift). C set to old bit 0.
     pub(crate) fn op_asrb(&mut self, cycle: u8) {
         if cycle == 0 {
-            let carry = self.b & 0x01 != 0;
-            self.b = ((self.b as i8) >> 1) as u8;
-            self.set_flags_shift(self.b, carry);
+            self.b = self.perform_asr(self.b);
             self.state = ExecState::Fetch;
         }
     }
@@ -61,9 +97,7 @@ impl M6809 {
     /// V = N XOR C = C (since N=0). C set to old bit 0.
     pub(crate) fn op_lsra(&mut self, cycle: u8) {
         if cycle == 0 {
-            let carry = self.a & 0x01 != 0;
-            self.a = self.a >> 1;
-            self.set_flags_shift(self.a, carry);
+            self.a = self.perform_lsr(self.a);
             self.state = ExecState::Fetch;
         }
     }
@@ -74,9 +108,7 @@ impl M6809 {
     /// V = N XOR C = C (since N=0). C set to old bit 0.
     pub(crate) fn op_lsrb(&mut self, cycle: u8) {
         if cycle == 0 {
-            let carry = self.b & 0x01 != 0;
-            self.b = self.b >> 1;
-            self.set_flags_shift(self.b, carry);
+            self.b = self.perform_lsr(self.b);
             self.state = ExecState::Fetch;
         }
     }
@@ -87,10 +119,7 @@ impl M6809 {
     /// V = N XOR C (post-rotate). C set to old bit 7.
     pub(crate) fn op_rola(&mut self, cycle: u8) {
         if cycle == 0 {
-            let old_carry = self.cc & (CcFlag::C as u8) != 0;
-            let new_carry = self.a & 0x80 != 0;
-            self.a = (self.a << 1) | (old_carry as u8);
-            self.set_flags_shift(self.a, new_carry);
+            self.a = self.perform_rol(self.a);
             self.state = ExecState::Fetch;
         }
     }
@@ -101,10 +130,7 @@ impl M6809 {
     /// V = N XOR C (post-rotate). C set to old bit 7.
     pub(crate) fn op_rolb(&mut self, cycle: u8) {
         if cycle == 0 {
-            let old_carry = self.cc & (CcFlag::C as u8) != 0;
-            let new_carry = self.b & 0x80 != 0;
-            self.b = (self.b << 1) | (old_carry as u8);
-            self.set_flags_shift(self.b, new_carry);
+            self.b = self.perform_rol(self.b);
             self.state = ExecState::Fetch;
         }
     }
@@ -115,10 +141,7 @@ impl M6809 {
     /// V = N XOR C (post-rotate). C set to old bit 0.
     pub(crate) fn op_rora(&mut self, cycle: u8) {
         if cycle == 0 {
-            let old_carry = self.cc & (CcFlag::C as u8) != 0;
-            let new_carry = self.a & 0x01 != 0;
-            self.a = (self.a >> 1) | ((old_carry as u8) << 7);
-            self.set_flags_shift(self.a, new_carry);
+            self.a = self.perform_ror(self.a);
             self.state = ExecState::Fetch;
         }
     }
@@ -129,10 +152,7 @@ impl M6809 {
     /// V = N XOR C (post-rotate). C set to old bit 0.
     pub(crate) fn op_rorb(&mut self, cycle: u8) {
         if cycle == 0 {
-            let old_carry = self.cc & (CcFlag::C as u8) != 0;
-            let new_carry = self.b & 0x01 != 0;
-            self.b = (self.b >> 1) | ((old_carry as u8) << 7);
-            self.set_flags_shift(self.b, new_carry);
+            self.b = self.perform_ror(self.b);
             self.state = ExecState::Fetch;
         }
     }

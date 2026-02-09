@@ -4,7 +4,7 @@
 
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-93%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-99%20passing-brightgreen.svg)](tests/)
 
 A modular emulator framework for retro CPUs, designed for extensibility and educational purposes. Features a trait-based architecture that allows easy addition of new CPUs, peripherals, and complete systems.
 
@@ -93,7 +93,7 @@ fn main() {
 | **M6502 CPU** | ❌ Placeholder | Structure exists, no implementation |
 | **PIA 6820** | ❌ Placeholder | Stub only |
 | **Simple6809 System** | ✅ Complete | RAM/ROM, testing utilities |
-| **Test Suite** | ✅ Complete | 93 integration tests passing |
+| **Test Suite** | ✅ Complete | 99 integration tests passing |
 
 ### Implemented 6809 Instructions
 
@@ -110,7 +110,7 @@ Currently **123 of ~280** documented 6809 opcodes are implemented (across 3 opco
 | ALU (16-bit) | 6 | ADDD, SUBD, CMPX (immediate + direct) |
 | ALU (Unary) | 13 | MUL, NEG, COM, CLR, INC, DEC, TST (A & B variants) |
 | Shift/Rotate | 10 | ASL, ASR, LSR, ROL, ROR (A & B variants) |
-| Load/Store imm | 6 | LDA, LDB, LDD, LDX, LDU, STA |
+| Load/Store imm | 5 | LDA, LDB, LDD, LDX, LDU |
 | Load/Store direct | 10 | LDA, LDB, LDD, LDX, LDU, STA, STB, STD, STX, STU |
 | Branch | 16 | BRA, BRN, BHI, BLS, BCC, BCS, BNE, BEQ, BVC, BVS, BPL, BMI, BGE, BLT, BGT, BLE |
 | Jump/Subroutine | 3 | BSR, JSR (direct), RTS |
@@ -204,7 +204,8 @@ phosphor-core/
 │   ├── m6809_branch_test.rs        # ✅ 11 branch/subroutine tests (bra, beq, bsr, jsr, rts, etc.)
 │   ├── m6809_load_store_test.rs    # ✅ 5 load/store tests (lda, ldb, ldd, ldx, ldu, sta)
 │   ├── m6809_stack_test.rs         # ✅ 1 stack test (pshs, puls)
-│   └── m6809_transfer_test.rs      # ✅ 3 transfer tests (tfr, exg)
+│   ├── m6809_transfer_test.rs      # ✅ 3 transfer tests (tfr, exg)
+│   └── m6809_direct_test.rs        # ✅ 34 direct addressing tests
 └── target/                         # Build artifacts (gitignored)
 
 Legend: ✅ Complete | ⚠️ Partial | ❌ Placeholder/Stub

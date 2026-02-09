@@ -135,7 +135,7 @@ fn test_bsr_and_rts() {
             0x86, 0x42, // LDA #$42
             0x20, 0xFE, // BRA self (sentinel)
             0x86, 0x99, // LDA #$99 (subroutine)
-            0x39,       // RTS
+            0x39, // RTS
         ],
     );
 
@@ -144,7 +144,11 @@ fn test_bsr_and_rts() {
         sys.tick();
     }
     assert_eq!(sys.get_cpu_state().pc, 0x06, "PC should be at subroutine");
-    assert_eq!(sys.get_cpu_state().s, 0x7EFE, "S should have decremented by 2");
+    assert_eq!(
+        sys.get_cpu_state().s,
+        0x7EFE,
+        "S should have decremented by 2"
+    );
     // Stack should contain return address 0x0002 (high at lower addr)
     assert_eq!(sys.read_ram(0x7EFE), 0x00, "Stack high byte of return addr");
     assert_eq!(sys.read_ram(0x7EFF), 0x02, "Stack low byte of return addr");
@@ -184,7 +188,7 @@ fn test_bsr_backward() {
             0x86, 0x11, // LDA #$11
             0x20, 0x03, // BRA $03 (skip to 0x07)
             0x86, 0x22, // LDA #$22 (subroutine at 0x04)
-            0x39,       // RTS (at 0x06)
+            0x39, // RTS (at 0x06)
             0x8D, 0xFB, // BSR $FB (at 0x07) -> 0x09 + (-5) = 0x04
             0x86, 0x33, // LDA #$33 (at 0x09, after return)
         ],
@@ -205,7 +209,11 @@ fn test_bsr_backward() {
     for _ in 0..7 {
         sys.tick();
     }
-    assert_eq!(sys.get_cpu_state().pc, 0x04, "Should branch backward to subroutine");
+    assert_eq!(
+        sys.get_cpu_state().pc,
+        0x04,
+        "Should branch backward to subroutine"
+    );
 
     // LDA #$22: 2 cycles
     sys.tick();
@@ -250,7 +258,11 @@ fn test_jsr_direct() {
         sys.tick();
     }
     assert_eq!(sys.get_cpu_state().pc, 0x20, "PC should be at subroutine");
-    assert_eq!(sys.get_cpu_state().s, 0x7EFE, "S should have decremented by 2");
+    assert_eq!(
+        sys.get_cpu_state().s,
+        0x7EFE,
+        "S should have decremented by 2"
+    );
     assert_eq!(sys.read_ram(0x7EFE), 0x00, "Stack high byte of return addr");
     assert_eq!(sys.read_ram(0x7EFF), 0x02, "Stack low byte of return addr");
 
@@ -292,9 +304,9 @@ fn test_nested_bsr() {
             0x86, 0x33, // LDA #$33
             0x20, 0xFE, // BRA self
             0x8D, 0x01, // BSR $01 -> 0x09
-            0x39,       // RTS
+            0x39, // RTS
             0x86, 0x77, // LDA #$77
-            0x39,       // RTS
+            0x39, // RTS
         ],
     );
 
@@ -310,7 +322,11 @@ fn test_nested_bsr() {
         sys.tick();
     }
     assert_eq!(sys.get_cpu_state().pc, 0x09);
-    assert_eq!(sys.get_cpu_state().s, 0x7EFC, "S should decrement by 4 total");
+    assert_eq!(
+        sys.get_cpu_state().s,
+        0x7EFC,
+        "S should decrement by 4 total"
+    );
 
     // LDA #$77: 2 cycles
     sys.tick();

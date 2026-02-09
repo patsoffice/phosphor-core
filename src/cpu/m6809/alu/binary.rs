@@ -2,6 +2,162 @@ use crate::core::{Bus, BusMaster};
 use crate::cpu::m6809::{CcFlag, ExecState, M6809};
 
 impl M6809 {
+    // --- Internal ALU Helpers ---
+
+    #[inline]
+    fn perform_suba(&mut self, operand: u8) {
+        let (result, borrow) = self.a.overflowing_sub(operand);
+        let overflow = (self.a ^ operand) & 0x80 != 0 && (self.a ^ result) & 0x80 != 0;
+        self.a = result;
+        self.set_flags_arithmetic(result, overflow, borrow);
+    }
+
+    #[inline]
+    fn perform_adda(&mut self, operand: u8) {
+        let (result, carry) = self.a.overflowing_add(operand);
+        let half_carry = (self.a & 0x0F) + (operand & 0x0F) > 0x0F;
+        let overflow = (self.a ^ operand) & 0x80 == 0 && (self.a ^ result) & 0x80 != 0;
+        self.a = result;
+        self.set_flag(CcFlag::H, half_carry);
+        self.set_flags_arithmetic(result, overflow, carry);
+    }
+
+    #[inline]
+    fn perform_cmpa(&mut self, operand: u8) {
+        let (result, borrow) = self.a.overflowing_sub(operand);
+        let overflow = (self.a ^ operand) & 0x80 != 0 && (self.a ^ result) & 0x80 != 0;
+        self.set_flags_arithmetic(result, overflow, borrow);
+    }
+
+    #[inline]
+    fn perform_subb(&mut self, operand: u8) {
+        let (result, borrow) = self.b.overflowing_sub(operand);
+        let overflow = (self.b ^ operand) & 0x80 != 0 && (self.b ^ result) & 0x80 != 0;
+        self.b = result;
+        self.set_flags_arithmetic(result, overflow, borrow);
+    }
+
+    #[inline]
+    fn perform_addb(&mut self, operand: u8) {
+        let (result, carry) = self.b.overflowing_add(operand);
+        let half_carry = (self.b & 0x0F) + (operand & 0x0F) > 0x0F;
+        let overflow = (self.b ^ operand) & 0x80 == 0 && (self.b ^ result) & 0x80 != 0;
+        self.b = result;
+        self.set_flag(CcFlag::H, half_carry);
+        self.set_flags_arithmetic(result, overflow, carry);
+    }
+
+    #[inline]
+    fn perform_cmpb(&mut self, operand: u8) {
+        let (result, borrow) = self.b.overflowing_sub(operand);
+        let overflow = (self.b ^ operand) & 0x80 != 0 && (self.b ^ result) & 0x80 != 0;
+        self.set_flags_arithmetic(result, overflow, borrow);
+    }
+
+    #[inline]
+    fn perform_sbca(&mut self, operand: u8) {
+        let carry = (self.cc & CcFlag::C as u8) as u16;
+        let a = self.a as u16;
+        let m = operand as u16;
+        let diff = a.wrapping_sub(m).wrapping_sub(carry);
+        let result = diff as u8;
+        let borrow = a < m + carry;
+        let overflow = (self.a ^ operand) & 0x80 != 0 && (self.a ^ result) & 0x80 != 0;
+        self.a = result;
+        self.set_flags_arithmetic(result, overflow, borrow);
+    }
+
+    #[inline]
+    fn perform_sbcb(&mut self, operand: u8) {
+        let carry = (self.cc & CcFlag::C as u8) as u16;
+        let b = self.b as u16;
+        let m = operand as u16;
+        let diff = b.wrapping_sub(m).wrapping_sub(carry);
+        let result = diff as u8;
+        let borrow = b < m + carry;
+        let overflow = (self.b ^ operand) & 0x80 != 0 && (self.b ^ result) & 0x80 != 0;
+        self.b = result;
+        self.set_flags_arithmetic(result, overflow, borrow);
+    }
+
+    #[inline]
+    fn perform_adca(&mut self, operand: u8) {
+        let carry_in = (self.cc & CcFlag::C as u8) as u16;
+        let a_u16 = self.a as u16;
+        let m_u16 = operand as u16;
+        let sum = a_u16 + m_u16 + carry_in;
+        let result = sum as u8;
+        let carry_out = sum > 0xFF;
+        let half_carry = (self.a & 0x0F) + (operand & 0x0F) + (carry_in as u8) > 0x0F;
+        let overflow = (self.a ^ operand) & 0x80 == 0 && (self.a ^ result) & 0x80 != 0;
+        self.a = result;
+        self.set_flag(CcFlag::H, half_carry);
+        self.set_flags_arithmetic(result, overflow, carry_out);
+    }
+
+    #[inline]
+    fn perform_adcb(&mut self, operand: u8) {
+        let carry_in = (self.cc & CcFlag::C as u8) as u16;
+        let b_u16 = self.b as u16;
+        let m_u16 = operand as u16;
+        let sum = b_u16 + m_u16 + carry_in;
+        let result = sum as u8;
+        let carry_out = sum > 0xFF;
+        let half_carry = (self.b & 0x0F) + (operand & 0x0F) + (carry_in as u8) > 0x0F;
+        let overflow = (self.b ^ operand) & 0x80 == 0 && (self.b ^ result) & 0x80 != 0;
+        self.b = result;
+        self.set_flag(CcFlag::H, half_carry);
+        self.set_flags_arithmetic(result, overflow, carry_out);
+    }
+
+    #[inline]
+    fn perform_anda(&mut self, operand: u8) {
+        self.a &= operand;
+        self.set_flags_logical(self.a);
+    }
+
+    #[inline]
+    fn perform_andb(&mut self, operand: u8) {
+        self.b &= operand;
+        self.set_flags_logical(self.b);
+    }
+
+    #[inline]
+    fn perform_bita(&mut self, operand: u8) {
+        let result = self.a & operand;
+        self.set_flags_logical(result);
+    }
+
+    #[inline]
+    fn perform_bitb(&mut self, operand: u8) {
+        let result = self.b & operand;
+        self.set_flags_logical(result);
+    }
+
+    #[inline]
+    fn perform_eora(&mut self, operand: u8) {
+        self.a ^= operand;
+        self.set_flags_logical(self.a);
+    }
+
+    #[inline]
+    fn perform_eorb(&mut self, operand: u8) {
+        self.b ^= operand;
+        self.set_flags_logical(self.b);
+    }
+
+    #[inline]
+    fn perform_ora(&mut self, operand: u8) {
+        self.a |= operand;
+        self.set_flags_logical(self.a);
+    }
+
+    #[inline]
+    fn perform_orb(&mut self, operand: u8) {
+        self.b |= operand;
+        self.set_flags_logical(self.b);
+    }
+
     /// SUBA immediate (0x80): Subtracts the immediate operand from accumulator A.
     /// N set if result bit 7 is set. Z set if result is zero.
     /// V set if signed overflow occurred (operands had different signs and result sign differs from A).
@@ -13,12 +169,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            let (result, borrow) = cpu.a.overflowing_sub(operand);
-            let half_borrow = (cpu.a & 0x0F) < (operand & 0x0F);
-            let overflow = (cpu.a ^ operand) & 0x80 != 0 && (cpu.a ^ result) & 0x80 != 0;
-            cpu.a = result;
-            cpu.set_flag(CcFlag::H, half_borrow);
-            cpu.set_flags_arithmetic(result, overflow, borrow);
+            cpu.perform_suba(operand);
         });
     }
 
@@ -33,12 +184,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            let (result, carry) = cpu.a.overflowing_add(operand);
-            let half_carry = (cpu.a & 0x0F) + (operand & 0x0F) > 0x0F;
-            let overflow = (cpu.a ^ operand) & 0x80 == 0 && (cpu.a ^ result) & 0x80 != 0;
-            cpu.a = result;
-            cpu.set_flag(CcFlag::H, half_carry);
-            cpu.set_flags_arithmetic(result, overflow, carry);
+            cpu.perform_adda(operand);
         });
     }
 
@@ -69,9 +215,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            let (result, borrow) = cpu.a.overflowing_sub(operand);
-            let overflow = (cpu.a ^ operand) & 0x80 != 0 && (cpu.a ^ result) & 0x80 != 0;
-            cpu.set_flags_arithmetic(result, overflow, borrow);
+            cpu.perform_cmpa(operand);
         });
     }
 
@@ -86,24 +230,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            let carry = if cpu.cc & (CcFlag::C as u8) != 0 {
-                1
-            } else {
-                0
-            };
-
-            let a = cpu.a as u16;
-            let m = operand as u16;
-            let c = carry as u16;
-
-            let diff = a.wrapping_sub(m).wrapping_sub(c);
-            let result = diff as u8;
-            let borrow = a < m + c;
-
-            let overflow = (cpu.a ^ operand) & 0x80 != 0 && (cpu.a ^ result) & 0x80 != 0;
-
-            cpu.a = result;
-            cpu.set_flags_arithmetic(result, overflow, borrow);
+            cpu.perform_sbca(operand);
         });
     }
 
@@ -116,8 +243,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            cpu.a &= operand;
-            cpu.set_flags_logical(cpu.a);
+            cpu.perform_anda(operand);
         });
     }
 
@@ -130,8 +256,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            let result = cpu.a & operand;
-            cpu.set_flags_logical(result);
+            cpu.perform_bita(operand);
         });
     }
 
@@ -144,8 +269,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            cpu.a ^= operand;
-            cpu.set_flags_logical(cpu.a);
+            cpu.perform_eora(operand);
         });
     }
 
@@ -161,26 +285,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            let carry_in = if cpu.cc & (CcFlag::C as u8) != 0 {
-                1
-            } else {
-                0
-            };
-
-            let a_u16 = cpu.a as u16;
-            let m_u16 = operand as u16;
-            let c_u16 = carry_in as u16;
-
-            let sum = a_u16 + m_u16 + c_u16;
-            let result = sum as u8;
-            let carry_out = sum > 0xFF;
-
-            let half_carry = (cpu.a & 0x0F) + (operand & 0x0F) + carry_in > 0x0F;
-            let overflow = (cpu.a ^ operand) & 0x80 == 0 && (cpu.a ^ result) & 0x80 != 0;
-
-            cpu.a = result;
-            cpu.set_flag(CcFlag::H, half_carry);
-            cpu.set_flags_arithmetic(result, overflow, carry_out);
+            cpu.perform_adca(operand);
         });
     }
 
@@ -193,8 +298,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            cpu.a |= operand;
-            cpu.set_flags_logical(cpu.a);
+            cpu.perform_ora(operand);
         });
     }
 
@@ -209,10 +313,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            let (result, borrow) = cpu.b.overflowing_sub(operand);
-            let overflow = (cpu.b ^ operand) & 0x80 != 0 && (cpu.b ^ result) & 0x80 != 0;
-            cpu.b = result;
-            cpu.set_flags_arithmetic(result, overflow, borrow);
+            cpu.perform_subb(operand);
         });
     }
 
@@ -227,9 +328,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            let (result, borrow) = cpu.b.overflowing_sub(operand);
-            let overflow = (cpu.b ^ operand) & 0x80 != 0 && (cpu.b ^ result) & 0x80 != 0;
-            cpu.set_flags_arithmetic(result, overflow, borrow);
+            cpu.perform_cmpb(operand);
         });
     }
 
@@ -244,24 +343,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            let carry = if cpu.cc & (CcFlag::C as u8) != 0 {
-                1
-            } else {
-                0
-            };
-
-            let b = cpu.b as u16;
-            let m = operand as u16;
-            let c = carry as u16;
-
-            let diff = b.wrapping_sub(m).wrapping_sub(c);
-            let result = diff as u8;
-            let borrow = b < m + c;
-
-            let overflow = (cpu.b ^ operand) & 0x80 != 0 && (cpu.b ^ result) & 0x80 != 0;
-
-            cpu.b = result;
-            cpu.set_flags_arithmetic(result, overflow, borrow);
+            cpu.perform_sbcb(operand);
         });
     }
 
@@ -274,8 +356,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            cpu.b &= operand;
-            cpu.set_flags_logical(cpu.b);
+            cpu.perform_andb(operand);
         });
     }
 
@@ -288,8 +369,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            let result = cpu.b & operand;
-            cpu.set_flags_logical(result);
+            cpu.perform_bitb(operand);
         });
     }
 
@@ -302,8 +382,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            cpu.b ^= operand;
-            cpu.set_flags_logical(cpu.b);
+            cpu.perform_eorb(operand);
         });
     }
 
@@ -319,26 +398,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            let carry_in = if cpu.cc & (CcFlag::C as u8) != 0 {
-                1
-            } else {
-                0
-            };
-
-            let b_u16 = cpu.b as u16;
-            let m_u16 = operand as u16;
-            let c_u16 = carry_in as u16;
-
-            let sum = b_u16 + m_u16 + c_u16;
-            let result = sum as u8;
-            let carry_out = sum > 0xFF;
-
-            let half_carry = (cpu.b & 0x0F) + (operand & 0x0F) + carry_in > 0x0F;
-            let overflow = (cpu.b ^ operand) & 0x80 == 0 && (cpu.b ^ result) & 0x80 != 0;
-
-            cpu.b = result;
-            cpu.set_flag(CcFlag::H, half_carry);
-            cpu.set_flags_arithmetic(result, overflow, carry_out);
+            cpu.perform_adcb(operand);
         });
     }
 
@@ -351,8 +411,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            cpu.b |= operand;
-            cpu.set_flags_logical(cpu.b);
+            cpu.perform_orb(operand);
         });
     }
 
@@ -367,12 +426,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            let (result, carry) = cpu.b.overflowing_add(operand);
-            let half_carry = (cpu.b & 0x0F) + (operand & 0x0F) > 0x0F;
-            let overflow = (cpu.b ^ operand) & 0x80 == 0 && (cpu.b ^ result) & 0x80 != 0;
-            cpu.b = result;
-            cpu.set_flag(CcFlag::H, half_carry);
-            cpu.set_flags_arithmetic(result, overflow, carry);
+            cpu.perform_addb(operand);
         });
     }
 
@@ -389,12 +443,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            let (result, borrow) = cpu.a.overflowing_sub(operand);
-            let half_borrow = (cpu.a & 0x0F) < (operand & 0x0F);
-            let overflow = (cpu.a ^ operand) & 0x80 != 0 && (cpu.a ^ result) & 0x80 != 0;
-            cpu.a = result;
-            cpu.set_flag(CcFlag::H, half_borrow);
-            cpu.set_flags_arithmetic(result, overflow, borrow);
+            cpu.perform_suba(operand);
         });
     }
 
@@ -410,9 +459,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            let (result, borrow) = cpu.a.overflowing_sub(operand);
-            let overflow = (cpu.a ^ operand) & 0x80 != 0 && (cpu.a ^ result) & 0x80 != 0;
-            cpu.set_flags_arithmetic(result, overflow, borrow);
+            cpu.perform_cmpa(operand);
         });
     }
 
@@ -427,20 +474,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            let carry = if cpu.cc & (CcFlag::C as u8) != 0 {
-                1
-            } else {
-                0
-            };
-            let a = cpu.a as u16;
-            let m = operand as u16;
-            let c = carry as u16;
-            let diff = a.wrapping_sub(m).wrapping_sub(c);
-            let result = diff as u8;
-            let borrow = a < m + c;
-            let overflow = (cpu.a ^ operand) & 0x80 != 0 && (cpu.a ^ result) & 0x80 != 0;
-            cpu.a = result;
-            cpu.set_flags_arithmetic(result, overflow, borrow);
+            cpu.perform_sbca(operand);
         });
     }
 
@@ -454,8 +488,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.a &= operand;
-            cpu.set_flags_logical(cpu.a);
+            cpu.perform_anda(operand);
         });
     }
 
@@ -469,8 +502,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            let result = cpu.a & operand;
-            cpu.set_flags_logical(result);
+            cpu.perform_bita(operand);
         });
     }
 
@@ -484,8 +516,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.a ^= operand;
-            cpu.set_flags_logical(cpu.a);
+            cpu.perform_eora(operand);
         });
     }
 
@@ -501,22 +532,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            let carry_in = if cpu.cc & (CcFlag::C as u8) != 0 {
-                1
-            } else {
-                0
-            };
-            let a_u16 = cpu.a as u16;
-            let m_u16 = operand as u16;
-            let c_u16 = carry_in as u16;
-            let sum = a_u16 + m_u16 + c_u16;
-            let result = sum as u8;
-            let carry_out = sum > 0xFF;
-            let half_carry = (cpu.a & 0x0F) + (operand & 0x0F) + carry_in > 0x0F;
-            let overflow = (cpu.a ^ operand) & 0x80 == 0 && (cpu.a ^ result) & 0x80 != 0;
-            cpu.a = result;
-            cpu.set_flag(CcFlag::H, half_carry);
-            cpu.set_flags_arithmetic(result, overflow, carry_out);
+            cpu.perform_adca(operand);
         });
     }
 
@@ -530,8 +546,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.a |= operand;
-            cpu.set_flags_logical(cpu.a);
+            cpu.perform_ora(operand);
         });
     }
 
@@ -547,12 +562,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            let (result, carry) = cpu.a.overflowing_add(operand);
-            let half_carry = (cpu.a & 0x0F) + (operand & 0x0F) > 0x0F;
-            let overflow = (cpu.a ^ operand) & 0x80 == 0 && (cpu.a ^ result) & 0x80 != 0;
-            cpu.a = result;
-            cpu.set_flag(CcFlag::H, half_carry);
-            cpu.set_flags_arithmetic(result, overflow, carry);
+            cpu.perform_adda(operand);
         });
     }
 
@@ -569,10 +579,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            let (result, borrow) = cpu.b.overflowing_sub(operand);
-            let overflow = (cpu.b ^ operand) & 0x80 != 0 && (cpu.b ^ result) & 0x80 != 0;
-            cpu.b = result;
-            cpu.set_flags_arithmetic(result, overflow, borrow);
+            cpu.perform_subb(operand);
         });
     }
 
@@ -588,9 +595,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            let (result, borrow) = cpu.b.overflowing_sub(operand);
-            let overflow = (cpu.b ^ operand) & 0x80 != 0 && (cpu.b ^ result) & 0x80 != 0;
-            cpu.set_flags_arithmetic(result, overflow, borrow);
+            cpu.perform_cmpb(operand);
         });
     }
 
@@ -605,20 +610,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            let carry = if cpu.cc & (CcFlag::C as u8) != 0 {
-                1
-            } else {
-                0
-            };
-            let b = cpu.b as u16;
-            let m = operand as u16;
-            let c = carry as u16;
-            let diff = b.wrapping_sub(m).wrapping_sub(c);
-            let result = diff as u8;
-            let borrow = b < m + c;
-            let overflow = (cpu.b ^ operand) & 0x80 != 0 && (cpu.b ^ result) & 0x80 != 0;
-            cpu.b = result;
-            cpu.set_flags_arithmetic(result, overflow, borrow);
+            cpu.perform_sbcb(operand);
         });
     }
 
@@ -632,8 +624,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.b &= operand;
-            cpu.set_flags_logical(cpu.b);
+            cpu.perform_andb(operand);
         });
     }
 
@@ -647,8 +638,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            let result = cpu.b & operand;
-            cpu.set_flags_logical(result);
+            cpu.perform_bitb(operand);
         });
     }
 
@@ -662,8 +652,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.b ^= operand;
-            cpu.set_flags_logical(cpu.b);
+            cpu.perform_eorb(operand);
         });
     }
 
@@ -679,22 +668,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            let carry_in = if cpu.cc & (CcFlag::C as u8) != 0 {
-                1
-            } else {
-                0
-            };
-            let b_u16 = cpu.b as u16;
-            let m_u16 = operand as u16;
-            let c_u16 = carry_in as u16;
-            let sum = b_u16 + m_u16 + c_u16;
-            let result = sum as u8;
-            let carry_out = sum > 0xFF;
-            let half_carry = (cpu.b & 0x0F) + (operand & 0x0F) + carry_in > 0x0F;
-            let overflow = (cpu.b ^ operand) & 0x80 == 0 && (cpu.b ^ result) & 0x80 != 0;
-            cpu.b = result;
-            cpu.set_flag(CcFlag::H, half_carry);
-            cpu.set_flags_arithmetic(result, overflow, carry_out);
+            cpu.perform_adcb(operand);
         });
     }
 
@@ -708,8 +682,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.b |= operand;
-            cpu.set_flags_logical(cpu.b);
+            cpu.perform_orb(operand);
         });
     }
 
@@ -725,12 +698,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            let (result, carry) = cpu.b.overflowing_add(operand);
-            let half_carry = (cpu.b & 0x0F) + (operand & 0x0F) > 0x0F;
-            let overflow = (cpu.b ^ operand) & 0x80 == 0 && (cpu.b ^ result) & 0x80 != 0;
-            cpu.b = result;
-            cpu.set_flag(CcFlag::H, half_carry);
-            cpu.set_flags_arithmetic(result, overflow, carry);
+            cpu.perform_addb(operand);
         });
     }
 
@@ -745,12 +713,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            let (result, borrow) = cpu.a.overflowing_sub(operand);
-            let half_borrow = (cpu.a & 0x0F) < (operand & 0x0F);
-            let overflow = (cpu.a ^ operand) & 0x80 != 0 && (cpu.a ^ result) & 0x80 != 0;
-            cpu.a = result;
-            cpu.set_flag(CcFlag::H, half_borrow);
-            cpu.set_flags_arithmetic(result, overflow, borrow);
+            cpu.perform_suba(operand);
         });
     }
 
@@ -763,9 +726,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            let (result, borrow) = cpu.a.overflowing_sub(operand);
-            let overflow = (cpu.a ^ operand) & 0x80 != 0 && (cpu.a ^ result) & 0x80 != 0;
-            cpu.set_flags_arithmetic(result, overflow, borrow);
+            cpu.perform_cmpa(operand);
         });
     }
 
@@ -778,20 +739,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            let carry = if cpu.cc & (CcFlag::C as u8) != 0 {
-                1
-            } else {
-                0
-            };
-            let a = cpu.a as u16;
-            let m = operand as u16;
-            let c = carry as u16;
-            let diff = a.wrapping_sub(m).wrapping_sub(c);
-            let result = diff as u8;
-            let borrow = a < m + c;
-            let overflow = (cpu.a ^ operand) & 0x80 != 0 && (cpu.a ^ result) & 0x80 != 0;
-            cpu.a = result;
-            cpu.set_flags_arithmetic(result, overflow, borrow);
+            cpu.perform_sbca(operand);
         });
     }
 
@@ -804,8 +752,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.a &= operand;
-            cpu.set_flags_logical(cpu.a);
+            cpu.perform_anda(operand);
         });
     }
 
@@ -818,8 +765,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            let result = cpu.a & operand;
-            cpu.set_flags_logical(result);
+            cpu.perform_bita(operand);
         });
     }
 
@@ -832,8 +778,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.a ^= operand;
-            cpu.set_flags_logical(cpu.a);
+            cpu.perform_eora(operand);
         });
     }
 
@@ -846,22 +791,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            let carry_in = if cpu.cc & (CcFlag::C as u8) != 0 {
-                1
-            } else {
-                0
-            };
-            let a_u16 = cpu.a as u16;
-            let m_u16 = operand as u16;
-            let c_u16 = carry_in as u16;
-            let sum = a_u16 + m_u16 + c_u16;
-            let result = sum as u8;
-            let carry_out = sum > 0xFF;
-            let half_carry = (cpu.a & 0x0F) + (operand & 0x0F) + carry_in > 0x0F;
-            let overflow = (cpu.a ^ operand) & 0x80 == 0 && (cpu.a ^ result) & 0x80 != 0;
-            cpu.a = result;
-            cpu.set_flag(CcFlag::H, half_carry);
-            cpu.set_flags_arithmetic(result, overflow, carry_out);
+            cpu.perform_adca(operand);
         });
     }
 
@@ -874,8 +804,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.a |= operand;
-            cpu.set_flags_logical(cpu.a);
+            cpu.perform_ora(operand);
         });
     }
 
@@ -891,12 +820,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            let (result, carry) = cpu.a.overflowing_add(operand);
-            let half_carry = (cpu.a & 0x0F) + (operand & 0x0F) > 0x0F;
-            let overflow = (cpu.a ^ operand) & 0x80 == 0 && (cpu.a ^ result) & 0x80 != 0;
-            cpu.a = result;
-            cpu.set_flag(CcFlag::H, half_carry);
-            cpu.set_flags_arithmetic(result, overflow, carry);
+            cpu.perform_adda(operand);
         });
     }
 
@@ -911,10 +835,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            let (result, borrow) = cpu.b.overflowing_sub(operand);
-            let overflow = (cpu.b ^ operand) & 0x80 != 0 && (cpu.b ^ result) & 0x80 != 0;
-            cpu.b = result;
-            cpu.set_flags_arithmetic(result, overflow, borrow);
+            cpu.perform_subb(operand);
         });
     }
 
@@ -927,9 +848,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            let (result, borrow) = cpu.b.overflowing_sub(operand);
-            let overflow = (cpu.b ^ operand) & 0x80 != 0 && (cpu.b ^ result) & 0x80 != 0;
-            cpu.set_flags_arithmetic(result, overflow, borrow);
+            cpu.perform_cmpb(operand);
         });
     }
 
@@ -942,20 +861,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            let carry = if cpu.cc & (CcFlag::C as u8) != 0 {
-                1
-            } else {
-                0
-            };
-            let b = cpu.b as u16;
-            let m = operand as u16;
-            let c = carry as u16;
-            let diff = b.wrapping_sub(m).wrapping_sub(c);
-            let result = diff as u8;
-            let borrow = b < m + c;
-            let overflow = (cpu.b ^ operand) & 0x80 != 0 && (cpu.b ^ result) & 0x80 != 0;
-            cpu.b = result;
-            cpu.set_flags_arithmetic(result, overflow, borrow);
+            cpu.perform_sbcb(operand);
         });
     }
 
@@ -968,8 +874,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.b &= operand;
-            cpu.set_flags_logical(cpu.b);
+            cpu.perform_andb(operand);
         });
     }
 
@@ -982,8 +887,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            let result = cpu.b & operand;
-            cpu.set_flags_logical(result);
+            cpu.perform_bitb(operand);
         });
     }
 
@@ -996,8 +900,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.b ^= operand;
-            cpu.set_flags_logical(cpu.b);
+            cpu.perform_eorb(operand);
         });
     }
 
@@ -1010,22 +913,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            let carry_in = if cpu.cc & (CcFlag::C as u8) != 0 {
-                1
-            } else {
-                0
-            };
-            let b_u16 = cpu.b as u16;
-            let m_u16 = operand as u16;
-            let c_u16 = carry_in as u16;
-            let sum = b_u16 + m_u16 + c_u16;
-            let result = sum as u8;
-            let carry_out = sum > 0xFF;
-            let half_carry = (cpu.b & 0x0F) + (operand & 0x0F) + carry_in > 0x0F;
-            let overflow = (cpu.b ^ operand) & 0x80 == 0 && (cpu.b ^ result) & 0x80 != 0;
-            cpu.b = result;
-            cpu.set_flag(CcFlag::H, half_carry);
-            cpu.set_flags_arithmetic(result, overflow, carry_out);
+            cpu.perform_adcb(operand);
         });
     }
 
@@ -1038,8 +926,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.b |= operand;
-            cpu.set_flags_logical(cpu.b);
+            cpu.perform_orb(operand);
         });
     }
 
@@ -1052,12 +939,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            let (result, carry) = cpu.b.overflowing_add(operand);
-            let half_carry = (cpu.b & 0x0F) + (operand & 0x0F) > 0x0F;
-            let overflow = (cpu.b ^ operand) & 0x80 == 0 && (cpu.b ^ result) & 0x80 != 0;
-            cpu.b = result;
-            cpu.set_flag(CcFlag::H, half_carry);
-            cpu.set_flags_arithmetic(result, overflow, carry);
+            cpu.perform_addb(operand);
         });
     }
 }

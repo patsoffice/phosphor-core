@@ -103,7 +103,11 @@ fn test_sta_direct_dp_combining() {
     sys.tick();
     sys.tick();
 
-    assert_eq!(sys.read_ram(0x1020), 0x55, "STA should write to DP:addr = $1020");
+    assert_eq!(
+        sys.read_ram(0x1020),
+        0x55,
+        "STA should write to DP:addr = $1020"
+    );
     assert_eq!(sys.read_ram(0x20), 0x00, "RAM[0x20] should be untouched");
 }
 

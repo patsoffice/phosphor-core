@@ -2,6 +2,33 @@ use crate::core::{Bus, BusMaster};
 use crate::cpu::m6809::{ExecState, M6809};
 
 impl M6809 {
+    // --- Internal 16-bit ALU Helpers ---
+
+    #[inline]
+    fn perform_addd(&mut self, operand: u16) {
+        let d = self.get_d();
+        let (result, carry) = d.overflowing_add(operand);
+        let overflow = (d ^ operand) & 0x8000 == 0 && (d ^ result) & 0x8000 != 0;
+        self.set_d(result);
+        self.set_flags_arithmetic16(result, overflow, carry);
+    }
+
+    #[inline]
+    fn perform_subd(&mut self, operand: u16) {
+        let d = self.get_d();
+        let (result, borrow) = d.overflowing_sub(operand);
+        let overflow = (d ^ operand) & 0x8000 != 0 && (d ^ result) & 0x8000 != 0;
+        self.set_d(result);
+        self.set_flags_arithmetic16(result, overflow, borrow);
+    }
+
+    #[inline]
+    fn perform_cmp16(&mut self, reg_val: u16, operand: u16) {
+        let (result, borrow) = reg_val.overflowing_sub(operand);
+        let overflow = (reg_val ^ operand) & 0x8000 != 0 && (reg_val ^ result) & 0x8000 != 0;
+        self.set_flags_arithmetic16(result, overflow, borrow);
+    }
+
     /// ADDD immediate (0xC3): Adds a 16-bit immediate value to the D register.
     /// N set if result bit 15 is set. Z set if result is zero.
     /// V set if signed overflow occurred. C set if unsigned carry out of bit 15.
@@ -25,13 +52,7 @@ impl M6809 {
                 let low = bus.read(master, self.pc) as u16;
                 self.pc = self.pc.wrapping_add(1);
                 let operand = self.temp_addr | low;
-
-                let d = self.get_d();
-                let (result, carry) = d.overflowing_add(operand);
-                let overflow = (d ^ operand) & 0x8000 == 0 && (d ^ result) & 0x8000 != 0;
-
-                self.set_d(result);
-                self.set_flags_arithmetic16(result, overflow, carry);
+                self.perform_addd(operand);
                 self.state = ExecState::Fetch;
             }
             _ => {}
@@ -61,13 +82,7 @@ impl M6809 {
                 let low = bus.read(master, self.pc) as u16;
                 self.pc = self.pc.wrapping_add(1);
                 let operand = self.temp_addr | low;
-
-                let d = self.get_d();
-                let (result, borrow) = d.overflowing_sub(operand);
-                let overflow = (d ^ operand) & 0x8000 != 0 && (d ^ result) & 0x8000 != 0;
-
-                self.set_d(result);
-                self.set_flags_arithmetic16(result, overflow, borrow);
+                self.perform_subd(operand);
                 self.state = ExecState::Fetch;
             }
             _ => {}
@@ -99,9 +114,7 @@ impl M6809 {
             }
             2 => {
                 let operand = self.temp_addr;
-                let (result, borrow) = self.x.overflowing_sub(operand);
-                let overflow = (self.x ^ operand) & 0x8000 != 0 && (self.x ^ result) & 0x8000 != 0;
-                self.set_flags_arithmetic16(result, overflow, borrow);
+                self.perform_cmp16(self.x, operand);
                 self.state = ExecState::Fetch;
             }
             _ => {}
@@ -220,11 +233,7 @@ impl M6809 {
             2 => {
                 let low = bus.read(master, self.temp_addr) as u16;
                 let operand = ((self.opcode as u16) << 8) | low;
-                let d = self.get_d();
-                let (result, borrow) = d.overflowing_sub(operand);
-                let overflow = (d ^ operand) & 0x8000 != 0 && (d ^ result) & 0x8000 != 0;
-                self.set_d(result);
-                self.set_flags_arithmetic16(result, overflow, borrow);
+                self.perform_subd(operand);
                 self.state = ExecState::Fetch;
             }
             _ => {}
@@ -257,11 +266,7 @@ impl M6809 {
             2 => {
                 let low = bus.read(master, self.temp_addr) as u16;
                 let operand = ((self.opcode as u16) << 8) | low;
-                let d = self.get_d();
-                let (result, carry) = d.overflowing_add(operand);
-                let overflow = (d ^ operand) & 0x8000 == 0 && (d ^ result) & 0x8000 != 0;
-                self.set_d(result);
-                self.set_flags_arithmetic16(result, overflow, carry);
+                self.perform_addd(operand);
                 self.state = ExecState::Fetch;
             }
             _ => {}
@@ -294,10 +299,7 @@ impl M6809 {
             2 => {
                 let low = bus.read(master, self.temp_addr) as u16;
                 let operand = ((self.opcode as u16) << 8) | low;
-                let (result, borrow) = self.x.overflowing_sub(operand);
-                let overflow =
-                    (self.x ^ operand) & 0x8000 != 0 && (self.x ^ result) & 0x8000 != 0;
-                self.set_flags_arithmetic16(result, overflow, borrow);
+                self.perform_cmp16(self.x, operand);
                 self.state = ExecState::Fetch;
             }
             _ => {}
