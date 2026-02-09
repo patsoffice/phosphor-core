@@ -132,3 +132,32 @@ fn test_cmpx_extended() {
 
     assert_eq!(sys.get_cpu_state().cc & (CcFlag::Z as u8), CcFlag::Z as u8);
 }
+
+#[test]
+fn test_cmpd_immediate() {
+    let mut sys = Simple6809System::new();
+    // LDD #$1234, CMPD #$1234 (0x10 0x83 0x12 0x34)
+    sys.load_rom(0, &[0xCC, 0x12, 0x34, 0x10, 0x83, 0x12, 0x34]);
+
+    // LDD (3 cycles)
+    sys.tick();
+    sys.tick();
+    sys.tick();
+
+    // CMPD (5 cycles: 1 prefix + 1 opcode + 2 operand + 1 exec)
+    for _ in 0..5 {
+        sys.tick();
+    }
+
+    let state = sys.get_cpu_state();
+    assert_eq!(
+        state.cc & (CcFlag::Z as u8),
+        CcFlag::Z as u8,
+        "Zero flag should be set"
+    );
+    assert_eq!(
+        state.cc & (CcFlag::N as u8),
+        0,
+        "Negative flag should be clear"
+    );
+}

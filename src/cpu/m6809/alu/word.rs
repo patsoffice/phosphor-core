@@ -121,6 +121,38 @@ impl M6809 {
         }
     }
 
+    /// CMPD immediate (0x1083): Compare D with 16-bit immediate.
+    /// N set if result bit 15 is set. Z set if result is zero.
+    /// V set if signed overflow occurred. C set if unsigned borrow occurred.
+    pub(crate) fn op_cmpd_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                let high = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = high << 8;
+                self.state = ExecState::ExecutePage2(opcode, 1);
+            }
+            1 => {
+                let low = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr |= low;
+                self.state = ExecState::ExecutePage2(opcode, 2);
+            }
+            2 => {
+                let operand = self.temp_addr;
+                self.perform_cmp16(self.get_d(), operand);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
     /// LDD immediate (0xCC): Load D with 16-bit immediate.
     /// N set if result bit 15 is set. Z set if result is zero. V always cleared.
     pub(crate) fn op_ldd_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(
@@ -273,6 +305,37 @@ impl M6809 {
         }
     }
 
+    /// CMPD direct (0x1093): Compare D with 16-bit value at DP:addr.
+    pub(crate) fn op_cmpd_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                let addr = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = ((self.dp as u16) << 8) | addr;
+                self.state = ExecState::ExecutePage2(opcode, 1);
+            }
+            1 => {
+                let high = bus.read(master, self.temp_addr) as u16;
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.opcode = high as u8;
+                self.state = ExecState::ExecutePage2(opcode, 2);
+            }
+            2 => {
+                let low = bus.read(master, self.temp_addr) as u16;
+                let operand = ((self.opcode as u16) << 8) | low;
+                self.perform_cmp16(self.get_d(), operand);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
     /// CMPX direct (0x9C): Compare X with 16-bit value at DP:addr.
     /// N set if result bit 15 is set. Z set if result is zero.
     /// V set if signed overflow occurred. C set if unsigned borrow occurred.
@@ -341,6 +404,43 @@ impl M6809 {
                 let low = bus.read(master, self.temp_addr) as u16;
                 let operand = ((self.opcode as u16) << 8) | low;
                 self.perform_subd(operand);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
+    /// CMPD extended (0x10B3): Compare D with 16-bit value at extended address.
+    pub(crate) fn op_cmpd_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                let high = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = high << 8;
+                self.state = ExecState::ExecutePage2(opcode, 1);
+            }
+            1 => {
+                let low = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr |= low;
+                self.state = ExecState::ExecutePage2(opcode, 2);
+            }
+            2 => {
+                let high = bus.read(master, self.temp_addr) as u16;
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.opcode = high as u8;
+                self.state = ExecState::ExecutePage2(opcode, 3);
+            }
+            3 => {
+                let low = bus.read(master, self.temp_addr) as u16;
+                let operand = ((self.opcode as u16) << 8) | low;
+                self.perform_cmp16(self.get_d(), operand);
                 self.state = ExecState::Fetch;
             }
             _ => {}

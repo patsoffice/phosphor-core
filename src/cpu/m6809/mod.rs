@@ -47,7 +47,8 @@ pub struct M6809 {
 #[derive(Clone, Debug)]
 pub(crate) enum ExecState {
     Fetch,
-    Execute(u8, u8), // (opcode, cycle)
+    Execute(u8, u8),      // (opcode, cycle)
+    ExecutePage2(u8, u8), // (opcode, cycle) for 0x10 prefix
     #[allow(dead_code)]
     Halted {
         return_state: Box<ExecState>,
@@ -124,6 +125,9 @@ impl M6809 {
             ExecState::Execute(op, cyc) => {
                 self.execute_instruction(op, cyc, bus, master);
             }
+            ExecState::ExecutePage2(op, cyc) => {
+                self.execute_instruction_page2(op, cyc, bus, master);
+            }
         }
     }
 
@@ -135,6 +139,15 @@ impl M6809 {
         master: BusMaster,
     ) {
         match opcode {
+            // Page 2 Prefix (0x10)
+            0x10 => {
+                if cycle == 0 {
+                    let next_op = bus.read(master, self.pc);
+                    self.pc = self.pc.wrapping_add(1);
+                    self.state = ExecState::ExecutePage2(next_op, 0);
+                }
+            }
+
             // ALU instructions (A register inherent)
             0x3D => self.op_mul(cycle),
             0x40 => self.op_nega(cycle),
@@ -292,6 +305,24 @@ impl M6809 {
             _ => {
                 self.state = ExecState::Fetch;
             }
+        }
+    }
+
+    fn execute_instruction_page2<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match opcode {
+            // CMPD Immediate (0x1083)
+            0x83 => self.op_cmpd_imm(opcode, cycle, bus, master),
+            // CMPD Direct (0x1093)
+            0x93 => self.op_cmpd_direct(opcode, cycle, bus, master),
+            // CMPD Extended (0x10B3)
+            0xB3 => self.op_cmpd_extended(opcode, cycle, bus, master),
+            _ => self.state = ExecState::Fetch,
         }
     }
 
