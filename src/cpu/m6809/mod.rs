@@ -211,6 +211,17 @@ impl M6809 {
             0x9E => self.op_ldx_direct(opcode, cycle, bus, master),
             0x9F => self.op_stx_direct(opcode, cycle, bus, master),
 
+            // ALU extended (A register)
+            0xB0 => self.op_suba_extended(opcode, cycle, bus, master),
+            0xB1 => self.op_cmpa_extended(opcode, cycle, bus, master),
+            0xB2 => self.op_sbca_extended(opcode, cycle, bus, master),
+            0xB4 => self.op_anda_extended(opcode, cycle, bus, master),
+            0xB5 => self.op_bita_extended(opcode, cycle, bus, master),
+            0xB8 => self.op_eora_extended(opcode, cycle, bus, master),
+            0xB9 => self.op_adca_extended(opcode, cycle, bus, master),
+            0xBA => self.op_ora_extended(opcode, cycle, bus, master),
+            0xBB => self.op_adda_extended(opcode, cycle, bus, master),
+
             // ALU instructions (B register inherent)
             0x50 => self.op_negb(cycle),
             0x53 => self.op_comb(cycle),
@@ -254,6 +265,17 @@ impl M6809 {
             0xDD => self.op_std_direct(opcode, cycle, bus, master),
             0xDE => self.op_ldu_direct(opcode, cycle, bus, master),
             0xDF => self.op_stu_direct(opcode, cycle, bus, master),
+
+            // ALU extended (B register)
+            0xF0 => self.op_subb_extended(opcode, cycle, bus, master),
+            0xF1 => self.op_cmpb_extended(opcode, cycle, bus, master),
+            0xF2 => self.op_sbcb_extended(opcode, cycle, bus, master),
+            0xF4 => self.op_andb_extended(opcode, cycle, bus, master),
+            0xF5 => self.op_bitb_extended(opcode, cycle, bus, master),
+            0xF8 => self.op_eorb_extended(opcode, cycle, bus, master),
+            0xF9 => self.op_adcb_extended(opcode, cycle, bus, master),
+            0xFA => self.op_orb_extended(opcode, cycle, bus, master),
+            0xFB => self.op_addb_extended(opcode, cycle, bus, master),
 
             // Load/store immediate
             0x86 => self.op_lda_imm(cycle, bus, master),

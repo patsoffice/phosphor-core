@@ -427,7 +427,11 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            let carry = if cpu.cc & (CcFlag::C as u8) != 0 { 1 } else { 0 };
+            let carry = if cpu.cc & (CcFlag::C as u8) != 0 {
+                1
+            } else {
+                0
+            };
             let a = cpu.a as u16;
             let m = operand as u16;
             let c = carry as u16;
@@ -497,7 +501,11 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            let carry_in = if cpu.cc & (CcFlag::C as u8) != 0 { 1 } else { 0 };
+            let carry_in = if cpu.cc & (CcFlag::C as u8) != 0 {
+                1
+            } else {
+                0
+            };
             let a_u16 = cpu.a as u16;
             let m_u16 = operand as u16;
             let c_u16 = carry_in as u16;
@@ -597,7 +605,11 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            let carry = if cpu.cc & (CcFlag::C as u8) != 0 { 1 } else { 0 };
+            let carry = if cpu.cc & (CcFlag::C as u8) != 0 {
+                1
+            } else {
+                0
+            };
             let b = cpu.b as u16;
             let m = operand as u16;
             let c = carry as u16;
@@ -667,7 +679,11 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            let carry_in = if cpu.cc & (CcFlag::C as u8) != 0 { 1 } else { 0 };
+            let carry_in = if cpu.cc & (CcFlag::C as u8) != 0 {
+                1
+            } else {
+                0
+            };
             let b_u16 = cpu.b as u16;
             let m_u16 = operand as u16;
             let c_u16 = carry_in as u16;
@@ -709,6 +725,333 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
+            let (result, carry) = cpu.b.overflowing_add(operand);
+            let half_carry = (cpu.b & 0x0F) + (operand & 0x0F) > 0x0F;
+            let overflow = (cpu.b ^ operand) & 0x80 == 0 && (cpu.b ^ result) & 0x80 != 0;
+            cpu.b = result;
+            cpu.set_flag(CcFlag::H, half_carry);
+            cpu.set_flags_arithmetic(result, overflow, carry);
+        });
+    }
+
+    // --- Extended addressing mode (A register) ---
+
+    /// SUBA extended (0xB0)
+    pub(crate) fn op_suba_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
+            let (result, borrow) = cpu.a.overflowing_sub(operand);
+            let half_borrow = (cpu.a & 0x0F) < (operand & 0x0F);
+            let overflow = (cpu.a ^ operand) & 0x80 != 0 && (cpu.a ^ result) & 0x80 != 0;
+            cpu.a = result;
+            cpu.set_flag(CcFlag::H, half_borrow);
+            cpu.set_flags_arithmetic(result, overflow, borrow);
+        });
+    }
+
+    /// CMPA extended (0xB1)
+    pub(crate) fn op_cmpa_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
+            let (result, borrow) = cpu.a.overflowing_sub(operand);
+            let overflow = (cpu.a ^ operand) & 0x80 != 0 && (cpu.a ^ result) & 0x80 != 0;
+            cpu.set_flags_arithmetic(result, overflow, borrow);
+        });
+    }
+
+    /// SBCA extended (0xB2)
+    pub(crate) fn op_sbca_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
+            let carry = if cpu.cc & (CcFlag::C as u8) != 0 {
+                1
+            } else {
+                0
+            };
+            let a = cpu.a as u16;
+            let m = operand as u16;
+            let c = carry as u16;
+            let diff = a.wrapping_sub(m).wrapping_sub(c);
+            let result = diff as u8;
+            let borrow = a < m + c;
+            let overflow = (cpu.a ^ operand) & 0x80 != 0 && (cpu.a ^ result) & 0x80 != 0;
+            cpu.a = result;
+            cpu.set_flags_arithmetic(result, overflow, borrow);
+        });
+    }
+
+    /// ANDA extended (0xB4)
+    pub(crate) fn op_anda_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
+            cpu.a &= operand;
+            cpu.set_flags_logical(cpu.a);
+        });
+    }
+
+    /// BITA extended (0xB5)
+    pub(crate) fn op_bita_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
+            let result = cpu.a & operand;
+            cpu.set_flags_logical(result);
+        });
+    }
+
+    /// EORA extended (0xB8)
+    pub(crate) fn op_eora_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
+            cpu.a ^= operand;
+            cpu.set_flags_logical(cpu.a);
+        });
+    }
+
+    /// ADCA extended (0xB9)
+    pub(crate) fn op_adca_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
+            let carry_in = if cpu.cc & (CcFlag::C as u8) != 0 {
+                1
+            } else {
+                0
+            };
+            let a_u16 = cpu.a as u16;
+            let m_u16 = operand as u16;
+            let c_u16 = carry_in as u16;
+            let sum = a_u16 + m_u16 + c_u16;
+            let result = sum as u8;
+            let carry_out = sum > 0xFF;
+            let half_carry = (cpu.a & 0x0F) + (operand & 0x0F) + carry_in > 0x0F;
+            let overflow = (cpu.a ^ operand) & 0x80 == 0 && (cpu.a ^ result) & 0x80 != 0;
+            cpu.a = result;
+            cpu.set_flag(CcFlag::H, half_carry);
+            cpu.set_flags_arithmetic(result, overflow, carry_out);
+        });
+    }
+
+    /// ORA extended (0xBA)
+    pub(crate) fn op_ora_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
+            cpu.a |= operand;
+            cpu.set_flags_logical(cpu.a);
+        });
+    }
+
+    /// ADDA extended (0xBB): Adds the memory operand at the 16-bit address to accumulator A.
+    /// N set if result bit 7 is set. Z set if result is zero.
+    /// V set if signed overflow occurred. C set if unsigned carry out of bit 7.
+    /// H set if carry from bit 3 to bit 4.
+    pub(crate) fn op_adda_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
+            let (result, carry) = cpu.a.overflowing_add(operand);
+            let half_carry = (cpu.a & 0x0F) + (operand & 0x0F) > 0x0F;
+            let overflow = (cpu.a ^ operand) & 0x80 == 0 && (cpu.a ^ result) & 0x80 != 0;
+            cpu.a = result;
+            cpu.set_flag(CcFlag::H, half_carry);
+            cpu.set_flags_arithmetic(result, overflow, carry);
+        });
+    }
+
+    // --- Extended addressing mode (B register) ---
+
+    /// SUBB extended (0xF0)
+    pub(crate) fn op_subb_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
+            let (result, borrow) = cpu.b.overflowing_sub(operand);
+            let overflow = (cpu.b ^ operand) & 0x80 != 0 && (cpu.b ^ result) & 0x80 != 0;
+            cpu.b = result;
+            cpu.set_flags_arithmetic(result, overflow, borrow);
+        });
+    }
+
+    /// CMPB extended (0xF1)
+    pub(crate) fn op_cmpb_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
+            let (result, borrow) = cpu.b.overflowing_sub(operand);
+            let overflow = (cpu.b ^ operand) & 0x80 != 0 && (cpu.b ^ result) & 0x80 != 0;
+            cpu.set_flags_arithmetic(result, overflow, borrow);
+        });
+    }
+
+    /// SBCB extended (0xF2)
+    pub(crate) fn op_sbcb_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
+            let carry = if cpu.cc & (CcFlag::C as u8) != 0 {
+                1
+            } else {
+                0
+            };
+            let b = cpu.b as u16;
+            let m = operand as u16;
+            let c = carry as u16;
+            let diff = b.wrapping_sub(m).wrapping_sub(c);
+            let result = diff as u8;
+            let borrow = b < m + c;
+            let overflow = (cpu.b ^ operand) & 0x80 != 0 && (cpu.b ^ result) & 0x80 != 0;
+            cpu.b = result;
+            cpu.set_flags_arithmetic(result, overflow, borrow);
+        });
+    }
+
+    /// ANDB extended (0xF4)
+    pub(crate) fn op_andb_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
+            cpu.b &= operand;
+            cpu.set_flags_logical(cpu.b);
+        });
+    }
+
+    /// BITB extended (0xF5)
+    pub(crate) fn op_bitb_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
+            let result = cpu.b & operand;
+            cpu.set_flags_logical(result);
+        });
+    }
+
+    /// EORB extended (0xF8)
+    pub(crate) fn op_eorb_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
+            cpu.b ^= operand;
+            cpu.set_flags_logical(cpu.b);
+        });
+    }
+
+    /// ADCB extended (0xF9)
+    pub(crate) fn op_adcb_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
+            let carry_in = if cpu.cc & (CcFlag::C as u8) != 0 {
+                1
+            } else {
+                0
+            };
+            let b_u16 = cpu.b as u16;
+            let m_u16 = operand as u16;
+            let c_u16 = carry_in as u16;
+            let sum = b_u16 + m_u16 + c_u16;
+            let result = sum as u8;
+            let carry_out = sum > 0xFF;
+            let half_carry = (cpu.b & 0x0F) + (operand & 0x0F) + carry_in > 0x0F;
+            let overflow = (cpu.b ^ operand) & 0x80 == 0 && (cpu.b ^ result) & 0x80 != 0;
+            cpu.b = result;
+            cpu.set_flag(CcFlag::H, half_carry);
+            cpu.set_flags_arithmetic(result, overflow, carry_out);
+        });
+    }
+
+    /// ORB extended (0xFA)
+    pub(crate) fn op_orb_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
+            cpu.b |= operand;
+            cpu.set_flags_logical(cpu.b);
+        });
+    }
+
+    /// ADDB extended (0xFB)
+    pub(crate) fn op_addb_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
             let (result, carry) = cpu.b.overflowing_add(operand);
             let half_carry = (cpu.b & 0x0F) + (operand & 0x0F) > 0x0F;
             let overflow = (cpu.b ^ operand) & 0x80 == 0 && (cpu.b ^ result) & 0x80 != 0;

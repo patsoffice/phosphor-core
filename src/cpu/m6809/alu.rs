@@ -96,6 +96,44 @@ impl M6809 {
         }
     }
 
+    /// Generic helper for Extended Addressing Mode ALU instructions.
+    /// Three execute cycles:
+    /// Cycle 0: Fetch high byte of address.
+    /// Cycle 1: Fetch low byte of address, form effective address.
+    /// Cycle 2: Read operand from the effective address and run the operation.
+    #[inline]
+    pub(crate) fn alu_extended<B: Bus<Address = u16, Data = u8> + ?Sized, F>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+        operation: F,
+    ) where
+        F: FnOnce(&mut Self, u8),
+    {
+        match cycle {
+            0 => {
+                let high = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = high << 8;
+                self.state = ExecState::Execute(opcode, 1);
+            }
+            1 => {
+                let low = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr |= low;
+                self.state = ExecState::Execute(opcode, 2);
+            }
+            2 => {
+                let operand = bus.read(master, self.temp_addr);
+                operation(self, operand);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
     // --- Shift and Rotate instructions ---
 
     /// Helper to set N, Z, V, C flags for shift/rotate operations.

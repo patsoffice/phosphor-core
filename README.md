@@ -12,7 +12,7 @@ A modular emulator framework for retro CPUs, designed for extensibility and educ
 
 **Current Focus:** Motorola 6809 CPU emulation
 
-**Status:** 🔨 Early development (105/280 opcodes implemented, 100% tested)
+**Status:** 🔨 Early development (123/280 opcodes implemented, 100% tested)
 
 ### Features
 
@@ -26,12 +26,12 @@ A modular emulator framework for retro CPUs, designed for extensibility and educ
 
 ### What Works Now
 
-- Motorola 6809 CPU with 105 instructions (including ALU, branch, subroutine, stack, transfer, and direct-page ops)
+- Motorola 6809 CPU with 123 instructions (including ALU, branch, subroutine, stack, transfer, direct-page, and extended ops)
 - Condition code flag enum (CcFlag) for readable flag manipulation
 - Simple 6809 system with 32KB RAM + 32KB ROM
 - DMA arbitration and halt signal support
 - Interrupt framework (NMI, IRQ, FIRQ)
-- Full test suite (93 integration tests)
+- Full test suite (99 integration tests)
 
 ## Quick Start
 
@@ -97,14 +97,16 @@ fn main() {
 
 ### Implemented 6809 Instructions
 
-Currently **105 of ~280** documented 6809 opcodes are implemented (across 3 opcode pages: ~233 on page 0, ~38 on page 1/0x10, ~9 on page 2/0x11):
+Currently **123 of ~280** documented 6809 opcodes are implemented (across 3 opcode pages: ~233 on page 0, ~38 on page 1/0x10, ~9 on page 2/0x11):
 
 | Category | Implemented | Examples |
 | --- | --- | --- |
 | ALU (A) imm | 9 | ADDA, SUBA, CMPA, SBCA, ADCA, ANDA, BITA, EORA, ORA |
 | ALU (A) direct | 9 | ADDA, SUBA, CMPA, SBCA, ADCA, ANDA, BITA, EORA, ORA |
+| ALU (A) extended | 9 | ADDA, SUBA, CMPA, SBCA, ADCA, ANDA, BITA, EORA, ORA |
 | ALU (B) imm | 9 | ADDB, SUBB, CMPB, SBCB, ADCB, ANDB, BITB, EORB, ORB |
 | ALU (B) direct | 9 | ADDB, SUBB, CMPB, SBCB, ADCB, ANDB, BITB, EORB, ORB |
+| ALU (B) extended | 9 | ADDB, SUBB, CMPB, SBCB, ADCB, ANDB, BITB, EORB, ORB |
 | ALU (16-bit) | 6 | ADDD, SUBD, CMPX (immediate + direct) |
 | ALU (Unary) | 13 | MUL, NEG, COM, CLR, INC, DEC, TST (A & B variants) |
 | Shift/Rotate | 10 | ASL, ASR, LSR, ROL, ROR (A & B variants) |
@@ -194,6 +196,7 @@ phosphor-core/
 │       └── mod.rs                  #    Module exports
 ├── tests/
 │   ├── m6809_alu_binary_test.rs    # ✅ 11 ALU tests (add, sub, mul)
+│   ├── m6809_alu_extended_test.rs  # ✅ 6 extended ALU tests
 │   ├── m6809_alu_imm_test.rs       # ✅ 11 ALU immediate tests (cmp, sbc, adc, logical)
 │   ├── m6809_alu_unary_test.rs     # ✅ 6 unary ALU tests (neg, com, clr, inc, dec, tst)
 │   ├── m6809_alu_word_test.rs      # ✅ 3 16-bit ALU tests (addd, subd, cmpx)
@@ -334,7 +337,7 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 - [ ] 16-bit operations (LDY, LDS, CMPD, CMPY, CMPU, CMPS, etc.)
   - [x] LDD, LDX, LDU, STD, STX, STU, ADDD, SUBD, CMPX
 
-**Progress:** 105/~280 opcodes implemented (37.5%)
+**Progress:** 123/~280 opcodes implemented (43.9%)
 
 ### Phase 2: Core Infrastructure
 
