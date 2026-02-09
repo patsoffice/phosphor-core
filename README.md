@@ -28,7 +28,8 @@ A modular emulator framework for retro CPUs, designed for extensibility and educ
 
 - Motorola 6809 CPU with 126 instructions (including ALU, branch, subroutine, stack, transfer, direct-page, and extended ops)
 - Condition code flag enum (CcFlag) for readable flag manipulation
-- **New:** Initial MOS 6502 CPU support (LDA immediate implemented)
+- Initial MOS 6502 CPU support (LDA immediate implemented)
+- **New:** Initial Zilog Z80 CPU support (LD A, n implemented)
 - Simple 6809 system with 32KB RAM + 32KB ROM
 - DMA arbitration and halt signal support
 - Interrupt framework (NMI, IRQ, FIRQ)
@@ -92,6 +93,7 @@ fn main() {
 | **Core Framework** | ✅ Complete | Bus trait, component system, arbitration |
 | **M6809 CPU** | ⚠️ Partial | State machine working, 126 instructions |
 | **M6502 CPU** | ⚠️ Partial | Initial structure, LDA imm implemented |
+| **Z80 CPU** | ⚠️ Partial | Initial structure, LD A, n implemented |
 | **PIA 6820** | ❌ Placeholder | Stub only |
 | **Simple6809 System** | ✅ Complete | RAM/ROM, testing utilities |
 | **Test Suite** | ✅ Complete | 103 integration tests passing |
@@ -128,6 +130,14 @@ Currently **1 of ~151** documented 6502 opcodes are implemented:
 | --- | --- | --- |
 | Load/Store | 1 | LDA (immediate) |
 
+### Implemented Z80 Instructions
+
+Currently **1 of ~1582** documented Z80 opcodes are implemented:
+
+| Category | Implemented | Examples |
+| --- | --- | --- |
+| Load/Store | 1 | LD A, n |
+
 ## Architecture
 
 ### Core Modules
@@ -158,6 +168,10 @@ The emulator is organized into four main layers:
   - `mod.rs` - Struct, state machine
   - `load_store.rs` - Load/store instructions
   - Initial implementation (LDA immediate only)
+- **`z80/`** ⚠️ - Zilog Z80 (directory module)
+  - `mod.rs` - Struct, state machine
+  - `load_store.rs` - Load/store instructions
+  - Initial implementation (LD A, n only)
 - **`mod.rs`** - Generic `Cpu` trait definition
 
 #### 3. `device/` - Peripheral Devices ❌
@@ -169,6 +183,7 @@ The emulator is organized into four main layers:
 - **`simple6809.rs`** - Minimal testable 6809 system
   - 32KB RAM (0x0000-0x7FFF)
   - 32KB ROM (0x8000-0xFFFF)
+  - **`simplez80.rs`** - Minimal testable Z80 system
   - DMA arbitration support
   - Testing utilities (load_rom, get_cpu_state, read/write_ram)
 
@@ -201,6 +216,9 @@ phosphor-core/
 │   │   ├── m6502/                  # ⚠️  Initial implementation
 │   │   │   ├── mod.rs              #    Struct, state machine
 │   │   │   └── load_store.rs       #    LDA immediate
+│   │   ├── z80/                    # ⚠️  Initial implementation
+│   │   │   ├── mod.rs              #    Struct, state machine
+│   │   │   └── load_store.rs       #    LD A, n
 │   │   └── mod.rs                  # ✅ Cpu trait definition
 │   ├── device/                     # ❌ Peripheral devices (stubs)
 │   │   ├── pia6820.rs              # ❌ PIA stub
@@ -208,9 +226,11 @@ phosphor-core/
 │   └── machine/                    # ✅ System implementations (complete)
 │       ├── simple6502.rs           # ✅ Minimal 6502 system
 │       ├── simple6809.rs           # ✅ Minimal 6809 system with RAM/ROM
+│       ├── simplez80.rs            # ✅ Minimal Z80 system
 │       └── mod.rs                  #    Module exports
 ├── tests/
 │   ├── m6502_basic_test.rs         # ✅ 1 basic 6502 test (LDA imm)
+│   ├── z80_basic_test.rs           # ✅ 1 basic Z80 test (LD A, n)
 │   ├── m6809_alu_binary_test.rs    # ✅ 11 ALU tests (add, sub, mul)
 │   ├── m6809_alu_extended_test.rs  # ✅ 6 extended ALU tests
 │   ├── m6809_alu_imm_test.rs       # ✅ 11 ALU immediate tests (cmp, sbc, adc, logical)
@@ -644,11 +664,11 @@ Once more instructions are implemented, we'll benchmark:
 
 **Q: Why Rust for an emulator?**
 
-A: Rust provides zero-cost abstractions, memory safety, and excellent performance - ideal for cycle-accurate emulation without sacrificing clarity.
+A: Rust provides zero-cost abstractions, memory safety, and excellent performance - ideal for cycle-accurate emulation without sacrificing clarity. Besides, I want to improve my Rust abilities.
 
 **Q: Can this run commercial ROMs?**
 
-A: Not yet. Only 105 instructions are implemented. This is an educational project in early development.
+A: Not yet. Only 126 instructions are implemented. This is an educational project in early development.
 
 **Q: Why use `unsafe` in an emulator?**
 
@@ -677,7 +697,7 @@ A: Cycle-accurate for implemented instructions. Each `tick()` = 1 CPU cycle = ma
 
 This project is licensed under the [MIT License](LICENSE).
 
-**Note:** This is a learning/reference implementation. Not affiliated with Motorola or any hardware manufacturer.
+**Note:** This is a learning/reference implementation. Not affiliated with any hardware manufacturer.
 
 ## Resources
 
@@ -693,6 +713,13 @@ This project is licensed under the [MIT License](LICENSE).
 - [6502.org](http://www.6502.org/) - The 6502 Microprocessor Resource
 - [6502 Instruction Set](http://www.6502.org/tutorials/6502opcodes.html) - Opcode reference
 - [MOS Technology 6502 Wikipedia](https://en.wikipedia.org/wiki/MOS_Technology_6502) - Architecture overview
+
+### Z80 Documentation
+
+- [Zilog Z80 User Manual](http://www.zilog.com/docs/z80/um0080.pdf) - Official User Manual
+- [Z80 Instruction Set](http://z80-heaven.wikidot.com/instructions-set) - Opcode reference
+- [Zilog Z80 Wikipedia](https://en.wikipedia.org/wiki/Zilog_Z80) - Architecture overview
+- [Thomas Scherrer Z80-Family](http://www.z80.info/) - Comprehensive Z80 resources
 
 ### Rust Resources
 
