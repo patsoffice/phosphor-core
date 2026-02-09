@@ -18,3 +18,4 @@ pub use m6809::M6809;
 
 // Placeholder for future
 pub mod m6502;
+pub use m6502::M6502;

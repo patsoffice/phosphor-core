@@ -4,7 +4,7 @@
 
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-102%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-103%20passing-brightgreen.svg)](tests/)
 
 A modular emulator framework for retro CPUs, designed for extensibility and educational purposes. Features a trait-based architecture that allows easy addition of new CPUs, peripherals, and complete systems.
 
@@ -28,10 +28,11 @@ A modular emulator framework for retro CPUs, designed for extensibility and educ
 
 - Motorola 6809 CPU with 126 instructions (including ALU, branch, subroutine, stack, transfer, direct-page, and extended ops)
 - Condition code flag enum (CcFlag) for readable flag manipulation
+- **New:** Initial MOS 6502 CPU support (LDA immediate implemented)
 - Simple 6809 system with 32KB RAM + 32KB ROM
 - DMA arbitration and halt signal support
 - Interrupt framework (NMI, IRQ, FIRQ)
-- Full test suite (102 integration tests)
+- Full test suite (103 integration tests)
 
 ## Quick Start
 
@@ -89,11 +90,11 @@ fn main() {
 | Component | Status | Notes |
 |-----------|--------|-------|
 | **Core Framework** | ✅ Complete | Bus trait, component system, arbitration |
-| **M6809 CPU** | ⚠️ Partial | State machine working, 105 instructions |
-| **M6502 CPU** | ❌ Placeholder | Structure exists, no implementation |
+| **M6809 CPU** | ⚠️ Partial | State machine working, 126 instructions |
+| **M6502 CPU** | ⚠️ Partial | Initial structure, LDA imm implemented |
 | **PIA 6820** | ❌ Placeholder | Stub only |
 | **Simple6809 System** | ✅ Complete | RAM/ROM, testing utilities |
-| **Test Suite** | ✅ Complete | 102 integration tests passing |
+| **Test Suite** | ✅ Complete | 103 integration tests passing |
 
 ### Implemented 6809 Instructions
 
@@ -118,6 +119,14 @@ Currently **126 of ~280** documented 6809 opcodes are implemented (across 3 opco
 | Stack | 4 | PSHS, PULS, PSHU, PULU |
 | Misc | 0 | |
 | Page 2/3 | 0 | |
+
+### Implemented 6502 Instructions
+
+Currently **1 of ~151** documented 6502 opcodes are implemented:
+
+| Category | Implemented | Examples |
+| --- | --- | --- |
+| Load/Store | 1 | LDA (immediate) |
 
 ## Architecture
 
@@ -145,7 +154,10 @@ The emulator is organized into four main layers:
   - All 8 registers (A, B, X, Y, U, S, PC, CC)
   - Explicit state machine (Fetch, Execute, Halted)
   - Cycle-accurate multi-cycle instruction execution
-- **`m6502.rs`** ❌ - Placeholder for future 6502 support
+- **`m6502/`** ⚠️ - MOS 6502 (directory module)
+  - `mod.rs` - Struct, state machine
+  - `load_store.rs` - Load/store instructions
+  - Initial implementation (LDA immediate only)
 - **`mod.rs`** - Generic `Cpu` trait definition
 
 #### 3. `device/` - Peripheral Devices ❌
@@ -186,15 +198,19 @@ phosphor-core/
 │   │   │   ├── load_store.rs       #    LDA, LDB, STA
 │   │   │   ├── stack.rs            #    Stack ops (PSHS, PULS, PSHU, PULU)
 │   │   │   └── transfer.rs         #    Transfer/exchange (TFR, EXG)
-│   │   ├── m6502.rs                # ❌ Placeholder only
+│   │   ├── m6502/                  # ⚠️  Initial implementation
+│   │   │   ├── mod.rs              #    Struct, state machine
+│   │   │   └── load_store.rs       #    LDA immediate
 │   │   └── mod.rs                  # ✅ Cpu trait definition
 │   ├── device/                     # ❌ Peripheral devices (stubs)
 │   │   ├── pia6820.rs              # ❌ PIA stub
 │   │   └── mod.rs                  #    Module exports
 │   └── machine/                    # ✅ System implementations (complete)
+│       ├── simple6502.rs           # ✅ Minimal 6502 system
 │       ├── simple6809.rs           # ✅ Minimal 6809 system with RAM/ROM
 │       └── mod.rs                  #    Module exports
 ├── tests/
+│   ├── m6502_basic_test.rs         # ✅ 1 basic 6502 test (LDA imm)
 │   ├── m6809_alu_binary_test.rs    # ✅ 11 ALU tests (add, sub, mul)
 │   ├── m6809_alu_extended_test.rs  # ✅ 6 extended ALU tests
 │   ├── m6809_alu_imm_test.rs       # ✅ 11 ALU immediate tests (cmp, sbc, adc, logical)
@@ -671,6 +687,12 @@ This project is licensed under the [MIT License](LICENSE).
 - [6809 Instruction Set](http://www.8bit-museum.de/6809_isa.html) - Complete opcode reference
 - [Motorola 6809 Wikipedia](https://en.wikipedia.org/wiki/Motorola_6809) - Architecture overview
 - [6809 Assembly Language](http://www.6809.org.uk/) - Programming guides
+
+### 6502 Documentation
+
+- [6502.org](http://www.6502.org/) - The 6502 Microprocessor Resource
+- [6502 Instruction Set](http://www.6502.org/tutorials/6502opcodes.html) - Opcode reference
+- [MOS Technology 6502 Wikipedia](https://en.wikipedia.org/wiki/MOS_Technology_6502) - Architecture overview
 
 ### Rust Resources
 
