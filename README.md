@@ -4,7 +4,7 @@
 
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-99%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-102%20passing-brightgreen.svg)](tests/)
 
 A modular emulator framework for retro CPUs, designed for extensibility and educational purposes. Features a trait-based architecture that allows easy addition of new CPUs, peripherals, and complete systems.
 
@@ -12,7 +12,7 @@ A modular emulator framework for retro CPUs, designed for extensibility and educ
 
 **Current Focus:** Motorola 6809 CPU emulation
 
-**Status:** 🔨 Early development (123/280 opcodes implemented, 100% tested)
+**Status:** 🔨 Early development (126/280 opcodes implemented, 100% tested)
 
 ### Features
 
@@ -26,12 +26,12 @@ A modular emulator framework for retro CPUs, designed for extensibility and educ
 
 ### What Works Now
 
-- Motorola 6809 CPU with 123 instructions (including ALU, branch, subroutine, stack, transfer, direct-page, and extended ops)
+- Motorola 6809 CPU with 126 instructions (including ALU, branch, subroutine, stack, transfer, direct-page, and extended ops)
 - Condition code flag enum (CcFlag) for readable flag manipulation
 - Simple 6809 system with 32KB RAM + 32KB ROM
 - DMA arbitration and halt signal support
 - Interrupt framework (NMI, IRQ, FIRQ)
-- Full test suite (99 integration tests)
+- Full test suite (102 integration tests)
 
 ## Quick Start
 
@@ -93,11 +93,11 @@ fn main() {
 | **M6502 CPU** | ❌ Placeholder | Structure exists, no implementation |
 | **PIA 6820** | ❌ Placeholder | Stub only |
 | **Simple6809 System** | ✅ Complete | RAM/ROM, testing utilities |
-| **Test Suite** | ✅ Complete | 99 integration tests passing |
+| **Test Suite** | ✅ Complete | 102 integration tests passing |
 
 ### Implemented 6809 Instructions
 
-Currently **123 of ~280** documented 6809 opcodes are implemented (across 3 opcode pages: ~233 on page 0, ~38 on page 1/0x10, ~9 on page 2/0x11):
+Currently **126 of ~280** documented 6809 opcodes are implemented (across 3 opcode pages: ~233 on page 0, ~38 on page 1/0x10, ~9 on page 2/0x11):
 
 | Category | Implemented | Examples |
 | --- | --- | --- |
@@ -107,7 +107,7 @@ Currently **123 of ~280** documented 6809 opcodes are implemented (across 3 opco
 | ALU (B) imm | 9 | ADDB, SUBB, CMPB, SBCB, ADCB, ANDB, BITB, EORB, ORB |
 | ALU (B) direct | 9 | ADDB, SUBB, CMPB, SBCB, ADCB, ANDB, BITB, EORB, ORB |
 | ALU (B) extended | 9 | ADDB, SUBB, CMPB, SBCB, ADCB, ANDB, BITB, EORB, ORB |
-| ALU (16-bit) | 6 | ADDD, SUBD, CMPX (immediate + direct) |
+| ALU (16-bit) | 9 | ADDD, SUBD, CMPX (immediate + direct + extended) |
 | ALU (Unary) | 13 | MUL, NEG, COM, CLR, INC, DEC, TST (A & B variants) |
 | Shift/Rotate | 10 | ASL, ASR, LSR, ROL, ROR (A & B variants) |
 | Load/Store imm | 5 | LDA, LDB, LDD, LDX, LDU |
@@ -199,7 +199,7 @@ phosphor-core/
 │   ├── m6809_alu_extended_test.rs  # ✅ 6 extended ALU tests
 │   ├── m6809_alu_imm_test.rs       # ✅ 11 ALU immediate tests (cmp, sbc, adc, logical)
 │   ├── m6809_alu_unary_test.rs     # ✅ 6 unary ALU tests (neg, com, clr, inc, dec, tst)
-│   ├── m6809_alu_word_test.rs      # ✅ 3 16-bit ALU tests (addd, subd, cmpx)
+│   ├── m6809_alu_word_test.rs      # ✅ 6 16-bit ALU tests (addd, subd, cmpx)
 │   ├── m6809_alu_shift_test.rs     # ✅ 8 shift/rotate tests (asl, asr, lsr, rol, ror)
 │   ├── m6809_branch_test.rs        # ✅ 11 branch/subroutine tests (bra, beq, bsr, jsr, rts, etc.)
 │   ├── m6809_load_store_test.rs    # ✅ 5 load/store tests (lda, ldb, ldd, ldx, ldu, sta)
@@ -338,7 +338,7 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 - [ ] 16-bit operations (LDY, LDS, CMPD, CMPY, CMPU, CMPS, etc.)
   - [x] LDD, LDX, LDU, STD, STX, STU, ADDD, SUBD, CMPX
 
-**Progress:** 123/~280 opcodes implemented (43.9%)
+**Progress:** 126/~280 opcodes implemented (45.0%)
 
 ### Phase 2: Core Infrastructure
 

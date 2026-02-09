@@ -305,4 +305,123 @@ impl M6809 {
             _ => {}
         }
     }
+
+    // --- Extended addressing mode (16-bit) ---
+
+    /// SUBD extended (0xB3): Subtracts the 16-bit value at the extended address from D.
+    /// N set if result bit 15 is set. Z set if result is zero.
+    /// V set if signed overflow occurred. C set if unsigned borrow occurred.
+    pub(crate) fn op_subd_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                let high = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = high << 8;
+                self.state = ExecState::Execute(opcode, 1);
+            }
+            1 => {
+                let low = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr |= low;
+                self.state = ExecState::Execute(opcode, 2);
+            }
+            2 => {
+                let high = bus.read(master, self.temp_addr) as u16;
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.opcode = high as u8; // reuse opcode field to store high byte
+                self.state = ExecState::Execute(opcode, 3);
+            }
+            3 => {
+                let low = bus.read(master, self.temp_addr) as u16;
+                let operand = ((self.opcode as u16) << 8) | low;
+                self.perform_subd(operand);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
+    /// ADDD extended (0xF3): Adds the 16-bit value at the extended address to D.
+    /// N set if result bit 15 is set. Z set if result is zero.
+    /// V set if signed overflow occurred. C set if unsigned carry out of bit 15.
+    pub(crate) fn op_addd_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                let high = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = high << 8;
+                self.state = ExecState::Execute(opcode, 1);
+            }
+            1 => {
+                let low = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr |= low;
+                self.state = ExecState::Execute(opcode, 2);
+            }
+            2 => {
+                let high = bus.read(master, self.temp_addr) as u16;
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.opcode = high as u8;
+                self.state = ExecState::Execute(opcode, 3);
+            }
+            3 => {
+                let low = bus.read(master, self.temp_addr) as u16;
+                let operand = ((self.opcode as u16) << 8) | low;
+                self.perform_addd(operand);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
+    /// CMPX extended (0xBC): Compare X with 16-bit value at extended address.
+    /// N set if result bit 15 is set. Z set if result is zero.
+    /// V set if signed overflow occurred. C set if unsigned borrow occurred.
+    pub(crate) fn op_cmpx_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                let high = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = high << 8;
+                self.state = ExecState::Execute(opcode, 1);
+            }
+            1 => {
+                let low = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr |= low;
+                self.state = ExecState::Execute(opcode, 2);
+            }
+            2 => {
+                let high = bus.read(master, self.temp_addr) as u16;
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.opcode = high as u8;
+                self.state = ExecState::Execute(opcode, 3);
+            }
+            3 => {
+                let low = bus.read(master, self.temp_addr) as u16;
+                let operand = ((self.opcode as u16) << 8) | low;
+                self.perform_cmp16(self.x, operand);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
 }
