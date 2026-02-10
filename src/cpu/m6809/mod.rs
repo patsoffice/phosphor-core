@@ -316,12 +316,47 @@ impl M6809 {
         master: BusMaster,
     ) {
         match opcode {
-            // CMPD Immediate (0x1083)
+            // Long branches
+            0x21 => self.op_lbrn(opcode, cycle, bus, master),
+            0x22 => self.op_lbhi(opcode, cycle, bus, master),
+            0x23 => self.op_lbls(opcode, cycle, bus, master),
+            0x24 => self.op_lbcc(opcode, cycle, bus, master),
+            0x25 => self.op_lbcs(opcode, cycle, bus, master),
+            0x26 => self.op_lbne(opcode, cycle, bus, master),
+            0x27 => self.op_lbeq(opcode, cycle, bus, master),
+            0x28 => self.op_lbvc(opcode, cycle, bus, master),
+            0x29 => self.op_lbvs(opcode, cycle, bus, master),
+            0x2A => self.op_lbpl(opcode, cycle, bus, master),
+            0x2B => self.op_lbmi(opcode, cycle, bus, master),
+            0x2C => self.op_lbge(opcode, cycle, bus, master),
+            0x2D => self.op_lblt(opcode, cycle, bus, master),
+            0x2E => self.op_lbgt(opcode, cycle, bus, master),
+            0x2F => self.op_lble(opcode, cycle, bus, master),
+
+            // CMPD (immediate, direct, extended)
             0x83 => self.op_cmpd_imm(opcode, cycle, bus, master),
-            // CMPD Direct (0x1093)
             0x93 => self.op_cmpd_direct(opcode, cycle, bus, master),
-            // CMPD Extended (0x10B3)
             0xB3 => self.op_cmpd_extended(opcode, cycle, bus, master),
+
+            // CMPY (immediate, direct, extended)
+            0x8C => self.op_cmpy_imm(opcode, cycle, bus, master),
+            0x9C => self.op_cmpy_direct(opcode, cycle, bus, master),
+            0xBC => self.op_cmpy_extended(opcode, cycle, bus, master),
+
+            // LDY / STY
+            0x8E => self.op_ldy_imm(opcode, cycle, bus, master),
+            0x9E => self.op_ldy_direct(opcode, cycle, bus, master),
+            0x9F => self.op_sty_direct(opcode, cycle, bus, master),
+            0xBE => self.op_ldy_extended(opcode, cycle, bus, master),
+            0xBF => self.op_sty_extended(opcode, cycle, bus, master),
+
+            // LDS / STS
+            0xCE => self.op_lds_imm(opcode, cycle, bus, master),
+            0xDE => self.op_lds_direct(opcode, cycle, bus, master),
+            0xDF => self.op_sts_direct(opcode, cycle, bus, master),
+            0xFE => self.op_lds_extended(opcode, cycle, bus, master),
+            0xFF => self.op_sts_extended(opcode, cycle, bus, master),
+
             _ => self.state = ExecState::Fetch,
         }
     }

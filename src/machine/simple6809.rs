@@ -87,6 +87,16 @@ impl Simple6809System {
         self.cpu.dp = val;
     }
 
+    /// Set the CPU Y register for testing
+    pub fn set_cpu_y(&mut self, val: u16) {
+        self.cpu.y = val;
+    }
+
+    /// Set the CPU condition code register (CC) for testing
+    pub fn set_cpu_cc(&mut self, val: u8) {
+        self.cpu.cc = val;
+    }
+
     /// Read a byte from RAM
     pub fn read_ram(&self, addr: usize) -> u8 {
         if addr < self.ram.len() {

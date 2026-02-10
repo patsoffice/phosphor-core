@@ -228,6 +228,230 @@ impl M6809 {
         self.branch_short(opcode, cycle, bus, master, z || (n != v));
     }
 
+    /// Generic helper for long branch instructions (16-bit offset, Page 2).
+    /// Cycle timing after prefix: 3 cycles (not taken) or 4 cycles (taken).
+    fn branch_long<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+        condition: bool,
+    ) {
+        match cycle {
+            0 => {
+                let high = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = high << 8;
+                self.state = ExecState::ExecutePage2(opcode, 1);
+            }
+            1 => {
+                let low = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr |= low;
+                self.state = ExecState::ExecutePage2(opcode, 2);
+            }
+            2 => {
+                if condition {
+                    self.state = ExecState::ExecutePage2(opcode, 3);
+                } else {
+                    self.state = ExecState::Fetch;
+                }
+            }
+            3 => {
+                let offset = self.temp_addr as i16;
+                self.pc = self.pc.wrapping_add(offset as u16);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
+    // 0x1021 LBRN: Long Branch Never (effectively a 5-cycle NOP)
+    pub(crate) fn op_lbrn<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.branch_long(opcode, cycle, bus, master, false);
+    }
+
+    // 0x1022 LBHI: Long Branch if Higher (Unsigned >) -> C=0 and Z=0
+    pub(crate) fn op_lbhi<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let cond = (self.cc & ((CcFlag::C as u8) | (CcFlag::Z as u8))) == 0;
+        self.branch_long(opcode, cycle, bus, master, cond);
+    }
+
+    // 0x1023 LBLS: Long Branch if Lower or Same (Unsigned <=) -> C=1 or Z=1
+    pub(crate) fn op_lbls<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let cond = (self.cc & ((CcFlag::C as u8) | (CcFlag::Z as u8))) != 0;
+        self.branch_long(opcode, cycle, bus, master, cond);
+    }
+
+    // 0x1024 LBCC: Long Branch if Carry Clear -> C=0
+    pub(crate) fn op_lbcc<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let cond = (self.cc & (CcFlag::C as u8)) == 0;
+        self.branch_long(opcode, cycle, bus, master, cond);
+    }
+
+    // 0x1025 LBCS: Long Branch if Carry Set -> C=1
+    pub(crate) fn op_lbcs<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let cond = (self.cc & (CcFlag::C as u8)) != 0;
+        self.branch_long(opcode, cycle, bus, master, cond);
+    }
+
+    // 0x1026 LBNE: Long Branch if Not Equal -> Z=0
+    pub(crate) fn op_lbne<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let cond = (self.cc & (CcFlag::Z as u8)) == 0;
+        self.branch_long(opcode, cycle, bus, master, cond);
+    }
+
+    // 0x1027 LBEQ: Long Branch if Equal -> Z=1
+    pub(crate) fn op_lbeq<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let cond = (self.cc & (CcFlag::Z as u8)) != 0;
+        self.branch_long(opcode, cycle, bus, master, cond);
+    }
+
+    // 0x1028 LBVC: Long Branch if Overflow Clear -> V=0
+    pub(crate) fn op_lbvc<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let cond = (self.cc & (CcFlag::V as u8)) == 0;
+        self.branch_long(opcode, cycle, bus, master, cond);
+    }
+
+    // 0x1029 LBVS: Long Branch if Overflow Set -> V=1
+    pub(crate) fn op_lbvs<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let cond = (self.cc & (CcFlag::V as u8)) != 0;
+        self.branch_long(opcode, cycle, bus, master, cond);
+    }
+
+    // 0x102A LBPL: Long Branch if Plus -> N=0
+    pub(crate) fn op_lbpl<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let cond = (self.cc & (CcFlag::N as u8)) == 0;
+        self.branch_long(opcode, cycle, bus, master, cond);
+    }
+
+    // 0x102B LBMI: Long Branch if Minus -> N=1
+    pub(crate) fn op_lbmi<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let cond = (self.cc & (CcFlag::N as u8)) != 0;
+        self.branch_long(opcode, cycle, bus, master, cond);
+    }
+
+    // 0x102C LBGE: Long Branch if Greater or Equal (Signed) -> N == V
+    pub(crate) fn op_lbge<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let n = (self.cc & (CcFlag::N as u8)) != 0;
+        let v = (self.cc & (CcFlag::V as u8)) != 0;
+        self.branch_long(opcode, cycle, bus, master, n == v);
+    }
+
+    // 0x102D LBLT: Long Branch if Less Than (Signed) -> N != V
+    pub(crate) fn op_lblt<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let n = (self.cc & (CcFlag::N as u8)) != 0;
+        let v = (self.cc & (CcFlag::V as u8)) != 0;
+        self.branch_long(opcode, cycle, bus, master, n != v);
+    }
+
+    // 0x102E LBGT: Long Branch if Greater Than (Signed) -> Z=0 and N=V
+    pub(crate) fn op_lbgt<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let z = (self.cc & (CcFlag::Z as u8)) != 0;
+        let n = (self.cc & (CcFlag::N as u8)) != 0;
+        let v = (self.cc & (CcFlag::V as u8)) != 0;
+        self.branch_long(opcode, cycle, bus, master, !z && (n == v));
+    }
+
+    // 0x102F LBLE: Long Branch if Less or Equal (Signed) -> Z=1 or N!=V
+    pub(crate) fn op_lble<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let z = (self.cc & (CcFlag::Z as u8)) != 0;
+        let n = (self.cc & (CcFlag::N as u8)) != 0;
+        let v = (self.cc & (CcFlag::V as u8)) != 0;
+        self.branch_long(opcode, cycle, bus, master, z || (n != v));
+    }
+
     /// BSR (0x8D): Branch to Subroutine.
     /// Pushes return address (PC after offset byte) onto S stack,
     /// then branches to PC + sign-extended 8-bit offset.

@@ -303,6 +303,130 @@ impl M6809 {
         }
     }
 
+    /// LDY direct (0x109E): Load Y from memory at DP:addr (16-bit).
+    /// N set if result bit 15 is set. Z set if result is zero. V always cleared.
+    pub(crate) fn op_ldy_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                let addr = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = ((self.dp as u16) << 8) | addr;
+                self.state = ExecState::ExecutePage2(opcode, 1);
+            }
+            1 => {
+                let high = bus.read(master, self.temp_addr) as u16;
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.y = high << 8;
+                self.state = ExecState::ExecutePage2(opcode, 2);
+            }
+            2 => {
+                let low = bus.read(master, self.temp_addr) as u16;
+                self.y |= low;
+                self.set_flags_logical16(self.y);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
+    /// STY direct (0x109F): Store Y to memory at DP:addr (16-bit).
+    /// N set if result bit 15 is set. Z set if result is zero. V always cleared.
+    pub(crate) fn op_sty_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                let addr = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = ((self.dp as u16) << 8) | addr;
+                self.state = ExecState::ExecutePage2(opcode, 1);
+            }
+            1 => {
+                bus.write(master, self.temp_addr, (self.y >> 8) as u8);
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.state = ExecState::ExecutePage2(opcode, 2);
+            }
+            2 => {
+                bus.write(master, self.temp_addr, self.y as u8);
+                self.set_flags_logical16(self.y);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
+    /// LDS direct (0x10DE): Load S from memory at DP:addr (16-bit).
+    /// N set if result bit 15 is set. Z set if result is zero. V always cleared.
+    pub(crate) fn op_lds_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                let addr = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = ((self.dp as u16) << 8) | addr;
+                self.state = ExecState::ExecutePage2(opcode, 1);
+            }
+            1 => {
+                let high = bus.read(master, self.temp_addr) as u16;
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.s = high << 8;
+                self.state = ExecState::ExecutePage2(opcode, 2);
+            }
+            2 => {
+                let low = bus.read(master, self.temp_addr) as u16;
+                self.s |= low;
+                self.set_flags_logical16(self.s);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
+    /// STS direct (0x10DF): Store S to memory at DP:addr (16-bit).
+    /// N set if result bit 15 is set. Z set if result is zero. V always cleared.
+    pub(crate) fn op_sts_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                let addr = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = ((self.dp as u16) << 8) | addr;
+                self.state = ExecState::ExecutePage2(opcode, 1);
+            }
+            1 => {
+                bus.write(master, self.temp_addr, (self.s >> 8) as u8);
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.state = ExecState::ExecutePage2(opcode, 2);
+            }
+            2 => {
+                bus.write(master, self.temp_addr, self.s as u8);
+                self.set_flags_logical16(self.s);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
     /// STU direct (0xDF): Store U to memory at DP:addr (16-bit).
     /// N set if result bit 15 is set. Z set if result is zero. V always cleared.
     pub(crate) fn op_stu_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
