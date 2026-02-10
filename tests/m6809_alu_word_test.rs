@@ -147,7 +147,11 @@ fn test_cmpy_immediate_equal() {
 
     let state = sys.get_cpu_state();
     assert_eq!(state.y, 0x1234, "Y should be unchanged");
-    assert_eq!(state.cc & (CcFlag::Z as u8), CcFlag::Z as u8, "Z should be set");
+    assert_eq!(
+        state.cc & (CcFlag::Z as u8),
+        CcFlag::Z as u8,
+        "Z should be set"
+    );
     assert_eq!(state.cc & (CcFlag::N as u8), 0, "N should be clear");
     assert_eq!(state.cc & (CcFlag::C as u8), 0, "C should be clear");
 }
@@ -164,8 +168,16 @@ fn test_cmpy_immediate_less() {
     }
 
     let state = sys.get_cpu_state();
-    assert_eq!(state.cc & (CcFlag::N as u8), CcFlag::N as u8, "N should be set");
-    assert_eq!(state.cc & (CcFlag::C as u8), CcFlag::C as u8, "C should be set (borrow)");
+    assert_eq!(
+        state.cc & (CcFlag::N as u8),
+        CcFlag::N as u8,
+        "N should be set"
+    );
+    assert_eq!(
+        state.cc & (CcFlag::C as u8),
+        CcFlag::C as u8,
+        "C should be set (borrow)"
+    );
     assert_eq!(state.cc & (CcFlag::Z as u8), 0, "Z should be clear");
 }
 
@@ -184,7 +196,11 @@ fn test_cmpy_direct() {
     }
 
     let state = sys.get_cpu_state();
-    assert_eq!(state.cc & (CcFlag::Z as u8), CcFlag::Z as u8, "Z should be set");
+    assert_eq!(
+        state.cc & (CcFlag::Z as u8),
+        CcFlag::Z as u8,
+        "Z should be set"
+    );
 }
 
 #[test]
@@ -202,7 +218,11 @@ fn test_cmpy_extended() {
     }
 
     let state = sys.get_cpu_state();
-    assert_eq!(state.cc & (CcFlag::Z as u8), CcFlag::Z as u8, "Z should be set");
+    assert_eq!(
+        state.cc & (CcFlag::Z as u8),
+        CcFlag::Z as u8,
+        "Z should be set"
+    );
 }
 
 #[test]

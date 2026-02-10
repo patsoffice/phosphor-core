@@ -198,7 +198,11 @@ fn test_ldy_immediate_zero() {
 
     let state = sys.get_cpu_state();
     assert_eq!(state.y, 0x0000);
-    assert_eq!(state.cc & (CcFlag::Z as u8), CcFlag::Z as u8, "Z should be set");
+    assert_eq!(
+        state.cc & (CcFlag::Z as u8),
+        CcFlag::Z as u8,
+        "Z should be set"
+    );
     assert_eq!(state.cc & (CcFlag::N as u8), 0, "N should be clear");
 }
 
@@ -217,7 +221,11 @@ fn test_ldy_direct() {
 
     let state = sys.get_cpu_state();
     assert_eq!(state.y, 0xABCD, "Y should be 0xABCD");
-    assert_eq!(state.cc & (CcFlag::N as u8), CcFlag::N as u8, "N should be set");
+    assert_eq!(
+        state.cc & (CcFlag::N as u8),
+        CcFlag::N as u8,
+        "N should be set"
+    );
     assert_eq!(state.cc & (CcFlag::Z as u8), 0, "Z should be clear");
 }
 
@@ -254,7 +262,11 @@ fn test_sty_direct() {
     assert_eq!(sys.read_ram(0x0030), 0xAB, "High byte stored");
     assert_eq!(sys.read_ram(0x0031), 0xCD, "Low byte stored");
     let state = sys.get_cpu_state();
-    assert_eq!(state.cc & (CcFlag::N as u8), CcFlag::N as u8, "N should be set");
+    assert_eq!(
+        state.cc & (CcFlag::N as u8),
+        CcFlag::N as u8,
+        "N should be set"
+    );
     assert_eq!(state.cc & (CcFlag::Z as u8), 0, "Z should be clear");
 }
 
