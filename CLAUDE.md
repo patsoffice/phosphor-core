@@ -6,6 +6,8 @@
 
 - `cargo build` to compile
 - `cargo test` to run all integration tests
+- `cargo fmt` to format code
+- `cargo clippy` to check code quality
 - All tests must pass before committing
 
 ### Architecture Rules

@@ -12,7 +12,7 @@ A modular emulator framework for retro CPUs, designed for extensibility and educ
 
 **Current Focus:** Motorola 6809 CPU emulation
 
-**Status:** 🔨 Early development (157/280 opcodes implemented, 100% tested)
+**Status:** 🔨 Early development (158/280 opcodes implemented, 100% tested)
 
 ### Features
 
@@ -30,10 +30,10 @@ A modular emulator framework for retro CPUs, designed for extensibility and educ
 - Condition code flag enum (CcFlag) for readable flag manipulation
 - Initial MOS 6502 CPU support (LDA immediate implemented)
 - **New:** Initial Zilog Z80 CPU support (LD A, n implemented)
-- Simple 6809 system with 32KB RAM + 32KB ROM
+- Simple 6809 system with 32KB RAM + 32KB ROM *(moving to separate crate)*
 - DMA arbitration and halt signal support
 - Interrupt framework (NMI, IRQ, FIRQ)
-- Full test suite (127 integration tests)
+- Full test suite (127 integration tests) using direct CPU testing
 
 ## Quick Start
 
@@ -54,15 +54,69 @@ cargo build
 cargo test
 
 # Expected output:
+#   test test_lda_immediate ... ok
+#   test test_ld_a_n ... ok
 #   test test_load_accumulator_immediate ... ok
 #   test test_reset ... ok
 #   test test_store_accumulator_direct ... ok
 #   test test_addd_immediate ... ok
-#   ... (59 tests total)
-#   test result: ok. 127 passed; 0 failed
+#   ... (128 tests total)
+#   test result: ok. 128 passed; 0 failed
 ```
 
 ### Try It Out
+
+#### Direct CPU + Bus Testing (Primary Approach)
+
+```rust
+use phosphor_core::core::{BusMaster, BusMasterComponent};
+use phosphor_core::cpu::m6809::M6809;
+use common::TestBus;
+
+fn main() {
+    let mut cpu = M6809::new();
+    let mut bus = TestBus::new();
+
+    // Load a simple program: LDA #$42, STA $10
+    bus.load(0, &[0x86, 0x42, 0x97, 0x10]);
+
+    // Execute for 5 cycles (enough for both instructions)
+    for _ in 0..5 {
+        cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    }
+
+    // Check results
+    println!("A register: 0x{:02X}", cpu.a);      // 0x42
+    println!("Memory[0x10]: 0x{:02X}", bus.memory[0x10]);  // 0x42
+    println!("PC: 0x{:04X}", cpu.pc);             // 0x0004
+}
+```
+
+#### SimpleSystem Components (Moving to New Crate)
+
+> **Note:** SimpleSystem implementations (Simple6809System, Simple6502System, SimpleZ80System) and their associated testing utilities will be moving to a separate crate in the future. For new development, use the direct CPU + bus pattern shown above.
+
+```rust
+use phosphor_core::machine::simple6809::Simple6809System;
+
+fn main() {
+    let mut sys = Simple6809System::new();
+
+    // Load a simple program: LDA #$42, STA $10
+    sys.load_rom(0, &[0x86, 0x42, 0x97, 0x10]);
+
+    // Execute for 5 cycles (enough for both instructions)
+    for _ in 0..5 {
+        sys.tick();
+    }
+
+    // Check results
+    let state = sys.get_cpu_state();
+    println!("A register: 0x{:02X}", state.a);      // 0x42
+    println!("Memory[0x10]: 0x{:02X}", sys.read_ram(0x10));  // 0x42
+    println!("PC: 0x{:04X}", state.pc);             // 0x0004
+}
+```
 
 ```rust
 use phosphor_core::machine::simple6809::Simple6809System;
@@ -91,16 +145,16 @@ fn main() {
 | Component | Status | Notes |
 |-----------|--------|-------|
 | **Core Framework** | ✅ Complete | Bus trait, component system, arbitration |
-| **M6809 CPU** | ⚠️ Partial | State machine working, 157 instructions |
+| **M6809 CPU** | ⚠️ Partial | State machine working, 158 instructions |
 | **M6502 CPU** | ⚠️ Partial | Initial structure, LDA imm implemented |
 | **Z80 CPU** | ⚠️ Partial | Initial structure, LD A, n implemented |
 | **PIA 6820** | ❌ Placeholder | Stub only |
-| **Simple6809 System** | ✅ Complete | RAM/ROM, testing utilities |
-| **Test Suite** | ✅ Complete | 127 integration tests passing |
+| **Simple6809 System** | ⚠️ Moving | RAM/ROM, testing utilities *(migrating to separate crate)* |
+| **Test Suite** | ✅ Complete | 127 integration tests passing using direct CPU testing |
 
 ### Implemented 6809 Instructions
 
-Currently **157 of ~280** documented 6809 opcodes are implemented (across 3 opcode pages: ~233 on page 0, ~38 on page 1/0x10, ~9 on page 2/0x11):
+Currently **158 of ~280** documented 6809 opcodes are implemented (across 3 opcode pages: ~233 on page 0, ~38 on page 1/0x10, ~9 on page 2/0x11):
 
 | Category | Implemented | Examples |
 | --- | --- | --- |
@@ -228,20 +282,21 @@ phosphor-core/
 │       ├── simplez80.rs            # ✅ Minimal Z80 system
 │       └── mod.rs                  #    Module exports
 ├── tests/
-│   ├── m6502_basic_test.rs         # ✅ 1 basic 6502 test (LDA imm)
-│   ├── z80_basic_test.rs           # ✅ 1 basic Z80 test (LD A, n)
-│   ├── m6809_alu_binary_test.rs    # ✅ 11 ALU tests (add, sub, mul)
-│   ├── m6809_alu_extended_test.rs  # ✅ 6 extended ALU tests
-│   ├── m6809_alu_imm_test.rs       # ✅ 11 ALU immediate tests (cmp, sbc, adc, logical)
-│   ├── m6809_alu_unary_test.rs     # ✅ 6 unary ALU tests (neg, com, clr, inc, dec, tst)
-│   ├── m6809_alu_word_test.rs      # ✅ 11 16-bit ALU tests (addd, subd, cmpx, cmpd, cmpy)
-│   ├── m6809_alu_shift_test.rs     # ✅ 8 shift/rotate tests (asl, asr, lsr, rol, ror)
-│   ├── m6809_branch_test.rs        # ✅ 11 branch/subroutine tests (bra, beq, bsr, jsr, rts, etc.)
-│   ├── m6809_long_branch_test.rs   # ✅ 10 long branch tests (lbeq, lbne, lbhi, lbge, etc.)
-│   ├── m6809_load_store_test.rs    # ✅ 13 load/store tests (lda, ldb, ldd, ldx, ldu, ldy, lds, sta, sty, sts)
-│   ├── m6809_stack_test.rs         # ✅ 1 stack test (pshs, puls)
-│   ├── m6809_transfer_test.rs      # ✅ 3 transfer tests (tfr, exg)
-│   └── m6809_direct_test.rs        # ✅ 34 direct addressing tests
+│   ├── common/mod.rs               # ✅ Direct CPU testing harness
+│   ├── m6502_basic_test.rs         # ✅ 1 basic 6502 test (LDA imm) - Direct CPU testing
+│   ├── z80_basic_test.rs           # ✅ 1 basic Z80 test (LD A, n) - Direct CPU testing
+│   ├── m6809_alu_binary_test.rs    # ✅ 11 ALU tests (add, sub, mul) - Direct CPU testing
+│   ├── m6809_alu_extended_test.rs  # ✅ 6 extended ALU tests - Direct CPU testing
+│   ├── m6809_alu_imm_test.rs       # ✅ 11 ALU immediate tests (cmp, sbc, adc, logical) - Direct CPU testing
+│   ├── m6809_alu_unary_test.rs     # ✅ 6 unary ALU tests (neg, com, clr, inc, dec, tst) - Direct CPU testing
+│   ├── m6809_alu_word_test.rs      # ✅ 11 16-bit ALU tests (addd, subd, cmpx, cmpd, cmpy) - Direct CPU testing
+│   ├── m6809_alu_shift_test.rs     # ✅ 8 shift/rotate tests (asl, asr, lsr, rol, ror) - Direct CPU testing
+│   ├── m6809_branch_test.rs        # ✅ 11 branch/subroutine tests (bra, beq, bsr, jsr, rts, etc.) - Direct CPU testing
+│   ├── m6809_long_branch_test.rs   # ✅ 10 long branch tests (lbeq, lbne, lbhi, lbge, etc.) - Direct CPU testing
+│   ├── m6809_load_store_test.rs    # ✅ 13 load/store tests (lda, ldb, ldd, ldx, ldu, ldy, lds, sta, sty, sts) - Direct CPU testing
+│   ├── m6809_stack_test.rs         # ✅ 1 stack test (pshs, puls) - Direct CPU testing
+│   ├── m6809_transfer_test.rs      # ✅ 3 transfer tests (tfr, exg) - Direct CPU testing
+│   └── m6809_direct_test.rs        # ✅ 34 direct addressing tests - Direct CPU testing
 └── target/                         # Build artifacts (gitignored)
 
 Legend: ✅ Complete | ⚠️ Partial | ❌ Placeholder/Stub
@@ -322,7 +377,40 @@ This separation allows video chips to tick without bus access, while CPUs get ex
 
 ### Using the Emulator
 
-The `Simple6809System` provides a complete testable environment:
+#### Direct CPU + Bus Testing (Primary Approach)
+
+The project uses a **TestBus** pattern for direct CPU testing:
+
+```rust
+use phosphor_core::core::{BusMaster, BusMasterComponent};
+use phosphor_core::cpu::m6809::M6809;
+mod common;
+use common::TestBus;
+
+let mut cpu = M6809::new();
+let mut bus = TestBus::new();
+
+// Load code into memory
+bus.load(0, &[
+    0x86, 0x42,  // LDA #$42
+    0x97, 0x10,  // STA $10
+]);
+
+// Execute cycle-by-cycle
+for cycle in 0..5 {
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    println!("Cycle {}: PC=0x{:04X}", cycle, cpu.pc);
+}
+
+// Verify results
+assert_eq!(cpu.a, 0x42);
+assert_eq!(bus.memory[0x10], 0x42);
+assert_eq!(cpu.pc, 0x04);
+```
+
+#### Legacy SimpleSystem Approach
+
+The `Simple6809System` still provides a complete testable environment:
 
 ```rust
 use phosphor_core::machine::simple6809::Simple6809System;
@@ -377,10 +465,11 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
   - [x] CMPD, CMPY, LDY, STY, LDS, STS (Page 2/0x10 prefix)
 - [x] Long conditional branches (LBRN..LBLE via Page 2/0x10 prefix)
 
-**Progress:** 157/~280 opcodes implemented (56.1%)
+**Progress:** 158/~280 opcodes implemented (56.4%)
 
 ### Phase 2: Core Infrastructure
 
+- [ ] Move SimpleSystem components to separate crate
 - [ ] Interrupt handling (IRQ, FIRQ, NMI)
 - [ ] Reset vector fetch from 0xFFFE/0xFFFF
 - [ ] CWAI and SYNC instructions
@@ -572,10 +661,10 @@ This is an educational emulator project. We welcome contributions!
 
 1. **Adding 6809 Instructions**
 
-   - Add an `op_*` method in the appropriate submodule (`alu/binary.rs`, `alu/word.rs`, `branch.rs`, `load_store.rs`, etc.)
-   - Add the dispatch entry in `src/cpu/m6809/mod.rs::execute_instruction()`
+   - Add an `op_*` method in appropriate submodule (`alu/binary.rs`, `alu/word.rs`, `branch.rs`, `load_store.rs`, etc.)
+   - Add dispatch entry in `src/cpu/m6809/mod.rs::execute_instruction()`
    - Implement cycle-accurate execution (use match on `cycle`)
-   - Add integration test in the matching `tests/m6809_*_test.rs` file
+   - Add integration test in matching `tests/m6809_*_test.rs` file using direct CPU testing
 
    Example (adding a method in `alu.rs`):
 
@@ -617,6 +706,7 @@ This is an educational emulator project. We welcome contributions!
 4. **Testing Guidelines**
 
    - All new instructions MUST have integration tests
+   - Use direct CPU testing pattern (M6809 + TestBus) for new tests
    - Tests should verify registers, memory, PC, and condition codes
    - Use descriptive test names: `test_<instruction>_<addressing_mode>`
    - Include edge cases (zero, negative, overflow)
