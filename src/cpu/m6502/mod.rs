@@ -32,6 +32,7 @@ pub struct M6502 {
     // Internal state
     pub(crate) state: ExecState,
     pub(crate) opcode: u8,
+    #[allow(dead_code)]
     pub(crate) temp_addr: u16,
 }
 
