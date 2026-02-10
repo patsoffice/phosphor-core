@@ -1,56 +1,62 @@
-use phosphor_core::machine::simple6809::Simple6809System;
+use phosphor_core::core::{BusMaster, BusMasterComponent};
+use phosphor_core::cpu::m6809::M6809;
+mod common;
+use common::TestBus;
 
 #[test]
 fn test_tfr_8bit() {
-    let mut sys = Simple6809System::new();
+    let mut cpu = M6809::new();
+    let mut bus = TestBus::new();
     // LDA #$42, TFR A,B
     // TFR op: 1F, operand: 89 (A=8, B=9)
-    sys.load_rom(0, &[0x86, 0x42, 0x1F, 0x89]);
+    bus.load(0, &[0x86, 0x42, 0x1F, 0x89]);
 
-    sys.tick();
-    sys.tick(); // LDA
-    assert_eq!(sys.get_cpu_state().a, 0x42);
-    assert_eq!(sys.get_cpu_state().b, 0x00);
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0)); // LDA
+    assert_eq!(cpu.a, 0x42);
+    assert_eq!(cpu.b, 0x00);
 
-    sys.tick();
-    sys.tick(); // TFR
-    assert_eq!(sys.get_cpu_state().b, 0x42);
-    assert_eq!(sys.get_cpu_state().a, 0x42); // Source unchanged
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0)); // TFR
+    assert_eq!(cpu.b, 0x42);
+    assert_eq!(cpu.a, 0x42); // Source unchanged
 }
 
 #[test]
 fn test_tfr_16bit() {
-    let mut sys = Simple6809System::new();
+    let mut cpu = M6809::new();
+    let mut bus = TestBus::new();
     // LDX #$1234, TFR X,Y
     // TFR op: 1F, operand: 12 (X=1, Y=2)
-    sys.load_rom(0, &[0x8E, 0x12, 0x34, 0x1F, 0x12]);
+    bus.load(0, &[0x8E, 0x12, 0x34, 0x1F, 0x12]);
 
-    sys.tick();
-    sys.tick();
-    sys.tick(); // LDX
-    assert_eq!(sys.get_cpu_state().x, 0x1234);
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0)); // LDX
+    assert_eq!(cpu.x, 0x1234);
 
-    sys.tick();
-    sys.tick(); // TFR
-    assert_eq!(sys.get_cpu_state().y, 0x1234);
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0)); // TFR
+    assert_eq!(cpu.y, 0x1234);
 }
 
 #[test]
 fn test_exg_8bit() {
-    let mut sys = Simple6809System::new();
+    let mut cpu = M6809::new();
+    let mut bus = TestBus::new();
     // LDA #$AA, LDB #$55, EXG A,B
     // EXG op: 1E, operand: 89
-    sys.load_rom(0, &[0x86, 0xAA, 0xC6, 0x55, 0x1E, 0x89]);
+    bus.load(0, &[0x86, 0xAA, 0xC6, 0x55, 0x1E, 0x89]);
 
-    sys.tick();
-    sys.tick(); // LDA
-    sys.tick();
-    sys.tick(); // LDB
-    assert_eq!(sys.get_cpu_state().a, 0xAA);
-    assert_eq!(sys.get_cpu_state().b, 0x55);
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0)); // LDA
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0)); // LDB
+    assert_eq!(cpu.a, 0xAA);
+    assert_eq!(cpu.b, 0x55);
 
-    sys.tick();
-    sys.tick(); // EXG
-    assert_eq!(sys.get_cpu_state().a, 0x55);
-    assert_eq!(sys.get_cpu_state().b, 0xAA);
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0)); // EXG
+    assert_eq!(cpu.a, 0x55);
+    assert_eq!(cpu.b, 0xAA);
 }

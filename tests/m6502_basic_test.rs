@@ -1,20 +1,22 @@
-use phosphor_core::cpu::m6502::StatusFlag;
-use phosphor_core::machine::simple6502::Simple6502System;
+use phosphor_core::core::{BusMaster, BusMasterComponent};
+use phosphor_core::cpu::m6502::{M6502, StatusFlag};
+mod common;
+use common::TestBus;
 
 #[test]
 fn test_lda_immediate() {
-    let mut sys = Simple6502System::new();
+    let mut cpu = M6502::new();
+    let mut bus = TestBus::new();
     // LDA #$42
-    sys.load_program(0, &[0xA9, 0x42]);
+    bus.load(0, &[0xA9, 0x42]);
 
     // Cycle 0: Fetch opcode 0xA9
-    sys.tick();
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     // Cycle 1: Fetch operand 0x42, execute
-    sys.tick();
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
 
-    let state = sys.get_cpu_state();
-    assert_eq!(state.a, 0x42);
-    assert_eq!(state.pc, 2);
-    assert_eq!(state.p & (StatusFlag::Z as u8), 0);
-    assert_eq!(state.p & (StatusFlag::N as u8), 0);
+    assert_eq!(cpu.a, 0x42);
+    assert_eq!(cpu.pc, 2);
+    assert_eq!(cpu.p & (StatusFlag::Z as u8), 0);
+    assert_eq!(cpu.p & (StatusFlag::N as u8), 0);
 }

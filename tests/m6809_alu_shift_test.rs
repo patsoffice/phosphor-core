@@ -1,19 +1,23 @@
+use phosphor_core::core::{BusMaster, BusMasterComponent};
 use phosphor_core::cpu::m6809::CcFlag;
-use phosphor_core::machine::simple6809::Simple6809System;
+use phosphor_core::cpu::m6809::M6809;
+mod common;
+use common::TestBus;
 
 #[test]
 fn test_asl() {
-    let mut sys = Simple6809System::new();
+    let mut cpu = M6809::new();
+    let mut bus = TestBus::new();
     // LDA #$55, ASLA, LDB #$80, ASLB
-    sys.load_rom(0, &[0x86, 0x55, 0x48, 0xC6, 0x80, 0x58]);
+    bus.load(0, &[0x86, 0x55, 0x48, 0xC6, 0x80, 0x58]);
 
-    sys.tick();
-    sys.tick(); // LDA #$55
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0)); // LDA #$55
 
     // ASLA: 0x55 (0101_0101) << 1 = 0xAA (1010_1010), C=0
-    sys.tick();
-    sys.tick();
-    let state = sys.get_cpu_state();
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    let state = &cpu;
     assert_eq!(state.a, 0xAA);
     assert_eq!(
         state.cc & (CcFlag::C as u8),
@@ -33,13 +37,13 @@ fn test_asl() {
         "V should be set (N XOR C)"
     );
 
-    sys.tick();
-    sys.tick(); // LDB #$80
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0)); // LDB #$80
 
     // ASLB: 0x80 (1000_0000) << 1 = 0x00, C=1
-    sys.tick();
-    sys.tick();
-    let state = sys.get_cpu_state();
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    let state = &cpu;
     assert_eq!(state.b, 0x00);
     assert_eq!(
         state.cc & (CcFlag::C as u8),
@@ -62,17 +66,18 @@ fn test_asl() {
 
 #[test]
 fn test_asr() {
-    let mut sys = Simple6809System::new();
+    let mut cpu = M6809::new();
+    let mut bus = TestBus::new();
     // LDA #$81, ASRA, LDB #$40, ASRB
-    sys.load_rom(0, &[0x86, 0x81, 0x47, 0xC6, 0x40, 0x57]);
+    bus.load(0, &[0x86, 0x81, 0x47, 0xC6, 0x40, 0x57]);
 
-    sys.tick();
-    sys.tick(); // LDA #$81
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0)); // LDA #$81
 
     // ASRA: 0x81 (1000_0001) >> 1 = 0xC0 (1100_0000), sign preserved, C=1
-    sys.tick();
-    sys.tick();
-    let state = sys.get_cpu_state();
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    let state = &cpu;
     assert_eq!(state.a, 0xC0);
     assert_eq!(
         state.cc & (CcFlag::C as u8),
@@ -86,13 +91,13 @@ fn test_asr() {
     );
     assert_eq!(state.cc & (CcFlag::Z as u8), 0, "Z should be clear");
 
-    sys.tick();
-    sys.tick(); // LDB #$40
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0)); // LDB #$40
 
     // ASRB: 0x40 (0100_0000) >> 1 = 0x20 (0010_0000), C=0
-    sys.tick();
-    sys.tick();
-    let state = sys.get_cpu_state();
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    let state = &cpu;
     assert_eq!(state.b, 0x20);
     assert_eq!(
         state.cc & (CcFlag::C as u8),
@@ -105,17 +110,18 @@ fn test_asr() {
 
 #[test]
 fn test_lsr() {
-    let mut sys = Simple6809System::new();
+    let mut cpu = M6809::new();
+    let mut bus = TestBus::new();
     // LDA #$01, LSRA, LDB #$80, LSRB
-    sys.load_rom(0, &[0x86, 0x01, 0x44, 0xC6, 0x80, 0x54]);
+    bus.load(0, &[0x86, 0x01, 0x44, 0xC6, 0x80, 0x54]);
 
-    sys.tick();
-    sys.tick(); // LDA #$01
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0)); // LDA #$01
 
     // LSRA: 0x01 >> 1 = 0x00, C=1
-    sys.tick();
-    sys.tick();
-    let state = sys.get_cpu_state();
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    let state = &cpu;
     assert_eq!(state.a, 0x00);
     assert_eq!(
         state.cc & (CcFlag::C as u8),
@@ -129,13 +135,13 @@ fn test_lsr() {
     );
     assert_eq!(state.cc & (CcFlag::N as u8), 0, "N always clear for LSR");
 
-    sys.tick();
-    sys.tick(); // LDB #$80
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0)); // LDB #$80
 
     // LSRB: 0x80 >> 1 = 0x40, C=0
-    sys.tick();
-    sys.tick();
-    let state = sys.get_cpu_state();
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    let state = &cpu;
     assert_eq!(state.b, 0x40);
     assert_eq!(
         state.cc & (CcFlag::C as u8),
@@ -148,18 +154,19 @@ fn test_lsr() {
 
 #[test]
 fn test_rol() {
-    let mut sys = Simple6809System::new();
+    let mut cpu = M6809::new();
+    let mut bus = TestBus::new();
     // LDA #$80, ROLA (C starts clear from reset)
-    sys.load_rom(0, &[0x86, 0x80, 0x49]);
+    bus.load(0, &[0x86, 0x80, 0x49]);
 
-    sys.tick();
-    sys.tick(); // LDA #$80
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0)); // LDA #$80
 
     // ROLA: 0x80 rotated left, old C=0 enters bit 0
     // Result: 0x00, C=1 (old bit 7)
-    sys.tick();
-    sys.tick();
-    let state = sys.get_cpu_state();
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    let state = &cpu;
     assert_eq!(state.a, 0x00);
     assert_eq!(
         state.cc & (CcFlag::C as u8),
@@ -176,24 +183,25 @@ fn test_rol() {
 
 #[test]
 fn test_rol_with_carry() {
-    let mut sys = Simple6809System::new();
+    let mut cpu = M6809::new();
+    let mut bus = TestBus::new();
     // LDA #$01, ASLA (to set carry since 0x01<<1=0x02, C=0... need different approach)
     // LDA #$80, ASLA (sets C=1), LDA #$55, ROLA
-    sys.load_rom(0, &[0x86, 0x80, 0x48, 0x86, 0x55, 0x49]);
+    bus.load(0, &[0x86, 0x80, 0x48, 0x86, 0x55, 0x49]);
 
-    sys.tick();
-    sys.tick(); // LDA #$80
-    sys.tick();
-    sys.tick(); // ASLA: 0x80 << 1 = 0x00, C=1
-    sys.tick();
-    sys.tick(); // LDA #$55
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0)); // LDA #$80
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0)); // ASLA: 0x80 << 1 = 0x00, C=1
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0)); // LDA #$55
     // Now C=1 (still set from ASLA, LDA doesn't affect C)
 
     // ROLA: 0x55 (0101_0101) rotated left with C=1
     // Result: 0xAB (1010_1011), C=0 (old bit 7 of 0x55 was 0)
-    sys.tick();
-    sys.tick();
-    let state = sys.get_cpu_state();
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    let state = &cpu;
     assert_eq!(state.a, 0xAB);
     assert_eq!(
         state.cc & (CcFlag::C as u8),
@@ -209,18 +217,19 @@ fn test_rol_with_carry() {
 
 #[test]
 fn test_ror() {
-    let mut sys = Simple6809System::new();
+    let mut cpu = M6809::new();
+    let mut bus = TestBus::new();
     // LDA #$01, RORA (C starts clear from reset)
-    sys.load_rom(0, &[0x86, 0x01, 0x46]);
+    bus.load(0, &[0x86, 0x01, 0x46]);
 
-    sys.tick();
-    sys.tick(); // LDA #$01
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0)); // LDA #$01
 
     // RORA: 0x01 rotated right, old C=0 enters bit 7
     // Result: 0x00, C=1 (old bit 0)
-    sys.tick();
-    sys.tick();
-    let state = sys.get_cpu_state();
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    let state = &cpu;
     assert_eq!(state.a, 0x00);
     assert_eq!(
         state.cc & (CcFlag::C as u8),
@@ -241,22 +250,23 @@ fn test_ror() {
 
 #[test]
 fn test_ror_with_carry() {
-    let mut sys = Simple6809System::new();
+    let mut cpu = M6809::new();
+    let mut bus = TestBus::new();
     // LDA #$01, LSRA (sets C=1, A=0x00), LDB #$40, RORB
-    sys.load_rom(0, &[0x86, 0x01, 0x44, 0xC6, 0x40, 0x56]);
+    bus.load(0, &[0x86, 0x01, 0x44, 0xC6, 0x40, 0x56]);
 
-    sys.tick();
-    sys.tick(); // LDA #$01
-    sys.tick();
-    sys.tick(); // LSRA: 0x01 >> 1 = 0x00, C=1
-    sys.tick();
-    sys.tick(); // LDB #$40
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0)); // LDA #$01
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0)); // LSRA: 0x01 >> 1 = 0x00, C=1
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0)); // LDB #$40
 
     // RORB: 0x40 (0100_0000) rotated right with C=1
     // Result: 0xA0 (1010_0000), C=0 (old bit 0 of 0x40 was 0)
-    sys.tick();
-    sys.tick();
-    let state = sys.get_cpu_state();
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    let state = &cpu;
     assert_eq!(state.b, 0xA0);
     assert_eq!(
         state.cc & (CcFlag::C as u8),
@@ -273,17 +283,18 @@ fn test_ror_with_carry() {
 
 #[test]
 fn test_asr_sign_extension() {
-    let mut sys = Simple6809System::new();
+    let mut cpu = M6809::new();
+    let mut bus = TestBus::new();
     // LDA #$FF, ASRA — shifting -1 right should stay -1
-    sys.load_rom(0, &[0x86, 0xFF, 0x47]);
+    bus.load(0, &[0x86, 0xFF, 0x47]);
 
-    sys.tick();
-    sys.tick(); // LDA #$FF
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0)); // LDA #$FF
 
     // ASRA: 0xFF (1111_1111) >> 1 = 0xFF (sign extended), C=1
-    sys.tick();
-    sys.tick();
-    let state = sys.get_cpu_state();
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    let state = &cpu;
     assert_eq!(
         state.a, 0xFF,
         "ASR of 0xFF should remain 0xFF (sign extension)"
