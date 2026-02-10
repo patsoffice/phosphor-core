@@ -1,14 +1,18 @@
-use phosphor_core::machine::simple6809::Simple6809System;
+use phosphor_core::core::{BusMaster, BusMasterComponent};
+use phosphor_core::cpu::m6809::M6809;
+mod common;
+use common::TestBus;
 
 #[test]
 fn test_pshs_puls_all() {
-    let mut sys = Simple6809System::new();
+    let mut cpu = M6809::new();
+    let mut bus = TestBus::new();
     // LDS #$1000
     // LDA #$AA, LDB #$BB, LDX #$1234
     // PSHS A,B,X (Mask: X=bit4, B=bit2, A=bit1 -> 00010110 = 0x16)
     // CLRA, CLRB, LDX #$0000
     // PULS A,B,X
-    sys.load_rom(
+    bus.load(
         0,
         &[
             // Setup S using U and TFR
@@ -31,50 +35,50 @@ fn test_pshs_puls_all() {
     // Execute setup
     // LDU(3) + TFR(2) + LDA(2) + LDB(2) + LDX(3) = 12 cycles
     for _ in 0..12 {
-        sys.tick();
+        cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     }
 
     // Check state before PSHS
-    assert_eq!(sys.get_cpu_state().s, 0x1000);
-    assert_eq!(sys.get_cpu_state().a, 0xAA);
-    assert_eq!(sys.get_cpu_state().x, 0x1234);
+    assert_eq!(cpu.s, 0x1000);
+    assert_eq!(cpu.a, 0xAA);
+    assert_eq!(cpu.x, 0x1234);
 
     // Execute PSHS
     // PSHS A,B,X:
     // Implementation takes 7 cycles (Fetch + ReadMask + 4 pushes + DoneCheck)
     for _ in 0..7 {
-        sys.tick();
+        cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     }
 
     // S should be 0x1000 - 4 = 0x0FFC
-    assert_eq!(sys.get_cpu_state().s, 0x0FFC);
+    assert_eq!(cpu.s, 0x0FFC);
     // Memory check:
     // 0x0FFF: X Low (34)
     // 0x0FFE: X High (12)
     // 0x0FFD: B (BB)
     // 0x0FFC: A (AA)
-    assert_eq!(sys.read_ram(0x0FFF), 0x34);
-    assert_eq!(sys.read_ram(0x0FFE), 0x12);
-    assert_eq!(sys.read_ram(0x0FFD), 0xBB);
-    assert_eq!(sys.read_ram(0x0FFC), 0xAA);
+    assert_eq!(bus.memory[0x0FFF], 0x34);
+    assert_eq!(bus.memory[0x0FFE], 0x12);
+    assert_eq!(bus.memory[0x0FFD], 0xBB);
+    assert_eq!(bus.memory[0x0FFC], 0xAA);
 
     // Execute clears
     // CLRA(2) + CLRB(2) + LDX(3) = 7 cycles
     for _ in 0..7 {
-        sys.tick();
+        cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     }
 
-    assert_eq!(sys.get_cpu_state().a, 0x00);
-    assert_eq!(sys.get_cpu_state().b, 0x00);
-    assert_eq!(sys.get_cpu_state().x, 0x0000);
+    assert_eq!(cpu.a, 0x00);
+    assert_eq!(cpu.b, 0x00);
+    assert_eq!(cpu.x, 0x0000);
 
     // Execute PULS (7 cycles)
     for _ in 0..7 {
-        sys.tick();
+        cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     }
 
-    assert_eq!(sys.get_cpu_state().s, 0x1000);
-    assert_eq!(sys.get_cpu_state().a, 0xAA);
-    assert_eq!(sys.get_cpu_state().b, 0xBB);
-    assert_eq!(sys.get_cpu_state().x, 0x1234);
+    assert_eq!(cpu.s, 0x1000);
+    assert_eq!(cpu.a, 0xAA);
+    assert_eq!(cpu.b, 0xBB);
+    assert_eq!(cpu.x, 0x1234);
 }
