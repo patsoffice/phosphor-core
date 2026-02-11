@@ -1,11 +1,14 @@
 mod load_store;
 
 use crate::core::{
-    Bus, BusMaster,
     bus::InterruptState,
     component::{BusMasterComponent, Component},
+    Bus, BusMaster,
 };
-use crate::cpu::Cpu;
+use crate::cpu::{
+    state::{CpuStateTrait, M6502State},
+    Cpu,
+};
 
 #[repr(u8)]
 #[derive(Copy, Clone, Debug)]
@@ -124,5 +127,20 @@ impl Cpu for M6502 {
 
     fn is_sleeping(&self) -> bool {
         false
+    }
+}
+
+impl CpuStateTrait for M6502 {
+    type Snapshot = M6502State;
+
+    fn snapshot(&self) -> M6502State {
+        M6502State {
+            a: self.a,
+            x: self.x,
+            y: self.y,
+            pc: self.pc,
+            sp: self.sp,
+            p: self.p,
+        }
     }
 }

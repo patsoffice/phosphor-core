@@ -5,11 +5,14 @@ mod stack;
 mod transfer;
 
 use crate::core::{
-    Bus, BusMaster,
     bus::InterruptState,
     component::{BusMasterComponent, Component},
+    Bus, BusMaster,
 };
-use crate::cpu::Cpu;
+use crate::cpu::{
+    state::{CpuStateTrait, M6809State},
+    Cpu,
+};
 
 #[repr(u8)]
 #[derive(Copy, Clone, Debug)]
@@ -399,5 +402,23 @@ impl Cpu for M6809 {
 
     fn is_sleeping(&self) -> bool {
         matches!(self.state, ExecState::Halted { .. })
+    }
+}
+
+impl CpuStateTrait for M6809 {
+    type Snapshot = M6809State;
+
+    fn snapshot(&self) -> M6809State {
+        M6809State {
+            a: self.a,
+            b: self.b,
+            dp: self.dp,
+            x: self.x,
+            y: self.y,
+            u: self.u,
+            s: self.s,
+            pc: self.pc,
+            cc: self.cc,
+        }
     }
 }

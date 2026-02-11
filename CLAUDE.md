@@ -4,18 +4,31 @@
 
 ### Build & Test
 
-- `cargo build` to compile
-- `cargo test` to run all integration tests
+```bash
+# Build entire workspace
+cargo build
+
+# Build specific crate
+cargo build --package phosphor-core
+cargo build --package phosphor-machines
+
+# Run all tests
+cargo test
+
+# Run specific test category
+cargo test m6809_alu_shift_test
+```
+
 - `cargo fmt` to format code
 - `cargo clippy` to check code quality
 - All tests must pass before committing
 
 ### Architecture Rules
 
-- CPU instructions go in `src/cpu/m6809/alu.rs` (ALU ops) or `load_store.rs` (load/store)
-- Opcode dispatch entries go in `src/cpu/m6809/mod.rs` `execute_instruction()`
+- CPU instructions go in `core/src/cpu/m6809/alu.rs` (ALU ops) or `load_store.rs` (load/store)
+- Opcode dispatch entries go in `core/src/cpu/m6809/mod.rs` `execute_instruction()`
 - Inherent-mode instructions use `if cycle == 0 { ... }` pattern
-- Immediate-mode instructions use the `alu_imm()` helper
+- Immediate-mode instructions use `alu_imm()` helper
 - Always transition to `ExecState::Fetch` when instruction completes
 
 ### Flag Conventions

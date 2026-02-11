@@ -1,7 +1,7 @@
 use crate::core::component::BusMasterComponent;
 
 /// Generic CPU interface
-pub trait Cpu: BusMasterComponent {
+pub trait Cpu: BusMasterComponent + CpuStateTrait {
     /// Reset vector fetch
     fn reset(&mut self);
 
@@ -11,6 +11,10 @@ pub trait Cpu: BusMasterComponent {
     /// Query if CPU is halted internally (CWAI, WAI, STOP instruction)
     fn is_sleeping(&self) -> bool;
 }
+
+// Re-export state types
+pub mod state;
+pub use state::{CpuStateTrait, M6502State, M6809State, Z80State};
 
 // Re-export specific CPUs
 pub mod m6809;

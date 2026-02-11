@@ -1,23 +1,10 @@
-use crate::core::{Bus, BusMaster, bus::InterruptState};
-use crate::cpu::z80::Z80;
+use phosphor_core::core::{bus::InterruptState, Bus, BusMaster};
+use phosphor_core::cpu::{state::Z80State, z80::Z80, CpuStateTrait};
 
 pub struct SimpleZ80System {
     pub cpu: Z80,
     ram: [u8; 0x10000], // 64KB RAM
     clock: u64,
-}
-
-pub struct CpuState {
-    pub a: u8,
-    pub f: u8,
-    pub b: u8,
-    pub c: u8,
-    pub d: u8,
-    pub e: u8,
-    pub h: u8,
-    pub l: u8,
-    pub sp: u16,
-    pub pc: u16,
 }
 
 impl SimpleZ80System {
@@ -44,19 +31,8 @@ impl SimpleZ80System {
         }
     }
 
-    pub fn get_cpu_state(&self) -> CpuState {
-        CpuState {
-            a: self.cpu.a,
-            f: self.cpu.f,
-            b: self.cpu.b,
-            c: self.cpu.c,
-            d: self.cpu.d,
-            e: self.cpu.e,
-            h: self.cpu.h,
-            l: self.cpu.l,
-            sp: self.cpu.sp,
-            pc: self.cpu.pc,
-        }
+    pub fn get_cpu_state(&self) -> Z80State {
+        self.cpu.snapshot()
     }
 }
 

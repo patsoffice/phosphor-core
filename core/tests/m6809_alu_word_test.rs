@@ -1,5 +1,5 @@
 use phosphor_core::cpu::m6809::CcFlag;
-use phosphor_core::machine::simple6809::Simple6809System;
+use phosphor_machines::simple6809::Simple6809System;
 
 #[test]
 fn test_addd_immediate() {

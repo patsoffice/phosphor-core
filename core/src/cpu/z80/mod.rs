@@ -1,11 +1,14 @@
 mod load_store;
 
 use crate::core::{
-    Bus, BusMaster,
     bus::InterruptState,
     component::{BusMasterComponent, Component},
+    Bus, BusMaster,
 };
-use crate::cpu::Cpu;
+use crate::cpu::{
+    state::{CpuStateTrait, Z80State},
+    Cpu,
+};
 
 #[repr(u8)]
 #[derive(Copy, Clone, Debug)]
@@ -124,5 +127,24 @@ impl Cpu for Z80 {
 
     fn is_sleeping(&self) -> bool {
         false
+    }
+}
+
+impl CpuStateTrait for Z80 {
+    type Snapshot = Z80State;
+
+    fn snapshot(&self) -> Z80State {
+        Z80State {
+            a: self.a,
+            f: self.f,
+            b: self.b,
+            c: self.c,
+            d: self.d,
+            e: self.e,
+            h: self.h,
+            l: self.l,
+            sp: self.sp,
+            pc: self.pc,
+        }
     }
 }

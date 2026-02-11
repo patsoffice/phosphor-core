@@ -19,18 +19,30 @@ This document provides essential information for AI agents and automated tools w
 
 ```
 phosphor-core/
-├── src/
-│   ├── core/           # Core abstractions (Bus, Component traits)
-│   ├── cpu/            # CPU implementations (m6809/, m6502/, z80/)
-│   ├── device/         # Peripheral devices (PIA 6820 stub)
-│   ├── machine/        # Complete systems (Simple6809System, etc.)
-│   └── lib.rs         # Library exports + prelude
-├── tests/             # Integration tests (128 total)
-│   ├── common/mod.rs   # TestBus harness for direct CPU testing
-│   └── m*_test.rs     # CPU-specific test files
-├── CLAUDE.md         # Development guidelines (REQUIRED READING)
-├── README.md          # Project documentation
-└── AGENTS.md          # This file - agent guidelines
+├── Cargo.toml              # [workspace] members = ["core", "machines"]
+├── core/                   # phosphor-core crate
+│   ├── src/
+│   │   ├── core/           # Core abstractions (Bus, Component traits)
+│   │   ├── cpu/            # CPU implementations (m6809/, m6502/, z80/)
+│   │   │   ├── state.rs     # CpuStateTrait + state structs
+│   │   │   ├── m6809/      # M6809 implementation
+│   │   │   ├── m6502/       # M6502 implementation
+│   │   │   └── z80/         # Z80 implementation
+│   │   └── device/         # Peripheral devices (PIA 6820 stub)
+│   │   └── lib.rs         # Library exports + prelude
+│   └── tests/             # Integration tests (126 total)
+│       ├── common/mod.rs   # TestBus harness for direct CPU testing
+│       └── m*_test.rs     # CPU-specific test files
+├── machines/               # phosphor-machines crate
+│   ├── src/
+│   │   ├── lib.rs         # Exports Simple6809System, Simple6502System, SimpleZ80System
+│   │   ├── simple6809.rs   # M6809 system implementation
+│   │   ├── simple6502.rs   # M6502 system implementation
+│   │   └── simplez80.rs    # Z80 system implementation
+│   └── Cargo.toml         # Machines crate manifest
+├── CLAUDE.md             # Development guidelines (REQUIRED READING)
+├── README.md              # Project documentation
+└── AGENTS.md              # This file - agent guidelines
 ```
 
 ### Critical Development Rules
@@ -38,8 +50,8 @@ phosphor-core/
 These are **non-negotiable** development guidelines from CLAUDE.md:
 
 #### Architecture Rules
-- **CPU instructions** → `src/cpu/m6809/alu.rs` (ALU ops) or `load_store.rs` (load/store)
-- **Opcode dispatch** → `src/cpu/m6809/mod.rs` `execute_instruction()`
+- **CPU instructions** → `core/src/cpu/m6809/alu.rs` (ALU ops) or `load_store.rs` (load/store)
+- **Opcode dispatch** → `core/src/cpu/m6809/mod.rs` `execute_instruction()`
 - **Inherent-mode** → `if cycle == 0 { ... }` pattern
 - **Immediate-mode** → use `alu_imm()` helper
 - **Always** → transition to `ExecState::Fetch` when instruction completes
@@ -54,9 +66,37 @@ These are **non-negotiable** development guidelines from CLAUDE.md:
   - `set_flags_shift()` for shift/rotate
   - V flag for shift/rotate = N XOR C (post-operation)
 
+### Workspace Development Guidelines
+
+#### Building Workspace
+```bash
+# Build entire workspace
+cargo build
+
+# Build specific crate
+cargo build --package phosphor-core
+cargo build --package phosphor-machines
+
+# Run all tests
+cargo test
+
+# Run specific test category
+cargo test m6809_alu_shift_test
+```
+
+#### Cross-Crate Dependencies
+- **Core crate** can depend on machines for testing (dev-dependencies)
+- **Machines crate** depends on core for CPU implementations
+- **Never** create circular dependencies
+
+#### File Organization
+- **Core functionality** → `core/src/` (CPU implementations, abstractions, devices)
+- **System implementations** → `machines/src/` (Simple*System implementations)
+- **Tests** → `core/tests/` for CPU tests, `machines/tests/` for system tests
+
 #### Testing Requirements
 - **Every new instruction** → MUST have integration tests
-- **Tests go in** → `tests/m6809_*_test.rs` (grouped by category)
+- **Tests go in** → `core/tests/m6809_*_test.rs` (grouped by category)
 - **Must test** → both A and B register variants
 - **Must include** → edge cases: zero, overflow, sign boundary (0x7F/0x80), carry propagation
 - **Assertions** → use `CcFlag::X as u8`, not raw hex

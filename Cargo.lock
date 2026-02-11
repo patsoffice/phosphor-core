@@ -5,3 +5,13 @@ version = 4
 [[package]]
 name = "phosphor-core"
 version = "0.1.0"
+dependencies = [
+ "phosphor-machines",
+]
+
+[[package]]
+name = "phosphor-machines"
+version = "0.1.0"
+dependencies = [
+ "phosphor-core",
+]

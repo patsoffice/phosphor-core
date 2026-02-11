@@ -1,4 +1,4 @@
-use super::{ExecState, M6502, StatusFlag};
+use super::{ExecState, StatusFlag, M6502};
 use crate::core::{Bus, BusMaster};
 
 impl M6502 {

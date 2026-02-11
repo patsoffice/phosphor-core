@@ -1,0 +1,11 @@
+[package]
+name = "phosphor-core"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "phosphor_core"
+path = "src/lib.rs"
+
+[dev-dependencies]
+phosphor-machines = { path = "../machines" }

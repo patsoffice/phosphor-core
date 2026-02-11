@@ -1,4 +1,4 @@
-use phosphor_core::core::{Bus, BusMaster, bus::InterruptState};
+use phosphor_core::core::{bus::InterruptState, Bus, BusMaster};
 
 /// Minimal bus for testing: flat 64KB read/write memory, no peripherals.
 pub struct TestBus {

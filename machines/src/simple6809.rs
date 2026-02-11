@@ -1,6 +1,7 @@
-use crate::core::{Bus, BusMaster, bus::InterruptState};
-use crate::cpu::m6809::M6809;
-use crate::device::pia6820::Pia6820;
+use phosphor_core::core::{bus::InterruptState, Bus, BusMaster};
+use phosphor_core::cpu::state::M6809State;
+use phosphor_core::cpu::{m6809::M6809, CpuStateTrait};
+use phosphor_core::device::pia6820::Pia6820;
 
 pub struct Simple6809System {
     #[allow(dead_code)]
@@ -63,18 +64,8 @@ impl Simple6809System {
     }
 
     /// Get a copy of the current CPU state for testing/debugging
-    pub fn get_cpu_state(&self) -> CpuState {
-        CpuState {
-            a: self.cpu.a,
-            b: self.cpu.b,
-            dp: self.cpu.dp,
-            x: self.cpu.x,
-            y: self.cpu.y,
-            u: self.cpu.u,
-            s: self.cpu.s,
-            pc: self.cpu.pc,
-            cc: self.cpu.cc,
-        }
+    pub fn get_cpu_state(&self) -> M6809State {
+        self.cpu.snapshot()
     }
 
     /// Set the CPU stack pointer (S register) for testing
@@ -112,19 +103,6 @@ impl Simple6809System {
             self.ram[addr] = data;
         }
     }
-}
-
-/// CPU state snapshot for testing
-pub struct CpuState {
-    pub a: u8,
-    pub b: u8,
-    pub dp: u8,
-    pub x: u16,
-    pub y: u16,
-    pub u: u16,
-    pub s: u16,
-    pub pc: u16,
-    pub cc: u8,
 }
 
 impl Bus for Simple6809System {

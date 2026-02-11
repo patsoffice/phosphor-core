@@ -1,19 +1,11 @@
-use crate::core::{Bus, BusMaster, bus::InterruptState};
-use crate::cpu::m6502::M6502;
+use phosphor_core::core::{bus::InterruptState, Bus, BusMaster};
+use phosphor_core::cpu::state::M6502State;
+use phosphor_core::cpu::{m6502::M6502, CpuStateTrait};
 
 pub struct Simple6502System {
     pub cpu: M6502,
     ram: [u8; 0x10000], // 64KB RAM
     clock: u64,
-}
-
-pub struct CpuState {
-    pub a: u8,
-    pub x: u8,
-    pub y: u8,
-    pub pc: u16,
-    pub sp: u8,
-    pub p: u8,
 }
 
 impl Simple6502System {
@@ -40,15 +32,8 @@ impl Simple6502System {
         }
     }
 
-    pub fn get_cpu_state(&self) -> CpuState {
-        CpuState {
-            a: self.cpu.a,
-            x: self.cpu.x,
-            y: self.cpu.y,
-            pc: self.cpu.pc,
-            sp: self.cpu.sp,
-            p: self.cpu.p,
-        }
+    pub fn get_cpu_state(&self) -> M6502State {
+        self.cpu.snapshot()
     }
 }
 

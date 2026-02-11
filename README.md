@@ -12,7 +12,7 @@ A modular emulator framework for retro CPUs, designed for extensibility and educ
 
 **Current Focus:** Motorola 6809 CPU emulation
 
-**Status:** 🔨 Early development (158/280 opcodes implemented, 100% tested)
+**Status:** 🔨 Early development (158/280 opcodes implemented, 126+ tests passing)
 
 ### Features
 
@@ -71,6 +71,7 @@ cargo test
 ```rust
 use phosphor_core::core::{BusMaster, BusMasterComponent};
 use phosphor_core::cpu::m6809::M6809;
+mod common;
 use common::TestBus;
 
 fn main() {
@@ -92,12 +93,16 @@ fn main() {
 }
 ```
 
-#### SimpleSystem Components (Moving to New Crate)
-
-> **Note:** SimpleSystem implementations (Simple6809System, Simple6502System, SimpleZ80System) and their associated testing utilities will be moving to a separate crate in the future. For new development, use the direct CPU + bus pattern shown above.
+#### Machine Systems
 
 ```rust
-use phosphor_core::machine::simple6809::Simple6809System;
+use phosphor_machines::Simple6809System;
+
+fn main() {
+    let mut system = Simple6809System::new();
+    // ... system-level operations
+}
+```
 
 fn main() {
     let mut sys = Simple6809System::new();
@@ -191,6 +196,29 @@ Currently **1 of ~1582** documented Z80 opcodes are implemented:
 | --- | --- | --- |
 | Load/Store | 1 | LD A, n |
 
+## Workspace Architecture
+
+This project uses a **workspace structure** to clearly separate reusable components from system implementations:
+
+### Core Crate (`phosphor-core`)
+Contains all reusable components that can be used across different systems:
+- CPU implementations (M6809, M6502, Z80)
+- Bus and component abstractions  
+- Peripheral device interfaces
+- CPU state management and testing utilities
+
+### Machines Crate (`phosphor-machines`)
+Contains complete system implementations that wire core components together:
+- Simple6809System (M6809 + RAM/ROM + PIA)
+- Simple6502System (M6502 + flat memory)
+- SimpleZ80System (Z80 + flat memory)
+
+### Benefits
+- **Clear separation**: Components vs. system-specific logic
+- **Reusable core**: Multiple machines can share same CPU implementations
+- **Independent development**: Core and machines can evolve separately
+- **Clean testing**: CPU tests live in core crate, system tests in machines
+
 ## Architecture
 
 ### Core Modules
@@ -207,11 +235,11 @@ The emulator is organized into four main layers:
   - `Component` trait for clocked devices
   - `BusMasterComponent` trait for devices needing bus access
 
-#### 2. `cpu/` - CPU Implementations ⚠️
+#### 2. `cpu/` - CPU Implementations
 
 - **`m6809/`** ✅ - Motorola 6809 (directory module, split by instruction category)
   - `mod.rs` - Struct, state machine, opcode dispatch table
-  - `alu/` - ALU instructions split into `binary`, `unary`, `shift`, and `word` modules
+  - `alu/` - ALU instructions split into `binary`, `unary`, `shift` and `word` modules
   - `branch.rs` - Branch instructions (BRA, BEQ, BNE, etc.)
   - `load_store.rs` - Load/store instructions (immediate + direct modes)
   - All 8 registers (A, B, X, Y, U, S, PC, CC)
@@ -225,81 +253,77 @@ The emulator is organized into four main layers:
   - `mod.rs` - Struct, state machine
   - `load_store.rs` - Load/store instructions
   - Initial implementation (LD A, n only)
-- **`mod.rs`** - Generic `Cpu` trait definition
+- **`mod.rs`** - Generic `Cpu` trait definition with `CpuStateTrait`
+- **`state.rs`** ✅ - NEW: CpuStateTrait + M6809State/M6502State/Z80State structs
 
 #### 3. `device/` - Peripheral Devices ❌
 
 - **`pia6820.rs`** - PIA (Peripheral Interface Adapter) stub only
 
-#### 4. `machine/` - Complete System Implementations ✅
+#### 4. `machines/` - Complete System Implementations ✅
+
+Located in separate `phosphor-machines` crate for clean component/system separation.
 
 - **`simple6809.rs`** - Minimal testable 6809 system
   - 32KB RAM (0x0000-0x7FFF)
   - 32KB ROM (0x8000-0xFFFF)
-  - **`simplez80.rs`** - Minimal testable Z80 system
+  - PIA6820 peripheral support
+- **`simple6502.rs`** - Minimal testable 6502 system
+  - 64KB flat memory space
+- **`simplez80.rs`** - Minimal testable Z80 system
+  - 64KB flat memory space
   - DMA arbitration support
-  - Testing utilities (load_rom, get_cpu_state, read/write_ram)
+  - Testing utilities (load_program, get_cpu_state)
 
 ## Project Structure
 
 ```text
 phosphor-core/
-├── Cargo.toml                      # Project manifest
-├── README.md                       # This file
-├── src/
-│   ├── lib.rs                      # ✅ Library root, exports prelude
-│   ├── main.rs                     # ⚠️  Empty placeholder
-│   ├── core/                       # ✅ Core abstractions (complete)
-│   │   ├── bus.rs                  #    Bus trait, BusMaster, InterruptState
-│   │   ├── component.rs            #    Component traits
-│   │   └── mod.rs                  #    Module exports
-│   ├── cpu/                        # ⚠️  CPU implementations (partial)
-│   │   ├── m6809/                  # ✅ Working M6809 (157 opcodes)
-│   │   │   ├── mod.rs              #    Struct, state machine, dispatch
-│   │   │   ├── alu.rs              #    ALU helpers and module exports
-│   │   │   ├── alu/                #    ALU instruction modules
-│   │   │   │   ├── binary.rs       #    Binary ops (ADD, SUB, MUL, etc.)
-│   │   │   │   ├── shift.rs        #    Shift/Rotate ops
-│   │   │   │   ├── unary.rs        #    Unary ops (NEG, COM, etc.)
-│   │   │   │   └── word.rs         #    16-bit ops (ADDD, CMPX, LDD, etc.)
-│   │   │   ├── branch.rs           #    Branch/subroutine ops (BRA, BEQ, BSR, JSR, RTS, etc.)
-│   │   │   ├── load_store.rs       #    LDA, LDB, STA
-│   │   │   ├── stack.rs            #    Stack ops (PSHS, PULS, PSHU, PULU)
-│   │   │   └── transfer.rs         #    Transfer/exchange (TFR, EXG)
-│   │   ├── m6502/                  # ⚠️  Initial implementation
-│   │   │   ├── mod.rs              #    Struct, state machine
-│   │   │   └── load_store.rs       #    LDA immediate
-│   │   ├── z80/                    # ⚠️  Initial implementation
-│   │   │   ├── mod.rs              #    Struct, state machine
-│   │   │   └── load_store.rs       #    LD A, n
-│   │   └── mod.rs                  # ✅ Cpu trait definition
-│   ├── device/                     # ❌ Peripheral devices (stubs)
-│   │   ├── pia6820.rs              # ❌ PIA stub
-│   │   └── mod.rs                  #    Module exports
-│   └── machine/                    # ✅ System implementations (complete)
-│       ├── simple6502.rs           # ✅ Minimal 6502 system
-│       ├── simple6809.rs           # ✅ Minimal 6809 system with RAM/ROM
-│       ├── simplez80.rs            # ✅ Minimal Z80 system
-│       └── mod.rs                  #    Module exports
-├── tests/
-│   ├── common/mod.rs               # ✅ Direct CPU testing harness
-│   ├── m6502_basic_test.rs         # ✅ 1 basic 6502 test (LDA imm) - Direct CPU testing
-│   ├── z80_basic_test.rs           # ✅ 1 basic Z80 test (LD A, n) - Direct CPU testing
-│   ├── m6809_alu_binary_test.rs    # ✅ 11 ALU tests (add, sub, mul) - Direct CPU testing
-│   ├── m6809_alu_extended_test.rs  # ✅ 6 extended ALU tests - Direct CPU testing
-│   ├── m6809_alu_imm_test.rs       # ✅ 11 ALU immediate tests (cmp, sbc, adc, logical) - Direct CPU testing
-│   ├── m6809_alu_unary_test.rs     # ✅ 6 unary ALU tests (neg, com, clr, inc, dec, tst) - Direct CPU testing
-│   ├── m6809_alu_word_test.rs      # ✅ 11 16-bit ALU tests (addd, subd, cmpx, cmpd, cmpy) - Direct CPU testing
-│   ├── m6809_alu_shift_test.rs     # ✅ 8 shift/rotate tests (asl, asr, lsr, rol, ror) - Direct CPU testing
-│   ├── m6809_branch_test.rs        # ✅ 11 branch/subroutine tests (bra, beq, bsr, jsr, rts, etc.) - Direct CPU testing
-│   ├── m6809_long_branch_test.rs   # ✅ 10 long branch tests (lbeq, lbne, lbhi, lbge, etc.) - Direct CPU testing
-│   ├── m6809_load_store_test.rs    # ✅ 13 load/store tests (lda, ldb, ldd, ldx, ldu, ldy, lds, sta, sty, sts) - Direct CPU testing
-│   ├── m6809_stack_test.rs         # ✅ 1 stack test (pshs, puls) - Direct CPU testing
-│   ├── m6809_transfer_test.rs      # ✅ 3 transfer tests (tfr, exg) - Direct CPU testing
-│   └── m6809_direct_test.rs        # ✅ 34 direct addressing tests - Direct CPU testing
-└── target/                         # Build artifacts (gitignored)
-
-Legend: ✅ Complete | ⚠️ Partial | ❌ Placeholder/Stub
+├── Cargo.toml                      # [workspace] members = ["core", "machines"]
+├── core/                           # phosphor-core crate
+│   ├── Cargo.toml                  # Core crate manifest
+│   ├── src/
+│   │   ├── lib.rs                  # Library root, exports core, cpu, device
+│   │   ├── core/                   # Core abstractions (complete)
+│   │   │   ├── bus.rs              # Bus trait, BusMaster, InterruptState
+│   │   │   ├── component.rs        # Component traits
+│   │   │   └── mod.rs              # Module exports
+│   │   ├── cpu/                    # CPU implementations
+│   │   │   ├── mod.rs              # Generic Cpu trait + CpuStateTrait
+│   │   │   ├── state.rs            # CpuStateTrait + state structs
+│   │   │   ├── m6809/              # Working M6809 (157 opcodes)
+│   │   │   │   ├── mod.rs          # Struct, state machine, dispatch
+│   │   │   │   ├── alu.rs          # ALU helpers and module exports
+│   │   │   │   ├── binary.rs       # Binary ops (ADD, SUB, MUL, etc.)
+│   │   │   │   ├── shift.rs        # Shift/Rotate ops
+│   │   │   │   ├── unary.rs        # Unary ops (NEG, COM, etc.)
+│   │   │   │   └── word.rs         # 16-bit ops (ADDD, CMPX, LDD, etc.)
+│   │   │   ├── branch.rs           # Branch/subroutine ops (BRA, BEQ, BSR, JSR, RTS, etc.)
+│   │   │   ├── load_store.rs       # LDA, LDB, STA
+│   │   │   ├── stack.rs            # Stack ops (PSHS, PULS, PSHU, PULU)
+│   │   │   └── transfer.rs         # Transfer/exchange (TFR, EXG)
+│   │   ├── m6502/                  # Initial implementation
+│   │   │   ├── mod.rs              # Struct, state machine
+│   │   │   └── load_store.rs       # LDA immediate
+│   │   └── z80/                    # Initial implementation
+│   │       ├── mod.rs              # Struct, state machine
+│   │       └── load_store.rs       # LD A, n
+│   │   └── device/                 # Peripheral devices
+│   │       ├── pia6820.rs          # PIA6820 stub
+│   │       └── mod.rs              # Module exports
+│   └── tests/                    # Integration tests
+│       ├── common/mod.rs           # Direct CPU testing harness
+│       ├── m6502_basic_test.rs     # Basic 6502 tests (1 test)
+│       ├── z80_basic_test.rs       # Basic Z80 tests (1 test)
+│       ├── m6809_*_test.rs       # M6809 tests (13 files, 126 tests)
+│       └── target/                # Build artifacts (gitignored)
+└── machines/                        # phosphor-machines crate
+    ├── Cargo.toml                  # Machines crate manifest
+    └── src/
+        ├── lib.rs                  # Exports Simple6809System, Simple6502System, SimpleZ80System
+        ├── simple6809.rs           # Minimal 6809 system with RAM/ROM
+        ├── simple6502.rs           # Minimal 6502 system
+        └── simplez80.rs            # Minimal Z80 system
 ```
 
 ## How It Works
