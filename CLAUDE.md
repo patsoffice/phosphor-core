@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-## Project: Phosphor Core (M6809/6502 Emulator)
+## Project: Phosphor Emulator
 
 ### Build & Test
 

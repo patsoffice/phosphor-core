@@ -942,4 +942,206 @@ impl M6809 {
             cpu.perform_addb(operand);
         });
     }
+
+    // --- Indexed addressing mode (A register) ---
+
+    /// SUBA indexed (0xA0)
+    pub(crate) fn op_suba_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_suba(op));
+    }
+
+    /// CMPA indexed (0xA1)
+    pub(crate) fn op_cmpa_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_cmpa(op));
+    }
+
+    /// SBCA indexed (0xA2)
+    pub(crate) fn op_sbca_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_sbca(op));
+    }
+
+    /// ANDA indexed (0xA4)
+    pub(crate) fn op_anda_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_anda(op));
+    }
+
+    /// BITA indexed (0xA5)
+    pub(crate) fn op_bita_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_bita(op));
+    }
+
+    /// EORA indexed (0xA8)
+    pub(crate) fn op_eora_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_eora(op));
+    }
+
+    /// ADCA indexed (0xA9)
+    pub(crate) fn op_adca_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_adca(op));
+    }
+
+    /// ORA indexed (0xAA)
+    pub(crate) fn op_ora_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_ora(op));
+    }
+
+    /// ADDA indexed (0xAB)
+    pub(crate) fn op_adda_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_adda(op));
+    }
+
+    // --- Indexed addressing mode (B register) ---
+
+    /// SUBB indexed (0xE0)
+    pub(crate) fn op_subb_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_subb(op));
+    }
+
+    /// CMPB indexed (0xE1)
+    pub(crate) fn op_cmpb_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_cmpb(op));
+    }
+
+    /// SBCB indexed (0xE2)
+    pub(crate) fn op_sbcb_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_sbcb(op));
+    }
+
+    /// ANDB indexed (0xE4)
+    pub(crate) fn op_andb_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_andb(op));
+    }
+
+    /// BITB indexed (0xE5)
+    pub(crate) fn op_bitb_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_bitb(op));
+    }
+
+    /// EORB indexed (0xE8)
+    pub(crate) fn op_eorb_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_eorb(op));
+    }
+
+    /// ADCB indexed (0xE9)
+    pub(crate) fn op_adcb_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_adcb(op));
+    }
+
+    /// ORB indexed (0xEA)
+    pub(crate) fn op_orb_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_orb(op));
+    }
+
+    /// ADDB indexed (0xEB)
+    pub(crate) fn op_addb_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_addb(op));
+    }
 }

@@ -1,10 +1,10 @@
-# Phosphor Core
+# Phosphor Emulator
 
 > Core emulation library for the Phosphor retro CPU emulator framework
 
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-127%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-190%20passing-brightgreen.svg)](tests/)
 
 A modular emulator framework for retro CPUs, designed for extensibility and educational purposes. Features a trait-based architecture that allows easy addition of new CPUs, peripherals, and complete systems.
 
@@ -12,7 +12,7 @@ A modular emulator framework for retro CPUs, designed for extensibility and educ
 
 **Current Focus:** Motorola 6809 CPU emulation
 
-**Status:** 🔨 Early development (158/280 opcodes implemented, 126+ tests passing)
+**Status:** 🔨 Early development (212/280 opcodes implemented, 190 tests passing)
 
 ### Features
 
@@ -26,14 +26,14 @@ A modular emulator framework for retro CPUs, designed for extensibility and educ
 
 ### What Works Now
 
-- Motorola 6809 CPU with 157 instructions (including ALU, branch, subroutine, stack, transfer, direct-page, extended, and Page 2 ops)
+- Motorola 6809 CPU with 212 instructions (including ALU, branch, subroutine, stack, transfer, direct-page, indexed, extended, and Page 2 ops)
 - Condition code flag enum (CcFlag) for readable flag manipulation
 - Initial MOS 6502 CPU support (LDA immediate implemented)
 - **New:** Initial Zilog Z80 CPU support (LD A, n implemented)
 - Simple 6809 system with 32KB RAM + 32KB ROM *(moving to separate crate)*
 - DMA arbitration and halt signal support
 - Interrupt framework (NMI, IRQ, FIRQ)
-- Full test suite (127 integration tests) using direct CPU testing
+- Full test suite (190 integration tests) using direct CPU testing
 
 ## Quick Start
 
@@ -47,7 +47,7 @@ A modular emulator framework for retro CPUs, designed for extensibility and educ
 ```bash
 # Clone and build
 git clone <repository-url>
-cd phosphor-core
+cd phosphor-emulator
 cargo build
 
 # Run all tests
@@ -60,8 +60,8 @@ cargo test
 #   test test_reset ... ok
 #   test test_store_accumulator_direct ... ok
 #   test test_addd_immediate ... ok
-#   ... (128 tests total)
-#   test result: ok. 128 passed; 0 failed
+#   ... (190 tests total)
+#   test result: ok. 190 passed; 0 failed
 ```
 
 ### Try It Out
@@ -150,35 +150,41 @@ fn main() {
 | Component | Status | Notes |
 |-----------|--------|-------|
 | **Core Framework** | ✅ Complete | Bus trait, component system, arbitration |
-| **M6809 CPU** | ⚠️ Partial | State machine working, 158 instructions |
+| **M6809 CPU** | ⚠️ Partial | State machine working, 212 instructions |
 | **M6502 CPU** | ⚠️ Partial | Initial structure, LDA imm implemented |
 | **Z80 CPU** | ⚠️ Partial | Initial structure, LD A, n implemented |
 | **PIA 6820** | ❌ Placeholder | Stub only |
 | **Simple6809 System** | ⚠️ Moving | RAM/ROM, testing utilities *(migrating to separate crate)* |
-| **Test Suite** | ✅ Complete | 127 integration tests passing using direct CPU testing |
+| **Test Suite** | ✅ Complete | 190 integration tests passing using direct CPU testing |
 
 ### Implemented 6809 Instructions
 
-Currently **158 of ~280** documented 6809 opcodes are implemented (across 3 opcode pages: ~233 on page 0, ~38 on page 1/0x10, ~9 on page 2/0x11):
+Currently **212 of ~280** documented 6809 opcodes are implemented (across 3 opcode pages: ~233 on page 0, ~38 on page 1/0x10, ~9 on page 2/0x11):
 
 | Category | Implemented | Examples |
 | --- | --- | --- |
 | ALU (A) imm | 9 | ADDA, SUBA, CMPA, SBCA, ADCA, ANDA, BITA, EORA, ORA |
 | ALU (A) direct | 9 | ADDA, SUBA, CMPA, SBCA, ADCA, ANDA, BITA, EORA, ORA |
+| ALU (A) indexed | 9 | ADDA, SUBA, CMPA, SBCA, ADCA, ANDA, BITA, EORA, ORA |
 | ALU (A) extended | 9 | ADDA, SUBA, CMPA, SBCA, ADCA, ANDA, BITA, EORA, ORA |
 | ALU (B) imm | 9 | ADDB, SUBB, CMPB, SBCB, ADCB, ANDB, BITB, EORB, ORB |
 | ALU (B) direct | 9 | ADDB, SUBB, CMPB, SBCB, ADCB, ANDB, BITB, EORB, ORB |
+| ALU (B) indexed | 9 | ADDB, SUBB, CMPB, SBCB, ADCB, ANDB, BITB, EORB, ORB |
 | ALU (B) extended | 9 | ADDB, SUBB, CMPB, SBCB, ADCB, ANDB, BITB, EORB, ORB |
-| ALU (16-bit) | 9 | ADDD, SUBD, CMPX (immediate + direct + extended) |
-| ALU (Unary) | 13 | MUL, NEG, COM, CLR, INC, DEC, TST (A & B variants) |
-| Shift/Rotate | 10 | ASL, ASR, LSR, ROL, ROR (A & B variants) |
+| ALU (16-bit) | 12 | ADDD, SUBD, CMPX (immediate + direct + indexed + extended) |
+| ALU (Unary) inherent | 13 | MUL, NEG, COM, CLR, INC, DEC, TST (A & B variants) |
+| ALU (Unary) indexed | 6 | NEG, COM, CLR, INC, DEC, TST (memory) |
+| Shift/Rotate inherent | 10 | ASL, ASR, LSR, ROL, ROR (A & B variants) |
+| Shift/Rotate indexed | 5 | ASL, ASR, LSR, ROL, ROR (memory) |
 | Load/Store imm | 5 | LDA, LDB, LDD, LDX, LDU |
 | Load/Store direct | 10 | LDA, LDB, LDD, LDX, LDU, STA, STB, STD, STX, STU |
+| Load/Store indexed | 10 | LDA, LDB, LDD, LDX, LDU, STA, STB, STD, STX, STU |
+| LEA | 4 | LEAX, LEAY, LEAS, LEAU |
 | Branch | 16 | BRA, BRN, BHI, BLS, BCC, BCS, BNE, BEQ, BVC, BVS, BPL, BMI, BGE, BLT, BGT, BLE |
-| Jump/Subroutine | 3 | BSR, JSR (direct), RTS |
+| Jump/Subroutine | 5 | BSR, JSR (direct), JSR (indexed), JMP (indexed), RTS |
 | Transfer | 2 | TFR, EXG |
 | Stack | 4 | PSHS, PULS, PSHU, PULU |
-| Page 2 (0x10) | 31 | CMPD, CMPY, LDY, STY, LDS, STS (imm/direct/ext), LBRN..LBLE |
+| Page 2 (0x10) | 37 | CMPD, CMPY, LDY, STY, LDS, STS (imm/direct/indexed/ext), LBRN..LBLE |
 
 ### Implemented 6502 Instructions
 
@@ -291,7 +297,7 @@ phosphor-core/
 │   │   ├── cpu/                    # CPU implementations
 │   │   │   ├── mod.rs              # Generic Cpu trait + CpuStateTrait
 │   │   │   ├── state.rs            # CpuStateTrait + state structs
-│   │   │   ├── m6809/              # Working M6809 (157 opcodes)
+│   │   │   ├── m6809/              # Working M6809 (212 opcodes)
 │   │   │   │   ├── mod.rs          # Struct, state machine, dispatch
 │   │   │   │   ├── alu.rs          # ALU helpers and module exports
 │   │   │   │   ├── binary.rs       # Binary ops (ADD, SUB, MUL, etc.)
@@ -482,14 +488,14 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 - [x] Stack operations (PSHS, PULS, PSHU, PULU)
 - [x] Transfer/exchange (TFR, EXG)
 - [x] Direct page (DP) addressing mode
-- [ ] All addressing modes (indexed, extended)
+- [x] All addressing modes (indexed, extended)
 - [x] Condition code (CC) flag enum (CcFlag)
 - [ ] 16-bit operations (CMPU, CMPS — Page 3/0x11 prefix)
   - [x] LDD, LDX, LDU, STD, STX, STU, ADDD, SUBD, CMPX
   - [x] CMPD, CMPY, LDY, STY, LDS, STS (Page 2/0x10 prefix)
 - [x] Long conditional branches (LBRN..LBLE via Page 2/0x10 prefix)
 
-**Progress:** 158/~280 opcodes implemented (56.4%)
+**Progress:** 212/~280 opcodes implemented (75.7%)
 
 ### Phase 2: Core Infrastructure
 
@@ -745,9 +751,9 @@ This is an educational emulator project. We welcome contributions!
 
 ### Areas Needing Help
 
-- 🔴 **High Priority:** More 6809 instructions (JMP, addressing modes, extended/indexed ops, etc.)
+- 🔴 **High Priority:** Remaining 6809 instructions (Page 3/0x11 prefix, interrupt handling)
 - 🟡 **Medium Priority:** 6502 CPU implementation
-- 🟡 **Medium Priority:** Indexed addressing modes for 6809
+- 🟡 **Medium Priority:** Z80 CPU implementation
 - 🟢 **Low Priority:** Peripheral devices
 - 🟢 **Low Priority:** Debugger interface
 
@@ -785,7 +791,7 @@ A: Rust provides zero-cost abstractions, memory safety, and excellent performanc
 
 **Q: Can this run commercial ROMs?**
 
-A: Not yet. Only 157 instructions are implemented. This is an educational project in early development.
+A: Not yet. Only 212 instructions are implemented. This is an educational project in early development.
 
 **Q: Why use `unsafe` in an emulator?**
 

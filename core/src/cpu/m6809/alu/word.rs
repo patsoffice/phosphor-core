@@ -832,4 +832,154 @@ impl M6809 {
             _ => {}
         }
     }
+
+    // --- Indexed addressing mode (16-bit ALU) ---
+
+    /// SUBD indexed (0xA3): Subtract 16-bit value at indexed EA from D.
+    pub(crate) fn op_subd_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            50 => {
+                // Read high byte of 16-bit operand
+                let high = bus.read(master, self.temp_addr);
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.opcode = high; // scratch for high byte
+                self.state = ExecState::Execute(opcode, 51);
+            }
+            51 => {
+                let low = bus.read(master, self.temp_addr) as u16;
+                let operand = ((self.opcode as u16) << 8) | low;
+                self.perform_subd(operand);
+                self.state = ExecState::Fetch;
+            }
+            _ => {
+                if self.indexed_resolve(opcode, cycle, bus, master) {
+                    self.state = ExecState::Execute(opcode, 50);
+                }
+            }
+        }
+    }
+
+    /// ADDD indexed (0xE3): Add 16-bit value at indexed EA to D.
+    pub(crate) fn op_addd_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            50 => {
+                let high = bus.read(master, self.temp_addr);
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.opcode = high;
+                self.state = ExecState::Execute(opcode, 51);
+            }
+            51 => {
+                let low = bus.read(master, self.temp_addr) as u16;
+                let operand = ((self.opcode as u16) << 8) | low;
+                self.perform_addd(operand);
+                self.state = ExecState::Fetch;
+            }
+            _ => {
+                if self.indexed_resolve(opcode, cycle, bus, master) {
+                    self.state = ExecState::Execute(opcode, 50);
+                }
+            }
+        }
+    }
+
+    /// CMPX indexed (0xAC): Compare X with 16-bit value at indexed EA.
+    pub(crate) fn op_cmpx_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            50 => {
+                let high = bus.read(master, self.temp_addr);
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.opcode = high;
+                self.state = ExecState::Execute(opcode, 51);
+            }
+            51 => {
+                let low = bus.read(master, self.temp_addr) as u16;
+                let operand = ((self.opcode as u16) << 8) | low;
+                self.perform_cmp16(self.x, operand);
+                self.state = ExecState::Fetch;
+            }
+            _ => {
+                if self.indexed_resolve(opcode, cycle, bus, master) {
+                    self.state = ExecState::Execute(opcode, 50);
+                }
+            }
+        }
+    }
+
+    // --- Page 2 indexed (16-bit) ---
+
+    /// CMPD indexed (0x10A3): Compare D with 16-bit value at indexed EA.
+    pub(crate) fn op_cmpd_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            50 => {
+                let high = bus.read(master, self.temp_addr);
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.opcode = high;
+                self.state = ExecState::ExecutePage2(opcode, 51);
+            }
+            51 => {
+                let low = bus.read(master, self.temp_addr) as u16;
+                let operand = ((self.opcode as u16) << 8) | low;
+                self.perform_cmp16(self.get_d(), operand);
+                self.state = ExecState::Fetch;
+            }
+            _ => {
+                if self.indexed_resolve_page2(opcode, cycle, bus, master) {
+                    self.state = ExecState::ExecutePage2(opcode, 50);
+                }
+            }
+        }
+    }
+
+    /// CMPY indexed (0x10AC): Compare Y with 16-bit value at indexed EA.
+    pub(crate) fn op_cmpy_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            50 => {
+                let high = bus.read(master, self.temp_addr);
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.opcode = high;
+                self.state = ExecState::ExecutePage2(opcode, 51);
+            }
+            51 => {
+                let low = bus.read(master, self.temp_addr) as u16;
+                let operand = ((self.opcode as u16) << 8) | low;
+                self.perform_cmp16(self.y, operand);
+                self.state = ExecState::Fetch;
+            }
+            _ => {
+                if self.indexed_resolve_page2(opcode, cycle, bus, master) {
+                    self.state = ExecState::ExecutePage2(opcode, 50);
+                }
+            }
+        }
+    }
 }

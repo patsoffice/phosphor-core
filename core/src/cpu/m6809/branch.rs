@@ -548,6 +548,61 @@ impl M6809 {
         }
     }
 
+    /// JMP indexed (0x6E): Jump to indexed EA.
+    /// No flags affected.
+    pub(crate) fn op_jmp_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        if self.indexed_resolve(opcode, cycle, bus, master) {
+            self.pc = self.temp_addr;
+            self.state = ExecState::Fetch;
+        }
+    }
+
+    /// JSR indexed (0xAD): Jump to Subroutine at indexed EA.
+    /// Pushes return address onto S stack, then jumps to indexed EA.
+    /// No flags affected.
+    pub(crate) fn op_jsr_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            50 => {
+                // Internal cycle
+                self.state = ExecState::Execute(opcode, 51);
+            }
+            51 => {
+                // Push PC low byte
+                self.s = self.s.wrapping_sub(1);
+                bus.write(master, self.s, self.pc as u8);
+                self.state = ExecState::Execute(opcode, 52);
+            }
+            52 => {
+                // Push PC high byte
+                self.s = self.s.wrapping_sub(1);
+                bus.write(master, self.s, (self.pc >> 8) as u8);
+                self.state = ExecState::Execute(opcode, 53);
+            }
+            53 => {
+                // Jump to target
+                self.pc = self.temp_addr;
+                self.state = ExecState::Fetch;
+            }
+            _ => {
+                if self.indexed_resolve(opcode, cycle, bus, master) {
+                    self.state = ExecState::Execute(opcode, 50);
+                }
+            }
+        }
+    }
+
     /// RTS (0x39): Return from Subroutine.
     /// Pulls PC from S stack. No flags affected.
     /// 5 cycles total (1 fetch + 4 execute).

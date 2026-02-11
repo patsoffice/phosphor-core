@@ -5,13 +5,13 @@ mod stack;
 mod transfer;
 
 use crate::core::{
+    Bus, BusMaster,
     bus::InterruptState,
     component::{BusMasterComponent, Component},
-    Bus, BusMaster,
 };
 use crate::cpu::{
-    state::{CpuStateTrait, M6809State},
     Cpu,
+    state::{CpuStateTrait, M6809State},
 };
 
 #[repr(u8)]
@@ -151,6 +151,10 @@ impl M6809 {
                 }
             }
 
+            // Transfer/Exchange
+            0x1E => self.op_exg(cycle, bus, master),
+            0x1F => self.op_tfr(cycle, bus, master),
+
             // ALU instructions (A register inherent)
             0x3D => self.op_mul(cycle),
             0x40 => self.op_nega(cycle),
@@ -165,9 +169,11 @@ impl M6809 {
             0x4D => self.op_tsta(cycle),
             0x4F => self.op_clra(cycle),
 
-            // Transfer/Exchange
-            0x1E => self.op_exg(cycle, bus, master),
-            0x1F => self.op_tfr(cycle, bus, master),
+            // LEA instructions
+            0x30 => self.op_leax(opcode, cycle, bus, master),
+            0x31 => self.op_leay(opcode, cycle, bus, master),
+            0x32 => self.op_leas(opcode, cycle, bus, master),
+            0x33 => self.op_leau(opcode, cycle, bus, master),
 
             // Subroutine / Return
             0x39 => self.op_rts(cycle, bus, master),
@@ -197,6 +203,20 @@ impl M6809 {
             0x2E => self.op_bgt(opcode, cycle, bus, master),
             0x2F => self.op_ble(opcode, cycle, bus, master),
 
+            // Indexed memory unary/shift (0x60-0x6F)
+            0x60 => self.op_neg_indexed(opcode, cycle, bus, master),
+            0x63 => self.op_com_indexed(opcode, cycle, bus, master),
+            0x64 => self.op_lsr_indexed(opcode, cycle, bus, master),
+            0x66 => self.op_ror_indexed(opcode, cycle, bus, master),
+            0x67 => self.op_asr_indexed(opcode, cycle, bus, master),
+            0x68 => self.op_asl_indexed(opcode, cycle, bus, master),
+            0x69 => self.op_rol_indexed(opcode, cycle, bus, master),
+            0x6A => self.op_dec_indexed(opcode, cycle, bus, master),
+            0x6C => self.op_inc_indexed(opcode, cycle, bus, master),
+            0x6D => self.op_tst_indexed(opcode, cycle, bus, master),
+            0x6E => self.op_jmp_indexed(opcode, cycle, bus, master),
+            0x6F => self.op_clr_indexed(opcode, cycle, bus, master),
+
             // ALU immediate (A register)
             0x80 => self.op_suba_imm(cycle, bus, master),
             0x81 => self.op_cmpa_imm(cycle, bus, master),
@@ -219,6 +239,7 @@ impl M6809 {
             0x94 => self.op_anda_direct(opcode, cycle, bus, master),
             0x95 => self.op_bita_direct(opcode, cycle, bus, master),
             0x96 => self.op_lda_direct(opcode, cycle, bus, master),
+            0x97 => self.op_sta_direct(opcode, cycle, bus, master),
             0x98 => self.op_eora_direct(opcode, cycle, bus, master),
             0x99 => self.op_adca_direct(opcode, cycle, bus, master),
             0x9A => self.op_ora_direct(opcode, cycle, bus, master),
@@ -226,6 +247,24 @@ impl M6809 {
             0x9C => self.op_cmpx_direct(opcode, cycle, bus, master),
             0x9E => self.op_ldx_direct(opcode, cycle, bus, master),
             0x9F => self.op_stx_direct(opcode, cycle, bus, master),
+
+            // ALU/load/store indexed (A register page, 0xA0-0xAF)
+            0xA0 => self.op_suba_indexed(opcode, cycle, bus, master),
+            0xA1 => self.op_cmpa_indexed(opcode, cycle, bus, master),
+            0xA2 => self.op_sbca_indexed(opcode, cycle, bus, master),
+            0xA3 => self.op_subd_indexed(opcode, cycle, bus, master),
+            0xA4 => self.op_anda_indexed(opcode, cycle, bus, master),
+            0xA5 => self.op_bita_indexed(opcode, cycle, bus, master),
+            0xA6 => self.op_lda_indexed(opcode, cycle, bus, master),
+            0xA7 => self.op_sta_indexed(opcode, cycle, bus, master),
+            0xA8 => self.op_eora_indexed(opcode, cycle, bus, master),
+            0xA9 => self.op_adca_indexed(opcode, cycle, bus, master),
+            0xAA => self.op_ora_indexed(opcode, cycle, bus, master),
+            0xAB => self.op_adda_indexed(opcode, cycle, bus, master),
+            0xAC => self.op_cmpx_indexed(opcode, cycle, bus, master),
+            0xAD => self.op_jsr_indexed(opcode, cycle, bus, master),
+            0xAE => self.op_ldx_indexed(opcode, cycle, bus, master),
+            0xAF => self.op_stx_indexed(opcode, cycle, bus, master),
 
             // ALU extended (A register)
             0xB0 => self.op_suba_extended(opcode, cycle, bus, master),
@@ -284,6 +323,24 @@ impl M6809 {
             0xDE => self.op_ldu_direct(opcode, cycle, bus, master),
             0xDF => self.op_stu_direct(opcode, cycle, bus, master),
 
+            // ALU/load/store indexed (B register page, 0xE0-0xEF)
+            0xE0 => self.op_subb_indexed(opcode, cycle, bus, master),
+            0xE1 => self.op_cmpb_indexed(opcode, cycle, bus, master),
+            0xE2 => self.op_sbcb_indexed(opcode, cycle, bus, master),
+            0xE3 => self.op_addd_indexed(opcode, cycle, bus, master),
+            0xE4 => self.op_andb_indexed(opcode, cycle, bus, master),
+            0xE5 => self.op_bitb_indexed(opcode, cycle, bus, master),
+            0xE6 => self.op_ldb_indexed(opcode, cycle, bus, master),
+            0xE7 => self.op_stb_indexed(opcode, cycle, bus, master),
+            0xE8 => self.op_eorb_indexed(opcode, cycle, bus, master),
+            0xE9 => self.op_adcb_indexed(opcode, cycle, bus, master),
+            0xEA => self.op_orb_indexed(opcode, cycle, bus, master),
+            0xEB => self.op_addb_indexed(opcode, cycle, bus, master),
+            0xEC => self.op_ldd_indexed(opcode, cycle, bus, master),
+            0xED => self.op_std_indexed(opcode, cycle, bus, master),
+            0xEE => self.op_ldu_indexed(opcode, cycle, bus, master),
+            0xEF => self.op_stu_indexed(opcode, cycle, bus, master),
+
             // ALU extended (B register)
             0xF0 => self.op_subb_extended(opcode, cycle, bus, master),
             0xF1 => self.op_cmpb_extended(opcode, cycle, bus, master),
@@ -300,8 +357,6 @@ impl M6809 {
             0x86 => self.op_lda_imm(cycle, bus, master),
             0xC6 => self.op_ldb_imm(cycle, bus, master),
 
-            // Direct (existing)
-            0x97 => self.op_sta_direct(opcode, cycle, bus, master),
             0x9D => self.op_jsr_direct(opcode, cycle, bus, master),
 
             // Unknown opcode - just fetch next
@@ -336,27 +391,33 @@ impl M6809 {
             0x2E => self.op_lbgt(opcode, cycle, bus, master),
             0x2F => self.op_lble(opcode, cycle, bus, master),
 
-            // CMPD (immediate, direct, extended)
+            // CMPD (immediate, direct, indexed, extended)
             0x83 => self.op_cmpd_imm(opcode, cycle, bus, master),
             0x93 => self.op_cmpd_direct(opcode, cycle, bus, master),
+            0xA3 => self.op_cmpd_indexed(opcode, cycle, bus, master),
             0xB3 => self.op_cmpd_extended(opcode, cycle, bus, master),
 
-            // CMPY (immediate, direct, extended)
+            // CMPY (immediate, direct, indexed, extended)
             0x8C => self.op_cmpy_imm(opcode, cycle, bus, master),
             0x9C => self.op_cmpy_direct(opcode, cycle, bus, master),
+            0xAC => self.op_cmpy_indexed(opcode, cycle, bus, master),
             0xBC => self.op_cmpy_extended(opcode, cycle, bus, master),
 
-            // LDY / STY
+            // LDY / STY (immediate, direct, indexed, extended)
             0x8E => self.op_ldy_imm(opcode, cycle, bus, master),
             0x9E => self.op_ldy_direct(opcode, cycle, bus, master),
             0x9F => self.op_sty_direct(opcode, cycle, bus, master),
+            0xAE => self.op_ldy_indexed(opcode, cycle, bus, master),
+            0xAF => self.op_sty_indexed(opcode, cycle, bus, master),
             0xBE => self.op_ldy_extended(opcode, cycle, bus, master),
             0xBF => self.op_sty_extended(opcode, cycle, bus, master),
 
-            // LDS / STS
+            // LDS / STS (immediate, direct, indexed, extended)
             0xCE => self.op_lds_imm(opcode, cycle, bus, master),
             0xDE => self.op_lds_direct(opcode, cycle, bus, master),
             0xDF => self.op_sts_direct(opcode, cycle, bus, master),
+            0xEE => self.op_lds_indexed(opcode, cycle, bus, master),
+            0xEF => self.op_sts_indexed(opcode, cycle, bus, master),
             0xFE => self.op_lds_extended(opcode, cycle, bus, master),
             0xFF => self.op_sts_extended(opcode, cycle, bus, master),
 

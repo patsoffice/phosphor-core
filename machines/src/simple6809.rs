@@ -1,6 +1,6 @@
-use phosphor_core::core::{bus::InterruptState, Bus, BusMaster};
+use phosphor_core::core::{Bus, BusMaster, bus::InterruptState};
 use phosphor_core::cpu::state::M6809State;
-use phosphor_core::cpu::{m6809::M6809, CpuStateTrait};
+use phosphor_core::cpu::{CpuStateTrait, m6809::M6809};
 use phosphor_core::device::pia6820::Pia6820;
 
 pub struct Simple6809System {

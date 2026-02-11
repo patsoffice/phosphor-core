@@ -1,3 +1,4 @@
+use crate::core::{Bus, BusMaster};
 use crate::cpu::m6809::{CcFlag, ExecState, M6809};
 
 impl M6809 {
@@ -173,5 +174,74 @@ impl M6809 {
             self.perform_tst(self.b);
             self.state = ExecState::Fetch;
         }
+    }
+
+    // --- Indexed addressing mode (memory unary ops, 0x60-0x6F) ---
+
+    /// NEG indexed (0x60): Negate memory byte at indexed EA.
+    pub(crate) fn op_neg_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.rmw_indexed(opcode, cycle, bus, master, |cpu, val| cpu.perform_neg(val));
+    }
+
+    /// COM indexed (0x63): Complement memory byte at indexed EA.
+    pub(crate) fn op_com_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.rmw_indexed(opcode, cycle, bus, master, |cpu, val| cpu.perform_com(val));
+    }
+
+    /// DEC indexed (0x6A): Decrement memory byte at indexed EA.
+    pub(crate) fn op_dec_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.rmw_indexed(opcode, cycle, bus, master, |cpu, val| cpu.perform_dec(val));
+    }
+
+    /// INC indexed (0x6C): Increment memory byte at indexed EA.
+    pub(crate) fn op_inc_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.rmw_indexed(opcode, cycle, bus, master, |cpu, val| cpu.perform_inc(val));
+    }
+
+    /// TST indexed (0x6D): Test memory byte at indexed EA (read-only, no write-back).
+    pub(crate) fn op_tst_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        // TST is read-only: resolve address, read operand, set flags
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, val| cpu.perform_tst(val));
+    }
+
+    /// CLR indexed (0x6F): Clear memory byte at indexed EA.
+    pub(crate) fn op_clr_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.rmw_indexed(opcode, cycle, bus, master, |cpu, _val| cpu.perform_clr());
     }
 }

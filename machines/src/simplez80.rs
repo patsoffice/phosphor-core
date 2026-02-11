@@ -1,5 +1,5 @@
-use phosphor_core::core::{bus::InterruptState, Bus, BusMaster};
-use phosphor_core::cpu::{state::Z80State, z80::Z80, CpuStateTrait};
+use phosphor_core::core::{Bus, BusMaster, bus::InterruptState};
+use phosphor_core::cpu::{CpuStateTrait, state::Z80State, z80::Z80};
 
 pub struct SimpleZ80System {
     pub cpu: Z80,

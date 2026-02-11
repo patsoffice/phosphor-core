@@ -1,3 +1,4 @@
+use crate::core::{Bus, BusMaster};
 use crate::cpu::m6809::{CcFlag, ExecState, M6809};
 
 impl M6809 {
@@ -155,5 +156,62 @@ impl M6809 {
             self.b = self.perform_ror(self.b);
             self.state = ExecState::Fetch;
         }
+    }
+
+    // --- Indexed addressing mode (memory shift ops, 0x64-0x69) ---
+
+    /// LSR indexed (0x64): Logical Shift Right memory byte at indexed EA.
+    pub(crate) fn op_lsr_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.rmw_indexed(opcode, cycle, bus, master, |cpu, val| cpu.perform_lsr(val));
+    }
+
+    /// ROR indexed (0x66): Rotate Right memory byte at indexed EA through Carry.
+    pub(crate) fn op_ror_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.rmw_indexed(opcode, cycle, bus, master, |cpu, val| cpu.perform_ror(val));
+    }
+
+    /// ASR indexed (0x67): Arithmetic Shift Right memory byte at indexed EA.
+    pub(crate) fn op_asr_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.rmw_indexed(opcode, cycle, bus, master, |cpu, val| cpu.perform_asr(val));
+    }
+
+    /// ASL indexed (0x68): Arithmetic Shift Left memory byte at indexed EA.
+    pub(crate) fn op_asl_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.rmw_indexed(opcode, cycle, bus, master, |cpu, val| cpu.perform_asl(val));
+    }
+
+    /// ROL indexed (0x69): Rotate Left memory byte at indexed EA through Carry.
+    pub(crate) fn op_rol_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.rmw_indexed(opcode, cycle, bus, master, |cpu, val| cpu.perform_rol(val));
     }
 }

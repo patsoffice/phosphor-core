@@ -1,13 +1,13 @@
 mod load_store;
 
 use crate::core::{
+    Bus, BusMaster,
     bus::InterruptState,
     component::{BusMasterComponent, Component},
-    Bus, BusMaster,
 };
 use crate::cpu::{
-    state::{CpuStateTrait, M6502State},
     Cpu,
+    state::{CpuStateTrait, M6502State},
 };
 
 #[repr(u8)]

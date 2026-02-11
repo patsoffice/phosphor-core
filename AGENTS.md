@@ -1,18 +1,19 @@
 # AGENTS.md
 
-## Project: Phosphor Core (M6809/6502/Z80 Emulator Framework)
+## Project: Phosphor Emulator
 
-This document provides essential information for AI agents and automated tools working with the Phosphor Core codebase.
+This document provides essential information for AI agents and automated tools working with the Phosphor Emulator codebase.
 
 ### Quick Overview
 
-**Phosphor Core** is a modular, cycle-accurate emulator framework for retro CPUs built in Rust. It uses a trait-based architecture to support multiple CPU types (Motorola 6809, MOS 6502, Zilog Z80) with zero runtime overhead.
+**Phosphor Emulator** is a modular, cycle-accurate emulator framework for retro CPUs built in Rust. It uses a trait-based architecture to support multiple CPU types (Motorola 6809, MOS 6502, Zilog Z80) with zero runtime overhead.
 
 **Current Status:**
-- M6809: 157/~280 opcodes implemented (56% complete)
+
+- M6809: 212/~280 opcodes implemented (76% complete)
 - M6502: 1/~151 opcodes implemented (initial)
 - Z80: 1/~1582 opcodes implemented (initial)
-- 127 integration tests passing
+- 190 integration tests passing
 - Focus on educational clarity and correctness over performance
 
 ### Repository Structure
@@ -30,7 +31,7 @@ phosphor-core/
 │   │   │   └── z80/         # Z80 implementation
 │   │   └── device/         # Peripheral devices (PIA 6820 stub)
 │   │   └── lib.rs         # Library exports + prelude
-│   └── tests/             # Integration tests (126 total)
+│   └── tests/             # Integration tests (190 total)
 │       ├── common/mod.rs   # TestBus harness for direct CPU testing
 │       └── m*_test.rs     # CPU-specific test files
 ├── machines/               # phosphor-machines crate
@@ -50,6 +51,7 @@ phosphor-core/
 These are **non-negotiable** development guidelines from CLAUDE.md:
 
 #### Architecture Rules
+
 - **CPU instructions** → `core/src/cpu/m6809/alu.rs` (ALU ops) or `load_store.rs` (load/store)
 - **Opcode dispatch** → `core/src/cpu/m6809/mod.rs` `execute_instruction()`
 - **Inherent-mode** → `if cycle == 0 { ... }` pattern
@@ -57,6 +59,7 @@ These are **non-negotiable** development guidelines from CLAUDE.md:
 - **Always** → transition to `ExecState::Fetch` when instruction completes
 
 #### Flag Handling Rules
+
 - **NEVER** use raw hex values (0x01, 0x02, etc.)
 - **ALWAYS** use `CcFlag` enum for condition codes
 - **MUST** document flag behavior in instruction doc comments
@@ -69,6 +72,7 @@ These are **non-negotiable** development guidelines from CLAUDE.md:
 ### Workspace Development Guidelines
 
 #### Building Workspace
+
 ```bash
 # Build entire workspace
 cargo build
@@ -85,16 +89,19 @@ cargo test m6809_alu_shift_test
 ```
 
 #### Cross-Crate Dependencies
+
 - **Core crate** can depend on machines for testing (dev-dependencies)
 - **Machines crate** depends on core for CPU implementations
 - **Never** create circular dependencies
 
 #### File Organization
+
 - **Core functionality** → `core/src/` (CPU implementations, abstractions, devices)
 - **System implementations** → `machines/src/` (Simple*System implementations)
 - **Tests** → `core/tests/` for CPU tests, `machines/tests/` for system tests
 
 #### Testing Requirements
+
 - **Every new instruction** → MUST have integration tests
 - **Tests go in** → `core/tests/m6809_*_test.rs` (grouped by category)
 - **Must test** → both A and B register variants
@@ -124,6 +131,7 @@ cargo clippy
 ### Testing Infrastructure
 
 #### TestBus Pattern (Modern)
+
 The project has migrated from Simple*System to direct CPU + TestBus pattern:
 
 ```rust
@@ -136,16 +144,17 @@ use common::TestBus;
 fn test_instruction() {
     let mut cpu = M6809::new();
     let mut bus = TestBus::new();
-    
+
     bus.load(0, &[0x86, 0x42]);  // Load instruction bytes
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0)); // Execute cycles
-    
+
     assert_eq!(cpu.a, 0x42);  // Direct field access
     assert_eq!(cpu.pc, 2);
 }
 ```
 
-#### Key TestBus Differences:
+#### Key TestBus Differences
+
 - **CPU creation**: `M6809::new()` instead of `Simple6809System::new()`
 - **Bus creation**: `TestBus::new()` - separate from CPU
 - **Memory loading**: `bus.load(address, data)` instead of `sys.load_rom()`
@@ -155,6 +164,7 @@ fn test_instruction() {
 ### CPU Implementation Patterns
 
 #### M6809 State Machine
+
 ```rust
 enum ExecState {
     Fetch,                    // Read next opcode
@@ -165,6 +175,7 @@ enum ExecState {
 ```
 
 #### Instruction Implementation Template
+
 ```rust
 pub(crate) fn op_instruction<B: Bus<Address=u16, Data=u8> + ?Sized>(
     &mut self, cycle: u8, bus: &mut B, master: BusMaster
@@ -186,11 +197,13 @@ pub(crate) fn op_instruction<B: Bus<Address=u16, Data=u8> + ?Sized>(
 ### Memory Layout
 
 #### Simple6809System (for reference)
+
 - **RAM**: 0x0000-0x7FFF (32KB)
 - **ROM**: 0x8000-0xFFFF (32KB)
 - **Vectors**: Reset at 0xFFFE/0xFFFF
 
 #### TestBus
+
 - **Flat 64KB** address space (0x0000-0xFFFF)
 - **Direct memory array access** for fast testing
 - **No peripherals** - pure CPU testing
@@ -198,6 +211,7 @@ pub(crate) fn op_instruction<B: Bus<Address=u16, Data=u8> + ?Sized>(
 ### Common Pitfalls & Solutions
 
 #### Borrow Splitting in Systems
+
 The `Simple6809System::tick()` uses controlled `unsafe` for borrow splitting:
 
 ```rust
@@ -213,13 +227,17 @@ pub fn tick(&mut self) {
 **Why safe:** CPU and Bus access disjoint memory regions.
 
 #### Cycle Count Issues
+
 Tests failing with wrong PC values often need more `tick()` calls:
+
 - LDA immediate = 2 cycles
 - STA direct = 3 cycles
 - Complex ops = 4+ cycles
 
 #### Flag Assertions
+
 Always use enum values, not magic numbers:
+
 ```rust
 // ✅ Correct
 assert_eq!(cpu.cc & (CcFlag::Z as u8), CcFlag::Z as u8);
@@ -231,6 +249,7 @@ assert_eq!(cpu.cc & 0x02, 0x02);
 ### File Organization
 
 #### CPU Module Structure
+
 ```
 src/cpu/m6809/
 ├── mod.rs              # Main CPU struct, state machine, opcode dispatch
@@ -247,6 +266,7 @@ src/cpu/m6809/
 ```
 
 #### Test File Naming
+
 - `tests/m6809_alu_binary_test.rs` - Binary ALU ops (ADD, SUB, MUL)
 - `tests/m6809_alu_shift_test.rs` - Shift/rotate ops
 - `tests/m6809_alu_unary_test.rs` - Unary ops (NEG, COM, etc.)
@@ -272,11 +292,13 @@ refactor(test): Convert test files to TestBus harness
 ### Performance Guidelines
 
 #### Design Priorities
+
 1. **Correctness** - Cycle-accurate hardware matching
 2. **Clarity** - Educational, maintainable code
 3. **Performance** - Fast enough for real-time (future goal)
 
 #### Zero-Cost Principles
+
 - **Generic traits** → compile-time static dispatch
 - **No heap allocations** in hot paths
 - **Minimal branching** - use pattern matching
@@ -285,6 +307,7 @@ refactor(test): Convert test files to TestBus harness
 ### API Usage Examples
 
 #### Direct CPU Usage
+
 ```rust
 use phosphor_core::cpu::m6809::M6809;
 use phosphor_core::core::{BusMaster, BusMasterComponent};
@@ -301,6 +324,7 @@ assert_eq!(cpu.a, 0x42);
 ```
 
 #### System Usage
+
 ```rust
 use phosphor_core::machine::simple6809::Simple6809System;
 
@@ -319,27 +343,31 @@ assert_eq!(sys.read_ram(0x10), 0x42);
 ### Current Focus Areas
 
 #### High Priority (What needs help)
-- **More 6809 instructions** - JMP, extended addressing, indexed modes
-- **Addressing modes** - Indexed, extended, indirect modes
+
+- **Remaining 6809 instructions** - Page 3/0x11 prefix (CMPU, CMPS), interrupt handling
 - **Interrupt handling** - IRQ, FIRQ, NMI implementation
 
 #### Medium Priority
+
 - **6502 implementation** - Complete instruction set and addressing modes
 - **Z80 implementation** - CB/DD/ED/FD prefixes and alternate registers
 
 #### Low Priority
+
 - **Peripheral devices** - PIA 6820, ACIA 6850, PTM 6840
 - **Debugger interface** - Breakpoints, step execution, memory viewer
 
 ### Safety Guidelines
 
 #### Controlled Unsafe Usage
+
 - **Split-borrow pattern** in system tick() methods
 - **Well-documented invariants** - disjoint memory access
 - **Scoped lifetime** - no pointer escape
 - **Alternative approaches** considered and rejected for performance
 
 #### Memory Safety
+
 - **No data races** - single-threaded CPU execution
 - **Clear ownership** - CPU owns registers, Bus owns memory
 - **Trait isolation** - components can't access internals
@@ -347,17 +375,20 @@ assert_eq!(sys.read_ram(0x10), 0x42);
 ### Resources for Agents
 
 #### Essential Reading
+
 1. **CLAUDE.md** - Development guidelines (PRIMARY SOURCE)
 2. **README.md** - Full project documentation
 3. **src/cpu/m6809/mod.rs** - Current instruction dispatch table
 4. **tests/common/mod.rs** - TestBus implementation
 
 #### Documentation Links
+
 - [6809 Programmer's Reference](http://www.6809.org.uk/dragon/pdf/6809.pdf)
 - [6809 Instruction Set](http://www.8bit-museum.de/6809_isa.html)
 - [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/)
 
 #### Verification Commands
+
 ```bash
 # Check project health
 cargo test && cargo fmt && cargo clippy

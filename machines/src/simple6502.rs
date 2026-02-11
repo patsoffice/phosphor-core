@@ -1,6 +1,6 @@
-use phosphor_core::core::{bus::InterruptState, Bus, BusMaster};
+use phosphor_core::core::{Bus, BusMaster, bus::InterruptState};
 use phosphor_core::cpu::state::M6502State;
-use phosphor_core::cpu::{m6502::M6502, CpuStateTrait};
+use phosphor_core::cpu::{CpuStateTrait, m6502::M6502};
 
 pub struct Simple6502System {
     pub cpu: M6502,
