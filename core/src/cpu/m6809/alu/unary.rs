@@ -176,6 +176,142 @@ impl M6809 {
         }
     }
 
+    // --- Direct addressing mode (memory unary ops, 0x00-0x0F) ---
+
+    /// NEG direct (0x00): Negate memory byte at DP:addr.
+    pub(crate) fn op_neg_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.rmw_direct(opcode, cycle, bus, master, |cpu, val| cpu.perform_neg(val));
+    }
+
+    /// COM direct (0x03): Complement memory byte at DP:addr.
+    pub(crate) fn op_com_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.rmw_direct(opcode, cycle, bus, master, |cpu, val| cpu.perform_com(val));
+    }
+
+    /// DEC direct (0x0A): Decrement memory byte at DP:addr.
+    pub(crate) fn op_dec_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.rmw_direct(opcode, cycle, bus, master, |cpu, val| cpu.perform_dec(val));
+    }
+
+    /// INC direct (0x0C): Increment memory byte at DP:addr.
+    pub(crate) fn op_inc_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.rmw_direct(opcode, cycle, bus, master, |cpu, val| cpu.perform_inc(val));
+    }
+
+    /// TST direct (0x0D): Test memory byte at DP:addr (read-only, no write-back).
+    pub(crate) fn op_tst_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_direct(opcode, cycle, bus, master, |cpu, val| cpu.perform_tst(val));
+    }
+
+    /// CLR direct (0x0F): Clear memory byte at DP:addr.
+    pub(crate) fn op_clr_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.rmw_direct(opcode, cycle, bus, master, |cpu, _val| cpu.perform_clr());
+    }
+
+    // --- Extended addressing mode (memory unary ops, 0x70-0x7F) ---
+
+    /// NEG extended (0x70): Negate memory byte at 16-bit address.
+    pub(crate) fn op_neg_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.rmw_extended(opcode, cycle, bus, master, |cpu, val| cpu.perform_neg(val));
+    }
+
+    /// COM extended (0x73): Complement memory byte at 16-bit address.
+    pub(crate) fn op_com_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.rmw_extended(opcode, cycle, bus, master, |cpu, val| cpu.perform_com(val));
+    }
+
+    /// DEC extended (0x7A): Decrement memory byte at 16-bit address.
+    pub(crate) fn op_dec_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.rmw_extended(opcode, cycle, bus, master, |cpu, val| cpu.perform_dec(val));
+    }
+
+    /// INC extended (0x7C): Increment memory byte at 16-bit address.
+    pub(crate) fn op_inc_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.rmw_extended(opcode, cycle, bus, master, |cpu, val| cpu.perform_inc(val));
+    }
+
+    /// TST extended (0x7D): Test memory byte at 16-bit address (read-only, no write-back).
+    pub(crate) fn op_tst_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_extended(opcode, cycle, bus, master, |cpu, val| cpu.perform_tst(val));
+    }
+
+    /// CLR extended (0x7F): Clear memory byte at 16-bit address.
+    pub(crate) fn op_clr_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.rmw_extended(opcode, cycle, bus, master, |cpu, _val| cpu.perform_clr());
+    }
+
     // --- Indexed addressing mode (memory unary ops, 0x60-0x6F) ---
 
     /// NEG indexed (0x60): Negate memory byte at indexed EA.

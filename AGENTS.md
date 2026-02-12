@@ -10,15 +10,15 @@ This document provides essential information for AI agents and automated tools w
 
 **Current Status:**
 
-- M6809: 212/~280 opcodes implemented (76% complete)
+- M6809: 247/~280 opcodes implemented (88% complete)
 - M6502: 1/~151 opcodes implemented (initial)
 - Z80: 1/~1582 opcodes implemented (initial)
-- 190 integration tests passing
+- 233 integration tests passing
 - Focus on educational clarity and correctness over performance
 
 ### Repository Structure
 
-```
+```text
 phosphor-core/
 ├── Cargo.toml              # [workspace] members = ["core", "machines"]
 ├── core/                   # phosphor-core crate
@@ -31,7 +31,7 @@ phosphor-core/
 │   │   │   └── z80/         # Z80 implementation
 │   │   └── device/         # Peripheral devices (PIA 6820 stub)
 │   │   └── lib.rs         # Library exports + prelude
-│   └── tests/             # Integration tests (190 total)
+│   └── tests/             # Integration tests (233 total)
 │       ├── common/mod.rs   # TestBus harness for direct CPU testing
 │       └── m*_test.rs     # CPU-specific test files
 ├── machines/               # phosphor-machines crate
@@ -250,7 +250,7 @@ assert_eq!(cpu.cc & 0x02, 0x02);
 
 #### CPU Module Structure
 
-```
+```text
 src/cpu/m6809/
 ├── mod.rs              # Main CPU struct, state machine, opcode dispatch
 ├── alu.rs             # ALU helpers and module exports
@@ -279,7 +279,7 @@ src/cpu/m6809/
 
 Follow established pattern (see `git log --oneline`):
 
-```
+```text
 refactor(test): Convert test files to TestBus harness
 
 - Convert m6502_basic_test.rs to use M6502 + TestBus instead of Simple6502System

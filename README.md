@@ -4,7 +4,7 @@
 
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-190%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-233%20passing-brightgreen.svg)](tests/)
 
 A modular emulator framework for retro CPUs, designed for extensibility and educational purposes. Features a trait-based architecture that allows easy addition of new CPUs, peripherals, and complete systems.
 
@@ -12,7 +12,7 @@ A modular emulator framework for retro CPUs, designed for extensibility and educ
 
 **Current Focus:** Motorola 6809 CPU emulation
 
-**Status:** 🔨 Early development (212/280 opcodes implemented, 190 tests passing)
+**Status:** 🔨 Early development (247/280 opcodes implemented, 233 tests passing)
 
 ### Features
 
@@ -26,14 +26,14 @@ A modular emulator framework for retro CPUs, designed for extensibility and educ
 
 ### What Works Now
 
-- Motorola 6809 CPU with 212 instructions (including ALU, branch, subroutine, stack, transfer, direct-page, indexed, extended, and Page 2 ops)
+- Motorola 6809 CPU with 247 instructions (including ALU, branch, subroutine, stack, transfer, direct-page, indexed, extended, and Page 2 ops)
 - Condition code flag enum (CcFlag) for readable flag manipulation
 - Initial MOS 6502 CPU support (LDA immediate implemented)
 - **New:** Initial Zilog Z80 CPU support (LD A, n implemented)
 - Simple 6809 system with 32KB RAM + 32KB ROM *(moving to separate crate)*
 - DMA arbitration and halt signal support
 - Interrupt framework (NMI, IRQ, FIRQ)
-- Full test suite (190 integration tests) using direct CPU testing
+- Full test suite (233 integration tests) using direct CPU testing
 
 ## Quick Start
 
@@ -60,8 +60,8 @@ cargo test
 #   test test_reset ... ok
 #   test test_store_accumulator_direct ... ok
 #   test test_addd_immediate ... ok
-#   ... (190 tests total)
-#   test result: ok. 190 passed; 0 failed
+#   ... (233 tests total)
+#   test result: ok. 233 passed; 0 failed
 ```
 
 ### Try It Out
@@ -99,34 +99,6 @@ fn main() {
 use phosphor_machines::Simple6809System;
 
 fn main() {
-    let mut system = Simple6809System::new();
-    // ... system-level operations
-}
-```
-
-fn main() {
-    let mut sys = Simple6809System::new();
-
-    // Load a simple program: LDA #$42, STA $10
-    sys.load_rom(0, &[0x86, 0x42, 0x97, 0x10]);
-
-    // Execute for 5 cycles (enough for both instructions)
-    for _ in 0..5 {
-        sys.tick();
-    }
-
-    // Check results
-    let state = sys.get_cpu_state();
-    println!("A register: 0x{:02X}", state.a);      // 0x42
-    println!("Memory[0x10]: 0x{:02X}", sys.read_ram(0x10));  // 0x42
-    println!("PC: 0x{:04X}", state.pc);             // 0x0004
-}
-```
-
-```rust
-use phosphor_core::machine::simple6809::Simple6809System;
-
-fn main() {
     let mut sys = Simple6809System::new();
 
     // Load a simple program: LDA #$42, STA $10
@@ -150,16 +122,16 @@ fn main() {
 | Component | Status | Notes |
 |-----------|--------|-------|
 | **Core Framework** | ✅ Complete | Bus trait, component system, arbitration |
-| **M6809 CPU** | ⚠️ Partial | State machine working, 212 instructions |
+| **M6809 CPU** | ⚠️ Partial | State machine working, 247 instructions |
 | **M6502 CPU** | ⚠️ Partial | Initial structure, LDA imm implemented |
 | **Z80 CPU** | ⚠️ Partial | Initial structure, LD A, n implemented |
 | **PIA 6820** | ❌ Placeholder | Stub only |
 | **Simple6809 System** | ⚠️ Moving | RAM/ROM, testing utilities *(migrating to separate crate)* |
-| **Test Suite** | ✅ Complete | 190 integration tests passing using direct CPU testing |
+| **Test Suite** | ✅ Complete | 233 integration tests passing using direct CPU testing |
 
 ### Implemented 6809 Instructions
 
-Currently **212 of ~280** documented 6809 opcodes are implemented (across 3 opcode pages: ~233 on page 0, ~38 on page 1/0x10, ~9 on page 2/0x11):
+Currently **247 of ~280** documented 6809 opcodes are implemented (across 3 opcode pages: 210 on page 0, 37 on page 1/0x10, ~9 on page 2/0x11):
 
 | Category | Implemented | Examples |
 | --- | --- | --- |
@@ -173,15 +145,20 @@ Currently **212 of ~280** documented 6809 opcodes are implemented (across 3 opco
 | ALU (B) extended | 9 | ADDB, SUBB, CMPB, SBCB, ADCB, ANDB, BITB, EORB, ORB |
 | ALU (16-bit) | 12 | ADDD, SUBD, CMPX (immediate + direct + indexed + extended) |
 | ALU (Unary) inherent | 13 | MUL, NEG, COM, CLR, INC, DEC, TST (A & B variants) |
+| ALU (Unary) direct | 6 | NEG, COM, CLR, INC, DEC, TST (memory) |
 | ALU (Unary) indexed | 6 | NEG, COM, CLR, INC, DEC, TST (memory) |
+| ALU (Unary) extended | 6 | NEG, COM, CLR, INC, DEC, TST (memory) |
 | Shift/Rotate inherent | 10 | ASL, ASR, LSR, ROL, ROR (A & B variants) |
+| Shift/Rotate direct | 5 | ASL, ASR, LSR, ROL, ROR (memory) |
 | Shift/Rotate indexed | 5 | ASL, ASR, LSR, ROL, ROR (memory) |
+| Shift/Rotate extended | 5 | ASL, ASR, LSR, ROL, ROR (memory) |
 | Load/Store imm | 5 | LDA, LDB, LDD, LDX, LDU |
 | Load/Store direct | 10 | LDA, LDB, LDD, LDX, LDU, STA, STB, STD, STX, STU |
 | Load/Store indexed | 10 | LDA, LDB, LDD, LDX, LDU, STA, STB, STD, STX, STU |
+| Load/Store extended | 10 | LDA, LDB, LDD, LDX, LDU, STA, STB, STD, STX, STU |
 | LEA | 4 | LEAX, LEAY, LEAS, LEAU |
 | Branch | 16 | BRA, BRN, BHI, BLS, BCC, BCS, BNE, BEQ, BVC, BVS, BPL, BMI, BGE, BLT, BGT, BLE |
-| Jump/Subroutine | 5 | BSR, JSR (direct), JSR (indexed), JMP (indexed), RTS |
+| Jump/Subroutine | 8 | BSR, JSR (direct/indexed/extended), JMP (direct/indexed/extended), RTS |
 | Transfer | 2 | TFR, EXG |
 | Stack | 4 | PSHS, PULS, PSHU, PULU |
 | Page 2 (0x10) | 37 | CMPD, CMPY, LDY, STY, LDS, STS (imm/direct/indexed/ext), LBRN..LBLE |
@@ -207,19 +184,24 @@ Currently **1 of ~1582** documented Z80 opcodes are implemented:
 This project uses a **workspace structure** to clearly separate reusable components from system implementations:
 
 ### Core Crate (`phosphor-core`)
+
 Contains all reusable components that can be used across different systems:
+
 - CPU implementations (M6809, M6502, Z80)
 - Bus and component abstractions  
 - Peripheral device interfaces
 - CPU state management and testing utilities
 
 ### Machines Crate (`phosphor-machines`)
+
 Contains complete system implementations that wire core components together:
+
 - Simple6809System (M6809 + RAM/ROM + PIA)
 - Simple6502System (M6502 + flat memory)
 - SimpleZ80System (Z80 + flat memory)
 
 ### Benefits
+
 - **Clear separation**: Components vs. system-specific logic
 - **Reusable core**: Multiple machines can share same CPU implementations
 - **Independent development**: Core and machines can evolve separately
@@ -297,7 +279,7 @@ phosphor-core/
 │   │   ├── cpu/                    # CPU implementations
 │   │   │   ├── mod.rs              # Generic Cpu trait + CpuStateTrait
 │   │   │   ├── state.rs            # CpuStateTrait + state structs
-│   │   │   ├── m6809/              # Working M6809 (212 opcodes)
+│   │   │   ├── m6809/              # Working M6809 (247 opcodes)
 │   │   │   │   ├── mod.rs          # Struct, state machine, dispatch
 │   │   │   │   ├── alu.rs          # ALU helpers and module exports
 │   │   │   │   ├── binary.rs       # Binary ops (ADD, SUB, MUL, etc.)
@@ -321,7 +303,7 @@ phosphor-core/
 │       ├── common/mod.rs           # Direct CPU testing harness
 │       ├── m6502_basic_test.rs     # Basic 6502 tests (1 test)
 │       ├── z80_basic_test.rs       # Basic Z80 tests (1 test)
-│       ├── m6809_*_test.rs       # M6809 tests (13 files, 126 tests)
+│       ├── m6809_*_test.rs       # M6809 tests (14 files, 231 tests)
 │       └── target/                # Build artifacts (gitignored)
 └── machines/                        # phosphor-machines crate
     ├── Cargo.toml                  # Machines crate manifest
@@ -495,7 +477,7 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
   - [x] CMPD, CMPY, LDY, STY, LDS, STS (Page 2/0x10 prefix)
 - [x] Long conditional branches (LBRN..LBLE via Page 2/0x10 prefix)
 
-**Progress:** 212/~280 opcodes implemented (75.7%)
+**Progress:** 247/~280 opcodes implemented (88.2%)
 
 ### Phase 2: Core Infrastructure
 
@@ -791,7 +773,7 @@ A: Rust provides zero-cost abstractions, memory safety, and excellent performanc
 
 **Q: Can this run commercial ROMs?**
 
-A: Not yet. Only 212 instructions are implemented. This is an educational project in early development.
+A: Not yet. Only 247 instructions are implemented. This is an educational project in early development.
 
 **Q: Why use `unsafe` in an emulator?**
 

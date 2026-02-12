@@ -457,6 +457,324 @@ impl M6809 {
         }
     }
 
+    // --- Extended addressing mode (8-bit load/store) ---
+
+    /// LDA extended (0xB6): Load A from memory at 16-bit address.
+    /// N set if result bit 7 is set. Z set if result is zero. V always cleared.
+    pub(crate) fn op_lda_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_extended(opcode, cycle, bus, master, |cpu, val| {
+            cpu.a = val;
+            cpu.set_flags_logical(val);
+        });
+    }
+
+    /// STA extended (0xB7): Store A to memory at 16-bit address.
+    /// N set if result bit 7 is set. Z set if result is zero. V always cleared.
+    pub(crate) fn op_sta_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                let high = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = high << 8;
+                self.state = ExecState::Execute(opcode, 1);
+            }
+            1 => {
+                let low = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr |= low;
+                self.state = ExecState::Execute(opcode, 2);
+            }
+            2 => {
+                bus.write(master, self.temp_addr, self.a);
+                self.set_flags_logical(self.a);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
+    /// LDB extended (0xF6): Load B from memory at 16-bit address.
+    /// N set if result bit 7 is set. Z set if result is zero. V always cleared.
+    pub(crate) fn op_ldb_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_extended(opcode, cycle, bus, master, |cpu, val| {
+            cpu.b = val;
+            cpu.set_flags_logical(val);
+        });
+    }
+
+    /// STB extended (0xF7): Store B to memory at 16-bit address.
+    /// N set if result bit 7 is set. Z set if result is zero. V always cleared.
+    pub(crate) fn op_stb_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                let high = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = high << 8;
+                self.state = ExecState::Execute(opcode, 1);
+            }
+            1 => {
+                let low = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr |= low;
+                self.state = ExecState::Execute(opcode, 2);
+            }
+            2 => {
+                bus.write(master, self.temp_addr, self.b);
+                self.set_flags_logical(self.b);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
+    // --- Extended addressing mode (16-bit load/store) ---
+
+    /// LDD extended (0xFC): Load D (A:B) from memory at 16-bit address.
+    /// N set if result bit 15 is set. Z set if result is zero. V always cleared.
+    pub(crate) fn op_ldd_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                let high = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = high << 8;
+                self.state = ExecState::Execute(opcode, 1);
+            }
+            1 => {
+                let low = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr |= low;
+                self.state = ExecState::Execute(opcode, 2);
+            }
+            2 => {
+                self.a = bus.read(master, self.temp_addr);
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.state = ExecState::Execute(opcode, 3);
+            }
+            3 => {
+                self.b = bus.read(master, self.temp_addr);
+                let val = self.get_d();
+                self.set_flags_logical16(val);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
+    /// STD extended (0xFD): Store D (A:B) to memory at 16-bit address.
+    /// N set if result bit 15 is set. Z set if result is zero. V always cleared.
+    pub(crate) fn op_std_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                let high = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = high << 8;
+                self.state = ExecState::Execute(opcode, 1);
+            }
+            1 => {
+                let low = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr |= low;
+                self.state = ExecState::Execute(opcode, 2);
+            }
+            2 => {
+                bus.write(master, self.temp_addr, self.a);
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.state = ExecState::Execute(opcode, 3);
+            }
+            3 => {
+                bus.write(master, self.temp_addr, self.b);
+                let val = self.get_d();
+                self.set_flags_logical16(val);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
+    /// LDX extended (0xBE): Load X from memory at 16-bit address.
+    /// N set if result bit 15 is set. Z set if result is zero. V always cleared.
+    pub(crate) fn op_ldx_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                let high = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = high << 8;
+                self.state = ExecState::Execute(opcode, 1);
+            }
+            1 => {
+                let low = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr |= low;
+                self.state = ExecState::Execute(opcode, 2);
+            }
+            2 => {
+                let high = bus.read(master, self.temp_addr) as u16;
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.x = high << 8;
+                self.state = ExecState::Execute(opcode, 3);
+            }
+            3 => {
+                let low = bus.read(master, self.temp_addr) as u16;
+                self.x |= low;
+                self.set_flags_logical16(self.x);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
+    /// STX extended (0xBF): Store X to memory at 16-bit address.
+    /// N set if result bit 15 is set. Z set if result is zero. V always cleared.
+    pub(crate) fn op_stx_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                let high = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = high << 8;
+                self.state = ExecState::Execute(opcode, 1);
+            }
+            1 => {
+                let low = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr |= low;
+                self.state = ExecState::Execute(opcode, 2);
+            }
+            2 => {
+                bus.write(master, self.temp_addr, (self.x >> 8) as u8);
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.state = ExecState::Execute(opcode, 3);
+            }
+            3 => {
+                bus.write(master, self.temp_addr, self.x as u8);
+                self.set_flags_logical16(self.x);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
+    /// LDU extended (0xFE): Load U from memory at 16-bit address.
+    /// N set if result bit 15 is set. Z set if result is zero. V always cleared.
+    pub(crate) fn op_ldu_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                let high = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = high << 8;
+                self.state = ExecState::Execute(opcode, 1);
+            }
+            1 => {
+                let low = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr |= low;
+                self.state = ExecState::Execute(opcode, 2);
+            }
+            2 => {
+                let high = bus.read(master, self.temp_addr) as u16;
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.u = high << 8;
+                self.state = ExecState::Execute(opcode, 3);
+            }
+            3 => {
+                let low = bus.read(master, self.temp_addr) as u16;
+                self.u |= low;
+                self.set_flags_logical16(self.u);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
+    /// STU extended (0xFF): Store U to memory at 16-bit address.
+    /// N set if result bit 15 is set. Z set if result is zero. V always cleared.
+    pub(crate) fn op_stu_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                let high = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = high << 8;
+                self.state = ExecState::Execute(opcode, 1);
+            }
+            1 => {
+                let low = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr |= low;
+                self.state = ExecState::Execute(opcode, 2);
+            }
+            2 => {
+                bus.write(master, self.temp_addr, (self.u >> 8) as u8);
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.state = ExecState::Execute(opcode, 3);
+            }
+            3 => {
+                bus.write(master, self.temp_addr, self.u as u8);
+                self.set_flags_logical16(self.u);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
     // --- Indexed addressing mode (8-bit load/store) ---
 
     /// LDA indexed (0xA6): Load A from memory at indexed EA.

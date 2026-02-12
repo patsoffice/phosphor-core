@@ -151,6 +151,20 @@ impl M6809 {
                 }
             }
 
+            // Direct-page unary/shift (0x00-0x0F)
+            0x00 => self.op_neg_direct(opcode, cycle, bus, master),
+            0x03 => self.op_com_direct(opcode, cycle, bus, master),
+            0x04 => self.op_lsr_direct(opcode, cycle, bus, master),
+            0x06 => self.op_ror_direct(opcode, cycle, bus, master),
+            0x07 => self.op_asr_direct(opcode, cycle, bus, master),
+            0x08 => self.op_asl_direct(opcode, cycle, bus, master),
+            0x09 => self.op_rol_direct(opcode, cycle, bus, master),
+            0x0A => self.op_dec_direct(opcode, cycle, bus, master),
+            0x0C => self.op_inc_direct(opcode, cycle, bus, master),
+            0x0D => self.op_tst_direct(opcode, cycle, bus, master),
+            0x0E => self.op_jmp_direct(opcode, cycle, bus, master),
+            0x0F => self.op_clr_direct(opcode, cycle, bus, master),
+
             // Transfer/Exchange
             0x1E => self.op_exg(cycle, bus, master),
             0x1F => self.op_tfr(cycle, bus, master),
@@ -217,6 +231,20 @@ impl M6809 {
             0x6E => self.op_jmp_indexed(opcode, cycle, bus, master),
             0x6F => self.op_clr_indexed(opcode, cycle, bus, master),
 
+            // Extended unary/shift (0x70-0x7F)
+            0x70 => self.op_neg_extended(opcode, cycle, bus, master),
+            0x73 => self.op_com_extended(opcode, cycle, bus, master),
+            0x74 => self.op_lsr_extended(opcode, cycle, bus, master),
+            0x76 => self.op_ror_extended(opcode, cycle, bus, master),
+            0x77 => self.op_asr_extended(opcode, cycle, bus, master),
+            0x78 => self.op_asl_extended(opcode, cycle, bus, master),
+            0x79 => self.op_rol_extended(opcode, cycle, bus, master),
+            0x7A => self.op_dec_extended(opcode, cycle, bus, master),
+            0x7C => self.op_inc_extended(opcode, cycle, bus, master),
+            0x7D => self.op_tst_extended(opcode, cycle, bus, master),
+            0x7E => self.op_jmp_extended(opcode, cycle, bus, master),
+            0x7F => self.op_clr_extended(opcode, cycle, bus, master),
+
             // ALU immediate (A register)
             0x80 => self.op_suba_imm(cycle, bus, master),
             0x81 => self.op_cmpa_imm(cycle, bus, master),
@@ -273,11 +301,16 @@ impl M6809 {
             0xB3 => self.op_subd_extended(opcode, cycle, bus, master),
             0xB4 => self.op_anda_extended(opcode, cycle, bus, master),
             0xB5 => self.op_bita_extended(opcode, cycle, bus, master),
+            0xB6 => self.op_lda_extended(opcode, cycle, bus, master),
+            0xB7 => self.op_sta_extended(opcode, cycle, bus, master),
             0xB8 => self.op_eora_extended(opcode, cycle, bus, master),
             0xB9 => self.op_adca_extended(opcode, cycle, bus, master),
             0xBA => self.op_ora_extended(opcode, cycle, bus, master),
             0xBB => self.op_adda_extended(opcode, cycle, bus, master),
             0xBC => self.op_cmpx_extended(opcode, cycle, bus, master),
+            0xBD => self.op_jsr_extended(opcode, cycle, bus, master),
+            0xBE => self.op_ldx_extended(opcode, cycle, bus, master),
+            0xBF => self.op_stx_extended(opcode, cycle, bus, master),
 
             // ALU instructions (B register inherent)
             0x50 => self.op_negb(cycle),
@@ -348,10 +381,16 @@ impl M6809 {
             0xF3 => self.op_addd_extended(opcode, cycle, bus, master),
             0xF4 => self.op_andb_extended(opcode, cycle, bus, master),
             0xF5 => self.op_bitb_extended(opcode, cycle, bus, master),
+            0xF6 => self.op_ldb_extended(opcode, cycle, bus, master),
+            0xF7 => self.op_stb_extended(opcode, cycle, bus, master),
             0xF8 => self.op_eorb_extended(opcode, cycle, bus, master),
             0xF9 => self.op_adcb_extended(opcode, cycle, bus, master),
             0xFA => self.op_orb_extended(opcode, cycle, bus, master),
             0xFB => self.op_addb_extended(opcode, cycle, bus, master),
+            0xFC => self.op_ldd_extended(opcode, cycle, bus, master),
+            0xFD => self.op_std_extended(opcode, cycle, bus, master),
+            0xFE => self.op_ldu_extended(opcode, cycle, bus, master),
+            0xFF => self.op_stu_extended(opcode, cycle, bus, master),
 
             // Load/store immediate
             0x86 => self.op_lda_imm(cycle, bus, master),

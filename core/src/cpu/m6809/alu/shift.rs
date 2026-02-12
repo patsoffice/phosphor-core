@@ -158,6 +158,120 @@ impl M6809 {
         }
     }
 
+    // --- Direct addressing mode (memory shift ops, 0x04-0x09) ---
+
+    /// LSR direct (0x04): Logical Shift Right memory byte at DP:addr.
+    pub(crate) fn op_lsr_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.rmw_direct(opcode, cycle, bus, master, |cpu, val| cpu.perform_lsr(val));
+    }
+
+    /// ROR direct (0x06): Rotate Right memory byte at DP:addr through Carry.
+    pub(crate) fn op_ror_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.rmw_direct(opcode, cycle, bus, master, |cpu, val| cpu.perform_ror(val));
+    }
+
+    /// ASR direct (0x07): Arithmetic Shift Right memory byte at DP:addr.
+    pub(crate) fn op_asr_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.rmw_direct(opcode, cycle, bus, master, |cpu, val| cpu.perform_asr(val));
+    }
+
+    /// ASL direct (0x08): Arithmetic Shift Left memory byte at DP:addr.
+    pub(crate) fn op_asl_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.rmw_direct(opcode, cycle, bus, master, |cpu, val| cpu.perform_asl(val));
+    }
+
+    /// ROL direct (0x09): Rotate Left memory byte at DP:addr through Carry.
+    pub(crate) fn op_rol_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.rmw_direct(opcode, cycle, bus, master, |cpu, val| cpu.perform_rol(val));
+    }
+
+    // --- Extended addressing mode (memory shift ops, 0x74-0x79) ---
+
+    /// LSR extended (0x74): Logical Shift Right memory byte at 16-bit address.
+    pub(crate) fn op_lsr_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.rmw_extended(opcode, cycle, bus, master, |cpu, val| cpu.perform_lsr(val));
+    }
+
+    /// ROR extended (0x76): Rotate Right memory byte at 16-bit address through Carry.
+    pub(crate) fn op_ror_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.rmw_extended(opcode, cycle, bus, master, |cpu, val| cpu.perform_ror(val));
+    }
+
+    /// ASR extended (0x77): Arithmetic Shift Right memory byte at 16-bit address.
+    pub(crate) fn op_asr_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.rmw_extended(opcode, cycle, bus, master, |cpu, val| cpu.perform_asr(val));
+    }
+
+    /// ASL extended (0x78): Arithmetic Shift Left memory byte at 16-bit address.
+    pub(crate) fn op_asl_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.rmw_extended(opcode, cycle, bus, master, |cpu, val| cpu.perform_asl(val));
+    }
+
+    /// ROL extended (0x79): Rotate Left memory byte at 16-bit address through Carry.
+    pub(crate) fn op_rol_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.rmw_extended(opcode, cycle, bus, master, |cpu, val| cpu.perform_rol(val));
+    }
+
     // --- Indexed addressing mode (memory shift ops, 0x64-0x69) ---
 
     /// LSR indexed (0x64): Logical Shift Right memory byte at indexed EA.

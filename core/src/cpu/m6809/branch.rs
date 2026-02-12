@@ -603,6 +603,110 @@ impl M6809 {
         }
     }
 
+    /// JMP direct (0x0E): Jump to direct addressing EA (DP:addr).
+    /// No flags affected.
+    pub(crate) fn op_jmp_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                let addr_low = bus.read(master, self.pc) as u16;
+                self.pc = ((self.dp as u16) << 8) | addr_low;
+                self.state = ExecState::Execute(opcode, 1);
+            }
+            1 => {
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
+    /// JMP extended (0x7E): Jump to 16-bit address.
+    /// No flags affected.
+    pub(crate) fn op_jmp_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                let high = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = high << 8;
+                self.state = ExecState::Execute(opcode, 1);
+            }
+            1 => {
+                let low = bus.read(master, self.pc) as u16;
+                self.pc = self.temp_addr | low;
+                self.state = ExecState::Execute(opcode, 2);
+            }
+            2 => {
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
+    /// JSR extended (0xBD): Jump to Subroutine at 16-bit address.
+    /// Pushes return address onto S stack, then jumps to 16-bit address.
+    /// No flags affected. 8 cycles total (1 fetch + 7 execute).
+    pub(crate) fn op_jsr_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                // Read address high byte
+                let high = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = high << 8;
+                self.state = ExecState::Execute(opcode, 1);
+            }
+            1 => {
+                // Read address low byte
+                let low = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr |= low;
+                self.state = ExecState::Execute(opcode, 2);
+            }
+            2 => {
+                // Internal
+                self.state = ExecState::Execute(opcode, 3);
+            }
+            3 => {
+                // Push PC low byte
+                self.s = self.s.wrapping_sub(1);
+                bus.write(master, self.s, self.pc as u8);
+                self.state = ExecState::Execute(opcode, 4);
+            }
+            4 => {
+                // Push PC high byte
+                self.s = self.s.wrapping_sub(1);
+                bus.write(master, self.s, (self.pc >> 8) as u8);
+                self.state = ExecState::Execute(opcode, 5);
+            }
+            5 => {
+                // Internal
+                self.state = ExecState::Execute(opcode, 6);
+            }
+            6 => {
+                // Jump to target
+                self.pc = self.temp_addr;
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
     /// RTS (0x39): Return from Subroutine.
     /// Pulls PC from S stack. No flags affected.
     /// 5 cycles total (1 fetch + 4 execute).

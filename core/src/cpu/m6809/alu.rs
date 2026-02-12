@@ -686,6 +686,83 @@ impl M6809 {
         }
     }
 
+    /// Generic helper for Direct Addressing Mode read-modify-write instructions.
+    /// Used by memory-modify ops in the 0x00-0x0F range (NEG, COM, LSR, etc.).
+    /// Cycle 0: fetch address byte, form DP:addr.
+    /// Cycle 1: read value from EA.
+    /// Cycle 2: modify and write back.
+    pub(crate) fn rmw_direct<B: Bus<Address = u16, Data = u8> + ?Sized, F>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+        operation: F,
+    ) where
+        F: FnOnce(&mut Self, u8) -> u8,
+    {
+        match cycle {
+            0 => {
+                let addr = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = ((self.dp as u16) << 8) | addr;
+                self.state = ExecState::Execute(opcode, 1);
+            }
+            1 => {
+                self.opcode = bus.read(master, self.temp_addr);
+                self.state = ExecState::Execute(opcode, 2);
+            }
+            2 => {
+                let result = operation(self, self.opcode);
+                bus.write(master, self.temp_addr, result);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
+    /// Generic helper for Extended Addressing Mode read-modify-write instructions.
+    /// Used by memory-modify ops in the 0x70-0x7F range (NEG, COM, LSR, etc.).
+    /// Cycle 0: fetch address high byte.
+    /// Cycle 1: fetch address low byte.
+    /// Cycle 2: read value from EA.
+    /// Cycle 3: modify and write back.
+    pub(crate) fn rmw_extended<B: Bus<Address = u16, Data = u8> + ?Sized, F>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+        operation: F,
+    ) where
+        F: FnOnce(&mut Self, u8) -> u8,
+    {
+        match cycle {
+            0 => {
+                let high = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = high << 8;
+                self.state = ExecState::Execute(opcode, 1);
+            }
+            1 => {
+                let low = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr |= low;
+                self.state = ExecState::Execute(opcode, 2);
+            }
+            2 => {
+                self.opcode = bus.read(master, self.temp_addr);
+                self.state = ExecState::Execute(opcode, 3);
+            }
+            3 => {
+                let result = operation(self, self.opcode);
+                bus.write(master, self.temp_addr, result);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
     /// Generic helper for Page 2 Indexed Addressing Mode ALU instructions.
     /// Same as `alu_indexed` but uses `ExecutePage2` state transitions.
     #[allow(dead_code)]
