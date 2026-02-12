@@ -43,6 +43,10 @@ pub struct M6809 {
     pub(crate) state: ExecState,
     pub(crate) opcode: u8,
     pub(crate) temp_addr: u16,
+    /// Interrupt type being processed: 0=none, 1=NMI, 2=FIRQ, 3=IRQ
+    pub(crate) interrupt_type: u8,
+    /// Previous NMI line state for edge detection
+    pub(crate) nmi_previous: bool,
     #[allow(dead_code)]
     resume_delay: u8, // For TSC/RDY release timing
 }
@@ -57,7 +61,12 @@ pub(crate) enum ExecState {
     Halted {
         return_state: Box<ExecState>,
     },
-    // ... etc
+    /// Hardware interrupt response sequence (NMI/IRQ/FIRQ push + vector)
+    Interrupt(u8),
+    /// CWAI: all registers pushed, waiting for interrupt
+    WaitForInterrupt,
+    /// SYNC: waiting for any interrupt signal
+    SyncWait,
 }
 
 impl M6809 {
@@ -75,6 +84,8 @@ impl M6809 {
             state: ExecState::Fetch,
             opcode: 0,
             temp_addr: 0,
+            interrupt_type: 0,
+            nmi_previous: false,
             resume_delay: 0,
         }
     }
@@ -120,7 +131,9 @@ impl M6809 {
             }
             ExecState::Fetch => {
                 let ints = bus.check_interrupts(master);
-                self.handle_interrupts(ints);
+                if self.handle_interrupts(ints) {
+                    return; // Interrupt taken, state changed to Interrupt sequence
+                }
 
                 self.opcode = bus.read(master, self.pc);
                 self.pc = self.pc.wrapping_add(1);
@@ -134,6 +147,15 @@ impl M6809 {
             }
             ExecState::ExecutePage3(op, cyc) => {
                 self.execute_instruction_page3(op, cyc, bus, master);
+            }
+            ExecState::Interrupt(cycle) => {
+                self.execute_interrupt(cycle, bus, master);
+            }
+            ExecState::WaitForInterrupt => {
+                self.wait_for_interrupt(bus, master);
+            }
+            ExecState::SyncWait => {
+                self.sync_wait(bus, master);
             }
         }
     }
@@ -166,6 +188,7 @@ impl M6809 {
 
             // Misc inherent/immediate
             0x12 => self.op_nop(cycle),
+            0x13 => self.op_sync(cycle, bus, master),
             0x19 => self.op_daa(cycle),
             0x1A => self.op_orcc(cycle, bus, master),
             0x1C => self.op_andcc(cycle, bus, master),
@@ -213,6 +236,7 @@ impl M6809 {
             0x39 => self.op_rts(cycle, bus, master),
             0x3A => self.op_abx(cycle),
             0x3B => self.op_rti(cycle, bus, master),
+            0x3C => self.op_cwai(cycle, bus, master),
             0x3F => self.op_swi(cycle, bus, master),
 
             // Stack operations
@@ -517,11 +541,35 @@ impl M6809 {
         }
     }
 
-    fn handle_interrupts(&mut self, ints: InterruptState) {
-        // 6809-specific: check FIRQ, IRQ, NMI
-        if ints.nmi { /* ... */ }
-        if ints.firq && (self.cc & CcFlag::F as u8) == 0 { /* ... */ }
-        if ints.irq && (self.cc & CcFlag::I as u8) == 0 { /* ... */ }
+    /// Check for pending hardware interrupts at instruction boundary.
+    /// Returns true if an interrupt is taken (state changed to Interrupt sequence).
+    /// Priority: NMI (edge-triggered) > FIRQ (level, masked by F) > IRQ (level, masked by I).
+    fn handle_interrupts(&mut self, ints: InterruptState) -> bool {
+        // NMI is edge-triggered: detect rising edge
+        let nmi_edge = ints.nmi && !self.nmi_previous;
+        self.nmi_previous = ints.nmi;
+
+        if nmi_edge {
+            self.interrupt_type = 1; // NMI
+            self.state = ExecState::Interrupt(0);
+            return true;
+        }
+
+        // FIRQ: level-sensitive, masked by F flag
+        if ints.firq && (self.cc & CcFlag::F as u8) == 0 {
+            self.interrupt_type = 2; // FIRQ
+            self.state = ExecState::Interrupt(0);
+            return true;
+        }
+
+        // IRQ: level-sensitive, masked by I flag
+        if ints.irq && (self.cc & CcFlag::I as u8) == 0 {
+            self.interrupt_type = 3; // IRQ
+            self.state = ExecState::Interrupt(0);
+            return true;
+        }
+
+        false
     }
 }
 
@@ -554,7 +602,10 @@ impl Cpu for M6809 {
     }
 
     fn is_sleeping(&self) -> bool {
-        matches!(self.state, ExecState::Halted { .. })
+        matches!(
+            self.state,
+            ExecState::Halted { .. } | ExecState::WaitForInterrupt | ExecState::SyncWait
+        )
     }
 }
 

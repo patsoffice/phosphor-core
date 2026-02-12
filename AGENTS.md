@@ -10,10 +10,10 @@ This document provides essential information for AI agents and automated tools w
 
 **Current Status:**
 
-- M6809: 266/~280 opcodes implemented (95.0% complete)
+- M6809: 268/~280 opcodes implemented (95.7% complete)
 - M6502: 1/~151 opcodes implemented (initial)
 - Z80: 1/~1582 opcodes implemented (initial)
-- 282 integration tests passing
+- 302 integration tests passing
 - Focus on educational clarity and correctness over performance
 
 ### Repository Structure
@@ -31,7 +31,7 @@ phosphor-core/
 │   │   │   └── z80/         # Z80 implementation
 │   │   └── device/         # Peripheral devices (PIA 6820 stub)
 │   │   └── lib.rs         # Library exports + prelude
-│   └── tests/             # Integration tests (282 total)
+│   └── tests/             # Integration tests (302 total)
 │       ├── common/mod.rs   # TestBus harness for direct CPU testing
 │       └── m*_test.rs     # CPU-specific test files
 ├── machines/               # phosphor-machines crate
@@ -170,7 +170,11 @@ enum ExecState {
     Fetch,                    // Read next opcode
     Execute(u8, u8),         // Execute opcode at cycle N
     ExecutePage2(u8, u8),    // Execute Page 2 (0x10 prefix)
+    ExecutePage3(u8, u8),    // Execute Page 3 (0x11 prefix)
     Halted { .. },            // TSC/RDY asserted
+    Interrupt(u8),           // Hardware interrupt response
+    WaitForInterrupt,        // CWAI wait state
+    SyncWait,                // SYNC wait state
 }
 ```
 
@@ -261,7 +265,7 @@ src/cpu/m6809/
 │   └── word.rs        # 16-bit operations (ADDD, SUBD, CMPX, etc.)
 ├── branch.rs          # BRA, BEQ, BNE, BSR, JSR, RTS
 ├── load_store.rs      # LDA, STA, LDB, STB with immediate/direct modes
-├── stack.rs          # PSHS, PULS, PSHU, PULU, SWI, SWI2, SWI3, RTI
+├── stack.rs          # PSHS, PULS, PSHU, PULU, SWI/SWI2/SWI3, RTI, CWAI, SYNC, interrupt response
 └── transfer.rs       # TFR, EXG
 ```
 
@@ -344,8 +348,8 @@ assert_eq!(sys.read_ram(0x10), 0x42);
 
 #### High Priority (What needs help)
 
-- **Remaining 6809 instructions** - CWAI, SYNC, hardware interrupt handling
-- **Interrupt handling** - IRQ, FIRQ, NMI infrastructure in handle_interrupts()
+- **Remaining 6809 instructions** - ~12 undocumented/illegal opcodes
+- **Reset vector** - Read PC from 0xFFFE/0xFFFF on reset (requires bus access)
 
 #### Medium Priority
 

@@ -421,6 +421,254 @@ impl M6809 {
         }
     }
 
+    // --- Hardware Interrupt Response ---
+
+    /// Execute hardware interrupt push+vector sequence.
+    /// Called from execute_cycle when state is Interrupt(cycle).
+    /// interrupt_type: 1=NMI, 2=FIRQ, 3=IRQ (stored in self.interrupt_type).
+    pub(crate) fn execute_interrupt<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            // Vector-only phase (used by CWAI completion, cycles 20-21)
+            20 => {
+                // temp_addr has vector base address, read high byte
+                let hi = bus.read(master, self.temp_addr);
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.opcode = hi; // scratch storage for vector high
+                self.state = ExecState::Interrupt(21);
+            }
+            21 => {
+                let lo = bus.read(master, self.temp_addr);
+                self.pc = ((self.opcode as u16) << 8) | (lo as u16);
+                self.state = ExecState::Fetch;
+            }
+            // Full interrupt response (dispatched by type)
+            _ => match self.interrupt_type {
+                1 | 3 => self.interrupt_full(cycle, bus, master), // NMI or IRQ
+                2 => self.interrupt_firq(cycle, bus, master),     // FIRQ
+                _ => {
+                    self.state = ExecState::Fetch;
+                }
+            },
+        }
+    }
+
+    /// NMI/IRQ full interrupt response: set E, push all 12 registers, mask, vector.
+    /// Cycle 0-11: push registers (identical to SWI).
+    /// Cycle 12: set mask flags + read vector high.
+    /// Cycle 13: read vector low, jump to handler.
+    fn interrupt_full<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                self.cc |= CcFlag::E as u8;
+                self.s = self.s.wrapping_sub(1);
+                bus.write(master, self.s, self.swi_push_byte(0));
+                self.state = ExecState::Interrupt(1);
+            }
+            c @ 1..=11 => {
+                self.s = self.s.wrapping_sub(1);
+                bus.write(master, self.s, self.swi_push_byte(c));
+                self.state = ExecState::Interrupt(c + 1);
+            }
+            12 => {
+                let (vector, mask) = match self.interrupt_type {
+                    1 => (0xFFFC_u16, CcFlag::I as u8 | CcFlag::F as u8), // NMI
+                    _ => (0xFFF8_u16, CcFlag::I as u8),                   // IRQ
+                };
+                self.cc |= mask;
+                let hi = bus.read(master, vector);
+                self.temp_addr = (hi as u16) << 8;
+                self.state = ExecState::Interrupt(13);
+            }
+            13 => {
+                let vector_lo = match self.interrupt_type {
+                    1 => 0xFFFD_u16, // NMI
+                    _ => 0xFFF9_u16, // IRQ
+                };
+                let lo = bus.read(master, vector_lo);
+                self.pc = self.temp_addr | (lo as u16);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
+    /// FIRQ fast interrupt response: clear E, push CC+PC only (3 bytes), mask I+F, vector.
+    /// Cycle 0: clear E, push PC low.
+    /// Cycle 1: push PC high.
+    /// Cycle 2: push CC.
+    /// Cycle 3: set I+F, read vector high.
+    /// Cycle 4: read vector low, jump to handler.
+    fn interrupt_firq<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                self.cc &= !(CcFlag::E as u8); // Clear E for fast return
+                self.s = self.s.wrapping_sub(1);
+                bus.write(master, self.s, self.pc as u8); // PC low
+                self.state = ExecState::Interrupt(1);
+            }
+            1 => {
+                self.s = self.s.wrapping_sub(1);
+                bus.write(master, self.s, (self.pc >> 8) as u8); // PC high
+                self.state = ExecState::Interrupt(2);
+            }
+            2 => {
+                self.s = self.s.wrapping_sub(1);
+                bus.write(master, self.s, self.cc); // CC
+                self.state = ExecState::Interrupt(3);
+            }
+            3 => {
+                self.cc |= CcFlag::I as u8 | CcFlag::F as u8;
+                let hi = bus.read(master, 0xFFF6);
+                self.temp_addr = (hi as u16) << 8;
+                self.state = ExecState::Interrupt(4);
+            }
+            4 => {
+                let lo = bus.read(master, 0xFFF7);
+                self.pc = self.temp_addr | (lo as u16);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
+    /// Handle CWAI wait state: check for interrupts each cycle.
+    /// Since all registers are already pushed, just apply mask and vector.
+    pub(crate) fn wait_for_interrupt<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let ints = bus.check_interrupts(master);
+
+        // NMI edge detection
+        let nmi_edge = ints.nmi && !self.nmi_previous;
+        self.nmi_previous = ints.nmi;
+
+        if nmi_edge {
+            self.cc |= CcFlag::I as u8 | CcFlag::F as u8;
+            self.temp_addr = 0xFFFC;
+            self.state = ExecState::Interrupt(20); // vector-only phase
+            return;
+        }
+
+        if ints.firq && (self.cc & CcFlag::F as u8) == 0 {
+            self.cc |= CcFlag::I as u8 | CcFlag::F as u8;
+            self.temp_addr = 0xFFF6;
+            self.state = ExecState::Interrupt(20);
+            return;
+        }
+
+        if ints.irq && (self.cc & CcFlag::I as u8) == 0 {
+            self.cc |= CcFlag::I as u8;
+            self.temp_addr = 0xFFF8;
+            self.state = ExecState::Interrupt(20);
+        }
+        // Otherwise: stay in WaitForInterrupt
+    }
+
+    /// Handle SYNC wait state: check for any interrupt signal each cycle.
+    /// If interrupt is not masked: take the interrupt normally (full push response).
+    /// If interrupt is masked: just wake up and continue to next instruction.
+    pub(crate) fn sync_wait<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let ints = bus.check_interrupts(master);
+
+        // NMI edge detection
+        let nmi_edge = ints.nmi && !self.nmi_previous;
+        self.nmi_previous = ints.nmi;
+
+        // Any interrupt signal wakes up from SYNC
+        let any_signal = nmi_edge || ints.firq || ints.irq;
+        if !any_signal {
+            return; // Stay in SyncWait
+        }
+
+        // Determine if the interrupt can be taken (not masked)
+        if nmi_edge {
+            self.interrupt_type = 1;
+            self.state = ExecState::Interrupt(0);
+        } else if ints.firq && (self.cc & CcFlag::F as u8) == 0 {
+            self.interrupt_type = 2;
+            self.state = ExecState::Interrupt(0);
+        } else if ints.irq && (self.cc & CcFlag::I as u8) == 0 {
+            self.interrupt_type = 3;
+            self.state = ExecState::Interrupt(0);
+        } else {
+            // Interrupt is masked: just wake up, continue to next instruction
+            self.state = ExecState::Fetch;
+        }
+    }
+
+    // --- CWAI / SYNC opcodes ---
+
+    /// CWAI (0x3C): Clear and Wait for Interrupt.
+    /// Cycle 0: Read immediate operand, AND with CC, set E flag.
+    /// Cycles 1-12: Push all registers (same as SWI push sequence).
+    /// Then enter WaitForInterrupt state.
+    /// When interrupt arrives: skip push (already done), just mask + vector.
+    pub(crate) fn op_cwai<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                // Read immediate operand, AND with CC, set E flag
+                let operand = bus.read(master, self.pc);
+                self.pc = self.pc.wrapping_add(1);
+                self.cc &= operand;
+                self.cc |= CcFlag::E as u8;
+                self.state = ExecState::Execute(0x3C, 1);
+            }
+            c @ 1..=12 => {
+                // Push all registers (same order as SWI)
+                self.s = self.s.wrapping_sub(1);
+                bus.write(master, self.s, self.swi_push_byte(c - 1));
+                if c == 12 {
+                    // All registers pushed, enter wait state
+                    self.state = ExecState::WaitForInterrupt;
+                } else {
+                    self.state = ExecState::Execute(0x3C, c + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// SYNC (0x13): Synchronize to interrupt.
+    /// Halts CPU until any interrupt signal is detected.
+    /// If interrupt is not masked: take the interrupt normally.
+    /// If interrupt is masked: just resume at next instruction.
+    pub(crate) fn op_sync<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        cycle: u8,
+        _bus: &mut B,
+        _master: BusMaster,
+    ) {
+        if cycle == 0 {
+            self.state = ExecState::SyncWait;
+        }
+    }
+
     /// RTI (0x3B): Return from Interrupt.
     /// Pulls CC from S stack. If E flag is set in pulled CC, pulls all registers
     /// (A, B, DP, X, Y, U, PC). If E is clear, pulls only PC (fast FIRQ return).

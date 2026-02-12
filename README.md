@@ -4,7 +4,7 @@
 
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-282%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-302%20passing-brightgreen.svg)](tests/)
 
 A modular emulator framework for retro CPUs, designed for extensibility and educational purposes. Features a trait-based architecture that allows easy addition of new CPUs, peripherals, and complete systems.
 
@@ -12,7 +12,7 @@ A modular emulator framework for retro CPUs, designed for extensibility and educ
 
 **Current Focus:** Motorola 6809 CPU emulation
 
-**Status:** 🔨 Early development (266/280 opcodes implemented, 282 tests passing)
+**Status:** 🔨 Early development (268/280 opcodes implemented, 302 tests passing)
 
 ### Features
 
@@ -26,14 +26,14 @@ A modular emulator framework for retro CPUs, designed for extensibility and educ
 
 ### What Works Now
 
-- Motorola 6809 CPU with 266 instructions (including ALU, branch, subroutine, stack, transfer, direct-page, indexed, extended, Page 2/3 ops, SWI/RTI)
+- Motorola 6809 CPU with 268 instructions (including ALU, branch, subroutine, stack, transfer, direct-page, indexed, extended, Page 2/3 ops, SWI/RTI, CWAI, SYNC)
 - Condition code flag enum (CcFlag) for readable flag manipulation
 - Initial MOS 6502 CPU support (LDA immediate implemented)
 - **New:** Initial Zilog Z80 CPU support (LD A, n implemented)
 - Simple 6809 system with 32KB RAM + 32KB ROM *(moving to separate crate)*
 - DMA arbitration and halt signal support
-- Interrupt framework (NMI, IRQ, FIRQ)
-- Full test suite (282 integration tests) using direct CPU testing
+- Complete hardware interrupt handling (NMI edge-triggered, IRQ/FIRQ level-sensitive with masking)
+- Full test suite (302 integration tests) using direct CPU testing
 
 ## Quick Start
 
@@ -60,8 +60,8 @@ cargo test
 #   test test_reset ... ok
 #   test test_store_accumulator_direct ... ok
 #   test test_addd_immediate ... ok
-#   ... (282 tests total)
-#   test result: ok. 282 passed; 0 failed
+#   ... (302 tests total)
+#   test result: ok. 302 passed; 0 failed
 ```
 
 ### Try It Out
@@ -122,16 +122,16 @@ fn main() {
 | Component | Status | Notes |
 |-----------|--------|-------|
 | **Core Framework** | ✅ Complete | Bus trait, component system, arbitration |
-| **M6809 CPU** | ⚠️ Partial | State machine working, 266 instructions |
+| **M6809 CPU** | ⚠️ Partial | State machine working, 268 instructions |
 | **M6502 CPU** | ⚠️ Partial | Initial structure, LDA imm implemented |
 | **Z80 CPU** | ⚠️ Partial | Initial structure, LD A, n implemented |
 | **PIA 6820** | ❌ Placeholder | Stub only |
 | **Simple6809 System** | ⚠️ Moving | RAM/ROM, testing utilities *(migrating to separate crate)* |
-| **Test Suite** | ✅ Complete | 282 integration tests passing using direct CPU testing |
+| **Test Suite** | ✅ Complete | 302 integration tests passing using direct CPU testing |
 
 ### Implemented 6809 Instructions
 
-Currently **266 of ~280** documented 6809 opcodes are implemented (across 3 opcode pages: 219 on page 0, 38 on page 1/0x10, 9 on page 2/0x11):
+Currently **268 of ~280** documented 6809 opcodes are implemented (across 3 opcode pages: 221 on page 0, 38 on page 1/0x10, 9 on page 2/0x11):
 
 | Category | Implemented | Examples |
 | --- | --- | --- |
@@ -163,7 +163,7 @@ Currently **266 of ~280** documented 6809 opcodes are implemented (across 3 opco
 | Jump/Subroutine | 8 | BSR, JSR (direct/indexed/extended), JMP (direct/indexed/extended), RTS |
 | Transfer | 2 | TFR, EXG |
 | Stack | 4 | PSHS, PULS, PSHU, PULU |
-| Interrupt | 2 | SWI, RTI |
+| Interrupt | 4 | SWI, RTI, CWAI, SYNC |
 | Page 2 (0x10) | 38 | CMPD, CMPY, LDY, STY, LDS, STS (imm/direct/indexed/ext), LBRN..LBLE, SWI2 |
 | Page 3 (0x11) | 9 | CMPU, CMPS (imm/direct/indexed/extended), SWI3 |
 
@@ -283,7 +283,7 @@ phosphor-core/
 │   │   ├── cpu/                    # CPU implementations
 │   │   │   ├── mod.rs              # Generic Cpu trait + CpuStateTrait
 │   │   │   ├── state.rs            # CpuStateTrait + state structs
-│   │   │   ├── m6809/              # Working M6809 (266 opcodes)
+│   │   │   ├── m6809/              # Working M6809 (268 opcodes)
 │   │   │   │   ├── mod.rs          # Struct, state machine, dispatch
 │   │   │   │   ├── alu.rs          # ALU helpers and module exports
 │   │   │   │   ├── binary.rs       # Binary ops (ADD, SUB, MUL, etc.)
@@ -292,7 +292,7 @@ phosphor-core/
 │   │   │   │   └── word.rs         # 16-bit ops (ADDD, CMPX, LDD, etc.)
 │   │   │   ├── branch.rs           # Branch/subroutine ops (BRA, BEQ, BSR, JSR, RTS, etc.)
 │   │   │   ├── load_store.rs       # LDA, LDB, STA
-│   │   │   ├── stack.rs            # Stack ops (PSHS, PULS, PSHU, PULU)
+│   │   │   ├── stack.rs            # Stack ops (PSHS, PULS, PSHU, PULU) + interrupts (SWI/RTI/CWAI/SYNC)
 │   │   │   └── transfer.rs         # Transfer/exchange (TFR, EXG)
 │   │   ├── m6502/                  # Initial implementation
 │   │   │   ├── mod.rs              # Struct, state machine
@@ -307,7 +307,7 @@ phosphor-core/
 │       ├── common/mod.rs           # Direct CPU testing harness
 │       ├── m6502_basic_test.rs     # Basic 6502 tests (1 test)
 │       ├── z80_basic_test.rs       # Basic Z80 tests (1 test)
-│       ├── m6809_*_test.rs       # M6809 tests (15 files, 249 tests)
+│       ├── m6809_*_test.rs       # M6809 tests (16 files, 276 tests)
 │       └── target/                # Build artifacts (gitignored)
 └── machines/                        # phosphor-machines crate
     ├── Cargo.toml                  # Machines crate manifest
@@ -332,6 +332,9 @@ enum ExecState {
     ExecutePage2(u8, u8),           // Execute Page 2 (0x10 prefix) opcode
     ExecutePage3(u8, u8),           // Execute Page 3 (0x11 prefix) opcode
     Halted { .. },                  // TSC/RDY asserted
+    Interrupt(u8),                  // Hardware interrupt response sequence
+    WaitForInterrupt,               // CWAI wait state
+    SyncWait,                       // SYNC wait state
 }
 ```
 
@@ -484,15 +487,17 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 - [x] Misc operations (NOP, SEX, ABX, DAA, ORCC, ANDCC)
 - [x] Long conditional branches (LBRN..LBLE via Page 2/0x10 prefix)
 - [x] Software interrupts (SWI, SWI2, SWI3, RTI)
+- [x] Hardware interrupt handling (NMI, FIRQ, IRQ)
+- [x] CWAI and SYNC instructions
 
-**Progress:** 266/~280 opcodes implemented (95.0%)
+**Progress:** 268/~280 opcodes implemented (95.7%)
 
 ### Phase 2: Core Infrastructure
 
 - [ ] Move SimpleSystem components to separate crate
-- [ ] Interrupt handling (IRQ, FIRQ, NMI)
+- [x] Interrupt handling (IRQ, FIRQ, NMI)
 - [ ] Reset vector fetch from 0xFFFE/0xFFFF
-- [ ] CWAI and SYNC instructions
+- [x] CWAI and SYNC instructions
 - [ ] Cycle-accurate timing validation
 - [ ] Instruction disassembler
 - [ ] Save state support
@@ -741,7 +746,7 @@ This is an educational emulator project. We welcome contributions!
 
 ### Areas Needing Help
 
-- 🔴 **High Priority:** Remaining 6809 instructions (CWAI, SYNC, interrupt handling infrastructure)
+- 🔴 **High Priority:** Remaining 6809 instructions (~12 undocumented/illegal opcodes)
 - 🟡 **Medium Priority:** 6502 CPU implementation
 - 🟡 **Medium Priority:** Z80 CPU implementation
 - 🟢 **Low Priority:** Peripheral devices
@@ -781,7 +786,7 @@ A: Rust provides zero-cost abstractions, memory safety, and excellent performanc
 
 **Q: Can this run commercial ROMs?**
 
-A: Not yet. Only 266 instructions are implemented. This is an educational project in early development.
+A: Not yet. Only 268 instructions are implemented. This is an educational project in early development.
 
 **Q: Why use `unsafe` in an emulator?**
 

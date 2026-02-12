@@ -42,15 +42,15 @@ fn test_swi_pushes_all_registers() {
     // CC, A, B, DP, X_hi, X_lo, Y_hi, Y_lo, U_hi, U_lo, PC_hi, PC_lo
     let s = 0x0100 - 12;
     assert_eq!(bus.memory[s], CcFlag::N as u8 | CcFlag::E as u8); // CC with E set
-    assert_eq!(bus.memory[s + 1], 0x11);  // A
-    assert_eq!(bus.memory[s + 2], 0x22);  // B
-    assert_eq!(bus.memory[s + 3], 0x33);  // DP
-    assert_eq!(bus.memory[s + 4], 0x44);  // X high
-    assert_eq!(bus.memory[s + 5], 0x55);  // X low
-    assert_eq!(bus.memory[s + 6], 0x66);  // Y high
-    assert_eq!(bus.memory[s + 7], 0x77);  // Y low
-    assert_eq!(bus.memory[s + 8], 0x88);  // U high
-    assert_eq!(bus.memory[s + 9], 0x99);  // U low
+    assert_eq!(bus.memory[s + 1], 0x11); // A
+    assert_eq!(bus.memory[s + 2], 0x22); // B
+    assert_eq!(bus.memory[s + 3], 0x33); // DP
+    assert_eq!(bus.memory[s + 4], 0x44); // X high
+    assert_eq!(bus.memory[s + 5], 0x55); // X low
+    assert_eq!(bus.memory[s + 6], 0x66); // Y high
+    assert_eq!(bus.memory[s + 7], 0x77); // Y low
+    assert_eq!(bus.memory[s + 8], 0x88); // U high
+    assert_eq!(bus.memory[s + 9], 0x99); // U low
     assert_eq!(bus.memory[s + 10], 0x00); // PC high (was 0x0001 after fetch)
     assert_eq!(bus.memory[s + 11], 0x01); // PC low
 
@@ -142,15 +142,15 @@ fn test_swi2_pushes_all_registers() {
     // Verify stack contents
     let s = cpu.s as usize;
     assert_ne!(bus.memory[s] & (CcFlag::E as u8), 0); // CC with E
-    assert_eq!(bus.memory[s + 1], 0xAA);  // A
-    assert_eq!(bus.memory[s + 2], 0xBB);  // B
-    assert_eq!(bus.memory[s + 3], 0xCC);  // DP
-    assert_eq!(bus.memory[s + 4], 0x12);  // X high
-    assert_eq!(bus.memory[s + 5], 0x34);  // X low
-    assert_eq!(bus.memory[s + 6], 0x56);  // Y high
-    assert_eq!(bus.memory[s + 7], 0x78);  // Y low
-    assert_eq!(bus.memory[s + 8], 0x9A);  // U high
-    assert_eq!(bus.memory[s + 9], 0xBC);  // U low
+    assert_eq!(bus.memory[s + 1], 0xAA); // A
+    assert_eq!(bus.memory[s + 2], 0xBB); // B
+    assert_eq!(bus.memory[s + 3], 0xCC); // DP
+    assert_eq!(bus.memory[s + 4], 0x12); // X high
+    assert_eq!(bus.memory[s + 5], 0x34); // X low
+    assert_eq!(bus.memory[s + 6], 0x56); // Y high
+    assert_eq!(bus.memory[s + 7], 0x78); // Y low
+    assert_eq!(bus.memory[s + 8], 0x9A); // U high
+    assert_eq!(bus.memory[s + 9], 0xBC); // U low
 }
 
 #[test]
@@ -204,8 +204,8 @@ fn test_swi3_pushes_all_registers() {
     // Verify stack
     let s = cpu.s as usize;
     assert_ne!(bus.memory[s] & (CcFlag::E as u8), 0); // CC with E
-    assert_eq!(bus.memory[s + 1], 0x11);  // A
-    assert_eq!(bus.memory[s + 2], 0x22);  // B
+    assert_eq!(bus.memory[s + 1], 0x11); // A
+    assert_eq!(bus.memory[s + 2], 0x22); // B
 }
 
 #[test]
@@ -258,15 +258,15 @@ fn test_rti_full_restore_e_set() {
 
     let cc_on_stack = CcFlag::E as u8 | CcFlag::N as u8; // E=1 → full restore
     bus.memory[s] = cc_on_stack;
-    bus.memory[s + 1] = 0x11;  // A
-    bus.memory[s + 2] = 0x22;  // B
-    bus.memory[s + 3] = 0x33;  // DP
-    bus.memory[s + 4] = 0x44;  // X high
-    bus.memory[s + 5] = 0x55;  // X low
-    bus.memory[s + 6] = 0x66;  // Y high
-    bus.memory[s + 7] = 0x77;  // Y low
-    bus.memory[s + 8] = 0x88;  // U high
-    bus.memory[s + 9] = 0x99;  // U low
+    bus.memory[s + 1] = 0x11; // A
+    bus.memory[s + 2] = 0x22; // B
+    bus.memory[s + 3] = 0x33; // DP
+    bus.memory[s + 4] = 0x44; // X high
+    bus.memory[s + 5] = 0x55; // X low
+    bus.memory[s + 6] = 0x66; // Y high
+    bus.memory[s + 7] = 0x77; // Y low
+    bus.memory[s + 8] = 0x88; // U high
+    bus.memory[s + 9] = 0x99; // U low
     bus.memory[s + 10] = 0x10; // PC high
     bus.memory[s + 11] = 0x00; // PC low
 
@@ -435,7 +435,7 @@ fn test_swi2_then_rti_roundtrip() {
     bus.memory[0xFFF5] = 0x00;
 
     bus.load(0, &[0x10, 0x3F]); // SWI2
-    bus.memory[0x3000] = 0x3B;  // RTI
+    bus.memory[0x3000] = 0x3B; // RTI
 
     // Execute SWI2 (16 cycles)
     tick(&mut cpu, &mut bus, 16);
