@@ -10,10 +10,10 @@ This document provides essential information for AI agents and automated tools w
 
 **Current Status:**
 
-- M6809: 247/~280 opcodes implemented (88% complete)
+- M6809: 262/~280 opcodes implemented (93.6% complete)
 - M6502: 1/~151 opcodes implemented (initial)
 - Z80: 1/~1582 opcodes implemented (initial)
-- 233 integration tests passing
+- 264 integration tests passing
 - Focus on educational clarity and correctness over performance
 
 ### Repository Structure
@@ -31,7 +31,7 @@ phosphor-core/
 │   │   │   └── z80/         # Z80 implementation
 │   │   └── device/         # Peripheral devices (PIA 6820 stub)
 │   │   └── lib.rs         # Library exports + prelude
-│   └── tests/             # Integration tests (233 total)
+│   └── tests/             # Integration tests (264 total)
 │       ├── common/mod.rs   # TestBus harness for direct CPU testing
 │       └── m*_test.rs     # CPU-specific test files
 ├── machines/               # phosphor-machines crate

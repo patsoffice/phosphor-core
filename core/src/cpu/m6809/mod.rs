@@ -52,6 +52,7 @@ pub(crate) enum ExecState {
     Fetch,
     Execute(u8, u8),      // (opcode, cycle)
     ExecutePage2(u8, u8), // (opcode, cycle) for 0x10 prefix
+    ExecutePage3(u8, u8), // (opcode, cycle) for 0x11 prefix
     #[allow(dead_code)]
     Halted {
         return_state: Box<ExecState>,
@@ -131,6 +132,9 @@ impl M6809 {
             ExecState::ExecutePage2(op, cyc) => {
                 self.execute_instruction_page2(op, cyc, bus, master);
             }
+            ExecState::ExecutePage3(op, cyc) => {
+                self.execute_instruction_page3(op, cyc, bus, master);
+            }
         }
     }
 
@@ -150,6 +154,22 @@ impl M6809 {
                     self.state = ExecState::ExecutePage2(next_op, 0);
                 }
             }
+
+            // Page 3 Prefix (0x11)
+            0x11 => {
+                if cycle == 0 {
+                    let next_op = bus.read(master, self.pc);
+                    self.pc = self.pc.wrapping_add(1);
+                    self.state = ExecState::ExecutePage3(next_op, 0);
+                }
+            }
+
+            // Misc inherent/immediate
+            0x12 => self.op_nop(cycle),
+            0x19 => self.op_daa(cycle),
+            0x1A => self.op_orcc(cycle, bus, master),
+            0x1C => self.op_andcc(cycle, bus, master),
+            0x1D => self.op_sex(cycle),
 
             // Direct-page unary/shift (0x00-0x0F)
             0x00 => self.op_neg_direct(opcode, cycle, bus, master),
@@ -191,6 +211,7 @@ impl M6809 {
 
             // Subroutine / Return
             0x39 => self.op_rts(cycle, bus, master),
+            0x3A => self.op_abx(cycle),
 
             // Stack operations
             0x34 => self.op_pshs(cycle, bus, master),
@@ -459,6 +480,30 @@ impl M6809 {
             0xEF => self.op_sts_indexed(opcode, cycle, bus, master),
             0xFE => self.op_lds_extended(opcode, cycle, bus, master),
             0xFF => self.op_sts_extended(opcode, cycle, bus, master),
+
+            _ => self.state = ExecState::Fetch,
+        }
+    }
+
+    fn execute_instruction_page3<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match opcode {
+            // CMPU (immediate, direct, indexed, extended)
+            0x83 => self.op_cmpu_imm(opcode, cycle, bus, master),
+            0x93 => self.op_cmpu_direct(opcode, cycle, bus, master),
+            0xA3 => self.op_cmpu_indexed(opcode, cycle, bus, master),
+            0xB3 => self.op_cmpu_extended(opcode, cycle, bus, master),
+
+            // CMPS (immediate, direct, indexed, extended)
+            0x8C => self.op_cmps_imm(opcode, cycle, bus, master),
+            0x9C => self.op_cmps_direct(opcode, cycle, bus, master),
+            0xAC => self.op_cmps_indexed(opcode, cycle, bus, master),
+            0xBC => self.op_cmps_extended(opcode, cycle, bus, master),
 
             _ => self.state = ExecState::Fetch,
         }

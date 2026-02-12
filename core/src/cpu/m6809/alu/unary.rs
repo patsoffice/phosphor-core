@@ -176,6 +176,64 @@ impl M6809 {
         }
     }
 
+    /// NOP inherent (0x12): No operation.
+    /// No flags affected.
+    pub(crate) fn op_nop(&mut self, cycle: u8) {
+        if cycle == 0 {
+            self.state = ExecState::Fetch;
+        }
+    }
+
+    /// SEX inherent (0x1D): Sign-extend B into A.
+    /// If B bit 7 is set, A = 0xFF; otherwise A = 0x00.
+    /// N set if result is negative. Z set if D (A:B) is zero.
+    pub(crate) fn op_sex(&mut self, cycle: u8) {
+        if cycle == 0 {
+            self.a = if self.b & 0x80 != 0 { 0xFF } else { 0x00 };
+            let d = self.get_d();
+            self.set_flag(CcFlag::N, d & 0x8000 != 0);
+            self.set_flag(CcFlag::Z, d == 0);
+            self.state = ExecState::Fetch;
+        }
+    }
+
+    /// ABX inherent (0x3A): Add B (unsigned) to X.
+    /// X = X + B. No flags affected.
+    pub(crate) fn op_abx(&mut self, cycle: u8) {
+        if cycle == 0 {
+            self.x = self.x.wrapping_add(self.b as u16);
+            self.state = ExecState::Fetch;
+        }
+    }
+
+    /// DAA inherent (0x19): Decimal Adjust A after BCD addition.
+    /// Adjusts A to produce valid BCD result after ADDA/ADCA.
+    /// N set if result bit 7 is set. Z set if result is zero.
+    /// C set if BCD carry occurred. V undefined (left unchanged).
+    pub(crate) fn op_daa(&mut self, cycle: u8) {
+        if cycle == 0 {
+            let mut correction: u8 = 0;
+            let mut carry = self.cc & (CcFlag::C as u8) != 0;
+            let msn = self.a & 0xF0;
+            let lsn = self.a & 0x0F;
+
+            if lsn > 0x09 || (self.cc & (CcFlag::H as u8) != 0) {
+                correction |= 0x06;
+            }
+
+            if msn > 0x90 || carry || (msn > 0x80 && lsn > 0x09) {
+                correction |= 0x60;
+                carry = true;
+            }
+
+            self.a = self.a.wrapping_add(correction);
+            self.set_flag(CcFlag::N, self.a & 0x80 != 0);
+            self.set_flag(CcFlag::Z, self.a == 0);
+            self.set_flag(CcFlag::C, carry);
+            self.state = ExecState::Fetch;
+        }
+    }
+
     // --- Direct addressing mode (memory unary ops, 0x00-0x0F) ---
 
     /// NEG direct (0x00): Negate memory byte at DP:addr.

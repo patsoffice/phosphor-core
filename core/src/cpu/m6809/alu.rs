@@ -66,6 +66,32 @@ impl M6809 {
         }
     }
 
+    /// ORCC immediate (0x1A): OR immediate value into CC register.
+    /// All CC bits may be set by the OR operand.
+    pub(crate) fn op_orcc<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_imm(cycle, bus, master, |cpu, operand| {
+            cpu.cc |= operand;
+        });
+    }
+
+    /// ANDCC immediate (0x1C): AND immediate value into CC register.
+    /// Used to clear specific CC bits (e.g., ANDCC #$FE clears C flag).
+    pub(crate) fn op_andcc<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.alu_imm(cycle, bus, master, |cpu, operand| {
+            cpu.cc &= operand;
+        });
+    }
+
     /// Generic helper for Direct Addressing Mode ALU instructions.
     /// Two execute cycles: cycle 0 fetches the address byte and forms DP:addr,
     /// cycle 1 reads the operand from the effective address and runs the operation.
@@ -619,6 +645,213 @@ impl M6809 {
                 self.temp_addr = self.temp_addr.wrapping_add(1);
                 self.opcode = high;
                 self.state = ExecState::ExecutePage2(opcode, 11);
+                false
+            }
+            11 => {
+                let low = bus.read(master, self.temp_addr) as u16;
+                let high = (self.opcode as u16) << 8;
+                self.temp_addr = high | low;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Multi-cycle indexed address resolution for Page 3 instructions.
+    /// Identical to `indexed_resolve` but uses `ExecutePage3` state transitions.
+    pub(crate) fn indexed_resolve_page3<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) -> bool {
+        match cycle {
+            0 => {
+                let postbyte = bus.read(master, self.pc);
+                self.pc = self.pc.wrapping_add(1);
+                self.opcode = postbyte;
+
+                if postbyte & 0x80 == 0 {
+                    let reg = self.indexed_reg_value((postbyte >> 5) & 0x03);
+                    let offset = Self::sign_extend_5(postbyte & 0x1F);
+                    self.temp_addr = reg.wrapping_add(offset);
+                    return true;
+                }
+
+                let reg_sel = (postbyte >> 5) & 0x03;
+                let indirect = postbyte & 0x10 != 0;
+                let mode = postbyte & 0x0F;
+                let reg = self.indexed_reg_value(reg_sel);
+
+                match mode {
+                    0x00 if !indirect => {
+                        self.temp_addr = reg;
+                        self.set_indexed_reg(reg_sel, reg.wrapping_add(1));
+                        true
+                    }
+                    0x01 => {
+                        self.temp_addr = reg;
+                        self.set_indexed_reg(reg_sel, reg.wrapping_add(2));
+                        if indirect {
+                            self.state = ExecState::ExecutePage3(opcode, 10);
+                            false
+                        } else {
+                            true
+                        }
+                    }
+                    0x02 if !indirect => {
+                        let new_reg = reg.wrapping_sub(1);
+                        self.set_indexed_reg(reg_sel, new_reg);
+                        self.temp_addr = new_reg;
+                        true
+                    }
+                    0x03 => {
+                        let new_reg = reg.wrapping_sub(2);
+                        self.set_indexed_reg(reg_sel, new_reg);
+                        self.temp_addr = new_reg;
+                        if indirect {
+                            self.state = ExecState::ExecutePage3(opcode, 10);
+                            false
+                        } else {
+                            true
+                        }
+                    }
+                    0x04 => {
+                        self.temp_addr = reg;
+                        if indirect {
+                            self.state = ExecState::ExecutePage3(opcode, 10);
+                            false
+                        } else {
+                            true
+                        }
+                    }
+                    0x05 => {
+                        self.temp_addr = reg.wrapping_add(self.b as i8 as i16 as u16);
+                        if indirect {
+                            self.state = ExecState::ExecutePage3(opcode, 10);
+                            false
+                        } else {
+                            true
+                        }
+                    }
+                    0x06 => {
+                        self.temp_addr = reg.wrapping_add(self.a as i8 as i16 as u16);
+                        if indirect {
+                            self.state = ExecState::ExecutePage3(opcode, 10);
+                            false
+                        } else {
+                            true
+                        }
+                    }
+                    0x08 | 0x0C => {
+                        self.state = ExecState::ExecutePage3(opcode, 1);
+                        false
+                    }
+                    0x09 | 0x0D => {
+                        self.state = ExecState::ExecutePage3(opcode, 1);
+                        false
+                    }
+                    0x0B => {
+                        self.temp_addr = reg.wrapping_add(self.get_d());
+                        if indirect {
+                            self.state = ExecState::ExecutePage3(opcode, 10);
+                            false
+                        } else {
+                            true
+                        }
+                    }
+                    0x0F if indirect => {
+                        self.state = ExecState::ExecutePage3(opcode, 1);
+                        false
+                    }
+                    _ => {
+                        self.state = ExecState::Fetch;
+                        false
+                    }
+                }
+            }
+            1 => {
+                let postbyte = self.opcode;
+                let mode = postbyte & 0x0F;
+                let indirect = postbyte & 0x10 != 0;
+                let reg_sel = (postbyte >> 5) & 0x03;
+
+                match mode {
+                    0x08 => {
+                        let offset = bus.read(master, self.pc) as i8;
+                        self.pc = self.pc.wrapping_add(1);
+                        let reg = self.indexed_reg_value(reg_sel);
+                        self.temp_addr = reg.wrapping_add(offset as i16 as u16);
+                        if indirect {
+                            self.state = ExecState::ExecutePage3(opcode, 10);
+                            false
+                        } else {
+                            true
+                        }
+                    }
+                    0x0C => {
+                        let offset = bus.read(master, self.pc) as i8;
+                        self.pc = self.pc.wrapping_add(1);
+                        self.temp_addr = self.pc.wrapping_add(offset as i16 as u16);
+                        if indirect {
+                            self.state = ExecState::ExecutePage3(opcode, 10);
+                            false
+                        } else {
+                            true
+                        }
+                    }
+                    0x09 | 0x0D | 0x0F => {
+                        let high = bus.read(master, self.pc) as u16;
+                        self.pc = self.pc.wrapping_add(1);
+                        self.temp_addr = high << 8;
+                        self.state = ExecState::ExecutePage3(opcode, 2);
+                        false
+                    }
+                    _ => {
+                        self.state = ExecState::Fetch;
+                        false
+                    }
+                }
+            }
+            2 => {
+                let postbyte = self.opcode;
+                let mode = postbyte & 0x0F;
+                let indirect = postbyte & 0x10 != 0;
+                let reg_sel = (postbyte >> 5) & 0x03;
+
+                let low = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                let offset16 = self.temp_addr | low;
+
+                match mode {
+                    0x09 => {
+                        let reg = self.indexed_reg_value(reg_sel);
+                        self.temp_addr = reg.wrapping_add(offset16);
+                    }
+                    0x0D => {
+                        self.temp_addr = self.pc.wrapping_add(offset16);
+                    }
+                    0x0F => {
+                        self.temp_addr = offset16;
+                        self.state = ExecState::ExecutePage3(opcode, 10);
+                        return false;
+                    }
+                    _ => {}
+                }
+
+                if indirect {
+                    self.state = ExecState::ExecutePage3(opcode, 10);
+                    false
+                } else {
+                    true
+                }
+            }
+            10 => {
+                let high = bus.read(master, self.temp_addr);
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.opcode = high;
+                self.state = ExecState::ExecutePage3(opcode, 11);
                 false
             }
             11 => {

@@ -4,7 +4,7 @@
 
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-233%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-264%20passing-brightgreen.svg)](tests/)
 
 A modular emulator framework for retro CPUs, designed for extensibility and educational purposes. Features a trait-based architecture that allows easy addition of new CPUs, peripherals, and complete systems.
 
@@ -12,7 +12,7 @@ A modular emulator framework for retro CPUs, designed for extensibility and educ
 
 **Current Focus:** Motorola 6809 CPU emulation
 
-**Status:** 🔨 Early development (247/280 opcodes implemented, 233 tests passing)
+**Status:** 🔨 Early development (262/280 opcodes implemented, 264 tests passing)
 
 ### Features
 
@@ -26,14 +26,14 @@ A modular emulator framework for retro CPUs, designed for extensibility and educ
 
 ### What Works Now
 
-- Motorola 6809 CPU with 247 instructions (including ALU, branch, subroutine, stack, transfer, direct-page, indexed, extended, and Page 2 ops)
+- Motorola 6809 CPU with 262 instructions (including ALU, branch, subroutine, stack, transfer, direct-page, indexed, extended, Page 2 and Page 3 ops)
 - Condition code flag enum (CcFlag) for readable flag manipulation
 - Initial MOS 6502 CPU support (LDA immediate implemented)
 - **New:** Initial Zilog Z80 CPU support (LD A, n implemented)
 - Simple 6809 system with 32KB RAM + 32KB ROM *(moving to separate crate)*
 - DMA arbitration and halt signal support
 - Interrupt framework (NMI, IRQ, FIRQ)
-- Full test suite (233 integration tests) using direct CPU testing
+- Full test suite (264 integration tests) using direct CPU testing
 
 ## Quick Start
 
@@ -60,8 +60,8 @@ cargo test
 #   test test_reset ... ok
 #   test test_store_accumulator_direct ... ok
 #   test test_addd_immediate ... ok
-#   ... (233 tests total)
-#   test result: ok. 233 passed; 0 failed
+#   ... (264 tests total)
+#   test result: ok. 264 passed; 0 failed
 ```
 
 ### Try It Out
@@ -122,16 +122,16 @@ fn main() {
 | Component | Status | Notes |
 |-----------|--------|-------|
 | **Core Framework** | ✅ Complete | Bus trait, component system, arbitration |
-| **M6809 CPU** | ⚠️ Partial | State machine working, 247 instructions |
+| **M6809 CPU** | ⚠️ Partial | State machine working, 262 instructions |
 | **M6502 CPU** | ⚠️ Partial | Initial structure, LDA imm implemented |
 | **Z80 CPU** | ⚠️ Partial | Initial structure, LD A, n implemented |
 | **PIA 6820** | ❌ Placeholder | Stub only |
 | **Simple6809 System** | ⚠️ Moving | RAM/ROM, testing utilities *(migrating to separate crate)* |
-| **Test Suite** | ✅ Complete | 233 integration tests passing using direct CPU testing |
+| **Test Suite** | ✅ Complete | 264 integration tests passing using direct CPU testing |
 
 ### Implemented 6809 Instructions
 
-Currently **247 of ~280** documented 6809 opcodes are implemented (across 3 opcode pages: 210 on page 0, 37 on page 1/0x10, ~9 on page 2/0x11):
+Currently **262 of ~280** documented 6809 opcodes are implemented (across 3 opcode pages: 217 on page 0, 37 on page 1/0x10, 8 on page 2/0x11):
 
 | Category | Implemented | Examples |
 | --- | --- | --- |
@@ -145,6 +145,8 @@ Currently **247 of ~280** documented 6809 opcodes are implemented (across 3 opco
 | ALU (B) extended | 9 | ADDB, SUBB, CMPB, SBCB, ADCB, ANDB, BITB, EORB, ORB |
 | ALU (16-bit) | 12 | ADDD, SUBD, CMPX (immediate + direct + indexed + extended) |
 | ALU (Unary) inherent | 13 | MUL, NEG, COM, CLR, INC, DEC, TST (A & B variants) |
+| Misc inherent | 4 | NOP, SEX, ABX, DAA |
+| CC manipulation | 2 | ORCC, ANDCC (immediate) |
 | ALU (Unary) direct | 6 | NEG, COM, CLR, INC, DEC, TST (memory) |
 | ALU (Unary) indexed | 6 | NEG, COM, CLR, INC, DEC, TST (memory) |
 | ALU (Unary) extended | 6 | NEG, COM, CLR, INC, DEC, TST (memory) |
@@ -162,6 +164,7 @@ Currently **247 of ~280** documented 6809 opcodes are implemented (across 3 opco
 | Transfer | 2 | TFR, EXG |
 | Stack | 4 | PSHS, PULS, PSHU, PULU |
 | Page 2 (0x10) | 37 | CMPD, CMPY, LDY, STY, LDS, STS (imm/direct/indexed/ext), LBRN..LBLE |
+| Page 3 (0x11) | 8 | CMPU, CMPS (imm/direct/indexed/extended) |
 
 ### Implemented 6502 Instructions
 
@@ -279,7 +282,7 @@ phosphor-core/
 │   │   ├── cpu/                    # CPU implementations
 │   │   │   ├── mod.rs              # Generic Cpu trait + CpuStateTrait
 │   │   │   ├── state.rs            # CpuStateTrait + state structs
-│   │   │   ├── m6809/              # Working M6809 (247 opcodes)
+│   │   │   ├── m6809/              # Working M6809 (262 opcodes)
 │   │   │   │   ├── mod.rs          # Struct, state machine, dispatch
 │   │   │   │   ├── alu.rs          # ALU helpers and module exports
 │   │   │   │   ├── binary.rs       # Binary ops (ADD, SUB, MUL, etc.)
@@ -472,12 +475,14 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 - [x] Direct page (DP) addressing mode
 - [x] All addressing modes (indexed, extended)
 - [x] Condition code (CC) flag enum (CcFlag)
-- [ ] 16-bit operations (CMPU, CMPS — Page 3/0x11 prefix)
+- [x] 16-bit operations (CMPU, CMPS — Page 3/0x11 prefix)
   - [x] LDD, LDX, LDU, STD, STX, STU, ADDD, SUBD, CMPX
   - [x] CMPD, CMPY, LDY, STY, LDS, STS (Page 2/0x10 prefix)
+  - [x] CMPU, CMPS (Page 3/0x11 prefix)
+- [x] Misc operations (NOP, SEX, ABX, DAA, ORCC, ANDCC)
 - [x] Long conditional branches (LBRN..LBLE via Page 2/0x10 prefix)
 
-**Progress:** 247/~280 opcodes implemented (88.2%)
+**Progress:** 262/~280 opcodes implemented (93.6%)
 
 ### Phase 2: Core Infrastructure
 
@@ -733,7 +738,7 @@ This is an educational emulator project. We welcome contributions!
 
 ### Areas Needing Help
 
-- 🔴 **High Priority:** Remaining 6809 instructions (Page 3/0x11 prefix, interrupt handling)
+- 🔴 **High Priority:** Remaining 6809 instructions (SWI variants, RTI, CWAI, SYNC, interrupt handling)
 - 🟡 **Medium Priority:** 6502 CPU implementation
 - 🟡 **Medium Priority:** Z80 CPU implementation
 - 🟢 **Low Priority:** Peripheral devices
@@ -773,7 +778,7 @@ A: Rust provides zero-cost abstractions, memory safety, and excellent performanc
 
 **Q: Can this run commercial ROMs?**
 
-A: Not yet. Only 247 instructions are implemented. This is an educational project in early development.
+A: Not yet. Only 262 instructions are implemented. This is an educational project in early development.
 
 **Q: Why use `unsafe` in an emulator?**
 
