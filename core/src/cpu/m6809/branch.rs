@@ -452,6 +452,99 @@ impl M6809 {
         self.branch_long(opcode, cycle, bus, master, z || (n != v));
     }
 
+    /// LBRA (0x16): Long Branch Always (Page 0).
+    /// Unconditional branch with 16-bit signed offset.
+    /// No flags affected. 5 cycles total (1 fetch + 4 execute).
+    pub(crate) fn op_lbra<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                let high = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = high << 8;
+                self.state = ExecState::Execute(opcode, 1);
+            }
+            1 => {
+                let low = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr |= low;
+                self.state = ExecState::Execute(opcode, 2);
+            }
+            2 => {
+                // Internal
+                self.state = ExecState::Execute(opcode, 3);
+            }
+            3 => {
+                let offset = self.temp_addr as i16;
+                self.pc = self.pc.wrapping_add(offset as u16);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
+    /// LBSR (0x17): Long Branch to Subroutine (Page 0).
+    /// Pushes return address onto S stack, then branches to PC + 16-bit signed offset.
+    /// No flags affected. 9 cycles total (1 fetch + 8 execute).
+    pub(crate) fn op_lbsr<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                let high = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = high << 8;
+                self.state = ExecState::Execute(opcode, 1);
+            }
+            1 => {
+                let low = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr |= low;
+                self.state = ExecState::Execute(opcode, 2);
+            }
+            2 => {
+                // Internal
+                self.state = ExecState::Execute(opcode, 3);
+            }
+            3 => {
+                // Internal
+                self.state = ExecState::Execute(opcode, 4);
+            }
+            4 => {
+                // Push PC low byte
+                self.s = self.s.wrapping_sub(1);
+                bus.write(master, self.s, self.pc as u8);
+                self.state = ExecState::Execute(opcode, 5);
+            }
+            5 => {
+                // Push PC high byte
+                self.s = self.s.wrapping_sub(1);
+                bus.write(master, self.s, (self.pc >> 8) as u8);
+                self.state = ExecState::Execute(opcode, 6);
+            }
+            6 => {
+                // Internal
+                self.state = ExecState::Execute(opcode, 7);
+            }
+            7 => {
+                // Add signed offset to PC
+                let offset = self.temp_addr as i16;
+                self.pc = self.pc.wrapping_add(offset as u16);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
     /// BSR (0x8D): Branch to Subroutine.
     /// Pushes return address (PC after offset byte) onto S stack,
     /// then branches to PC + sign-extended 8-bit offset.
