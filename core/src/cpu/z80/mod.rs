@@ -49,6 +49,12 @@ pub(crate) enum ExecState {
     Execute(u8, u8), // (opcode, cycle)
 }
 
+impl Default for Z80 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Z80 {
     pub fn new() -> Self {
         Self {

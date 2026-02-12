@@ -69,6 +69,12 @@ pub(crate) enum ExecState {
     SyncWait,
 }
 
+impl Default for M6809 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl M6809 {
     pub fn new() -> Self {
         Self {

@@ -15,6 +15,12 @@ pub struct Simple6809System {
     clock: u64,
 }
 
+impl Default for Simple6809System {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Simple6809System {
     pub fn new() -> Self {
         Self {
@@ -135,7 +141,7 @@ impl Bus for Simple6809System {
         InterruptState {
             nmi: false,
             firq: false,
-            irq: self.clock % 16667 == 0,
+            irq: self.clock.is_multiple_of(16667),
         }
     }
 }

@@ -9,16 +9,13 @@ impl M6809 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        match cycle {
-            0 => {
-                self.a = bus.read(master, self.pc);
-                self.pc = self.pc.wrapping_add(1);
-                self.set_flag(CcFlag::N, self.a & 0x80 != 0);
-                self.set_flag(CcFlag::Z, self.a == 0);
-                self.set_flag(CcFlag::V, false);
-                self.state = ExecState::Fetch;
-            }
-            _ => {}
+        if cycle == 0 {
+            self.a = bus.read(master, self.pc);
+            self.pc = self.pc.wrapping_add(1);
+            self.set_flag(CcFlag::N, self.a & 0x80 != 0);
+            self.set_flag(CcFlag::Z, self.a == 0);
+            self.set_flag(CcFlag::V, false);
+            self.state = ExecState::Fetch;
         }
     }
 
@@ -29,16 +26,13 @@ impl M6809 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        match cycle {
-            0 => {
-                self.b = bus.read(master, self.pc);
-                self.pc = self.pc.wrapping_add(1);
-                self.set_flag(CcFlag::N, self.b & 0x80 != 0);
-                self.set_flag(CcFlag::Z, self.b == 0);
-                self.set_flag(CcFlag::V, false);
-                self.state = ExecState::Fetch;
-            }
-            _ => {}
+        if cycle == 0 {
+            self.b = bus.read(master, self.pc);
+            self.pc = self.pc.wrapping_add(1);
+            self.set_flag(CcFlag::N, self.b & 0x80 != 0);
+            self.set_flag(CcFlag::Z, self.b == 0);
+            self.set_flag(CcFlag::V, false);
+            self.state = ExecState::Fetch;
         }
     }
 

@@ -45,6 +45,12 @@ pub(crate) enum ExecState {
     Execute(u8, u8), // (opcode, cycle)
 }
 
+impl Default for M6502 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl M6502 {
     pub fn new() -> Self {
         Self {

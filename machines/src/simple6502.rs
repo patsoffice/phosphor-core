@@ -8,6 +8,12 @@ pub struct Simple6502System {
     clock: u64,
 }
 
+impl Default for Simple6502System {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Simple6502System {
     pub fn new() -> Self {
         Self {

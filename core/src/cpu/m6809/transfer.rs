@@ -50,23 +50,20 @@ impl M6809 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        match cycle {
-            0 => {
-                let operand = bus.read(master, self.pc);
-                self.pc = self.pc.wrapping_add(1);
+        if cycle == 0 {
+            let operand = bus.read(master, self.pc);
+            self.pc = self.pc.wrapping_add(1);
 
-                let src = (operand >> 4) as u8;
-                let dst = (operand & 0x0F) as u8;
+            let src = operand >> 4;
+            let dst = operand & 0x0F;
 
-                if Self::is_16bit(src) == Self::is_16bit(dst) {
-                    let val = self.get_reg_val(src);
-                    self.set_reg_val(dst, val);
-                }
-                // If sizes mismatch, undefined behavior (we do nothing)
-
-                self.state = ExecState::Fetch;
+            if Self::is_16bit(src) == Self::is_16bit(dst) {
+                let val = self.get_reg_val(src);
+                self.set_reg_val(dst, val);
             }
-            _ => {}
+            // If sizes mismatch, undefined behavior (we do nothing)
+
+            self.state = ExecState::Fetch;
         }
     }
 
@@ -79,24 +76,21 @@ impl M6809 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        match cycle {
-            0 => {
-                let operand = bus.read(master, self.pc);
-                self.pc = self.pc.wrapping_add(1);
+        if cycle == 0 {
+            let operand = bus.read(master, self.pc);
+            self.pc = self.pc.wrapping_add(1);
 
-                let r1 = (operand >> 4) as u8;
-                let r2 = (operand & 0x0F) as u8;
+            let r1 = operand >> 4;
+            let r2 = operand & 0x0F;
 
-                if Self::is_16bit(r1) == Self::is_16bit(r2) {
-                    let val1 = self.get_reg_val(r1);
-                    let val2 = self.get_reg_val(r2);
-                    self.set_reg_val(r1, val2);
-                    self.set_reg_val(r2, val1);
-                }
-
-                self.state = ExecState::Fetch;
+            if Self::is_16bit(r1) == Self::is_16bit(r2) {
+                let val1 = self.get_reg_val(r1);
+                let val2 = self.get_reg_val(r2);
+                self.set_reg_val(r1, val2);
+                self.set_reg_val(r2, val1);
             }
-            _ => {}
+
+            self.state = ExecState::Fetch;
         }
     }
 }

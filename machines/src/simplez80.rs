@@ -7,6 +7,12 @@ pub struct SimpleZ80System {
     clock: u64,
 }
 
+impl Default for SimpleZ80System {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SimpleZ80System {
     pub fn new() -> Self {
         Self {
