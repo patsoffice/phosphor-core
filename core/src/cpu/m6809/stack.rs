@@ -1,4 +1,4 @@
-use super::{ExecState, M6809};
+use super::{CcFlag, ExecState, M6809};
 use crate::core::{Bus, BusMaster};
 
 impl M6809 {
@@ -280,5 +280,234 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.op_pull(0x37, cycle, bus, master, true);
+    }
+
+    // --- SWI / RTI ---
+
+    /// Returns the register value to push for a given SWI push cycle (0-11).
+    /// Push order matches PSHS hardware: PC, U, Y, X, DP, B, A, CC.
+    /// For 16-bit regs, low byte is pushed first, high byte second
+    /// (so high byte ends up at lower address = big-endian in memory).
+    fn swi_push_byte(&self, push_cycle: u8) -> u8 {
+        match push_cycle {
+            0 => self.pc as u8,
+            1 => (self.pc >> 8) as u8,
+            2 => self.u as u8,
+            3 => (self.u >> 8) as u8,
+            4 => self.y as u8,
+            5 => (self.y >> 8) as u8,
+            6 => self.x as u8,
+            7 => (self.x >> 8) as u8,
+            8 => self.dp,
+            9 => self.b,
+            10 => self.a,
+            11 => self.cc,
+            _ => 0,
+        }
+    }
+
+    /// SWI (0x3F): Software Interrupt.
+    /// Sets E flag, pushes all registers onto S stack, sets I+F flags,
+    /// then vectors through 0xFFFA/0xFFFB.
+    /// No flags affected directly (E, I, F are set as part of interrupt sequence).
+    pub(crate) fn op_swi<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                // Set E flag to indicate entire state saved
+                self.cc |= CcFlag::E as u8;
+                // Push PC low byte
+                self.s = self.s.wrapping_sub(1);
+                bus.write(master, self.s, self.swi_push_byte(0));
+                self.state = ExecState::Execute(0x3F, 1);
+            }
+            c @ 1..=11 => {
+                // Push remaining registers
+                self.s = self.s.wrapping_sub(1);
+                bus.write(master, self.s, self.swi_push_byte(c));
+                self.state = ExecState::Execute(0x3F, c + 1);
+            }
+            12 => {
+                // Mask both IRQ and FIRQ
+                self.cc |= CcFlag::I as u8 | CcFlag::F as u8;
+                // Read vector high byte
+                let hi = bus.read(master, 0xFFFA);
+                self.temp_addr = (hi as u16) << 8;
+                self.state = ExecState::Execute(0x3F, 13);
+            }
+            13 => {
+                // Read vector low byte, jump to handler
+                let lo = bus.read(master, 0xFFFB);
+                self.pc = self.temp_addr | (lo as u16);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
+    /// SWI2 (0x103F): Software Interrupt 2.
+    /// Sets E flag, pushes all registers onto S stack. Does NOT mask interrupts.
+    /// Vectors through 0xFFF4/0xFFF5.
+    pub(crate) fn op_swi2<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                self.cc |= CcFlag::E as u8;
+                self.s = self.s.wrapping_sub(1);
+                bus.write(master, self.s, self.swi_push_byte(0));
+                self.state = ExecState::ExecutePage2(0x3F, 1);
+            }
+            c @ 1..=11 => {
+                self.s = self.s.wrapping_sub(1);
+                bus.write(master, self.s, self.swi_push_byte(c));
+                self.state = ExecState::ExecutePage2(0x3F, c + 1);
+            }
+            12 => {
+                // SWI2 does NOT mask interrupts
+                let hi = bus.read(master, 0xFFF4);
+                self.temp_addr = (hi as u16) << 8;
+                self.state = ExecState::ExecutePage2(0x3F, 13);
+            }
+            13 => {
+                let lo = bus.read(master, 0xFFF5);
+                self.pc = self.temp_addr | (lo as u16);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
+    /// SWI3 (0x113F): Software Interrupt 3.
+    /// Sets E flag, pushes all registers onto S stack. Does NOT mask interrupts.
+    /// Vectors through 0xFFF2/0xFFF3.
+    pub(crate) fn op_swi3<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                self.cc |= CcFlag::E as u8;
+                self.s = self.s.wrapping_sub(1);
+                bus.write(master, self.s, self.swi_push_byte(0));
+                self.state = ExecState::ExecutePage3(0x3F, 1);
+            }
+            c @ 1..=11 => {
+                self.s = self.s.wrapping_sub(1);
+                bus.write(master, self.s, self.swi_push_byte(c));
+                self.state = ExecState::ExecutePage3(0x3F, c + 1);
+            }
+            12 => {
+                // SWI3 does NOT mask interrupts
+                let hi = bus.read(master, 0xFFF2);
+                self.temp_addr = (hi as u16) << 8;
+                self.state = ExecState::ExecutePage3(0x3F, 13);
+            }
+            13 => {
+                let lo = bus.read(master, 0xFFF3);
+                self.pc = self.temp_addr | (lo as u16);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
+    }
+
+    /// RTI (0x3B): Return from Interrupt.
+    /// Pulls CC from S stack. If E flag is set in pulled CC, pulls all registers
+    /// (A, B, DP, X, Y, U, PC). If E is clear, pulls only PC (fast FIRQ return).
+    /// CC is restored from the stack (all flags affected).
+    pub(crate) fn op_rti<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                // Pull CC
+                self.cc = bus.read(master, self.s);
+                self.s = self.s.wrapping_add(1);
+                if self.cc & (CcFlag::E as u8) != 0 {
+                    // E set: pull all registers
+                    self.state = ExecState::Execute(0x3B, 1);
+                } else {
+                    // E clear: pull PC only (fast FIRQ return)
+                    self.state = ExecState::Execute(0x3B, 10);
+                }
+            }
+            1 => {
+                self.a = bus.read(master, self.s);
+                self.s = self.s.wrapping_add(1);
+                self.state = ExecState::Execute(0x3B, 2);
+            }
+            2 => {
+                self.b = bus.read(master, self.s);
+                self.s = self.s.wrapping_add(1);
+                self.state = ExecState::Execute(0x3B, 3);
+            }
+            3 => {
+                self.dp = bus.read(master, self.s);
+                self.s = self.s.wrapping_add(1);
+                self.state = ExecState::Execute(0x3B, 4);
+            }
+            4 => {
+                // X high byte
+                self.x = (bus.read(master, self.s) as u16) << 8;
+                self.s = self.s.wrapping_add(1);
+                self.state = ExecState::Execute(0x3B, 5);
+            }
+            5 => {
+                // X low byte
+                self.x |= bus.read(master, self.s) as u16;
+                self.s = self.s.wrapping_add(1);
+                self.state = ExecState::Execute(0x3B, 6);
+            }
+            6 => {
+                // Y high byte
+                self.y = (bus.read(master, self.s) as u16) << 8;
+                self.s = self.s.wrapping_add(1);
+                self.state = ExecState::Execute(0x3B, 7);
+            }
+            7 => {
+                // Y low byte
+                self.y |= bus.read(master, self.s) as u16;
+                self.s = self.s.wrapping_add(1);
+                self.state = ExecState::Execute(0x3B, 8);
+            }
+            8 => {
+                // U high byte
+                self.u = (bus.read(master, self.s) as u16) << 8;
+                self.s = self.s.wrapping_add(1);
+                self.state = ExecState::Execute(0x3B, 9);
+            }
+            9 => {
+                // U low byte
+                self.u |= bus.read(master, self.s) as u16;
+                self.s = self.s.wrapping_add(1);
+                self.state = ExecState::Execute(0x3B, 10);
+            }
+            10 => {
+                // PC high byte (shared by E=0 and E=1 paths)
+                self.pc = (bus.read(master, self.s) as u16) << 8;
+                self.s = self.s.wrapping_add(1);
+                self.state = ExecState::Execute(0x3B, 11);
+            }
+            11 => {
+                // PC low byte
+                self.pc |= bus.read(master, self.s) as u16;
+                self.s = self.s.wrapping_add(1);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
     }
 }

@@ -209,9 +209,11 @@ impl M6809 {
             0x32 => self.op_leas(opcode, cycle, bus, master),
             0x33 => self.op_leau(opcode, cycle, bus, master),
 
-            // Subroutine / Return
+            // Subroutine / Return / Interrupt
             0x39 => self.op_rts(cycle, bus, master),
             0x3A => self.op_abx(cycle),
+            0x3B => self.op_rti(cycle, bus, master),
+            0x3F => self.op_swi(cycle, bus, master),
 
             // Stack operations
             0x34 => self.op_pshs(cycle, bus, master),
@@ -434,6 +436,9 @@ impl M6809 {
         master: BusMaster,
     ) {
         match opcode {
+            // SWI2
+            0x3F => self.op_swi2(cycle, bus, master),
+
             // Long branches
             0x21 => self.op_lbrn(opcode, cycle, bus, master),
             0x22 => self.op_lbhi(opcode, cycle, bus, master),
@@ -493,6 +498,9 @@ impl M6809 {
         master: BusMaster,
     ) {
         match opcode {
+            // SWI3
+            0x3F => self.op_swi3(cycle, bus, master),
+
             // CMPU (immediate, direct, indexed, extended)
             0x83 => self.op_cmpu_imm(opcode, cycle, bus, master),
             0x93 => self.op_cmpu_direct(opcode, cycle, bus, master),
