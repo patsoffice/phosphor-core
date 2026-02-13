@@ -9,9 +9,6 @@ pub struct Simple6809System {
     ram: [u8; 0x8000],
     rom: [u8; 0x8000],
     pia: Pia6820,
-
-    // Bus arbitration state
-    dma_request: bool,
     clock: u64,
 }
 
@@ -28,7 +25,6 @@ impl Simple6809System {
             ram: [0; 0x8000],
             rom: [0; 0x8000],
             pia: Pia6820::new(),
-            dma_request: false,
             clock: 0,
         }
     }
@@ -41,21 +37,13 @@ impl Simple6809System {
     }
 
     pub fn tick(&mut self) {
-        // PIA or other devices can request the bus (assert TSC)
-        if self.pia.dma_requested() {
-            self.dma_request = true;
-        }
-
         // Execute one CPU cycle manually to avoid borrow checker issues
-        if !self.dma_request {
-            // Split the borrow: execute_cycle needs &mut M6809 and &mut Bus
-            // We need to separate accessing cpu from accessing bus
-            let bus_ptr: *mut Self = self;
+        // Split the borrow: execute_cycle needs &mut M6809 and &mut Bus
+        let bus_ptr: *mut Self = self;
 
-            unsafe {
-                let bus = &mut *bus_ptr as &mut dyn Bus<Address = u16, Data = u8>;
-                self.cpu.execute_cycle(bus, BusMaster::Cpu(0));
-            }
+        unsafe {
+            let bus = &mut *bus_ptr as &mut dyn Bus<Address = u16, Data = u8>;
+            self.cpu.execute_cycle(bus, BusMaster::Cpu(0));
         }
 
         self.clock += 1;
@@ -128,13 +116,8 @@ impl Bus for Simple6809System {
         }
     }
 
-    fn is_halted_for(&self, master: BusMaster) -> bool {
-        // Only CPU 0 can be halted by TSC/DMA in this simple system
-        if master == BusMaster::Cpu(0) {
-            self.dma_request
-        } else {
-            false
-        }
+    fn is_halted_for(&self, _master: BusMaster) -> bool {
+        false
     }
 
     fn check_interrupts(&self, _target: BusMaster) -> InterruptState {
