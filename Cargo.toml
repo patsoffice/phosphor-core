@@ -1,3 +1,3 @@
 [workspace]
-members = ["core", "machines"]
+members = ["core", "machines", "cpu-validation"]
 resolver = "2"

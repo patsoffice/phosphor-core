@@ -1,0 +1,14 @@
+[package]
+name = "phosphor-cpu-validation"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+phosphor-core = { path = "../core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rand = "0.8"
+
+[[bin]]
+name = "gen_m6809_tests"
+path = "src/bin/gen_m6809_tests.rs"
