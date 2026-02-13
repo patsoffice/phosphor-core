@@ -10,27 +10,127 @@ use phosphor_core::device::williams_blitter::WilliamsBlitter;
 
 use crate::rom_loader::{RomEntry, RomRegion};
 
-/// Joust program ROM region: 12KB at 0xD000-0xFFFF, split across three 4KB files.
+// ---------------------------------------------------------------------------
+// Joust ROM definitions (from MAME williams.cpp)
+//
+// Three label variants exist: Green (parent "joust"), Yellow ("jousty"),
+// Red ("joustr"). Each CRC32 slice lists accepted values across variants.
+// The `name` field uses the MAME parent set filename as a fallback.
+// ---------------------------------------------------------------------------
+
+/// Banked program ROMs: 36KB at 0x0000-0x8FFF, nine 4KB chips.
+/// These overlap video RAM and require ROM banking (register 0xC900).
+pub static JOUST_BANKED_ROM: RomRegion = RomRegion {
+    size: 0x9000, // 36KB
+    entries: &[
+        RomEntry {
+            name: "joust_rom_1b_3006-13.e4",
+            size: 0x1000,
+            offset: 0x0000,
+            crc32: &[0xfe41b2af], // same across all variants
+        },
+        RomEntry {
+            name: "joust_rom_2b_3006-14.c4",
+            size: 0x1000,
+            offset: 0x1000,
+            crc32: &[0x501c143c], // same across all variants
+        },
+        RomEntry {
+            name: "joust_rom_3b_3006-15.a4",
+            size: 0x1000,
+            offset: 0x2000,
+            crc32: &[0x43f7161d], // same across all variants
+        },
+        RomEntry {
+            name: "joust_rom_4b_3006-16.e5",
+            size: 0x1000,
+            offset: 0x3000,
+            crc32: &[0xdb5571b6, 0xab347170], // green+yellow, red
+        },
+        RomEntry {
+            name: "joust_rom_5b_3006-17.c5",
+            size: 0x1000,
+            offset: 0x4000,
+            crc32: &[0xc686bb6b], // same across all variants
+        },
+        RomEntry {
+            name: "joust_rom_6b_3006-18.a5",
+            size: 0x1000,
+            offset: 0x5000,
+            crc32: &[0xfac5f2cf, 0x3d9a6fac], // green+yellow, red
+        },
+        RomEntry {
+            name: "joust_rom_7b_3006-19.e6",
+            size: 0x1000,
+            offset: 0x6000,
+            crc32: &[0x81418240, 0xe6f439c4, 0x0a70b3d1], // green, yellow, red
+        },
+        RomEntry {
+            name: "joust_rom_8b_3006-20.c6",
+            size: 0x1000,
+            offset: 0x7000,
+            crc32: &[0xba5359ba, 0xa7f01504], // green+yellow, red
+        },
+        RomEntry {
+            name: "joust_rom_9b_3006-21.a6",
+            size: 0x1000,
+            offset: 0x8000,
+            crc32: &[0x39643147, 0x978687ad], // green+yellow, red
+        },
+    ],
+};
+
+/// Fixed program ROMs: 12KB at 0xD000-0xFFFF, three 4KB chips.
 pub static JOUST_PROGRAM_ROM: RomRegion = RomRegion {
     size: 0x3000, // 12KB
     entries: &[
         RomEntry {
-            name: "joust.wg1",
+            name: "joust_rom_10b_3006-22.a7",
             size: 0x1000,
-            offset: 0x0000, // -> 0xD000-0xDFFF
-            crc32: None,
+            offset: 0x0000,                               // -> 0xD000-0xDFFF
+            crc32: &[0x3f1c4f89, 0x2039014a, 0xc0c6e52a], // green, yellow, red
         },
         RomEntry {
-            name: "joust.wg2",
+            name: "joust_rom_11b_3006-23.c7",
             size: 0x1000,
-            offset: 0x1000, // -> 0xE000-0xEFFF
-            crc32: None,
+            offset: 0x1000,                   // -> 0xE000-0xEFFF
+            crc32: &[0xea48b359, 0xab11bcf9], // green+yellow, red
         },
         RomEntry {
-            name: "joust.wg3",
+            name: "joust_rom_12b_3006-24.e7",
             size: 0x1000,
-            offset: 0x2000, // -> 0xF000-0xFFFF
-            crc32: None,
+            offset: 0x2000,                   // -> 0xF000-0xFFFF
+            crc32: &[0xc710717b, 0xea14574b], // green+yellow, red
+        },
+    ],
+};
+
+/// Sound CPU ROM: 4KB at 0xF000.
+pub static JOUST_SOUND_ROM: RomRegion = RomRegion {
+    size: 0x1000,
+    entries: &[RomEntry {
+        name: "video_sound_rom_4_std_780.ic12",
+        size: 0x1000,
+        offset: 0x0000,
+        crc32: &[0xf1835bdd], // same across all variants
+    }],
+};
+
+/// Decoder PROMs: 2 x 512B.
+pub static JOUST_DECODER_PROM: RomRegion = RomRegion {
+    size: 0x0400,
+    entries: &[
+        RomEntry {
+            name: "decoder_rom_4.3g",
+            size: 0x0200,
+            offset: 0x0000,
+            crc32: &[0xe6631c23],
+        },
+        RomEntry {
+            name: "decoder_rom_6.3c",
+            size: 0x0200,
+            offset: 0x0200,
+            crc32: &[0x83faf25e],
         },
     ],
 };
@@ -168,6 +268,9 @@ impl JoustSystem {
     }
 
     /// Load program ROM from a RomSet using the Joust ROM mapping.
+    ///
+    /// Matches ROM files by CRC32 checksum (for MAME ROMs with any filename)
+    /// with fallback to name-based lookup.
     pub fn load_rom_set(
         &mut self,
         rom_set: &crate::rom_loader::RomSet,
@@ -328,8 +431,8 @@ impl Machine for JoustSystem {
         //
         // Visible area: 292 pixels wide (146 byte-columns) x 240 pixels tall,
         // cropped from the full 304x256 frame starting at byte-column 3, row 7.
-        const CROP_X: usize = 6;  // First visible byte-column * 2 (pixel offset)
-        const CROP_Y: usize = 7;  // First visible row
+        const CROP_X: usize = 6; // First visible byte-column * 2 (pixel offset)
+        const CROP_Y: usize = 7; // First visible row
 
         for screen_y in 0..h {
             let row = screen_y + CROP_Y;

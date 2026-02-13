@@ -1,9 +1,10 @@
 use phosphor_core::core::machine::Machine;
 use phosphor_machines::JoustSystem;
-use phosphor_machines::rom_loader::RomSet;
+use phosphor_machines::joust::{JOUST_BANKED_ROM, JOUST_DECODER_PROM, JOUST_SOUND_ROM};
 
 mod emulator;
 mod input;
+mod rom_path;
 mod video;
 
 fn main() {
@@ -18,10 +19,22 @@ fn main() {
 
     let mut machine: Box<dyn Machine> = match machine_name.as_str() {
         "joust" => {
-            let rom_set = RomSet::from_directory(std::path::Path::new(rom_path))
-                .expect("Failed to load ROM directory");
+            let rom_set = rom_path::load_rom_set("joust", rom_path).expect("Failed to load ROMs");
+
+            // Validate all ROM regions (even those not yet wired into memory)
+            JOUST_BANKED_ROM
+                .load(&rom_set)
+                .expect("Failed to load banked ROMs");
+            JOUST_SOUND_ROM
+                .load(&rom_set)
+                .expect("Failed to load sound ROM");
+            JOUST_DECODER_PROM
+                .load(&rom_set)
+                .expect("Failed to load decoder PROMs");
+
             let mut sys = JoustSystem::new();
-            sys.load_rom_set(&rom_set).expect("Failed to map ROMs");
+            sys.load_rom_set(&rom_set)
+                .expect("Failed to map program ROMs");
             Box::new(sys)
         }
         _ => {

@@ -77,7 +77,7 @@ fn test_render_frame_two_pixels_per_byte() {
 
     // Pixel (1,0) = palette entry 9: R=145, G=145, B=170
     let px1 = 3; // offset for pixel x=1
-    assert_eq!(buffer[px1], (4 * 255 / 7) as u8);     // R
+    assert_eq!(buffer[px1], (4 * 255 / 7) as u8); // R
     assert_eq!(buffer[px1 + 1], (4 * 255 / 7) as u8); // G
     assert_eq!(buffer[px1 + 2], (2 * 255 / 3) as u8); // B
 }
@@ -403,15 +403,20 @@ fn test_load_program_rom_slice() {
 }
 
 #[test]
-fn test_load_rom_set() {
+fn test_load_rom_set_by_name_fallback() {
+    use phosphor_machines::joust::JOUST_PROGRAM_ROM;
     use phosphor_machines::rom_loader::RomSet;
+
+    // Use MAME filenames with test data — CRC32 won't match but
+    // load_skip_checksums falls back to name-based matching.
     let rom_set = RomSet::from_slices(&[
-        ("joust.wg1", &[0x11u8; 0x1000]),
-        ("joust.wg2", &[0x22u8; 0x1000]),
-        ("joust.wg3", &[0x33u8; 0x1000]),
+        ("joust_rom_10b_3006-22.a7", &[0x11u8; 0x1000]),
+        ("joust_rom_11b_3006-23.c7", &[0x22u8; 0x1000]),
+        ("joust_rom_12b_3006-24.e7", &[0x33u8; 0x1000]),
     ]);
+    let rom_data = JOUST_PROGRAM_ROM.load_skip_checksums(&rom_set).unwrap();
     let mut sys = JoustSystem::new();
-    sys.load_rom_set(&rom_set).unwrap();
+    sys.load_program_rom(0, &rom_data);
 
     // Verify ROM contents at start of each region
     assert_eq!(sys.read(BusMaster::Cpu(0), 0xD000), 0x11);

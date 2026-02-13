@@ -35,7 +35,7 @@ const CRC32_TABLE: [u32; 256] = {
 };
 
 /// Compute the CRC-32 checksum of a byte slice.
-fn crc32(data: &[u8]) -> u32 {
+pub fn crc32(data: &[u8]) -> u32 {
     let mut crc: u32 = 0xFFFF_FFFF;
     for &byte in data {
         let index = ((crc ^ byte as u32) & 0xFF) as usize;
@@ -145,6 +145,13 @@ impl RomSet {
         Self { files }
     }
 
+    /// Create a RomSet from owned entries (e.g. extracted from a ZIP file).
+    pub fn from_entries(entries: Vec<(String, Vec<u8>)>) -> Self {
+        Self {
+            files: entries.into_iter().collect(),
+        }
+    }
+
     /// Get a ROM file's data by name.
     pub fn get(&self, name: &str) -> Option<&[u8]> {
         self.files.get(name).map(|v| v.as_slice())
@@ -169,6 +176,17 @@ impl RomSet {
         Ok(data)
     }
 
+    /// Find a file by CRC32 checksum and expected size.
+    ///
+    /// Scans all files in the set for one matching both the target CRC32
+    /// and expected size. Returns the filename and data if found.
+    pub fn find_by_crc32(&self, target_crc32: u32, expected_size: usize) -> Option<(&str, &[u8])> {
+        self.files
+            .iter()
+            .find(|(_, data)| data.len() == expected_size && crc32(data) == target_crc32)
+            .map(|(name, data)| (name.as_str(), data.as_slice()))
+    }
+
     /// List all file names in the set.
     pub fn file_names(&self) -> Vec<&str> {
         self.files.keys().map(|s| s.as_str()).collect()
@@ -181,16 +199,17 @@ impl RomSet {
 
 /// Describes how a single ROM file maps into a memory region.
 pub struct RomEntry {
-    /// Filename in the ROM set.
+    /// Filename in the ROM set (used as fallback when CRC32 matching fails).
     pub name: &'static str,
     /// Expected size in bytes.
     pub size: usize,
     /// Offset within the target memory region where this ROM is loaded.
     pub offset: usize,
-    /// Optional CRC32 checksum. `None` means no checksum is defined
-    /// and the file is always accepted. `Some(value)` will be validated
-    /// during [`RomRegion::load`].
-    pub crc32: Option<u32>,
+    /// Accepted CRC32 checksums. An empty slice means no checksum is defined
+    /// and the file is always accepted by name. A non-empty slice enables
+    /// CRC32-based matching: the loader scans all files for any matching
+    /// checksum before falling back to name-based lookup.
+    pub crc32: &'static [u32],
 }
 
 /// Describes the complete ROM mapping for a machine or subsystem.
@@ -238,18 +257,34 @@ impl RomRegion {
                 self.size,
             );
 
-            let data = rom_set.require_sized(entry.name, entry.size)?;
+            let data = if !entry.crc32.is_empty() {
+                // CRC32-first matching: scan all files for any accepted checksum
+                let found = entry
+                    .crc32
+                    .iter()
+                    .find_map(|&crc| rom_set.find_by_crc32(crc, entry.size));
 
-            if verify_checksums && let Some(expected_crc) = entry.crc32 {
-                let actual_crc = crc32(data);
-                if actual_crc != expected_crc {
-                    return Err(RomLoadError::ChecksumMismatch {
-                        file: entry.name.to_string(),
-                        expected: expected_crc,
-                        actual: actual_crc,
-                    });
+                if let Some((_matched_name, matched_data)) = found {
+                    matched_data
+                } else {
+                    // Fall back to name-based lookup
+                    let data = rom_set.require_sized(entry.name, entry.size)?;
+                    if verify_checksums {
+                        let actual_crc = crc32(data);
+                        if !entry.crc32.contains(&actual_crc) {
+                            return Err(RomLoadError::ChecksumMismatch {
+                                file: entry.name.to_string(),
+                                expected: entry.crc32[0],
+                                actual: actual_crc,
+                            });
+                        }
+                    }
+                    data
                 }
-            }
+            } else {
+                // No CRC32 defined: name-based lookup only
+                rom_set.require_sized(entry.name, entry.size)?
+            };
 
             region[entry.offset..entry.offset + entry.size].copy_from_slice(data);
         }
@@ -348,7 +383,7 @@ mod tests {
             name: "test.rom",
             size: 4,
             offset: 0,
-            crc32: None,
+            crc32: &[],
         }];
         let region = RomRegion {
             size: 4,
@@ -364,11 +399,12 @@ mod tests {
         let data: &[u8] = &[0xDE, 0xAD, 0xBE, 0xEF];
         let checksum = crc32(data);
 
+        let crc_slice: &'static [u32] = Box::leak(Box::new([checksum]));
         let entries: &'static [RomEntry] = Box::leak(Box::new([RomEntry {
             name: "test.rom",
             size: 4,
             offset: 0,
-            crc32: Some(checksum),
+            crc32: crc_slice,
         }]));
         let region = RomRegion { size: 4, entries };
         let rom_set = RomSet::from_slices(&[("test.rom", data)]);
@@ -382,7 +418,7 @@ mod tests {
             name: "test.rom",
             size: 4,
             offset: 0,
-            crc32: Some(0xDEAD_BEEF), // wrong checksum
+            crc32: &[0xDEAD_BEEF], // wrong checksum
         }];
         let region = RomRegion {
             size: 4,
@@ -399,7 +435,7 @@ mod tests {
             name: "test.rom",
             size: 4,
             offset: 0,
-            crc32: Some(0xDEAD_BEEF), // wrong checksum
+            crc32: &[0xDEAD_BEEF], // wrong checksum
         }];
         let region = RomRegion {
             size: 4,
@@ -417,7 +453,7 @@ mod tests {
             name: "test.rom",
             size: 8,
             offset: 0,
-            crc32: None,
+            crc32: &[],
         }];
         let region = RomRegion {
             size: 8,
@@ -435,19 +471,19 @@ mod tests {
                 name: "rom1.bin",
                 size: 8,
                 offset: 0,
-                crc32: None,
+                crc32: &[],
             },
             RomEntry {
                 name: "rom2.bin",
                 size: 8,
                 offset: 8,
-                crc32: None,
+                crc32: &[],
             },
             RomEntry {
                 name: "rom3.bin",
                 size: 8,
                 offset: 16,
-                crc32: None,
+                crc32: &[],
             },
         ];
         let region = RomRegion {
@@ -473,13 +509,13 @@ mod tests {
                 name: "rom1.bin",
                 size: 8,
                 offset: 0,
-                crc32: None,
+                crc32: &[],
             },
             RomEntry {
                 name: "rom2.bin",
                 size: 8,
                 offset: 8,
-                crc32: None,
+                crc32: &[],
             },
         ];
         let region = RomRegion {
@@ -492,13 +528,13 @@ mod tests {
     }
 
     #[test]
-    fn load_none_checksum_not_validated_even_with_verify() {
-        // crc32: None means the file is always accepted, even with load()
+    fn load_empty_checksum_not_validated_even_with_verify() {
+        // crc32: &[] means the file is always accepted, even with load()
         static ENTRIES: [RomEntry; 1] = [RomEntry {
             name: "test.rom",
             size: 4,
             offset: 0,
-            crc32: None,
+            crc32: &[],
         }];
         let region = RomRegion {
             size: 4,
@@ -521,5 +557,120 @@ mod tests {
         assert_eq!(rom_set.get("test.rom"), Some(&[0xAA, 0xBB][..]));
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // -- from_entries --------------------------------------------------------
+
+    #[test]
+    fn from_entries_creates_romset() {
+        let rom_set = RomSet::from_entries(vec![
+            ("a.rom".to_string(), vec![0x01, 0x02]),
+            ("b.rom".to_string(), vec![0x03]),
+        ]);
+        assert_eq!(rom_set.get("a.rom"), Some(&[0x01, 0x02][..]));
+        assert_eq!(rom_set.get("b.rom"), Some(&[0x03][..]));
+    }
+
+    // -- find_by_crc32 -------------------------------------------------------
+
+    #[test]
+    fn find_by_crc32_finds_matching_file() {
+        let data: &[u8] = &[0xDE, 0xAD, 0xBE, 0xEF];
+        let checksum = crc32(data);
+
+        let rom_set = RomSet::from_slices(&[("wrong.rom", &[0x00; 4]), ("right.rom", data)]);
+        let result = rom_set.find_by_crc32(checksum, 4);
+        assert!(result.is_some());
+        let (name, found_data) = result.unwrap();
+        assert_eq!(name, "right.rom");
+        assert_eq!(found_data, data);
+    }
+
+    #[test]
+    fn find_by_crc32_returns_none_when_no_match() {
+        let rom_set = RomSet::from_slices(&[("a.rom", &[0x01, 0x02])]);
+        assert!(rom_set.find_by_crc32(0xDEAD_BEEF, 2).is_none());
+    }
+
+    #[test]
+    fn find_by_crc32_checks_size() {
+        let data: &[u8] = &[0xDE, 0xAD, 0xBE, 0xEF];
+        let checksum = crc32(data);
+
+        let rom_set = RomSet::from_slices(&[("test.rom", data)]);
+        // Right CRC32 but wrong expected size
+        assert!(rom_set.find_by_crc32(checksum, 8).is_none());
+    }
+
+    // -- CRC32-based region loading ------------------------------------------
+
+    #[test]
+    fn load_matches_by_crc32_ignoring_filename() {
+        let data: &[u8] = &[0xDE, 0xAD, 0xBE, 0xEF];
+        let checksum = crc32(data);
+
+        let crc_slice: &'static [u32] = Box::leak(Box::new([checksum]));
+        let entries: &'static [RomEntry] = Box::leak(Box::new([RomEntry {
+            name: "expected_name.rom",
+            size: 4,
+            offset: 0,
+            crc32: crc_slice,
+        }]));
+        let region = RomRegion { size: 4, entries };
+
+        // File has a completely different name but matching CRC32
+        let rom_set = RomSet::from_slices(&[("totally_different.rom", data)]);
+        let result = region.load(&rom_set).unwrap();
+        assert_eq!(result, vec![0xDE, 0xAD, 0xBE, 0xEF]);
+    }
+
+    #[test]
+    fn load_matches_any_variant_crc32() {
+        let data_a: &[u8] = &[0x11, 0x22, 0x33, 0x44];
+        let data_b: &[u8] = &[0xAA, 0xBB, 0xCC, 0xDD];
+        let crc_a = crc32(data_a);
+        let crc_b = crc32(data_b);
+
+        // Entry accepts either CRC32 variant
+        let crc_slice: &'static [u32] = Box::leak(Box::new([crc_a, crc_b]));
+        let entries: &'static [RomEntry] = Box::leak(Box::new([RomEntry {
+            name: "rom.bin",
+            size: 4,
+            offset: 0,
+            crc32: crc_slice,
+        }]));
+        let region = RomRegion { size: 4, entries };
+
+        // Provide variant B — should match the second CRC32
+        let rom_set = RomSet::from_slices(&[("any_name.rom", data_b)]);
+        let result = region.load(&rom_set).unwrap();
+        assert_eq!(result, vec![0xAA, 0xBB, 0xCC, 0xDD]);
+    }
+
+    #[test]
+    fn load_falls_back_to_name_when_no_crc32_match() {
+        // Entry has a CRC32 that won't match the data, but the filename does match.
+        // With skip_checksums, the name fallback should succeed.
+        static ENTRIES: [RomEntry; 1] = [RomEntry {
+            name: "fallback.rom",
+            size: 4,
+            offset: 0,
+            crc32: &[0xDEAD_BEEF], // won't match any file's CRC32
+        }];
+        let region = RomRegion {
+            size: 4,
+            entries: &ENTRIES,
+        };
+        let rom_set = RomSet::from_slices(&[("fallback.rom", &[0x01, 0x02, 0x03, 0x04])]);
+
+        // load() with verify_checksums=true will fail (CRC32 mismatch on fallback)
+        assert!(matches!(
+            region.load(&rom_set),
+            Err(RomLoadError::ChecksumMismatch { .. })
+        ));
+
+        // load_skip_checksums() succeeds via name fallback
+        let result = region.load_skip_checksums(&rom_set).unwrap();
+        assert_eq!(result, vec![0x01, 0x02, 0x03, 0x04]);
     }
 }

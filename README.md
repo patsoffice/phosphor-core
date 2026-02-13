@@ -4,11 +4,11 @@
 
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-429%20passing-brightgreen.svg)](core/tests/)
+[![Tests](https://img.shields.io/badge/tests-440%20passing-brightgreen.svg)](core/tests/)
 
 A modular emulator framework for retro CPUs, designed for extensibility and educational purposes. Features a trait-based architecture that allows easy addition of new CPUs, peripherals, and complete systems.
 
-**Current Focus:** Joust (1982) arcade board emulation — M6809 CPU (285 opcodes), MC6821 PIA, Williams SC1 blitter, CMOS RAM, Machine trait for frontend abstraction. 429 tests passing
+**Current Focus:** Joust (1982) arcade board emulation — M6809 CPU (285 opcodes), MC6821 PIA, Williams SC1 blitter, CMOS RAM, Machine trait for frontend abstraction. 440 tests passing
 
 ## Quick Start
 
@@ -30,15 +30,23 @@ cargo build
 cargo test
 
 # Expected output:
-#   test result: ok. 429 passed; 0 failed
+#   test result: ok. 440 passed; 0 failed
 ```
 
 ### Running the Emulator
 
 ```bash
-# Run with Joust ROMs (extracted MAME format)
-cargo run --package phosphor-frontend -- joust /path/to/joust/roms --scale 3
+# MAME-style rompath (directory containing joust.zip)
+cargo run --package phosphor-frontend -- joust /path/to/roms --scale 3
+
+# Direct ZIP file
+cargo run --package phosphor-frontend -- joust /path/to/joust.zip --scale 3
+
+# Extracted ROM directory (backward compatible)
+cargo run --package phosphor-frontend -- joust /path/to/extracted/roms --scale 3
 ```
+
+ROMs are matched by CRC32 checksum, so any MAME ROM naming convention works. All three Joust label variants are supported: Green (parent), Yellow, and Red.
 
 **Controls:**
 
@@ -66,11 +74,11 @@ cargo run --package phosphor-frontend -- joust /path/to/joust/roms --scale 3
 | **MC6821 PIA** | Complete | Full register set, interrupts, edge detection, control lines |
 | **Williams SC1 Blitter** | Complete | DMA block copy/fill, mask, shift, foreground-only modes |
 | **CMOS RAM** | Complete | 1KB battery-backed RAM with save/load persistence |
-| **ROM Loader** | Complete | CRC32 validation, RomSet/RomRegion system |
+| **ROM Loader** | Complete | MAME ZIP support, CRC32-based ROM matching, multi-variant support |
 | **Joust System** | Complete | Williams board: CPU + video RAM + PIAs + blitter + CMOS + ROM |
 | **Machine Trait** | Complete | Frontend-agnostic interface: display, input, render, reset |
 | **CPU Validation** | In progress | SingleStepTests framework, opcode 0x86 validated |
-| **Test Suite** | Complete | 429 tests across core, devices, and machine integration |
+| **Test Suite** | Complete | 440 tests across core, devices, and machine integration |
 
 ### 6809 Instructions
 
@@ -120,9 +128,10 @@ Complete system implementations that wire core components together:
 
 ### Frontend Crate (`phosphor-frontend`)
 
-SDL2-based windowed frontend — the only crate with external dependencies:
+SDL2-based windowed frontend — external dependencies: SDL2, zip:
 
 - **Machine-agnostic** — operates entirely through the `Machine` trait, no hardware-specific knowledge
+- **ROM path resolution** — loads from MAME ZIP files, rompath directories, or extracted loose files
 - SDL2 window with GPU-scaled texture rendering (VSync frame timing)
 - Keyboard input mapping built automatically from `Machine::input_map()`
 - Adding a new machine requires only a new match arm in `main.rs`
@@ -193,7 +202,7 @@ phosphor-core/
 │   │       ├── williams_blitter.rs # Williams SC1 DMA blitter (copy/fill/shift/mask)
 │   │       ├── cmos_ram.rs         # 1KB battery-backed CMOS RAM
 │   │       └── mod.rs              # Module exports
-│   └── tests/                      # Integration tests (429 tests)
+│   └── tests/                      # Integration tests (440 tests)
 │       ├── common/mod.rs           # TestBus harness
 │       ├── m6809_*_test.rs         # M6809 tests (16 files)
 │       ├── pia6820_test.rs         # MC6821 PIA tests (23 tests)
@@ -205,12 +214,12 @@ phosphor-core/
 │   ├── src/
 │   │   ├── lib.rs                  # Exports system types
 │   │   ├── joust.rs                # Joust arcade board (Williams 2nd-gen)
-│   │   ├── rom_loader.rs           # ROM loading with CRC32 validation
+│   │   ├── rom_loader.rs           # ROM loading with CRC32 matching, multi-variant support
 │   │   ├── simple6809.rs           # M6809 + RAM/ROM
 │   │   ├── simple6502.rs           # M6502 + flat memory
 │   │   └── simplez80.rs            # Z80 + flat memory
 │   └── tests/
-│       └── joust_test.rs           # Joust system integration tests (38 tests)
+│       └── joust_test.rs           # Joust system integration tests (39 tests)
 ├── cpu-validation/                 # phosphor-cpu-validation crate
 │   ├── Cargo.toml                  # Deps: phosphor-core, serde, rand
 │   ├── src/
@@ -222,9 +231,10 @@ phosphor-core/
 │   └── test_data/m6809/            # Generated JSON test vectors
 │       └── 86.json                 # 1000 vectors for LDA #imm
 ├── frontend/                       # phosphor-frontend crate (SDL2 frontend)
-│   ├── Cargo.toml                  # Deps: phosphor-core, phosphor-machines, sdl2
+│   ├── Cargo.toml                  # Deps: phosphor-core, phosphor-machines, sdl2, zip
 │   └── src/
 │       ├── main.rs                 # CLI args, machine selection, ROM loading
+│       ├── rom_path.rs             # ROM path resolution (ZIP, rompath, directory)
 │       ├── emulator.rs             # Main loop: tick, render, input, frame timing
 │       ├── video.rs                # SDL window/texture setup, framebuffer blit
 │       └── input.rs                # Keyboard → Machine::set_input() mapping
@@ -379,7 +389,7 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 - [x] MC6821 PIA (full register set, interrupts, edge detection)
 - [x] Williams SC1 blitter (DMA copy/fill, mask, shift, foreground-only)
 - [x] CMOS RAM (1KB battery-backed, save/load persistence)
-- [x] ROM loader (CRC32 validation, RomSet/RomRegion)
+- [x] ROM loader (MAME ZIP support, CRC32-based matching, multi-variant ROM sets)
 - [x] Machine trait (frontend-agnostic display/input/render interface)
 - [x] Joust arcade board (Williams 2nd-gen: M6809 + video RAM + PIAs + blitter + CMOS + ROM)
 - [ ] 6850 ACIA (serial communication)
