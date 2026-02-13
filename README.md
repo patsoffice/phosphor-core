@@ -4,11 +4,11 @@
 
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-316%20passing-brightgreen.svg)](core/tests/)
+[![Tests](https://img.shields.io/badge/tests-429%20passing-brightgreen.svg)](core/tests/)
 
 A modular emulator framework for retro CPUs, designed for extensibility and educational purposes. Features a trait-based architecture that allows easy addition of new CPUs, peripherals, and complete systems.
 
-**Current Focus:** Motorola 6809 CPU emulation — 285 opcodes (280 documented + 15 undocumented aliases), 316 tests passing
+**Current Focus:** Joust (1982) arcade board emulation — M6809 CPU (285 opcodes), MC6821 PIA, Williams SC1 blitter, CMOS RAM, Machine trait for frontend abstraction. 429 tests passing
 
 ## Quick Start
 
@@ -29,20 +29,25 @@ cargo build
 cargo test
 
 # Expected output:
-#   test result: ok. 316 passed; 0 failed
+#   test result: ok. 429 passed; 0 failed
 ```
 
 ## Implementation Status
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| **Core Framework** | Complete | Bus trait, component system, arbitration |
+| **Core Framework** | Complete | Bus trait, Machine trait, component system, arbitration |
 | **M6809 CPU** | Complete | 285 opcodes, cycle-accurate, all addressing modes |
 | **M6502 CPU** | Partial | Initial structure, LDA immediate only |
 | **Z80 CPU** | Partial | Initial structure, LD A, n only |
-| **PIA 6820** | Placeholder | Stub only |
+| **MC6821 PIA** | Complete | Full register set, interrupts, edge detection, control lines |
+| **Williams SC1 Blitter** | Complete | DMA block copy/fill, mask, shift, foreground-only modes |
+| **CMOS RAM** | Complete | 1KB battery-backed RAM with save/load persistence |
+| **ROM Loader** | Complete | CRC32 validation, RomSet/RomRegion system |
+| **Joust System** | Complete | Williams board: CPU + video RAM + PIAs + blitter + CMOS + ROM |
+| **Machine Trait** | Complete | Frontend-agnostic interface: display, input, render, reset |
 | **CPU Validation** | In progress | SingleStepTests framework, opcode 0x86 validated |
-| **Test Suite** | Complete | 316 integration tests using direct CPU testing |
+| **Test Suite** | Complete | 429 tests across core, devices, and machine integration |
 
 ### 6809 Instructions
 
@@ -78,12 +83,14 @@ Contains all reusable components — zero external dependencies:
 
 - CPU implementations (M6809, M6502, Z80)
 - Bus and component abstractions
-- Peripheral device interfaces
+- Machine trait (frontend-agnostic display/input/render interface)
+- Peripheral devices (MC6821 PIA, Williams SC1 blitter, CMOS RAM)
 
 ### Machines Crate (`phosphor-machines`)
 
 Complete system implementations that wire core components together:
 
+- **JoustSystem** — Williams arcade board (M6809 + 48KB video RAM + two PIAs + blitter + CMOS + 12KB ROM)
 - Simple6809System (M6809 + RAM/ROM + PIA)
 - Simple6502System (M6502 + flat memory)
 - SimpleZ80System (Z80 + flat memory)
@@ -126,6 +133,7 @@ phosphor-core/
 │   │   ├── core/                   # Core abstractions (complete)
 │   │   │   ├── bus.rs              # Bus trait, BusMaster, InterruptState
 │   │   │   ├── component.rs        # Component traits
+│   │   │   ├── machine.rs          # Machine trait, InputButton (frontend interface)
 │   │   │   └── mod.rs              # Module exports
 │   │   ├── cpu/                    # CPU implementations
 │   │   │   ├── mod.rs              # Generic Cpu trait + CpuStateTrait
@@ -148,20 +156,28 @@ phosphor-core/
 │   │       ├── mod.rs              # Struct, state machine
 │   │       └── load_store.rs       # LD A, n
 │   │   └── device/                 # Peripheral devices
-│   │       ├── pia6820.rs          # PIA6820 stub
+│   │       ├── pia6820.rs          # MC6821 PIA (full: registers, interrupts, edge detection)
+│   │       ├── williams_blitter.rs # Williams SC1 DMA blitter (copy/fill/shift/mask)
+│   │       ├── cmos_ram.rs         # 1KB battery-backed CMOS RAM
 │   │       └── mod.rs              # Module exports
-│   └── tests/                      # Integration tests (316 tests)
+│   └── tests/                      # Integration tests (429 tests)
 │       ├── common/mod.rs           # TestBus harness
 │       ├── m6809_*_test.rs         # M6809 tests (16 files)
+│       ├── pia6820_test.rs         # MC6821 PIA tests (23 tests)
+│       ├── williams_blitter_test.rs # Blitter tests (18 tests)
 │       ├── m6502_basic_test.rs     # Basic 6502 tests
 │       └── z80_basic_test.rs       # Basic Z80 tests
 ├── machines/                       # phosphor-machines crate
 │   ├── Cargo.toml
-│   └── src/
-│       ├── lib.rs                  # Exports Simple*System types
-│       ├── simple6809.rs           # M6809 + RAM/ROM
-│       ├── simple6502.rs           # M6502 + flat memory
-│       └── simplez80.rs            # Z80 + flat memory
+│   ├── src/
+│   │   ├── lib.rs                  # Exports system types
+│   │   ├── joust.rs                # Joust arcade board (Williams 2nd-gen)
+│   │   ├── rom_loader.rs           # ROM loading with CRC32 validation
+│   │   ├── simple6809.rs           # M6809 + RAM/ROM
+│   │   ├── simple6502.rs           # M6502 + flat memory
+│   │   └── simplez80.rs            # Z80 + flat memory
+│   └── tests/
+│       └── joust_test.rs           # Joust system integration tests (38 tests)
 ├── cpu-validation/                 # phosphor-cpu-validation crate
 │   ├── Cargo.toml                  # Deps: phosphor-core, serde, rand
 │   ├── src/
@@ -320,14 +336,19 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 
 ### Phase 4: Peripherals & Systems
 
-- [ ] 6820 PIA (Peripheral Interface Adapter)
+- [x] MC6821 PIA (full register set, interrupts, edge detection)
+- [x] Williams SC1 blitter (DMA copy/fill, mask, shift, foreground-only)
+- [x] CMOS RAM (1KB battery-backed, save/load persistence)
+- [x] ROM loader (CRC32 validation, RomSet/RomRegion)
+- [x] Machine trait (frontend-agnostic display/input/render interface)
+- [x] Joust arcade board (Williams 2nd-gen: M6809 + video RAM + PIAs + blitter + CMOS + ROM)
 - [ ] 6850 ACIA (serial communication)
 - [ ] 6840 PTM (timer)
 - [ ] Memory mappers and bank switching
-- [ ] Real system implementations (Williams arcade boards)
 
-### Phase 5: Developer Tools
+### Phase 5: Frontend & Developer Tools
 
+- [ ] SDL2 frontend (renders any Machine impl)
 - [ ] Debugger with breakpoints and step execution
 - [ ] Memory viewer/editor
 - [ ] Disassembly viewer
@@ -335,9 +356,8 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 
 ### Phase 6: Multimedia
 
-- [ ] Video display simulation
 - [ ] Sound chip emulation (AY-3-8910, SN76489)
-- [ ] Input handling (keyboard, joystick)
+- [ ] Additional arcade boards (Robotron, Defender)
 
 ## License
 

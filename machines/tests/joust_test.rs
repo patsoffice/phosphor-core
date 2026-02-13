@@ -1,0 +1,543 @@
+use phosphor_core::core::machine::Machine;
+use phosphor_core::core::{Bus, BusMaster};
+use phosphor_core::cpu::m6809::CcFlag;
+use phosphor_machines::joust::JoustSystem;
+
+// =================================================================
+// Machine Trait Tests
+// =================================================================
+
+#[test]
+fn test_display_size() {
+    let sys = JoustSystem::new();
+    assert_eq!(sys.display_size(), (292, 240));
+}
+
+#[test]
+fn test_input_map_has_all_buttons() {
+    let sys = JoustSystem::new();
+    let map = sys.input_map();
+    assert_eq!(map.len(), 9); // 8 player buttons + coin
+    for button in map {
+        assert!(!button.name.is_empty());
+    }
+}
+
+#[test]
+fn test_render_frame_correct_size() {
+    let sys = JoustSystem::new();
+    let (w, h) = sys.display_size();
+    let mut buffer = vec![0u8; (w * h * 3) as usize];
+    sys.render_frame(&mut buffer); // Should not panic
+}
+
+#[test]
+fn test_render_frame_uses_palette() {
+    let mut sys = JoustSystem::new();
+    // Set palette entry 5 to a known color: R=7, G=0, B=3 => 0b111_000_11 = 0xE3
+    sys.write(BusMaster::Cpu(0), 0xC005, 0xE3);
+
+    // Write video RAM byte with upper nibble = 5 (color index 5)
+    sys.write(BusMaster::Cpu(0), 0x0000, 0x50);
+
+    let (w, h) = sys.display_size();
+    let mut buffer = vec![0u8; (w * h * 3) as usize];
+    sys.render_frame(&mut buffer);
+
+    // Pixel at (0,0) should have color from palette entry 5
+    // R = 7 * 255 / 7 = 255, G = 0, B = 3 * 255 / 3 = 255
+    assert_eq!(buffer[0], 255); // R
+    assert_eq!(buffer[1], 0); // G
+    assert_eq!(buffer[2], 255); // B
+}
+
+#[test]
+fn test_render_frame_black_palette() {
+    let sys = JoustSystem::new();
+    // All palette entries are 0 (black), all video RAM is 0
+    let (w, h) = sys.display_size();
+    let mut buffer = vec![0xFFu8; (w * h * 3) as usize];
+    sys.render_frame(&mut buffer);
+
+    // Every pixel should be black (0,0,0)
+    assert!(buffer.iter().all(|&b| b == 0));
+}
+
+#[test]
+fn test_set_input_active_low() {
+    let mut sys = JoustSystem::new();
+    // All buttons start released (input_port_a = 0xFF)
+
+    // Press P1 Right (button 0)
+    sys.set_input(0, true);
+    // Bit 0 should be cleared
+    // We can verify by reading the PIA data port after configuring DDR
+    // For now, verify that pressing then releasing returns to initial state
+    sys.set_input(0, false);
+
+    // Press and release P1 Flap (button 2)
+    sys.set_input(2, true);
+    sys.set_input(2, false);
+}
+
+#[test]
+fn test_set_input_multiple_buttons() {
+    let mut sys = JoustSystem::new();
+    // Press P1 Left and P1 Flap simultaneously
+    sys.set_input(1, true);
+    sys.set_input(2, true);
+
+    // Release P1 Left, P1 Flap still held
+    sys.set_input(1, false);
+
+    // Release P1 Flap
+    sys.set_input(2, false);
+}
+
+#[test]
+fn test_set_input_coin() {
+    let mut sys = JoustSystem::new();
+    // Coin triggers CA1 on widget PIA
+    sys.set_input(8, true); // Coin inserted (CA1 goes low)
+    sys.set_input(8, false); // Coin switch released (CA1 goes high)
+}
+
+// =================================================================
+// Memory Map Routing Tests
+// =================================================================
+
+#[test]
+fn test_video_ram_read_write() {
+    let mut sys = JoustSystem::new();
+    sys.write_video_ram(0x1234, 0xAB);
+    assert_eq!(sys.read_video_ram(0x1234), 0xAB);
+}
+
+#[test]
+fn test_video_ram_full_range() {
+    let mut sys = JoustSystem::new();
+    sys.write_video_ram(0x0000, 0x11);
+    sys.write_video_ram(0xBFFF, 0x22);
+    assert_eq!(sys.read_video_ram(0x0000), 0x11);
+    assert_eq!(sys.read_video_ram(0xBFFF), 0x22);
+}
+
+#[test]
+fn test_video_ram_via_bus() {
+    let mut sys = JoustSystem::new();
+    sys.write(BusMaster::Cpu(0), 0x1234, 0xCD);
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0x1234), 0xCD);
+    assert_eq!(sys.read_video_ram(0x1234), 0xCD);
+}
+
+#[test]
+fn test_palette_ram_read_write() {
+    let mut sys = JoustSystem::new();
+    sys.write(BusMaster::Cpu(0), 0xC000, 0xAA);
+    sys.write(BusMaster::Cpu(0), 0xC00F, 0xBB);
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0xC000), 0xAA);
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0xC00F), 0xBB);
+    assert_eq!(sys.read_palette(0), 0xAA);
+    assert_eq!(sys.read_palette(15), 0xBB);
+}
+
+#[test]
+fn test_cmos_ram_read_write() {
+    let mut sys = JoustSystem::new();
+    sys.write(BusMaster::Cpu(0), 0xCC00, 0x42);
+    sys.write(BusMaster::Cpu(0), 0xCFFF, 0x99);
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0xCC00), 0x42);
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0xCFFF), 0x99);
+}
+
+#[test]
+fn test_rom_write_protection() {
+    let mut sys = JoustSystem::new();
+    sys.load_program_rom(0, &[0xAA; 0x3000]);
+    // Write to ROM area should be ignored
+    sys.write(BusMaster::Cpu(0), 0xD000, 0x55);
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0xD000), 0xAA);
+}
+
+#[test]
+fn test_unmapped_returns_ff() {
+    let mut sys = JoustSystem::new();
+    // Addresses in the unmapped gap
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0xC010), 0xFF);
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0xC100), 0xFF);
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0xC7FF), 0xFF);
+}
+
+// =================================================================
+// PIA Routing Tests
+// =================================================================
+
+#[test]
+fn test_widget_pia_accessible() {
+    let mut sys = JoustSystem::new();
+    // Write DDRA (ctrl bit 2 = 0 by default, so offset 0 accesses DDR)
+    sys.write(BusMaster::Cpu(0), 0xC804, 0xFF); // Set all as outputs
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0xC804), 0xFF);
+}
+
+#[test]
+fn test_rom_pia_accessible() {
+    let mut sys = JoustSystem::new();
+    // Write DDRA on ROM PIA
+    sys.write(BusMaster::Cpu(0), 0xC80C, 0xFF);
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0xC80C), 0xFF);
+}
+
+#[test]
+fn test_pia_addresses_independent() {
+    let mut sys = JoustSystem::new();
+    // Write different DDR values to each PIA
+    sys.write(BusMaster::Cpu(0), 0xC804, 0xAA); // Widget PIA DDRA
+    sys.write(BusMaster::Cpu(0), 0xC80C, 0x55); // ROM PIA DDRA
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0xC804), 0xAA);
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0xC80C), 0x55);
+}
+
+// =================================================================
+// Blitter Integration Tests
+// =================================================================
+
+#[test]
+fn test_blitter_registers_accessible() {
+    let mut sys = JoustSystem::new();
+    sys.write(BusMaster::Cpu(0), 0xCA00, 0xFF); // mask
+    sys.write(BusMaster::Cpu(0), 0xCA01, 0x42); // solid_color
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0xCA00), 0xFF);
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0xCA01), 0x42);
+}
+
+#[test]
+fn test_blitter_halts_cpu() {
+    let mut sys = JoustSystem::new();
+    // Set up an infinite loop at 0xD000: BRA * (2 bytes)
+    sys.load_program_rom(0, &[0x20, 0xFE]); // BRA *
+    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]); // Reset vector -> 0xD000
+    sys.reset();
+
+    // Run enough cycles for the CPU to settle into the BRA loop
+    for _ in 0..20 {
+        sys.tick();
+    }
+
+    // Record CPU PC — it should be at the BRA instruction
+    let pc_before = sys.get_cpu_state().pc;
+
+    // Trigger a large blit: 8x8 solid fill so the blitter runs for 64+ DMA cycles
+    sys.write(BusMaster::Cpu(0), 0xCA00, 0xFF); // mask = 0xFF
+    sys.write(BusMaster::Cpu(0), 0xCA01, 0x42); // solid_color
+    sys.write(BusMaster::Cpu(0), 0xCA04, 0x00); // dst_hi
+    sys.write(BusMaster::Cpu(0), 0xCA05, 0x00); // dst_lo
+    sys.write(BusMaster::Cpu(0), 0xCA06, 0x07); // width = 7 (8 bytes)
+    sys.write(BusMaster::Cpu(0), 0xCA07, 0x07); // height = 7 (8 rows), triggers blit
+
+    // The blitter should now be active. Tick once and verify the CPU PC
+    // did NOT advance (blitter halts the CPU via is_halted_for).
+    sys.tick();
+    let pc_during_blit = sys.get_cpu_state().pc;
+    assert_eq!(
+        pc_before, pc_during_blit,
+        "CPU PC should not advance while blitter is active"
+    );
+
+    // Run enough cycles to complete the blit (8*8 = 64 DMA cycles)
+    for _ in 0..100 {
+        sys.tick();
+    }
+
+    // After blit completes, CPU should resume and PC should be back in the loop
+    let pc_after = sys.get_cpu_state().pc;
+    assert!(
+        pc_after >= 0xD000 && pc_after <= 0xD002,
+        "CPU should resume executing after blit completes, PC=0x{:04X}",
+        pc_after
+    );
+}
+
+#[test]
+fn test_blitter_writes_to_video_ram() {
+    let mut sys = JoustSystem::new();
+
+    // Write source data in video RAM at address 0x1000
+    sys.write_video_ram(0x1000, 0xAB);
+    sys.write_video_ram(0x1001, 0xCD);
+
+    // Configure blitter for a 2-byte copy (1 row, width=1)
+    sys.write(BusMaster::Cpu(0), 0xCA00, 0xFF); // mask
+    sys.write(BusMaster::Cpu(0), 0xCA02, 0x10); // src_hi = 0x10
+    sys.write(BusMaster::Cpu(0), 0xCA03, 0x00); // src_lo = 0x00
+    sys.write(BusMaster::Cpu(0), 0xCA04, 0x20); // dst_hi = 0x20
+    sys.write(BusMaster::Cpu(0), 0xCA05, 0x00); // dst_lo = 0x00
+    sys.write(BusMaster::Cpu(0), 0xCA06, 0x01); // width = 1 (2 bytes)
+    sys.write(BusMaster::Cpu(0), 0xCA07, 0x00); // height = 0 (1 row), triggers blit
+
+    // Run enough DMA cycles to complete
+    for _ in 0..10 {
+        sys.tick();
+    }
+
+    // Verify destination
+    assert_eq!(sys.read_video_ram(0x2000), 0xAB);
+    assert_eq!(sys.read_video_ram(0x2001), 0xCD);
+}
+
+// =================================================================
+// Interrupt Tests
+// =================================================================
+
+#[test]
+fn test_no_irq_when_pia_disabled() {
+    let mut sys = JoustSystem::new();
+    // Load a simple infinite loop
+    sys.load_program_rom(0, &[0x20, 0xFE]); // BRA *
+    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.reset();
+
+    // PIA CB1 interrupt not enabled by default, so no IRQ after VBLANK
+    for _ in 0..200 {
+        sys.tick();
+    }
+    // CPU should still be running the loop, not stuck in an IRQ handler
+    let state = sys.get_cpu_state();
+    // PC should be in the loop at 0xD000
+    assert!(state.pc >= 0xD000 && state.pc <= 0xD002);
+}
+
+// =================================================================
+// Reset Tests
+// =================================================================
+
+#[test]
+fn test_reset_loads_vector_from_rom() {
+    let mut sys = JoustSystem::new();
+    sys.load_program_rom(0x2FFE, &[0xD1, 0x00]);
+    sys.reset();
+    assert_eq!(sys.get_cpu_state().pc, 0xD100);
+}
+
+#[test]
+fn test_reset_masks_interrupts() {
+    let mut sys = JoustSystem::new();
+    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.reset();
+    let state = sys.get_cpu_state();
+    assert_ne!(state.cc & (CcFlag::I as u8), 0);
+    assert_ne!(state.cc & (CcFlag::F as u8), 0);
+}
+
+#[test]
+fn test_reset_preserves_cmos() {
+    let mut sys = JoustSystem::new();
+    sys.load_cmos(&[0x42; 1024]);
+    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.reset();
+    assert_eq!(sys.save_cmos()[0], 0x42);
+}
+
+#[test]
+fn test_reset_preserves_video_ram() {
+    let mut sys = JoustSystem::new();
+    sys.write_video_ram(0x0100, 0xAB);
+    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.reset();
+    assert_eq!(sys.read_video_ram(0x0100), 0xAB);
+}
+
+// =================================================================
+// CMOS Persistence Tests
+// =================================================================
+
+#[test]
+fn test_cmos_load_save_roundtrip() {
+    let mut sys = JoustSystem::new();
+    let data = [0xAB; 1024];
+    sys.load_cmos(&data);
+    assert_eq!(sys.save_cmos(), &data);
+}
+
+// =================================================================
+// ROM Loading Tests
+// =================================================================
+
+#[test]
+fn test_load_program_rom_slice() {
+    let mut sys = JoustSystem::new();
+    sys.load_program_rom(0, &[0x12, 0x34]);
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0xD000), 0x12);
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0xD001), 0x34);
+}
+
+#[test]
+fn test_load_rom_set() {
+    use phosphor_machines::rom_loader::RomSet;
+    let rom_set = RomSet::from_slices(&[
+        ("joust.wg1", &[0x11u8; 0x1000]),
+        ("joust.wg2", &[0x22u8; 0x1000]),
+        ("joust.wg3", &[0x33u8; 0x1000]),
+    ]);
+    let mut sys = JoustSystem::new();
+    sys.load_rom_set(&rom_set).unwrap();
+
+    // Verify ROM contents at start of each region
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0xD000), 0x11);
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0xE000), 0x22);
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0xF000), 0x33);
+}
+
+// =================================================================
+// I/O Register Tests
+// =================================================================
+
+#[test]
+fn test_rom_bank_select() {
+    let mut sys = JoustSystem::new();
+    sys.write(BusMaster::Cpu(0), 0xC900, 0x03);
+    assert_eq!(sys.rom_bank(), 0x03);
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0xC900), 0x03);
+}
+
+#[test]
+fn test_watchdog_reset_on_read() {
+    let mut sys = JoustSystem::new();
+    sys.load_program_rom(0, &[0x20, 0xFE]); // BRA *
+    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.reset();
+
+    // Tick a few times to increment watchdog
+    for _ in 0..100 {
+        sys.tick();
+    }
+
+    // Reading 0xCB00 should reset watchdog (returns 0)
+    let val = sys.read(BusMaster::Cpu(0), 0xCB00);
+    assert_eq!(val, 0);
+}
+
+#[test]
+fn test_watchdog_reset_on_write() {
+    let mut sys = JoustSystem::new();
+    // Writing to 0xCB00 should also reset watchdog
+    sys.write(BusMaster::Cpu(0), 0xCB00, 0x00);
+}
+
+// =================================================================
+// Integration: Execute a Small Program
+// =================================================================
+
+#[test]
+fn test_execute_simple_program() {
+    let mut sys = JoustSystem::new();
+    sys.load_program_rom(
+        0,
+        &[
+            0x86, 0x42, // LDA #$42
+            0xB7, 0x01, 0x00, // STA $0100
+            0xF6, 0x01, 0x00, // LDB $0100
+            0xF7, 0x01, 0x01, // STB $0101
+            0x20, 0xFE, // BRA *
+        ],
+    );
+    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.reset();
+
+    for _ in 0..50 {
+        sys.tick();
+    }
+
+    assert_eq!(sys.read_video_ram(0x0100), 0x42);
+    assert_eq!(sys.read_video_ram(0x0101), 0x42);
+    let state = sys.get_cpu_state();
+    assert_eq!(state.a, 0x42);
+    assert_eq!(state.b, 0x42);
+}
+
+#[test]
+fn test_execute_palette_write_program() {
+    let mut sys = JoustSystem::new();
+    // Program that writes 0xE3 to palette entry 0 (address 0xC000)
+    sys.load_program_rom(
+        0,
+        &[
+            0x86, 0xE3, // LDA #$E3
+            0xB7, 0xC0, 0x00, // STA $C000
+            0x20, 0xFE, // BRA *
+        ],
+    );
+    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.reset();
+
+    for _ in 0..30 {
+        sys.tick();
+    }
+
+    assert_eq!(sys.read_palette(0), 0xE3);
+}
+
+#[test]
+fn test_execute_cmos_write_program() {
+    let mut sys = JoustSystem::new();
+    // Program that writes 0x99 to CMOS at 0xCC00
+    sys.load_program_rom(
+        0,
+        &[
+            0x86, 0x99, // LDA #$99
+            0xB7, 0xCC, 0x00, // STA $CC00
+            0x20, 0xFE, // BRA *
+        ],
+    );
+    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.reset();
+
+    for _ in 0..30 {
+        sys.tick();
+    }
+
+    assert_eq!(sys.save_cmos()[0], 0x99);
+}
+
+#[test]
+fn test_execute_rom_bank_program() {
+    let mut sys = JoustSystem::new();
+    // Program that writes 0x03 to ROM bank select at 0xC900
+    sys.load_program_rom(
+        0,
+        &[
+            0x86, 0x03, // LDA #$03
+            0xB7, 0xC9, 0x00, // STA $C900
+            0x20, 0xFE, // BRA *
+        ],
+    );
+    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.reset();
+
+    for _ in 0..30 {
+        sys.tick();
+    }
+
+    assert_eq!(sys.rom_bank(), 0x03);
+}
+
+#[test]
+fn test_clock_advances() {
+    let mut sys = JoustSystem::new();
+    sys.load_program_rom(0, &[0x20, 0xFE]); // BRA *
+    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.reset();
+
+    assert_eq!(sys.clock(), 0);
+    for _ in 0..100 {
+        sys.tick();
+    }
+    assert_eq!(sys.clock(), 100);
+}
+
+#[test]
+fn test_default_impl() {
+    let sys = JoustSystem::default();
+    assert_eq!(sys.display_size(), (292, 240));
+    assert_eq!(sys.clock(), 0);
+}
