@@ -1,3 +1,4 @@
+pub mod rom_loader;
 pub mod simple6502;
 pub mod simple6809;
 pub mod simplez80;
