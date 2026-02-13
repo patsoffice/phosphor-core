@@ -317,19 +317,26 @@ impl Machine for JoustSystem {
             );
         }
 
-        // Williams video RAM is organized in column-major order (304 columns x 256 rows).
-        // Each byte holds two horizontally-adjacent 4-bit pixels packed together:
-        //   Upper nibble (bits 7-4) = color index for the left pixel
-        //   Lower nibble (bits 3-0) = color index for the right pixel
-        // Addressing: vram_addr = column * 256 + row
-        // The visible area is 292x240, cropped from the full 304x256 frame.
+        // Williams video RAM is organized in column-major order with 2 pixels per byte.
+        // Each byte holds two horizontally-adjacent 4-bit pixels:
+        //   Upper nibble (bits 7-4) = color index for the even (left) pixel
+        //   Lower nibble (bits 3-0) = color index for the odd (right) pixel
         //
-        // For now we render only the upper nibble per byte (one pixel per byte).
-        // This is sufficient for the initial bring-up; full 2-pixel-per-byte
-        // rendering will be added when tested against real Joust ROMs.
+        // VRAM addressing: byte_column * 256 + row
+        // Each byte_column spans 2 screen pixels, so screen pixel X maps to:
+        //   byte_column = X / 2,  upper nibble if X is even, lower nibble if X is odd
+        //
+        // Visible area: 292 pixels wide (146 byte-columns) x 240 pixels tall,
+        // cropped from the full 304x256 frame starting at byte-column 3, row 7.
+        const CROP_X: usize = 6;  // First visible byte-column * 2 (pixel offset)
+        const CROP_Y: usize = 7;  // First visible row
+
         for screen_y in 0..h {
+            let row = screen_y + CROP_Y;
             for screen_x in 0..w {
-                let vram_addr = screen_x * 256 + screen_y;
+                let pixel_x = screen_x + CROP_X;
+                let byte_column = pixel_x / 2;
+                let vram_addr = byte_column * 256 + row;
 
                 let byte = if vram_addr < self.video_ram.len() {
                     self.video_ram[vram_addr]
@@ -337,8 +344,12 @@ impl Machine for JoustSystem {
                     0
                 };
 
-                // Use upper nibble as 4-bit color index into the 16-entry palette
-                let color_index = (byte >> 4) & 0x0F;
+                // Even pixel = upper nibble, odd pixel = lower nibble
+                let color_index = if pixel_x & 1 == 0 {
+                    (byte >> 4) & 0x0F
+                } else {
+                    byte & 0x0F
+                };
                 let (r, g, b) = palette_rgb[color_index as usize];
                 let pixel_offset = (screen_y * w + screen_x) * 3;
                 buffer[pixel_offset] = r;

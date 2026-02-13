@@ -37,8 +37,10 @@ fn test_render_frame_uses_palette() {
     // Set palette entry 5 to a known color: R=7, G=0, B=3 => 0b111_000_11 = 0xE3
     sys.write(BusMaster::Cpu(0), 0xC005, 0xE3);
 
-    // Write video RAM byte with upper nibble = 5 (color index 5)
-    sys.write(BusMaster::Cpu(0), 0x0000, 0x50);
+    // Screen pixel (0,0) maps to VRAM at byte_column=3, row=7 (crop offset 6,7).
+    // pixel_x=6 is even, so the upper nibble is used.
+    // VRAM address = 3 * 256 + 7 = 0x0307
+    sys.write(BusMaster::Cpu(0), 0x0307, 0x50);
 
     let (w, h) = sys.display_size();
     let mut buffer = vec![0u8; (w * h * 3) as usize];
@@ -49,6 +51,35 @@ fn test_render_frame_uses_palette() {
     assert_eq!(buffer[0], 255); // R
     assert_eq!(buffer[1], 0); // G
     assert_eq!(buffer[2], 255); // B
+}
+
+#[test]
+fn test_render_frame_two_pixels_per_byte() {
+    let mut sys = JoustSystem::new();
+    // Palette entry 3: R=0, G=7, B=0 => 0b000_111_00 = 0x1C
+    // Palette entry 9: R=4, G=4, B=2 => 0b100_100_10 = 0x92
+    sys.write(BusMaster::Cpu(0), 0xC003, 0x1C);
+    sys.write(BusMaster::Cpu(0), 0xC009, 0x92);
+
+    // Screen pixels (0,0) and (1,0) share the same VRAM byte at byte_column=3, row=7.
+    // pixel_x=6 (even) reads upper nibble, pixel_x=7 (odd) reads lower nibble.
+    // Write 0x39 → upper nibble=3 (palette 3), lower nibble=9 (palette 9).
+    sys.write(BusMaster::Cpu(0), 0x0307, 0x39);
+
+    let (w, _h) = sys.display_size();
+    let mut buffer = vec![0u8; w as usize * 240 * 3];
+    sys.render_frame(&mut buffer);
+
+    // Pixel (0,0) = palette entry 3: R=0, G=255, B=0
+    assert_eq!(buffer[0], 0);
+    assert_eq!(buffer[1], 255);
+    assert_eq!(buffer[2], 0);
+
+    // Pixel (1,0) = palette entry 9: R=145, G=145, B=170
+    let px1 = 3; // offset for pixel x=1
+    assert_eq!(buffer[px1], (4 * 255 / 7) as u8);     // R
+    assert_eq!(buffer[px1 + 1], (4 * 255 / 7) as u8); // G
+    assert_eq!(buffer[px1 + 2], (2 * 255 / 3) as u8); // B
 }
 
 #[test]

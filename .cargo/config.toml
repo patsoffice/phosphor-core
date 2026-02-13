@@ -1,0 +1,4 @@
+# Homebrew on Apple Silicon installs to /opt/homebrew.
+# SDL2 (brew install sdl2) puts its dylib there, so the linker needs this path.
+[target.aarch64-apple-darwin]
+rustflags = ["-L", "/opt/homebrew/lib"]

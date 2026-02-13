@@ -11,17 +11,27 @@ cargo build
 # Build specific crate
 cargo build --package phosphor-core
 cargo build --package phosphor-machines
+cargo build --package phosphor-frontend
 
 # Run all tests
 cargo test
 
 # Run specific test category
 cargo test m6809_alu_shift_test
+
+# Run the emulator
+cargo run --package phosphor-frontend -- joust /path/to/roms --scale 3
 ```
 
 - `cargo fmt` to format code
 - `cargo clippy` to check code quality
 - All tests must pass before committing
+
+### SDL2 Dependency
+
+- The `phosphor-frontend` crate requires SDL2: `brew install sdl2`
+- `.cargo/config.toml` sets the Homebrew library path for aarch64-apple-darwin automatically
+- Core and machines crates remain zero-dep pure Rust
 
 ### Architecture Rules
 

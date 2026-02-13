@@ -1,0 +1,13 @@
+[package]
+name = "phosphor-frontend"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "phosphor"
+path = "src/main.rs"
+
+[dependencies]
+phosphor-core = { path = "../core" }
+phosphor-machines = { path = "../machines" }
+sdl2 = "0.37"

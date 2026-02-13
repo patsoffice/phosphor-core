@@ -16,6 +16,7 @@ A modular emulator framework for retro CPUs, designed for extensibility and educ
 
 - Rust 1.85+ (2024 edition)
 - Cargo
+- SDL2 (`brew install sdl2` on macOS)
 
 ### Build and Test
 
@@ -31,6 +32,28 @@ cargo test
 # Expected output:
 #   test result: ok. 429 passed; 0 failed
 ```
+
+### Running the Emulator
+
+```bash
+# Run with Joust ROMs (extracted MAME format)
+cargo run --package phosphor-frontend -- joust /path/to/joust/roms --scale 3
+```
+
+**Controls:**
+
+| Key              | Action      |
+| ---------------- | ----------- |
+| Arrow Left/Right | P1 Move     |
+| Space            | P1 Flap     |
+| 1                | P1 Start    |
+| A/D              | P2 Move     |
+| W                | P2 Flap     |
+| 2                | P2 Start    |
+| 5                | Insert Coin |
+| Escape           | Quit        |
+
+> `.cargo/config.toml` sets the Homebrew library path for aarch64-apple-darwin automatically, so no manual `LIBRARY_PATH` is needed.
 
 ## Implementation Status
 
@@ -95,6 +118,15 @@ Complete system implementations that wire core components together:
 - Simple6502System (M6502 + flat memory)
 - SimpleZ80System (Z80 + flat memory)
 
+### Frontend Crate (`phosphor-frontend`)
+
+SDL2-based windowed frontend — the only crate with external dependencies:
+
+- **Machine-agnostic** — operates entirely through the `Machine` trait, no hardware-specific knowledge
+- SDL2 window with GPU-scaled texture rendering (VSync frame timing)
+- Keyboard input mapping built automatically from `Machine::input_map()`
+- Adding a new machine requires only a new match arm in `main.rs`
+
 ### CPU Validation Crate (`phosphor-cpu-validation`)
 
 [SingleStepTests](https://github.com/SingleStepTests/65x02)-style test infrastructure for validating CPU implementations against randomized test vectors with cycle-by-cycle bus traces:
@@ -125,7 +157,8 @@ make -C cross-validation
 
 ```text
 phosphor-core/
-├── Cargo.toml                      # [workspace] members = ["core", "machines", "cpu-validation"]
+├── Cargo.toml                      # [workspace] members = ["core", "machines", "cpu-validation", "frontend"]
+├── .cargo/config.toml              # Homebrew library path for aarch64-apple-darwin
 ├── core/                           # phosphor-core crate
 │   ├── Cargo.toml                  # Core crate manifest (zero dependencies)
 │   ├── src/
@@ -188,6 +221,13 @@ phosphor-core/
 │   │   └── m6809_single_step_test.rs  # Validates phosphor-core against JSON
 │   └── test_data/m6809/            # Generated JSON test vectors
 │       └── 86.json                 # 1000 vectors for LDA #imm
+├── frontend/                       # phosphor-frontend crate (SDL2 frontend)
+│   ├── Cargo.toml                  # Deps: phosphor-core, phosphor-machines, sdl2
+│   └── src/
+│       ├── main.rs                 # CLI args, machine selection, ROM loading
+│       ├── emulator.rs             # Main loop: tick, render, input, frame timing
+│       ├── video.rs                # SDL window/texture setup, framebuffer blit
+│       └── input.rs                # Keyboard → Machine::set_input() mapping
 └── cross-validation/               # C++ reference validation
     ├── Makefile
     ├── validate.cpp                # Test harness using elmerucr/MC6809
@@ -348,7 +388,7 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 
 ### Phase 5: Frontend & Developer Tools
 
-- [ ] SDL2 frontend (renders any Machine impl)
+- [x] SDL2 frontend (renders any Machine impl, keyboard input, VSync timing)
 - [ ] Debugger with breakpoints and step execution
 - [ ] Memory viewer/editor
 - [ ] Disassembly viewer
