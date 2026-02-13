@@ -4,6 +4,8 @@ mod load_store;
 mod stack;
 mod transfer;
 
+use std::mem;
+
 use crate::core::{
     Bus, BusMaster,
     bus::InterruptState,
@@ -57,7 +59,6 @@ pub(crate) enum ExecState {
     Execute(u8, u8),      // (opcode, cycle)
     ExecutePage2(u8, u8), // (opcode, cycle) for 0x10 prefix
     ExecutePage3(u8, u8), // (opcode, cycle) for 0x11 prefix
-    #[allow(dead_code)]
     Halted {
         return_state: Box<ExecState>,
     },
@@ -131,10 +132,17 @@ impl M6809 {
             return;
         }
 
-        match self.state {
-            ExecState::Halted { .. } => {
-                // TSC released? Bus trait handles the logic; we just check again next cycle
+        // TSC released — restore the pre-halt state (one dead cycle for re-sync)
+        if let ExecState::Halted { .. } = self.state {
+            let old = mem::replace(&mut self.state, ExecState::Fetch);
+            if let ExecState::Halted { return_state } = old {
+                self.state = *return_state;
             }
+            return;
+        }
+
+        match self.state {
+            ExecState::Halted { .. } => unreachable!("handled above"),
             ExecState::Fetch => {
                 let ints = bus.check_interrupts(master);
                 if self.handle_interrupts(ints) {

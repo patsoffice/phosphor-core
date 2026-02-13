@@ -234,8 +234,7 @@ impl Pia6820 {
     /// irq_a2 only contributes when CA2 is input (bit 5=0) and enabled (bit 3=1).
     pub fn irq_a(&self) -> bool {
         let a1_active = self.irq_a1 && (self.ctrl_a & 0x01) != 0;
-        let a2_active =
-            self.irq_a2 && (self.ctrl_a & 0x20) == 0 && (self.ctrl_a & 0x08) != 0;
+        let a2_active = self.irq_a2 && (self.ctrl_a & 0x20) == 0 && (self.ctrl_a & 0x08) != 0;
         a1_active || a2_active
     }
 
@@ -246,8 +245,7 @@ impl Pia6820 {
     /// irq_b2 only contributes when CB2 is input (bit 5=0) and enabled (bit 3=1).
     pub fn irq_b(&self) -> bool {
         let b1_active = self.irq_b1 && (self.ctrl_b & 0x01) != 0;
-        let b2_active =
-            self.irq_b2 && (self.ctrl_b & 0x20) == 0 && (self.ctrl_b & 0x08) != 0;
+        let b2_active = self.irq_b2 && (self.ctrl_b & 0x20) == 0 && (self.ctrl_b & 0x08) != 0;
         b1_active || b2_active
     }
 
@@ -263,7 +261,6 @@ impl Pia6820 {
     pub fn read_output_b(&self) -> u8 {
         self.output_b & self.ddr_b
     }
-
 }
 
 impl Default for Pia6820 {

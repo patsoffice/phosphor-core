@@ -418,4 +418,3 @@ fn test_no_edge_on_initial_low() {
     pia.set_ca1(false);
     assert!(!pia.irq_a());
 }
-

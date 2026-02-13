@@ -23,21 +23,9 @@ fn test_load_accumulator_immediate() {
     // Verify A register loaded with immediate value
     assert_eq!(cpu.a, 0x42, "A register should be 0x42 after LDA #$42");
     assert_eq!(cpu.pc, 2, "PC should be at 0x02 after LDA");
-    assert_eq!(
-        cpu.cc & (CcFlag::N as u8),
-        0,
-        "Negative should be clear"
-    );
-    assert_eq!(
-        cpu.cc & (CcFlag::Z as u8),
-        0,
-        "Zero should be clear"
-    );
-    assert_eq!(
-        cpu.cc & (CcFlag::V as u8),
-        0,
-        "Overflow should be clear"
-    );
+    assert_eq!(cpu.cc & (CcFlag::N as u8), 0, "Negative should be clear");
+    assert_eq!(cpu.cc & (CcFlag::Z as u8), 0, "Zero should be clear");
+    assert_eq!(cpu.cc & (CcFlag::V as u8), 0, "Overflow should be clear");
 }
 
 #[test]
@@ -53,28 +41,20 @@ fn test_reset() {
 
     // Verify the CPU state after execution
     // After LDA #$FF, the A register should contain 0xFF
-    assert_eq!(
-        cpu.a, 0xFF,
-        "A register should be 0xFF after LDA #$FF"
-    );
+    assert_eq!(cpu.a, 0xFF, "A register should be 0xFF after LDA #$FF");
     assert_eq!(
         cpu.cc & (CcFlag::N as u8),
         CcFlag::N as u8,
         "Negative should be set"
     );
-    assert_eq!(
-        cpu.cc & (CcFlag::Z as u8),
-        0,
-        "Zero should be clear"
-    );
-    assert_eq!(
-        cpu.cc & (CcFlag::V as u8),
-        0,
-        "Overflow should be clear"
-    );
+    assert_eq!(cpu.cc & (CcFlag::Z as u8), 0, "Zero should be clear");
+    assert_eq!(cpu.cc & (CcFlag::V as u8), 0, "Overflow should be clear");
 
     // After STA $00, memory[0] should contain 0xFF
-    assert_eq!(bus.memory[0], 0xFF, "memory[0] should be 0xFF after STA $00");
+    assert_eq!(
+        bus.memory[0], 0xFF,
+        "memory[0] should be 0xFF after STA $00"
+    );
 
     // PC should have advanced past both instructions (2 + 2 = 4 bytes)
     assert_eq!(cpu.pc, 4, "PC should be at 0x04 after both instructions");
@@ -97,21 +77,9 @@ fn test_store_accumulator_direct() {
         "memory[0x10] should be 0x55 after store"
     );
     assert_eq!(cpu.pc, 4, "PC should be at 0x04");
-    assert_eq!(
-        cpu.cc & (CcFlag::N as u8),
-        0,
-        "Negative should be clear"
-    );
-    assert_eq!(
-        cpu.cc & (CcFlag::Z as u8),
-        0,
-        "Zero should be clear"
-    );
-    assert_eq!(
-        cpu.cc & (CcFlag::V as u8),
-        0,
-        "Overflow should be clear"
-    );
+    assert_eq!(cpu.cc & (CcFlag::N as u8), 0, "Negative should be clear");
+    assert_eq!(cpu.cc & (CcFlag::Z as u8), 0, "Zero should be clear");
+    assert_eq!(cpu.cc & (CcFlag::V as u8), 0, "Overflow should be clear");
 }
 
 #[test]
@@ -133,31 +101,13 @@ fn test_multiple_loads_and_stores() {
     tick(&mut cpu, &mut bus, 10);
 
     // Verify all values were loaded and stored
-    assert_eq!(
-        cpu.a, 0x22,
-        "A register should be 0x22 (last loaded value)"
-    );
+    assert_eq!(cpu.a, 0x22, "A register should be 0x22 (last loaded value)");
     assert_eq!(bus.memory[0x00], 0x11, "memory[0x00] should be 0x11");
     assert_eq!(bus.memory[0x01], 0x22, "memory[0x01] should be 0x22");
-    assert_eq!(
-        cpu.pc, 8,
-        "PC should be at 0x08 after all instructions"
-    );
-    assert_eq!(
-        cpu.cc & (CcFlag::N as u8),
-        0,
-        "Negative should be clear"
-    );
-    assert_eq!(
-        cpu.cc & (CcFlag::Z as u8),
-        0,
-        "Zero should be clear"
-    );
-    assert_eq!(
-        cpu.cc & (CcFlag::V as u8),
-        0,
-        "Overflow should be clear"
-    );
+    assert_eq!(cpu.pc, 8, "PC should be at 0x08 after all instructions");
+    assert_eq!(cpu.cc & (CcFlag::N as u8), 0, "Negative should be clear");
+    assert_eq!(cpu.cc & (CcFlag::Z as u8), 0, "Zero should be clear");
+    assert_eq!(cpu.cc & (CcFlag::V as u8), 0, "Overflow should be clear");
 }
 
 #[test]

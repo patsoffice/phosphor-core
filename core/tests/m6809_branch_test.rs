@@ -501,7 +501,11 @@ fn test_neg_direct_alias_0x01() {
     tick(&mut cpu, &mut bus, 4); // RMW direct: 4 cycles
     assert_eq!(bus.memory[0x10], 0xFB, "NEG $05 = $FB (-5)");
     assert_ne!(cpu.cc & (CcFlag::N as u8), 0, "N should be set");
-    assert_ne!(cpu.cc & (CcFlag::C as u8), 0, "C should be set (non-zero negate)");
+    assert_ne!(
+        cpu.cc & (CcFlag::C as u8),
+        0,
+        "C should be set (non-zero negate)"
+    );
 }
 
 #[test]
@@ -584,7 +588,11 @@ fn test_lsrb_alias_0x55() {
 
     tick(&mut cpu, &mut bus, 2);
     assert_eq!(cpu.b, 0x01, "LSR $03 = $01");
-    assert_ne!(cpu.cc & (CcFlag::C as u8), 0, "C should be set (bit 0 shifted out)");
+    assert_ne!(
+        cpu.cc & (CcFlag::C as u8),
+        0,
+        "C should be set (bit 0 shifted out)"
+    );
 }
 
 #[test]
@@ -597,5 +605,9 @@ fn test_decb_alias_0x5b() {
     tick(&mut cpu, &mut bus, 2);
     assert_eq!(cpu.b, 0x7F, "DEC $80 = $7F");
     assert_eq!(cpu.cc & (CcFlag::N as u8), 0, "N should be clear");
-    assert_ne!(cpu.cc & (CcFlag::V as u8), 0, "V should be set (sign change)");
+    assert_ne!(
+        cpu.cc & (CcFlag::V as u8),
+        0,
+        "V should be set (sign change)"
+    );
 }

@@ -41,11 +41,9 @@ fn run_test_case(tc: &TestCase) {
     // Assert memory
     for &(addr, expected) in &tc.final_state.ram {
         assert_eq!(
-            bus.memory[addr as usize],
-            expected,
+            bus.memory[addr as usize], expected,
             "{}: RAM[0x{:04X}]",
-            tc.name,
-            addr
+            tc.name, addr
         );
     }
 
