@@ -143,8 +143,8 @@ impl M6800 {
         &mut self,
         opcode: u8,
         cycle: u8,
-        _bus: &mut B,
-        _master: BusMaster,
+        bus: &mut B,
+        master: BusMaster,
     ) {
         match opcode {
             // NOP (0x01) - 2 cycles total: 1 fetch + 1 internal
@@ -193,6 +193,37 @@ impl M6800 {
             0x5C => self.op_incb(cycle),
             0x5D => self.op_tstb(cycle),
             0x5F => self.op_clrb(cycle),
+
+            // --- Immediate mode ALU A register (2 cycles) ---
+            0x80 => self.op_suba_imm(cycle, bus, master),
+            0x81 => self.op_cmpa_imm(cycle, bus, master),
+            0x82 => self.op_sbca_imm(cycle, bus, master),
+            0x84 => self.op_anda_imm(cycle, bus, master),
+            0x85 => self.op_bita_imm(cycle, bus, master),
+            0x86 => self.op_ldaa_imm(cycle, bus, master),
+            0x88 => self.op_eora_imm(cycle, bus, master),
+            0x89 => self.op_adca_imm(cycle, bus, master),
+            0x8A => self.op_oraa_imm(cycle, bus, master),
+            0x8B => self.op_adda_imm(cycle, bus, master),
+
+            // --- 16-bit immediate ops (3 cycles) ---
+            0x8C => self.op_cpx_imm(cycle, bus, master),
+            0x8E => self.op_lds_imm(cycle, bus, master),
+
+            // --- Immediate mode ALU B register (2 cycles) ---
+            0xC0 => self.op_subb_imm(cycle, bus, master),
+            0xC1 => self.op_cmpb_imm(cycle, bus, master),
+            0xC2 => self.op_sbcb_imm(cycle, bus, master),
+            0xC4 => self.op_andb_imm(cycle, bus, master),
+            0xC5 => self.op_bitb_imm(cycle, bus, master),
+            0xC6 => self.op_ldab_imm(cycle, bus, master),
+            0xC8 => self.op_eorb_imm(cycle, bus, master),
+            0xC9 => self.op_adcb_imm(cycle, bus, master),
+            0xCA => self.op_orab_imm(cycle, bus, master),
+            0xCB => self.op_addb_imm(cycle, bus, master),
+
+            // --- 16-bit immediate ops ---
+            0xCE => self.op_ldx_imm(cycle, bus, master),
 
             // Unknown opcode - just fetch next
             _ => {

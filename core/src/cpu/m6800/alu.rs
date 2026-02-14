@@ -32,6 +32,14 @@ impl M6800 {
         self.set_flag(CcFlag::C, carry);
     }
 
+    /// Helper to set N, Z, V (cleared) flags for 16-bit logical operations (LDX, LDS)
+    #[inline]
+    pub(crate) fn set_flags_logical16(&mut self, result: u16) {
+        self.set_flag(CcFlag::N, result & 0x8000 != 0);
+        self.set_flag(CcFlag::Z, result == 0);
+        self.set_flag(CcFlag::V, false);
+    }
+
     /// Helper to set N, Z, C flags for shift/rotate operations.
     /// V = N XOR C (post-operation).
     #[inline]
