@@ -174,8 +174,11 @@ impl M6800 {
             0x2E => self.op_bgt(cycle, bus, master),
             0x2F => self.op_ble(cycle, bus, master),
 
-            // --- RTS (5 cycles) ---
+            // --- Stack/Interrupt ops ---
             0x39 => self.op_rts(cycle, bus, master),
+            0x3B => self.op_rti(cycle, bus, master),
+            0x3E => self.op_wai(cycle, bus, master),
+            0x3F => self.op_swi(cycle),
 
             // --- Transfer / Flag / Misc inherent ops (2 cycles) ---
             0x06 => self.op_tap(cycle),
@@ -198,8 +201,12 @@ impl M6800 {
             0x09 => self.op_dex(cycle),
             0x30 => self.op_tsx(cycle),
             0x31 => self.op_ins(cycle),
+            0x32 => self.op_pula(cycle, bus, master),
+            0x33 => self.op_pulb(cycle, bus, master),
             0x34 => self.op_des(cycle),
             0x35 => self.op_txs(cycle),
+            0x36 => self.op_psha(cycle, bus, master),
+            0x37 => self.op_pshb(cycle, bus, master),
 
             // --- Inherent unary/shift A register (2 cycles) ---
             0x40 => self.op_nega(cycle),
