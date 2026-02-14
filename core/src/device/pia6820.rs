@@ -37,6 +37,9 @@ pub struct Pia6820 {
     ca2: bool,
     cb1: bool,
     cb2: bool,
+
+    // Write notification (for inter-board communication)
+    port_b_written: bool, // Set when CPU writes to Port B data register
 }
 
 impl Pia6820 {
@@ -62,6 +65,8 @@ impl Pia6820 {
             ca2: false,
             cb1: false,
             cb2: false,
+
+            port_b_written: false,
         }
     }
 
@@ -132,6 +137,7 @@ impl Pia6820 {
             2 => {
                 if (self.ctrl_b & 0x04) != 0 {
                     self.output_b = data;
+                    self.port_b_written = true;
                 } else {
                     self.ddr_b = data;
                 }
@@ -260,6 +266,37 @@ impl Pia6820 {
     /// Read the current output value of Port B (ORB masked by DDRB).
     pub fn read_output_b(&self) -> u8 {
         self.output_b & self.ddr_b
+    }
+
+    /// Read CB2 output state (when configured as output by CRB bits 5:4:3).
+    ///
+    /// Returns the driven level when CB2 is in output mode:
+    /// - CRB bits 5:4 = 11: direct control, output = CRB bit 3
+    /// - CRB bits 5:4 = 10: handshake/pulse mode, returns stored state
+    ///
+    /// Returns false if CB2 is configured as input (CRB bit 5 = 0).
+    pub fn cb2_output(&self) -> bool {
+        if (self.ctrl_b & 0x20) == 0 {
+            return false; // CB2 is input
+        }
+        if (self.ctrl_b & 0x10) != 0 {
+            // Direct output mode: output = bit 3
+            (self.ctrl_b & 0x08) != 0
+        } else {
+            // Handshake/pulse mode: return stored state
+            self.cb2
+        }
+    }
+
+    /// Check if Port B data register was written since last check.
+    /// Clears the flag after reading (one-shot notification).
+    ///
+    /// Used by board logic to detect when the CPU sends a command
+    /// via Port B, so the board can propagate it to another device.
+    pub fn take_port_b_written(&mut self) -> bool {
+        let was_written = self.port_b_written;
+        self.port_b_written = false;
+        was_written
     }
 }
 

@@ -95,42 +95,99 @@ fn test_render_frame_black_palette() {
 }
 
 #[test]
-fn test_set_input_active_low() {
+fn test_set_input_active_high() {
+    use phosphor_machines::joust::INPUT_P1_LEFT;
     let mut sys = JoustSystem::new();
-    // All buttons start released (input_port_a = 0xFF)
 
-    // Press P1 Right (button 0)
-    sys.set_input(0, true);
-    // Bit 0 should be cleared
-    // We can verify by reading the PIA data port after configuring DDR
-    // For now, verify that pressing then releasing returns to initial state
-    sys.set_input(0, false);
+    // Configure Widget PIA to read Port A data: set DDRA=0 (all input), then CRA.2=1
+    sys.write(BusMaster::Cpu(0), 0xC804, 0x00); // DDRA = 0 (all input)
+    sys.write(BusMaster::Cpu(0), 0xC805, 0x04); // CRA: bit 2 = 1 (data select)
 
-    // Press and release P1 Flap (button 2)
-    sys.set_input(2, true);
-    sys.set_input(2, false);
+    // All buttons start released (0x00), Port A should read 0x00
+    let val = sys.read(BusMaster::Cpu(0), 0xC804);
+    assert_eq!(val, 0x00, "All released should be 0x00 (active-high)");
+
+    // Press P1 Left (button 0 → mux bit 0) — mux defaults to P2 (CB2=0),
+    // so P1 controls don't appear until CB2=1. Set CB2 output high first.
+    sys.write(BusMaster::Cpu(0), 0xC807, 0x3C); // CRB: bits 5:4:3 = 111 → CB2 output high
+    sys.set_input(INPUT_P1_LEFT, true);
+    let val = sys.read(BusMaster::Cpu(0), 0xC804);
+    assert_eq!(val & 0x01, 0x01, "P1 Left pressed should set bit 0");
+
+    sys.set_input(INPUT_P1_LEFT, false);
+    let val = sys.read(BusMaster::Cpu(0), 0xC804);
+    assert_eq!(val & 0x01, 0x00, "P1 Left released should clear bit 0");
 }
 
 #[test]
 fn test_set_input_multiple_buttons() {
+    use phosphor_machines::joust::{INPUT_P1_FLAP, INPUT_P1_LEFT};
     let mut sys = JoustSystem::new();
+
+    // Set CB2 high to select P1 controls
+    sys.write(BusMaster::Cpu(0), 0xC804, 0x00); // DDRA = 0
+    sys.write(BusMaster::Cpu(0), 0xC805, 0x04); // CRA data select
+    sys.write(BusMaster::Cpu(0), 0xC807, 0x3C); // CRB: CB2 output high (P1)
+
     // Press P1 Left and P1 Flap simultaneously
-    sys.set_input(1, true);
-    sys.set_input(2, true);
+    sys.set_input(INPUT_P1_LEFT, true);
+    sys.set_input(INPUT_P1_FLAP, true);
+    let val = sys.read(BusMaster::Cpu(0), 0xC804);
+    assert_eq!(val & 0x05, 0x05, "Left (bit 0) and Flap (bit 2) both set");
 
     // Release P1 Left, P1 Flap still held
-    sys.set_input(1, false);
+    sys.set_input(INPUT_P1_LEFT, false);
+    let val = sys.read(BusMaster::Cpu(0), 0xC804);
+    assert_eq!(val & 0x05, 0x04, "Only Flap (bit 2) should remain");
 
-    // Release P1 Flap
-    sys.set_input(2, false);
+    sys.set_input(INPUT_P1_FLAP, false);
+    let val = sys.read(BusMaster::Cpu(0), 0xC804);
+    assert_eq!(val & 0x07, 0x00, "All released");
 }
 
 #[test]
 fn test_set_input_coin() {
+    use phosphor_machines::joust::INPUT_COIN;
     let mut sys = JoustSystem::new();
-    // Coin triggers CA1 on widget PIA
-    sys.set_input(8, true); // Coin inserted (CA1 goes low)
-    sys.set_input(8, false); // Coin switch released (CA1 goes high)
+
+    // Configure ROM PIA Port A as all input, data select
+    sys.write(BusMaster::Cpu(0), 0xC80C, 0x00); // DDRA = 0
+    sys.write(BusMaster::Cpu(0), 0xC80D, 0x04); // CRA data select
+
+    // Coin triggers ROM PIA Port A bit 4 (active-high)
+    sys.set_input(INPUT_COIN, true);
+    let val = sys.read(BusMaster::Cpu(0), 0xC80C);
+    assert_eq!(val & 0x10, 0x10, "Coin pressed should set bit 4");
+
+    sys.set_input(INPUT_COIN, false);
+    let val = sys.read(BusMaster::Cpu(0), 0xC80C);
+    assert_eq!(val & 0x10, 0x00, "Coin released should clear bit 4");
+}
+
+#[test]
+fn test_input_muxing() {
+    use phosphor_machines::joust::{INPUT_P1_RIGHT, INPUT_P2_LEFT};
+    let mut sys = JoustSystem::new();
+
+    // Configure Widget PIA Port A as input, data select
+    sys.write(BusMaster::Cpu(0), 0xC804, 0x00); // DDRA = 0
+    sys.write(BusMaster::Cpu(0), 0xC805, 0x04); // CRA data select
+
+    // Press both P1 Right and P2 Left
+    sys.set_input(INPUT_P1_RIGHT, true);
+    sys.set_input(INPUT_P2_LEFT, true);
+
+    // CB2=0 (default) selects P2: should see P2 Left (bit 0)
+    let val = sys.read(BusMaster::Cpu(0), 0xC804);
+    assert_eq!(val & 0x03, 0x01, "CB2=0 → P2 selected, P2 Left on bit 0");
+
+    // Set CB2 high → selects P1: should see P1 Right (bit 1)
+    sys.write(BusMaster::Cpu(0), 0xC807, 0x3C); // CRB: CB2 output high
+    let val = sys.read(BusMaster::Cpu(0), 0xC804);
+    assert_eq!(val & 0x03, 0x02, "CB2=1 → P1 selected, P1 Right on bit 1");
+
+    sys.set_input(INPUT_P1_RIGHT, false);
+    sys.set_input(INPUT_P2_LEFT, false);
 }
 
 // =================================================================
@@ -747,27 +804,37 @@ fn test_load_banked_rom_all_chips() {
 }
 
 #[test]
-fn test_watchdog_reset_on_read() {
+fn test_video_counter_read() {
     let mut sys = JoustSystem::new();
     sys.load_program_rom(0, &[0x20, 0xFE]); // BRA *
     sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
     sys.reset();
 
-    // Tick a few times to increment watchdog
-    for _ in 0..100 {
+    // At cycle 0, scanline = 0, video counter = 0 & 0xFC = 0
+    let val = sys.read(BusMaster::Cpu(0), 0xCB00);
+    assert_eq!(val, 0x00);
+
+    // Advance past first scanline boundary (64 cycles)
+    for _ in 0..64 {
         sys.tick();
     }
-
-    // Reading 0xCB00 should reset watchdog (returns 0)
+    // At cycle 64, scanline = 1, video counter = 1 & 0xFC = 0
     let val = sys.read(BusMaster::Cpu(0), 0xCB00);
-    assert_eq!(val, 0);
+    assert_eq!(val, 0x00);
+
+    // Advance to scanline 4 (cycle 256)
+    for _ in 0..192 {
+        sys.tick();
+    }
+    let val = sys.read(BusMaster::Cpu(0), 0xCB42); // Any address in 0xCB00-0xCBFF works
+    assert_eq!(val, 0x04);
 }
 
 #[test]
 fn test_watchdog_reset_on_write() {
     let mut sys = JoustSystem::new();
-    // Writing to 0xCB00 should also reset watchdog
-    sys.write(BusMaster::Cpu(0), 0xCB00, 0x00);
+    // Writing to 0xCBFF resets watchdog
+    sys.write(BusMaster::Cpu(0), 0xCBFF, 0x00);
 }
 
 // =================================================================
@@ -886,4 +953,215 @@ fn test_default_impl() {
     let sys = JoustSystem::default();
     assert_eq!(sys.display_size(), (292, 240));
     assert_eq!(sys.clock(), 0);
+}
+
+// =================================================================
+// Sound Board Tests
+// =================================================================
+
+#[test]
+fn test_sound_cpu_reset_loads_vector() {
+    let mut sys = JoustSystem::new();
+    // Reset vector at 0xFFFE-0xFFFF in sound ROM (offset 0x0FFE-0x0FFF)
+    sys.load_sound_rom(0x0FFE, &[0xF0, 0x80]); // Reset vector = 0xF080
+    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.reset();
+    assert_eq!(sys.get_sound_cpu_state().pc, 0xF080);
+}
+
+#[test]
+fn test_sound_cpu_reset_masks_interrupts() {
+    let mut sys = JoustSystem::new();
+    sys.load_sound_rom(0x0FFE, &[0xF0, 0x00]);
+    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.reset();
+    let state = sys.get_sound_cpu_state();
+    assert_ne!(state.cc & (CcFlag::I as u8), 0);
+    assert_ne!(state.cc & (CcFlag::F as u8), 0);
+}
+
+#[test]
+fn test_sound_cpu_executes_independently() {
+    let mut sys = JoustSystem::new();
+    // Sound ROM at 0xF000: LDA #$42, STA $0010, BRA *
+    sys.load_sound_rom(
+        0,
+        &[
+            0x86, 0x42, // LDA #$42
+            0xB7, 0x00, 0x10, // STA $0010
+            0x20, 0xFE, // BRA *
+        ],
+    );
+    sys.load_sound_rom(0x0FFE, &[0xF0, 0x00]); // Reset vector -> 0xF000
+    // Main CPU: BRA *
+    sys.load_program_rom(0, &[0x20, 0xFE]);
+    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.reset();
+
+    for _ in 0..50 {
+        sys.tick();
+    }
+
+    // Sound CPU should have written 0x42 to sound RAM at 0x0010
+    assert_eq!(sys.read(BusMaster::Cpu(1), 0x0010), 0x42);
+    assert_eq!(sys.get_sound_cpu_state().a, 0x42);
+}
+
+#[test]
+fn test_sound_ram_isolated_from_main_cpu() {
+    let mut sys = JoustSystem::new();
+    // Write to address 0x0010 via main CPU (hits video RAM)
+    sys.write(BusMaster::Cpu(0), 0x0010, 0xAA);
+    // Write to address 0x0010 via sound CPU (hits sound RAM)
+    sys.write(BusMaster::Cpu(1), 0x0010, 0xBB);
+
+    // They should be in separate memory spaces
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0x0010), 0xAA);
+    assert_eq!(sys.read(BusMaster::Cpu(1), 0x0010), 0xBB);
+}
+
+#[test]
+fn test_sound_rom_readable() {
+    let mut sys = JoustSystem::new();
+    sys.load_sound_rom(0, &[0xDE, 0xAD]);
+    assert_eq!(sys.read(BusMaster::Cpu(1), 0xF000), 0xDE);
+    assert_eq!(sys.read(BusMaster::Cpu(1), 0xF001), 0xAD);
+}
+
+#[test]
+fn test_sound_rom_write_protection() {
+    let mut sys = JoustSystem::new();
+    sys.load_sound_rom(0, &[0x42]);
+    sys.write(BusMaster::Cpu(1), 0xF000, 0xFF);
+    assert_eq!(sys.read(BusMaster::Cpu(1), 0xF000), 0x42);
+}
+
+#[test]
+fn test_sound_unmapped_returns_ff() {
+    let mut sys = JoustSystem::new();
+    assert_eq!(sys.read(BusMaster::Cpu(1), 0x0100), 0xFF);
+    assert_eq!(sys.read(BusMaster::Cpu(1), 0x0500), 0xFF);
+    assert_eq!(sys.read(BusMaster::Cpu(1), 0x1000), 0xFF);
+    assert_eq!(sys.read(BusMaster::Cpu(1), 0xEFFF), 0xFF);
+}
+
+#[test]
+fn test_sound_pia_accessible() {
+    let mut sys = JoustSystem::new();
+    // Write DDRA on sound PIA (ctrl bit 2 = 0 by default)
+    sys.write(BusMaster::Cpu(1), 0x0400, 0xFF);
+    assert_eq!(sys.read(BusMaster::Cpu(1), 0x0400), 0xFF);
+}
+
+#[test]
+fn test_sound_command_propagation() {
+    let mut sys = JoustSystem::new();
+
+    // Configure ROM PIA Port B as all output
+    sys.write(BusMaster::Cpu(0), 0xC80E, 0xFF); // ROM PIA DDRB
+    sys.write(BusMaster::Cpu(0), 0xC80F, 0x04); // CRB: bit 2 = 1 (data select)
+
+    // Configure sound PIA Port B as all input (default) with CRB data select
+    sys.write(BusMaster::Cpu(1), 0x0403, 0x04); // Sound PIA CRB: data select
+
+    // Write a sound command to ROM PIA Port B
+    sys.write(BusMaster::Cpu(0), 0xC80E, 0x42);
+
+    // Tick once to propagate
+    sys.tick();
+
+    // Sound PIA Port B should have the command
+    let command = sys.read(BusMaster::Cpu(1), 0x0402);
+    assert_eq!(command, 0x42);
+}
+
+#[test]
+fn test_sound_cpu_not_halted_during_blit() {
+    let mut sys = JoustSystem::new();
+
+    // Sound ROM: LDA #$42, STA $0050, BRA *
+    sys.load_sound_rom(
+        0,
+        &[
+            0x86, 0x42, // LDA #$42
+            0xB7, 0x00, 0x50, // STA $0050
+            0x20, 0xFE, // BRA *
+        ],
+    );
+    sys.load_sound_rom(0x0FFE, &[0xF0, 0x00]);
+    // Main CPU: BRA *
+    sys.load_program_rom(0, &[0x20, 0xFE]);
+    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.reset();
+
+    // Trigger a large blit to halt main CPU
+    sys.write(BusMaster::Cpu(0), 0xCA01, 0x00);
+    sys.write(BusMaster::Cpu(0), 0xCA04, 0x90);
+    sys.write(BusMaster::Cpu(0), 0xCA05, 0x00);
+    sys.write(BusMaster::Cpu(0), 0xCA06, 8 ^ 4);
+    sys.write(BusMaster::Cpu(0), 0xCA07, 8 ^ 4);
+    sys.write(BusMaster::Cpu(0), 0xCA00, 0x10); // SOLID blit
+
+    // Tick during blit — sound CPU should still execute
+    for _ in 0..50 {
+        sys.tick();
+    }
+
+    assert_eq!(sys.read(BusMaster::Cpu(1), 0x0050), 0x42);
+}
+
+// =================================================================
+// Scanline / Video Timing Tests
+// =================================================================
+
+#[test]
+fn test_scanline_va11_signal() {
+    let mut sys = JoustSystem::new();
+    sys.load_program_rom(0, &[0x20, 0xFE]); // BRA *
+    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.reset();
+
+    // Enable ROM PIA CB1 interrupt: set CRB bit 0 = 1 (interrupt enable)
+    // and bit 1 = 1 (rising edge trigger), bit 2 = 1 (data select)
+    sys.write(BusMaster::Cpu(0), 0xC80E, 0x00); // DDRB = 0
+    sys.write(BusMaster::Cpu(0), 0xC80F, 0x07); // CRB: enable CB1 IRQ, rising edge, data select
+
+    // Advance past scanline 32 boundary: clock must reach 32*64 = 2048.
+    // tick() checks clock at entry, so the (N+1)th call processes clock=N.
+    for _ in 0..2049 {
+        sys.tick();
+    }
+    // At scanline 32: VA11 = (32 & 0x20) != 0 = true → CB1 goes high (rising edge)
+    // ROM PIA irq_b1 should be set → CRB bit 7 high
+    let crb = sys.read(BusMaster::Cpu(0), 0xC80F);
+    assert_ne!(crb & 0x80, 0, "CB1 IRQ flag should be set after VA11 rising edge at scanline 32");
+}
+
+#[test]
+fn test_scanline_count240_signal() {
+    let mut sys = JoustSystem::new();
+    sys.load_program_rom(0, &[0x20, 0xFE]); // BRA *
+    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.reset();
+
+    // Enable ROM PIA CA1 interrupt: set CRA bit 0 = 1, bit 1 = 1 (rising edge), bit 2 = 1
+    sys.write(BusMaster::Cpu(0), 0xC80C, 0x00); // DDRA = 0
+    sys.write(BusMaster::Cpu(0), 0xC80D, 0x07); // CRA: enable CA1 IRQ, rising edge, data select
+
+    // Advance past scanline 240 boundary: clock must reach 240*64 = 15360.
+    for _ in 0..15361 {
+        sys.tick();
+    }
+    // count240 should have asserted CA1 at scanline 240 → CRA bit 7 high
+    let cra = sys.read(BusMaster::Cpu(0), 0xC80D);
+    assert_ne!(cra & 0x80, 0, "CA1 IRQ flag should be set at scanline 240 (count240)");
+}
+
+#[test]
+fn test_irq_routing_rom_pia_only() {
+    let sys = JoustSystem::new();
+    // With no PIA interrupts enabled, main CPU should have no IRQ
+    let state = sys.check_interrupts(BusMaster::Cpu(0));
+    assert!(!state.irq);
+    assert!(!state.firq, "FIRQ should never be asserted on Williams gen-1");
 }

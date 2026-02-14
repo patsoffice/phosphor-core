@@ -418,3 +418,51 @@ fn test_no_edge_on_initial_low() {
     pia.set_ca1(false);
     assert!(!pia.irq_a());
 }
+
+// ==========================================================================
+// Port B write notification tests
+// ==========================================================================
+
+#[test]
+fn test_port_b_written_not_set_initially() {
+    let mut pia = Pia6820::new();
+    assert!(!pia.take_port_b_written());
+}
+
+#[test]
+fn test_port_b_written_set_on_data_write() {
+    let mut pia = Pia6820::new();
+    pia.write(2, 0xFF); // DDRB (ctrl_b bit 2 = 0 by default)
+    pia.write(3, 0x04); // CRB: bit 2 = 1, switch to data register
+    pia.write(2, 0x42); // Write Port B data
+    assert!(pia.take_port_b_written());
+}
+
+#[test]
+fn test_port_b_written_cleared_after_take() {
+    let mut pia = Pia6820::new();
+    pia.write(2, 0xFF); // DDRB
+    pia.write(3, 0x04); // CRB: data select
+    pia.write(2, 0x42); // Write data
+    assert!(pia.take_port_b_written());
+    assert!(!pia.take_port_b_written()); // Cleared by first take
+}
+
+#[test]
+fn test_port_b_written_not_set_on_ddr_write() {
+    let mut pia = Pia6820::new();
+    // CRB bit 2 = 0 (default): offset 2 writes to DDR, not data
+    pia.write(2, 0xFF);
+    assert!(!pia.take_port_b_written());
+}
+
+#[test]
+fn test_port_b_written_set_on_same_value() {
+    let mut pia = Pia6820::new();
+    pia.write(2, 0xFF); // DDRB
+    pia.write(3, 0x04); // CRB: data select
+    pia.write(2, 0x42); // First write
+    pia.take_port_b_written(); // Clear flag
+    pia.write(2, 0x42); // Same value again
+    assert!(pia.take_port_b_written()); // Should still be set
+}

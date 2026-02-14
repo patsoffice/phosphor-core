@@ -135,39 +135,41 @@ pub static JOUST_DECODER_PROM: RomRegion = RomRegion {
     ],
 };
 
-// Widget PIA Port A — player controls (active-low)
-pub const INPUT_P1_RIGHT: u8 = 0;
-pub const INPUT_P1_LEFT: u8 = 1;
-pub const INPUT_P1_FLAP: u8 = 2;
-pub const INPUT_P2_RIGHT: u8 = 3;
-pub const INPUT_P2_LEFT: u8 = 4;
-pub const INPUT_P2_FLAP: u8 = 5;
-pub const INPUT_P1_START: u8 = 6;
-pub const INPUT_P2_START: u8 = 7;
+// Widget PIA Port A — player controls via LS157 mux (active-high)
+// CB2 output selects P1 (B input, CB2=1) vs P2 (A input, CB2=0).
+// Bits 0-3 come from the active mux channel, bits 4-5 are start buttons.
+pub const INPUT_P1_LEFT: u8 = 0; // Mux bit 0 when CB2=1
+pub const INPUT_P1_RIGHT: u8 = 1; // Mux bit 1 when CB2=1
+pub const INPUT_P1_FLAP: u8 = 2; // Mux bit 2 when CB2=1
+pub const INPUT_P2_LEFT: u8 = 3; // Mux bit 0 when CB2=0
+pub const INPUT_P2_RIGHT: u8 = 4; // Mux bit 1 when CB2=0
+pub const INPUT_P2_FLAP: u8 = 5; // Mux bit 2 when CB2=0
+pub const INPUT_P1_START: u8 = 6; // Port A bit 5 (direct, active-high)
+pub const INPUT_P2_START: u8 = 7; // Port A bit 4 (direct, active-high)
 
-// Widget PIA Port B / control lines
-pub const INPUT_COIN: u8 = 8;
+// ROM PIA Port A — coin/service inputs (active-high)
+pub const INPUT_COIN: u8 = 8; // bit 4 (Left Coin)
 
 const JOUST_INPUT_MAP: &[InputButton] = &[
     InputButton {
-        id: INPUT_P1_RIGHT,
-        name: "P1 Right",
-    },
-    InputButton {
         id: INPUT_P1_LEFT,
         name: "P1 Left",
+    },
+    InputButton {
+        id: INPUT_P1_RIGHT,
+        name: "P1 Right",
     },
     InputButton {
         id: INPUT_P1_FLAP,
         name: "P1 Flap",
     },
     InputButton {
-        id: INPUT_P2_RIGHT,
-        name: "P2 Right",
-    },
-    InputButton {
         id: INPUT_P2_LEFT,
         name: "P2 Left",
+    },
+    InputButton {
+        id: INPUT_P2_RIGHT,
+        name: "P2 Right",
     },
     InputButton {
         id: INPUT_P2_FLAP,
@@ -186,6 +188,11 @@ const JOUST_INPUT_MAP: &[InputButton] = &[
         name: "Coin",
     },
 ];
+
+// Video timing constants (Williams gen-1 hardware)
+// 6 MHz pixel clock, 384 pixels/line, 264 lines/frame → ~59.19 fps
+const CYCLES_PER_SCANLINE: u64 = 64; // 1 MHz CPU / (6 MHz / 384 pixels)
+const CYCLES_PER_FRAME: u64 = 264 * CYCLES_PER_SCANLINE; // 16896 cycles
 
 /// Williams 2nd-generation arcade board configured for Joust (1982)
 ///
@@ -210,13 +217,21 @@ pub struct JoustSystem {
     // I/O registers
     rom_bank: u8, // 0xC900: ROM bank select
 
+    // Sound board (M6809 stand-in for M6802; audio output not implemented)
+    sound_cpu: M6809,
+    sound_ram: [u8; 256],        // 0x0000-0x00FF: 256 bytes RAM
+    sound_pia: Pia6820,          // 0x0400-0x0403: Sound PIA
+    sound_rom: [u8; 0x1000],     // 0xF000-0xFFFF: 4KB sound ROM
+
     // System state
-    watchdog_counter: u32, // Reset by read/write to 0xCB00
+    watchdog_counter: u32, // Reset by write to 0xCBFF
     clock: u64,            // Master clock cycle counter
 
-    // Input state (active-low: 0 = pressed, 1 = released, default all released)
-    input_port_a: u8, // Widget PIA Port A: player buttons
-    input_port_b: u8, // Widget PIA Port B: coins, DIP switches
+    // Input state (active-high: 1 = pressed, 0 = released)
+    p1_controls: u8,   // bits 0-2: left, right, flap (LS157 mux B input)
+    p2_controls: u8,   // bits 0-2: left, right, flap (LS157 mux A input)
+    start_bits: u8,    // bit 4: P2 Start, bit 5: P1 Start
+    rom_pia_input: u8, // ROM PIA Port A: coins, service, tilt
 }
 
 impl JoustSystem {
@@ -232,19 +247,66 @@ impl JoustSystem {
             rom_pia: Pia6820::new(),
             blitter: WilliamsBlitter::new(),
             rom_bank: 0,
+            sound_cpu: M6809::new(),
+            sound_ram: [0; 256],
+            sound_pia: Pia6820::new(),
+            sound_rom: [0; 0x1000],
             watchdog_counter: 0,
             clock: 0,
-            input_port_a: 0xFF, // All buttons released (active-low)
-            input_port_b: 0xFF,
+            p1_controls: 0,
+            p2_controls: 0,
+            start_bits: 0,
+            rom_pia_input: 0,
         }
     }
 
+    /// Update Widget PIA Port A based on the LS157 mux state.
+    ///
+    /// The mux select line is Widget PIA CB2 output:
+    /// - CB2 = 1 (select B): P1 controls on bits 0-3
+    /// - CB2 = 0 (select A): P2 controls on bits 0-3
+    ///
+    /// Start buttons on bits 4-5 are always present (direct wiring).
+    fn update_widget_mux(&mut self) {
+        let select_p1 = self.widget_pia.cb2_output();
+        let mux_bits = if select_p1 {
+            self.p1_controls
+        } else {
+            self.p2_controls
+        };
+        let port_a = self.start_bits | (mux_bits & 0x0F);
+        self.widget_pia.set_port_a_input(port_a);
+    }
+
+    /// Current scanline number derived from the master clock.
+    fn current_scanline(&self) -> u8 {
+        let frame_cycle = self.clock % CYCLES_PER_FRAME;
+        (frame_cycle / CYCLES_PER_SCANLINE) as u8
+    }
+
     pub fn tick(&mut self) {
-        let vblank_cycle = self.clock % 16667;
-        if vblank_cycle == 0 {
-            self.widget_pia.set_cb1(true); // VBLANK start
-        } else if vblank_cycle == 100 {
-            self.widget_pia.set_cb1(false); // VBLANK end (~100us pulse)
+        // Video timing signals on ROM PIA (from MAME williams_m.cpp).
+        // VA11 (scanline bit 5) → ROM PIA CB1, count240 → ROM PIA CA1.
+        // These drive the main CPU's IRQ via ROM PIA interrupt outputs.
+        let frame_cycle = self.clock % CYCLES_PER_FRAME;
+        if frame_cycle.is_multiple_of(CYCLES_PER_SCANLINE) {
+            let scanline = (frame_cycle / CYCLES_PER_SCANLINE) as u16;
+            if scanline != 256 {
+                // VA11: toggles every 32 scanlines
+                self.rom_pia.set_cb1((scanline & 0x20) != 0);
+            }
+            // count240: asserted from scanline 240 through VBLANK
+            self.rom_pia.set_ca1(scanline >= 240);
+        }
+
+        // Propagate sound commands from main board ROM PIA to sound board PIA.
+        // On real hardware, writing ROM PIA Port B pulses CB2 (write strobe),
+        // which is wired to Sound PIA CB1 to generate an IRQ.
+        if self.rom_pia.take_port_b_written() {
+            let command = self.rom_pia.read_output_b();
+            self.sound_pia.set_port_b_input(command);
+            self.sound_pia.set_cb1(false);
+            self.sound_pia.set_cb1(true);
         }
 
         let bus_ptr: *mut Self = self;
@@ -255,6 +317,8 @@ impl JoustSystem {
             } else {
                 self.cpu.execute_cycle(bus, BusMaster::Cpu(0));
             }
+            // Sound CPU runs every cycle (separate bus, not halted by blitter)
+            self.sound_cpu.execute_cycle(bus, BusMaster::Cpu(1));
         }
 
         self.clock += 1;
@@ -290,11 +354,27 @@ impl JoustSystem {
 
         let rom_data = JOUST_PROGRAM_ROM.load(rom_set)?;
         self.program_rom.copy_from_slice(&rom_data);
+
+        let sound_data = JOUST_SOUND_ROM.load(rom_set)?;
+        self.sound_rom.copy_from_slice(&sound_data);
+
         Ok(())
     }
 
     pub fn get_cpu_state(&self) -> M6809State {
         self.cpu.snapshot()
+    }
+
+    pub fn get_sound_cpu_state(&self) -> M6809State {
+        self.sound_cpu.snapshot()
+    }
+
+    /// Load sound ROM from a byte slice at the given offset (for testing).
+    /// Offset is relative to the start of the sound ROM region (0 = address 0xF000).
+    pub fn load_sound_rom(&mut self, offset: usize, data: &[u8]) {
+        let end = (offset + data.len()).min(self.sound_rom.len());
+        let len = end - offset;
+        self.sound_rom[offset..end].copy_from_slice(&data[..len]);
     }
 
     pub fn read_video_ram(&self, addr: usize) -> u8 {
@@ -347,6 +427,17 @@ impl Bus for JoustSystem {
     type Data = u8;
 
     fn read(&mut self, master: BusMaster, addr: u16) -> u8 {
+        if master == BusMaster::Cpu(1) {
+            // Sound board memory map
+            return match addr {
+                0x0000..=0x00FF => self.sound_ram[addr as usize],
+                0x0400..=0x0403 => self.sound_pia.read((addr - 0x0400) as u8),
+                0xF000..=0xFFFF => self.sound_rom[(addr - 0xF000) as usize],
+                _ => 0xFF,
+            };
+        }
+
+        // Main board memory map
         match addr {
             0x0000..=0x8FFF => {
                 // DmaVram reads bypass ROM banking — the blitter reads dest
@@ -360,21 +451,31 @@ impl Bus for JoustSystem {
             }
             0x9000..=0xBFFF => self.video_ram[addr as usize],
             0xC000..=0xC00F => self.palette_ram[(addr - 0xC000) as usize],
-            0xC804..=0xC807 => self.widget_pia.read((addr - 0xC804) as u8),
+            0xC804..=0xC807 => {
+                self.update_widget_mux();
+                self.widget_pia.read((addr - 0xC804) as u8)
+            }
             0xC80C..=0xC80F => self.rom_pia.read((addr - 0xC80C) as u8),
             0xC900 => self.rom_bank,
             0xCA00..=0xCA07 => 0, // Blitter registers are write-only on real hardware
-            0xCB00 => {
-                self.watchdog_counter = 0;
-                0
-            }
+            0xCB00..=0xCBFF => self.current_scanline() & 0xFC, // Video counter read
             0xCC00..=0xCFFF => self.cmos_ram.read(addr - 0xCC00),
             0xD000..=0xFFFF => self.program_rom[(addr - 0xD000) as usize],
             _ => 0xFF,
         }
     }
 
-    fn write(&mut self, _master: BusMaster, addr: u16, data: u8) {
+    fn write(&mut self, master: BusMaster, addr: u16, data: u8) {
+        if master == BusMaster::Cpu(1) {
+            // Sound board memory map
+            return match addr {
+                0x0000..=0x00FF => self.sound_ram[addr as usize] = data,
+                0x0400..=0x0403 => self.sound_pia.write((addr - 0x0400) as u8, data),
+                _ => { /* ROM or unmapped: ignored */ }
+            };
+        }
+
+        // Main board memory map
         match addr {
             0x0000..=0xBFFF => self.video_ram[addr as usize] = data,
             0xC000..=0xC00F => self.palette_ram[(addr - 0xC000) as usize] = data,
@@ -382,7 +483,7 @@ impl Bus for JoustSystem {
             0xC80C..=0xC80F => self.rom_pia.write((addr - 0xC80C) as u8, data),
             0xC900 => self.rom_bank = data,
             0xCA00..=0xCA07 => self.blitter.write_register((addr - 0xCA00) as u8, data),
-            0xCB00 => self.watchdog_counter = 0,
+            0xCBFF => self.watchdog_counter = 0, // Watchdog reset (write-only, single address)
             0xCC00..=0xCFFF => self.cmos_ram.write(addr - 0xCC00, data),
             0xD000..=0xFFFF => { /* ROM: ignored */ }
             _ => { /* Unmapped: ignored */ }
@@ -398,13 +499,30 @@ impl Bus for JoustSystem {
 
     fn check_interrupts(&self, target: BusMaster) -> InterruptState {
         match target {
+            // Only ROM PIA interrupts are wired to the main CPU IRQ line
+            // via INPUT_MERGER_ANY_HIGH. Widget PIA IRQs are not connected.
+            // FIRQ is not used on Williams gen-1 hardware.
             BusMaster::Cpu(0) => InterruptState {
                 nmi: false,
-                irq: self.widget_pia.irq_b(),
-                firq: self.rom_pia.irq_a() || self.rom_pia.irq_b(),
+                irq: self.rom_pia.irq_a() || self.rom_pia.irq_b(),
+                firq: false,
+            },
+            BusMaster::Cpu(1) => InterruptState {
+                nmi: false,
+                irq: self.sound_pia.irq_a() || self.sound_pia.irq_b(),
+                firq: false,
             },
             _ => InterruptState::default(),
         }
+    }
+}
+
+/// Active-high bit manipulation: set bit on press, clear on release.
+fn set_bit(reg: &mut u8, bit: u8, pressed: bool) {
+    if pressed {
+        *reg |= 1 << bit;
+    } else {
+        *reg &= !(1 << bit);
     }
 }
 
@@ -414,10 +532,10 @@ impl Machine for JoustSystem {
     }
 
     fn run_frame(&mut self) {
-        self.widget_pia.set_port_a_input(self.input_port_a);
-        self.widget_pia.set_port_b_input(self.input_port_b);
+        self.update_widget_mux();
+        self.rom_pia.set_port_a_input(self.rom_pia_input);
 
-        for _ in 0..16667 {
+        for _ in 0..CYCLES_PER_FRAME {
             self.tick();
         }
     }
@@ -487,30 +605,26 @@ impl Machine for JoustSystem {
 
     fn set_input(&mut self, button: u8, pressed: bool) {
         match button {
-            // Player buttons (IDs 0-7) map directly to bits 0-7 of Widget PIA
-            // Port A. Williams uses active-low logic: clearing a bit means the
-            // button is pressed, setting a bit means it is released.
-            INPUT_P1_RIGHT..=INPUT_P2_START => {
-                if pressed {
-                    self.input_port_a &= !(1 << button); // Clear bit = pressed
-                } else {
-                    self.input_port_a |= 1 << button; // Set bit = released
-                }
-                self.widget_pia.set_port_a_input(self.input_port_a);
-            }
-            // Coin insertion triggers the CA1 control line on the Widget PIA.
-            // On real hardware this is an active-low edge: the coin switch pulls
-            // CA1 low momentarily. The PIA's edge-detect logic generates an
-            // interrupt flag on the transition.
+            // Player controls go into separate P1/P2 registers.
+            // The LS157 mux selects which register appears on Widget PIA
+            // Port A bits 0-3 based on CB2 output.
+            INPUT_P1_LEFT => set_bit(&mut self.p1_controls, 0, pressed),
+            INPUT_P1_RIGHT => set_bit(&mut self.p1_controls, 1, pressed),
+            INPUT_P1_FLAP => set_bit(&mut self.p1_controls, 2, pressed),
+            INPUT_P2_LEFT => set_bit(&mut self.p2_controls, 0, pressed),
+            INPUT_P2_RIGHT => set_bit(&mut self.p2_controls, 1, pressed),
+            INPUT_P2_FLAP => set_bit(&mut self.p2_controls, 2, pressed),
+            // Start buttons are wired directly to Port A (not muxed)
+            INPUT_P1_START => set_bit(&mut self.start_bits, 5, pressed),
+            INPUT_P2_START => set_bit(&mut self.start_bits, 4, pressed),
+            // Coin goes to ROM PIA Port A bit 4 (Left Coin)
             INPUT_COIN => {
-                if pressed {
-                    self.widget_pia.set_ca1(false);
-                } else {
-                    self.widget_pia.set_ca1(true);
-                }
+                set_bit(&mut self.rom_pia_input, 4, pressed);
+                self.rom_pia.set_port_a_input(self.rom_pia_input);
             }
             _ => {}
         }
+        self.update_widget_mux();
     }
 
     fn input_map(&self) -> &[InputButton] {
@@ -523,14 +637,22 @@ impl Machine for JoustSystem {
         let vec_lo = self.program_rom[0x2FFF];
         self.cpu.pc = u16::from_be_bytes([vec_hi, vec_lo]);
 
+        self.sound_cpu.reset();
+        let sound_vec_hi = self.sound_rom[0x0FFE]; // 0xFFFE - 0xF000
+        let sound_vec_lo = self.sound_rom[0x0FFF]; // 0xFFFF - 0xF000
+        self.sound_cpu.pc = u16::from_be_bytes([sound_vec_hi, sound_vec_lo]);
+
         self.widget_pia = Pia6820::new();
         self.rom_pia = Pia6820::new();
+        self.sound_pia = Pia6820::new();
         self.blitter = WilliamsBlitter::new();
         self.rom_bank = 0;
         self.watchdog_counter = 0;
         self.clock = 0;
-        self.input_port_a = 0xFF;
-        self.input_port_b = 0xFF;
+        self.p1_controls = 0;
+        self.p2_controls = 0;
+        self.start_bits = 0;
+        self.rom_pia_input = 0;
         // CMOS RAM and video RAM NOT cleared (battery-backed / not cleared by hardware)
     }
 

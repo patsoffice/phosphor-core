@@ -1,6 +1,6 @@
 use phosphor_core::core::machine::Machine;
 use phosphor_machines::JoustSystem;
-use phosphor_machines::joust::{JOUST_DECODER_PROM, JOUST_SOUND_ROM};
+use phosphor_machines::joust::JOUST_DECODER_PROM;
 
 mod emulator;
 mod input;
@@ -22,9 +22,6 @@ fn main() {
             let rom_set = rom_path::load_rom_set("joust", rom_path).expect("Failed to load ROMs");
 
             // Validate ROM regions not yet wired into memory
-            JOUST_SOUND_ROM
-                .load(&rom_set)
-                .expect("Failed to load sound ROM");
             JOUST_DECODER_PROM
                 .load(&rom_set)
                 .expect("Failed to load decoder PROMs");
