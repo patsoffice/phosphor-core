@@ -7,7 +7,10 @@ impl M6800 {
     /// PSHA (0x36): Push A onto stack.
     /// No flags affected.
     pub(crate) fn op_psha<B: Bus<Address = u16, Data = u8> + ?Sized>(
-        &mut self, cycle: u8, bus: &mut B, master: BusMaster,
+        &mut self,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
     ) {
         match cycle {
             0 | 1 => {
@@ -25,7 +28,10 @@ impl M6800 {
     /// PSHB (0x37): Push B onto stack.
     /// No flags affected.
     pub(crate) fn op_pshb<B: Bus<Address = u16, Data = u8> + ?Sized>(
-        &mut self, cycle: u8, bus: &mut B, master: BusMaster,
+        &mut self,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
     ) {
         match cycle {
             0 | 1 => {
@@ -43,7 +49,10 @@ impl M6800 {
     /// PULA (0x32): Pull A from stack.
     /// No flags affected.
     pub(crate) fn op_pula<B: Bus<Address = u16, Data = u8> + ?Sized>(
-        &mut self, cycle: u8, bus: &mut B, master: BusMaster,
+        &mut self,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
     ) {
         match cycle {
             0 => {
@@ -64,7 +73,10 @@ impl M6800 {
     /// PULB (0x33): Pull B from stack.
     /// No flags affected.
     pub(crate) fn op_pulb<B: Bus<Address = u16, Data = u8> + ?Sized>(
-        &mut self, cycle: u8, bus: &mut B, master: BusMaster,
+        &mut self,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
     ) {
         match cycle {
             0 => {
@@ -106,7 +118,10 @@ impl M6800 {
     /// RTI (0x3B): Return from interrupt.
     /// Pulls CC, B, A, XH, XL, PCH, PCL from stack. All flags restored.
     pub(crate) fn op_rti<B: Bus<Address = u16, Data = u8> + ?Sized>(
-        &mut self, cycle: u8, bus: &mut B, master: BusMaster,
+        &mut self,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
     ) {
         match cycle {
             // Pull CC
@@ -170,7 +185,10 @@ impl M6800 {
     /// WAI (0x3E): Wait for interrupt.
     /// Pushes all registers then enters wait state until NMI or IRQ.
     pub(crate) fn op_wai<B: Bus<Address = u16, Data = u8> + ?Sized>(
-        &mut self, cycle: u8, bus: &mut B, master: BusMaster,
+        &mut self,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
     ) {
         match cycle {
             // Push PC low

@@ -23,15 +23,6 @@ impl M6800 {
         self.set_flag(CcFlag::C, carry);
     }
 
-    /// Helper to set N, Z, V, C flags for 16-bit arithmetic
-    #[inline]
-    pub(crate) fn set_flags_arithmetic16(&mut self, result: u16, overflow: bool, carry: bool) {
-        self.set_flag(CcFlag::N, result & 0x8000 != 0);
-        self.set_flag(CcFlag::Z, result == 0);
-        self.set_flag(CcFlag::V, overflow);
-        self.set_flag(CcFlag::C, carry);
-    }
-
     /// Helper to set N, Z, V (cleared) flags for 16-bit logical operations (LDX, LDS)
     #[inline]
     pub(crate) fn set_flags_logical16(&mut self, result: u16) {
@@ -247,7 +238,7 @@ impl M6800 {
                 self.temp_addr = self.x.wrapping_add(offset);
                 self.state = ExecState::Execute(self.opcode, 1);
             }
-            1 | 2 | 3 => {
+            1..=3 => {
                 self.state = ExecState::Execute(self.opcode, cycle + 1);
             }
             4 => {
@@ -451,7 +442,7 @@ impl M6800 {
                 self.temp_addr = self.x.wrapping_add(offset);
                 self.state = ExecState::Execute(self.opcode, 1);
             }
-            1 | 2 | 3 => {
+            1..=3 => {
                 self.state = ExecState::Execute(self.opcode, cycle + 1);
             }
             4 => {
@@ -467,43 +458,6 @@ impl M6800 {
     }
 
     // ---- Read-Modify-Write helpers ----
-
-    /// Generic direct mode read-modify-write helper.
-    /// 6 cycles total: 1 fetch + 1 read addr + 1 read operand + 1 internal + 1 write + 1 internal.
-    #[inline]
-    pub(crate) fn rmw_direct<B: Bus<Address = u16, Data = u8> + ?Sized, F>(
-        &mut self,
-        cycle: u8,
-        bus: &mut B,
-        master: BusMaster,
-        operation: F,
-    ) where
-        F: FnOnce(&mut Self, u8) -> u8,
-    {
-        match cycle {
-            0 => {
-                self.temp_addr = bus.read(master, self.pc) as u16;
-                self.pc = self.pc.wrapping_add(1);
-                self.state = ExecState::Execute(self.opcode, 1);
-            }
-            1 => {
-                self.temp_data = bus.read(master, self.temp_addr);
-                self.state = ExecState::Execute(self.opcode, 2);
-            }
-            2 => {
-                self.temp_data = operation(self, self.temp_data);
-                self.state = ExecState::Execute(self.opcode, 3);
-            }
-            3 => {
-                bus.write(master, self.temp_addr, self.temp_data);
-                self.state = ExecState::Execute(self.opcode, 4);
-            }
-            4 => {
-                self.state = ExecState::Fetch;
-            }
-            _ => self.state = ExecState::Fetch,
-        }
-    }
 
     /// Generic extended mode read-modify-write helper.
     /// 6 cycles total: 1 fetch + 1 hi + 1 lo + 1 read + 1 internal + 1 write.

@@ -200,10 +200,13 @@ fn test_rol_through_carry_ext() {
     let mut cpu = M6800::new();
     let mut bus = TestBus::new();
     bus.memory[0x1000] = 0x80;
-    bus.load(0, &[
-        0x79, 0x10, 0x00, // ROL $1000
-        0x79, 0x10, 0x00, // ROL $1000
-    ]);
+    bus.load(
+        0,
+        &[
+            0x79, 0x10, 0x00, // ROL $1000
+            0x79, 0x10, 0x00, // ROL $1000
+        ],
+    );
     tick(&mut cpu, &mut bus, 6); // ROL (C=0 in)
     assert_eq!(bus.memory[0x1000], 0x00);
     assert_ne!(cpu.cc & (CcFlag::C as u8), 0); // C=1 out

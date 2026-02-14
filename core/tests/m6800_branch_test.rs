@@ -663,12 +663,15 @@ fn test_branch_after_compare() {
     // CMPA #5; BEQ +2; LDAA #0xFF; ...
     // If A == 5, skip the LDAA and land at PC=7
     cpu.a = 5;
-    bus.load(0, &[
-        0x81, 0x05, // CMPA #5 (2 cycles) → Z=1
-        0x27, 0x02, // BEQ +2 (4 cycles) → taken, target = 4+2 = 6
-        0x86, 0xFF, // LDAA #0xFF (skipped)
-        0x01,       // NOP (target)
-    ]);
+    bus.load(
+        0,
+        &[
+            0x81, 0x05, // CMPA #5 (2 cycles) → Z=1
+            0x27, 0x02, // BEQ +2 (4 cycles) → taken, target = 4+2 = 6
+            0x86, 0xFF, // LDAA #0xFF (skipped)
+            0x01, // NOP (target)
+        ],
+    );
     tick(&mut cpu, &mut bus, 2); // CMPA
     assert_ne!(cpu.cc & (CcFlag::Z as u8), 0);
     tick(&mut cpu, &mut bus, 4); // BEQ

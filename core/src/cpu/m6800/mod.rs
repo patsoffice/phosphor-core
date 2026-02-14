@@ -50,7 +50,7 @@ pub struct M6800 {
 #[derive(Clone, Debug)]
 pub(crate) enum ExecState {
     Fetch,
-    Execute(u8, u8),      // (opcode, cycle)
+    Execute(u8, u8), // (opcode, cycle)
     Halted {
         return_state: Box<ExecState>,
     },

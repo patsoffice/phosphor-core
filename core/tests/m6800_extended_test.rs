@@ -315,11 +315,14 @@ fn test_ldaa_adda_staa_extended_sequence() {
     bus.memory[0x1000] = 0x10;
     bus.memory[0x2000] = 0x20;
     // LDAA $1000; ADDA $2000; STAA $3000
-    bus.load(0, &[
-        0xB6, 0x10, 0x00,  // LDAA $1000
-        0xBB, 0x20, 0x00,  // ADDA $2000
-        0xB7, 0x30, 0x00,  // STAA $3000
-    ]);
+    bus.load(
+        0,
+        &[
+            0xB6, 0x10, 0x00, // LDAA $1000
+            0xBB, 0x20, 0x00, // ADDA $2000
+            0xB7, 0x30, 0x00, // STAA $3000
+        ],
+    );
     tick(&mut cpu, &mut bus, 4); // LDAA $1000
     assert_eq!(cpu.a, 0x10);
     tick(&mut cpu, &mut bus, 4); // ADDA $2000
@@ -336,10 +339,13 @@ fn test_ldx_stx_roundtrip_extended() {
     bus.memory[0x1000] = 0xDE;
     bus.memory[0x1001] = 0xAD;
     // LDX $1000; STX $2000
-    bus.load(0, &[
-        0xFE, 0x10, 0x00,  // LDX $1000
-        0xFF, 0x20, 0x00,  // STX $2000
-    ]);
+    bus.load(
+        0,
+        &[
+            0xFE, 0x10, 0x00, // LDX $1000
+            0xFF, 0x20, 0x00, // STX $2000
+        ],
+    );
     tick(&mut cpu, &mut bus, 5); // LDX
     assert_eq!(cpu.x, 0xDEAD);
     tick(&mut cpu, &mut bus, 6); // STX
@@ -355,11 +361,14 @@ fn test_cross_mode_imm_dir_ext() {
     let mut bus = TestBus::new();
     bus.memory[0x10] = 0x30; // for ADDA $10
     // LDAA #$20; ADDA $10; STAA $1000
-    bus.load(0, &[
-        0x86, 0x20,         // LDAA #$20
-        0x9B, 0x10,         // ADDA $10
-        0xB7, 0x10, 0x00,   // STAA $1000
-    ]);
+    bus.load(
+        0,
+        &[
+            0x86, 0x20, // LDAA #$20
+            0x9B, 0x10, // ADDA $10
+            0xB7, 0x10, 0x00, // STAA $1000
+        ],
+    );
     tick(&mut cpu, &mut bus, 2); // LDAA imm (2 cycles)
     assert_eq!(cpu.a, 0x20);
     tick(&mut cpu, &mut bus, 3); // ADDA dir (3 cycles)
