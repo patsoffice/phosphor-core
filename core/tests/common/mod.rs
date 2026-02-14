@@ -3,12 +3,16 @@ use phosphor_core::core::{Bus, BusMaster, bus::InterruptState};
 /// Minimal bus for testing: flat 64KB read/write memory, no peripherals.
 pub struct TestBus {
     pub memory: [u8; 0x10000],
+    pub nmi: bool,
+    pub irq: bool,
 }
 
 impl TestBus {
     pub fn new() -> Self {
         Self {
             memory: [0; 0x10000],
+            nmi: false,
+            irq: false,
         }
     }
 
@@ -34,6 +38,10 @@ impl Bus for TestBus {
         false
     }
     fn check_interrupts(&self, _target: BusMaster) -> InterruptState {
-        InterruptState::default()
+        InterruptState {
+            nmi: self.nmi,
+            irq: self.irq,
+            firq: false,
+        }
     }
 }

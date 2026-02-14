@@ -98,6 +98,10 @@ impl M6502 {
     ) {
         match self.state {
             ExecState::Fetch => {
+                let ints = bus.check_interrupts(master);
+                if self.handle_interrupts(ints) {
+                    return;
+                }
                 self.opcode = bus.read(master, self.pc);
                 self.pc = self.pc.wrapping_add(1);
                 self.state = ExecState::Execute(self.opcode, 0);
@@ -474,14 +478,84 @@ impl M6502 {
         }
     }
 
-    /// Placeholder for interrupt execution (will be implemented in Phase 7)
+    /// Check for pending interrupts during Fetch state. Returns true if an
+    /// interrupt was taken (state transitions to Interrupt sequence).
+    fn handle_interrupts(&mut self, ints: InterruptState) -> bool {
+        // NMI is edge-triggered: detect rising edge
+        let nmi_edge = ints.nmi && !self.nmi_previous;
+        self.nmi_previous = ints.nmi;
+
+        if nmi_edge {
+            self.interrupt_type = 1; // NMI
+            self.state = ExecState::Interrupt(0);
+            return true;
+        }
+
+        // IRQ is level-triggered, masked by I flag
+        if ints.irq && (self.p & StatusFlag::I as u8) == 0 {
+            self.interrupt_type = 2; // IRQ
+            self.state = ExecState::Interrupt(0);
+            return true;
+        }
+
+        false
+    }
+
+    /// Execute hardware interrupt sequence (NMI/IRQ).
+    /// 7 cycles total: 1 (detection in Fetch) + 6 (this handler, cycles 0-5).
+    /// Pushes PC and P (with B=0), then reads vector and sets I flag.
     fn execute_interrupt<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
-        _cycle: u8,
-        _bus: &mut B,
-        _master: BusMaster,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
     ) {
-        self.state = ExecState::Fetch;
+        match cycle {
+            0 => {
+                // Internal cycle (replaces phantom opcode read)
+                self.state = ExecState::Interrupt(1);
+            }
+            1 => {
+                // Push PCH
+                bus.write(master, 0x0100 | self.sp as u16, (self.pc >> 8) as u8);
+                self.sp = self.sp.wrapping_sub(1);
+                self.state = ExecState::Interrupt(2);
+            }
+            2 => {
+                // Push PCL
+                bus.write(master, 0x0100 | self.sp as u16, self.pc as u8);
+                self.sp = self.sp.wrapping_sub(1);
+                self.state = ExecState::Interrupt(3);
+            }
+            3 => {
+                // Push P with B=0, U=1 (hardware interrupt, not BRK)
+                let p_push = (self.p | StatusFlag::U as u8) & !(StatusFlag::B as u8);
+                bus.write(master, 0x0100 | self.sp as u16, p_push);
+                self.sp = self.sp.wrapping_sub(1);
+                self.state = ExecState::Interrupt(4);
+            }
+            4 => {
+                // Set I flag, read vector low byte
+                self.set_flag(StatusFlag::I, true);
+                let vector_addr = match self.interrupt_type {
+                    1 => 0xFFFA, // NMI
+                    _ => 0xFFFE, // IRQ
+                };
+                self.pc = bus.read(master, vector_addr) as u16;
+                self.state = ExecState::Interrupt(5);
+            }
+            5 => {
+                // Read vector high byte
+                let vector_addr = match self.interrupt_type {
+                    1 => 0xFFFB, // NMI
+                    _ => 0xFFFF, // IRQ
+                };
+                self.pc |= (bus.read(master, vector_addr) as u16) << 8;
+                self.interrupt_type = 0;
+                self.state = ExecState::Fetch;
+            }
+            _ => self.state = ExecState::Fetch,
+        }
     }
 }
 
