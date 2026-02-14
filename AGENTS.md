@@ -10,11 +10,10 @@ This document provides essential information for AI agents and automated tools w
 
 **Current Status:**
 
-- M6800: 1/~197 opcodes implemented (skeleton with NOP, addressing mode helpers, interrupt framework)
-- M6809: 285/~280 opcodes implemented (100%+ with undocumented aliases), cycle-accurate timing cross-validated
-- M6502: 1/~151 opcodes implemented (initial)
-- Z80: 1/~1582 opcodes implemented (initial)
-- 475 integration tests passing, 266,000 cross-validated test vectors across 266 opcodes
+- M6800: In progress (inherent, immediate ALU, shifts/rotates)
+- M6809: Complete (285 opcodes, cycle-accurate timing cross-validated against elmerucr/MC6809)
+- M6502: Initial (LDA immediate only)
+- Z80: Initial (LD A,n only)
 - Focus on educational clarity and correctness over performance
 
 ### Repository Structure
@@ -33,7 +32,7 @@ phosphor-core/
 │   │   │   └── z80/         # Z80 implementation
 │   │   └── device/         # Peripheral devices (PIA 6821, blitter, CMOS RAM)
 │   │   └── lib.rs         # Library exports + prelude
-│   └── tests/             # Integration tests (474 total)
+│   └── tests/             # Integration tests
 │       ├── common/mod.rs   # TestBus harness for direct CPU testing
 │       └── m*_test.rs     # CPU-specific test files
 ├── machines/               # phosphor-machines crate
@@ -299,6 +298,8 @@ src/cpu/m6809/
 - `tests/m6809_branch_test.rs` - Branch and subroutine ops
 - `tests/m6809_direct_test.rs` - Direct addressing mode tests
 - `tests/m6800_inherent_test.rs` - M6800 inherent mode tests
+- `tests/m6800_alu_imm_test.rs` - M6800 immediate mode ALU tests
+- `tests/m6800_shift_test.rs` - M6800 shift/rotate tests
 - `tests/m6502_basic_test.rs` - 6502 basic tests
 - `tests/z80_basic_test.rs` - Z80 basic tests
 
@@ -384,7 +385,7 @@ assert_eq!(sys.read_ram(0x10), 0x42);
 
 #### Medium Priority
 
-- **6800 implementation** - Complete instruction set (~197 opcodes, skeleton in place)
+- **6800 implementation** - Complete instruction set (~197 opcodes)
 - **6502 implementation** - Complete instruction set and addressing modes
 - **Z80 implementation** - CB/DD/ED/FD prefixes and alternate registers
 

@@ -83,5 +83,5 @@ cd cross-validation && make && ./validate ../cpu-validation/test_data/m6809/*.js
 
 ### README
 
-- Update opcode/test counts in README.md, AGENTS.md, and CLAUDE.md when adding instructions (M6800 or M6809)
+- Update opcode/test counts in README.md when adding instructions
 - Keep roadmap checkboxes current

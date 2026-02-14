@@ -4,11 +4,11 @@
 
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-475%20passing-brightgreen.svg)](core/tests/)
+[![Tests](https://img.shields.io/badge/tests-561%20passing-brightgreen.svg)](core/tests/)
 
 A modular emulator framework for retro CPUs, designed for extensibility and educational purposes. Features a trait-based architecture that allows easy addition of new CPUs, peripherals, and complete systems.
 
-**Current Focus:** Joust (1982) arcade board emulation — M6809 CPU (285 opcodes), MC6821 PIA, Williams SC1 blitter, CMOS RAM, Machine trait for frontend abstraction. 475 tests passing, 266,000 cross-validated test vectors across 266 opcodes
+**Current Focus:** Joust (1982) arcade board emulation — M6809 CPU (285 opcodes), M6800 CPU (66 opcodes), MC6821 PIA, Williams SC1 blitter, CMOS RAM, Machine trait for frontend abstraction. 561 tests passing, 266,000 cross-validated test vectors across 266 M6809 opcodes
 
 ## Quick Start
 
@@ -30,7 +30,7 @@ cargo build
 cargo test
 
 # Expected output:
-#   test result: ok. 475 passed; 0 failed
+#   test result: ok. 561 passed; 0 failed
 ```
 
 ### Running the Emulator
@@ -69,7 +69,7 @@ ROMs are matched by CRC32 checksum, so any MAME ROM naming convention works. All
 |-----------|--------|-------|
 | **Core Framework** | Complete | Bus trait, Machine trait, component system, arbitration |
 | **M6809 CPU** | Complete | 285 opcodes, cycle-accurate, all addressing modes |
-| **M6800 CPU** | In Progress | Skeleton with NOP, addressing mode helpers, interrupt framework |
+| **M6800 CPU** | In Progress | 66 opcodes: inherent, immediate ALU, shifts/rotates, addressing mode helpers |
 | **M6502 CPU** | Partial | Initial structure, LDA immediate only |
 | **Z80 CPU** | Partial | Initial structure, LD A, n only |
 | **MC6821 PIA** | Complete | Full register set, interrupts, edge detection, control lines |
@@ -79,7 +79,7 @@ ROMs are matched by CRC32 checksum, so any MAME ROM naming convention works. All
 | **Joust System** | Complete | Williams board: CPU + video RAM + PIAs + blitter + CMOS + ROM |
 | **Machine Trait** | Complete | Frontend-agnostic interface: display, input, render, reset |
 | **CPU Validation** | Complete | 266 opcodes, 266,000 test vectors cross-validated against elmerucr/MC6809 |
-| **Test Suite** | Complete | 475 tests across core, devices, and machine integration |
+| **Test Suite** | Complete | 561 tests across core, devices, and machine integration |
 
 ### 6809 Instructions
 
@@ -186,9 +186,13 @@ phosphor-core/
 │   │   ├── cpu/                    # CPU implementations
 │   │   │   ├── mod.rs              # Generic Cpu trait + CpuStateTrait
 │   │   │   ├── state.rs            # CpuStateTrait + state structs
-│   │   │   ├── m6800/              # M6800 CPU (in progress)
+│   │   │   ├── m6800/              # M6800 CPU (66 opcodes, in progress)
 │   │   │   │   ├── mod.rs          # Struct, state machine, dispatch
 │   │   │   │   ├── alu.rs          # ALU helpers and module exports
+│   │   │   │   ├── alu/
+│   │   │   │   │   ├── binary.rs   # ADD, SUB, CMP, AND, OR, EOR, BIT, ADC, SBC
+│   │   │   │   │   ├── shift.rs    # ASL, ASR, LSR, ROL, ROR
+│   │   │   │   │   └── unary.rs    # NEG, COM, CLR, INC, DEC, TST
 │   │   │   │   ├── branch.rs       # Branch/subroutine ops
 │   │   │   │   ├── load_store.rs   # Load/store ops
 │   │   │   │   └── stack.rs        # Stack ops + interrupts
@@ -214,11 +218,12 @@ phosphor-core/
 │   │       ├── williams_blitter.rs # Williams SC1 DMA blitter (copy/fill/shift/mask)
 │   │       ├── cmos_ram.rs         # 1KB battery-backed CMOS RAM
 │   │       └── mod.rs              # Module exports
-│   └── tests/                      # Integration tests (475 tests)
+│   └── tests/                      # Integration tests (561 tests)
 │       ├── common/mod.rs           # TestBus harness
+│       ├── m6800_*_test.rs         # M6800 tests (3 files, 164 tests)
 │       ├── m6809_*_test.rs         # M6809 tests (16 files)
-│       ├── pia6820_test.rs         # MC6821 PIA tests (23 tests)
-│       ├── williams_blitter_test.rs # Blitter tests (18 tests)
+│       ├── pia6820_test.rs         # MC6821 PIA tests (28 tests)
+│       ├── williams_blitter_test.rs # Blitter tests (39 tests)
 │       ├── m6502_basic_test.rs     # Basic 6502 tests
 │       └── z80_basic_test.rs       # Basic Z80 tests
 ├── machines/                       # phosphor-machines crate
@@ -381,7 +386,7 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 
 ### Phase 1: M6809 CPU ✅
 
-285 opcodes implemented (280 documented + 15 undocumented aliases), 474 integration tests passing. Complete hardware interrupt handling (NMI, FIRQ, IRQ), CWAI, SYNC. Cycle-accurate timing validated against independent reference emulator.
+285 opcodes implemented (280 documented + 15 undocumented aliases), integration tests passing. Complete hardware interrupt handling (NMI, FIRQ, IRQ), CWAI, SYNC. Cycle-accurate timing validated against independent reference emulator.
 
 ### Phase 2: Core Infrastructure
 
@@ -395,7 +400,7 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 
 ### Phase 3: Additional CPUs
 
-- [ ] Motorola 6800 CPU (in progress — skeleton complete, ~197 opcodes planned)
+- [ ] Motorola 6800 CPU (in progress — 66/~197 opcodes: inherent, immediate ALU, shifts)
 - [ ] MOS 6502 CPU (addressing modes, instruction set, BCD arithmetic)
 - [ ] Zilog Z80 CPU (instruction prefixes, alternate register set)
 - [ ] Motorola 68000 CPU (32-bit address space, 16-bit data bus)
@@ -432,6 +437,15 @@ This project is licensed under the [MIT License](LICENSE).
 This is a learning/reference implementation. Not affiliated with any hardware manufacturer.
 
 ## Resources
+
+### Motorola 6800
+
+- [MC6800 Programming Manual](http://www.bitsavers.org/components/motorola/6800/Motorola_M6800_Programming_Reference_Manual_M68PRM_D_Nov76.pdf) - Official Motorola programming reference
+- [MC6800 Datasheet](http://www.bitsavers.org/components/motorola/6800/MC6800_8-Bit_Microprocessing_Unit.pdf) - Instruction timing and pinout
+- [Motorola 6800 Wikipedia](https://en.wikipedia.org/wiki/Motorola_6800) - Architecture overview
+- [MAME 6800 Core](https://github.com/mamedev/mame/tree/master/src/devices/cpu/m6800) - Reference implementation
+
+### Motorola 6809
 
 - [6809 Programmer's Reference](http://www.6809.org.uk/dragon/pdf/6809.pdf) - Official Motorola datasheet
 - [6809 Instruction Set](http://www.8bit-museum.de/6809_isa.html) - Complete opcode reference

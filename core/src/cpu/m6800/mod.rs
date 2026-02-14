@@ -178,17 +178,27 @@ impl M6800 {
             0x34 => self.op_des(cycle),
             0x35 => self.op_txs(cycle),
 
-            // --- Inherent unary A register (2 cycles) ---
+            // --- Inherent unary/shift A register (2 cycles) ---
             0x40 => self.op_nega(cycle),
             0x43 => self.op_coma(cycle),
+            0x44 => self.op_lsra(cycle),
+            0x46 => self.op_rora(cycle),
+            0x47 => self.op_asra(cycle),
+            0x48 => self.op_asla(cycle),
+            0x49 => self.op_rola(cycle),
             0x4A => self.op_deca(cycle),
             0x4C => self.op_inca(cycle),
             0x4D => self.op_tsta(cycle),
             0x4F => self.op_clra(cycle),
 
-            // --- Inherent unary B register (2 cycles) ---
+            // --- Inherent unary/shift B register (2 cycles) ---
             0x50 => self.op_negb(cycle),
             0x53 => self.op_comb(cycle),
+            0x54 => self.op_lsrb(cycle),
+            0x56 => self.op_rorb(cycle),
+            0x57 => self.op_asrb(cycle),
+            0x58 => self.op_aslb(cycle),
+            0x59 => self.op_rolb(cycle),
             0x5A => self.op_decb(cycle),
             0x5C => self.op_incb(cycle),
             0x5D => self.op_tstb(cycle),
