@@ -19,6 +19,54 @@ impl M6502 {
         self.set_flag(StatusFlag::C, carry);
     }
 
+    // ---- Shift/Rotate perform helpers ----
+
+    /// ASL (Arithmetic Shift Left). Bit 7 → C, bits shift left, bit 0 = 0.
+    #[inline]
+    pub(crate) fn perform_asl(&mut self, value: u8) -> u8 {
+        let carry = value & 0x80 != 0;
+        let result = value << 1;
+        self.set_flags_shift(result, carry);
+        result
+    }
+
+    /// LSR (Logical Shift Right). Bit 0 → C, bits shift right, bit 7 = 0.
+    #[inline]
+    pub(crate) fn perform_lsr(&mut self, value: u8) -> u8 {
+        let carry = value & 0x01 != 0;
+        let result = value >> 1;
+        self.set_flags_shift(result, carry);
+        result
+    }
+
+    /// ROL (Rotate Left). Old C → bit 0, bit 7 → new C.
+    #[inline]
+    pub(crate) fn perform_rol(&mut self, value: u8) -> u8 {
+        let old_carry = if self.p & (StatusFlag::C as u8) != 0 {
+            1
+        } else {
+            0
+        };
+        let new_carry = value & 0x80 != 0;
+        let result = (value << 1) | old_carry;
+        self.set_flags_shift(result, new_carry);
+        result
+    }
+
+    /// ROR (Rotate Right). Old C → bit 7, bit 0 → new C.
+    #[inline]
+    pub(crate) fn perform_ror(&mut self, value: u8) -> u8 {
+        let old_carry = if self.p & (StatusFlag::C as u8) != 0 {
+            0x80
+        } else {
+            0
+        };
+        let new_carry = value & 0x01 != 0;
+        let result = (value >> 1) | old_carry;
+        self.set_flags_shift(result, new_carry);
+        result
+    }
+
     // ---- ALU operation helpers ----
 
     /// Perform ADC (Add with Carry). Sets N, Z, C, V. Handles BCD mode.

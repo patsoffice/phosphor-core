@@ -1,6 +1,8 @@
 mod alu;
 mod binary;
 mod load_store;
+mod shift;
+mod unary;
 
 use crate::core::{
     Bus, BusMaster,
@@ -231,6 +233,70 @@ impl M6502 {
             0xC0 => self.op_cpy_imm(cycle, bus, master),
             0xC4 => self.op_cpy_zp(cycle, bus, master),
             0xCC => self.op_cpy_abs(cycle, bus, master),
+
+            // --- ASL ---
+            0x0A => {
+                // ASL Accumulator - 2 cycles
+                if cycle == 0 {
+                    self.a = self.perform_asl(self.a);
+                    self.state = ExecState::Fetch;
+                }
+            }
+            0x06 => self.op_asl_zp(cycle, bus, master),
+            0x16 => self.op_asl_zp_x(cycle, bus, master),
+            0x0E => self.op_asl_abs(cycle, bus, master),
+            0x1E => self.op_asl_abs_x(cycle, bus, master),
+
+            // --- LSR ---
+            0x4A => {
+                // LSR Accumulator - 2 cycles
+                if cycle == 0 {
+                    self.a = self.perform_lsr(self.a);
+                    self.state = ExecState::Fetch;
+                }
+            }
+            0x46 => self.op_lsr_zp(cycle, bus, master),
+            0x56 => self.op_lsr_zp_x(cycle, bus, master),
+            0x4E => self.op_lsr_abs(cycle, bus, master),
+            0x5E => self.op_lsr_abs_x(cycle, bus, master),
+
+            // --- ROL ---
+            0x2A => {
+                // ROL Accumulator - 2 cycles
+                if cycle == 0 {
+                    self.a = self.perform_rol(self.a);
+                    self.state = ExecState::Fetch;
+                }
+            }
+            0x26 => self.op_rol_zp(cycle, bus, master),
+            0x36 => self.op_rol_zp_x(cycle, bus, master),
+            0x2E => self.op_rol_abs(cycle, bus, master),
+            0x3E => self.op_rol_abs_x(cycle, bus, master),
+
+            // --- ROR ---
+            0x6A => {
+                // ROR Accumulator - 2 cycles
+                if cycle == 0 {
+                    self.a = self.perform_ror(self.a);
+                    self.state = ExecState::Fetch;
+                }
+            }
+            0x66 => self.op_ror_zp(cycle, bus, master),
+            0x76 => self.op_ror_zp_x(cycle, bus, master),
+            0x6E => self.op_ror_abs(cycle, bus, master),
+            0x7E => self.op_ror_abs_x(cycle, bus, master),
+
+            // --- INC ---
+            0xE6 => self.op_inc_zp(cycle, bus, master),
+            0xF6 => self.op_inc_zp_x(cycle, bus, master),
+            0xEE => self.op_inc_abs(cycle, bus, master),
+            0xFE => self.op_inc_abs_x(cycle, bus, master),
+
+            // --- DEC ---
+            0xC6 => self.op_dec_zp(cycle, bus, master),
+            0xD6 => self.op_dec_zp_x(cycle, bus, master),
+            0xCE => self.op_dec_abs(cycle, bus, master),
+            0xDE => self.op_dec_abs_x(cycle, bus, master),
 
             // --- Flag instructions (all 2-cycle implied) ---
             0x18 => {
