@@ -1134,7 +1134,11 @@ fn test_scanline_va11_signal() {
     // At scanline 32: VA11 = (32 & 0x20) != 0 = true → CB1 goes high (rising edge)
     // ROM PIA irq_b1 should be set → CRB bit 7 high
     let crb = sys.read(BusMaster::Cpu(0), 0xC80F);
-    assert_ne!(crb & 0x80, 0, "CB1 IRQ flag should be set after VA11 rising edge at scanline 32");
+    assert_ne!(
+        crb & 0x80,
+        0,
+        "CB1 IRQ flag should be set after VA11 rising edge at scanline 32"
+    );
 }
 
 #[test]
@@ -1154,7 +1158,11 @@ fn test_scanline_count240_signal() {
     }
     // count240 should have asserted CA1 at scanline 240 → CRA bit 7 high
     let cra = sys.read(BusMaster::Cpu(0), 0xC80D);
-    assert_ne!(cra & 0x80, 0, "CA1 IRQ flag should be set at scanline 240 (count240)");
+    assert_ne!(
+        cra & 0x80,
+        0,
+        "CA1 IRQ flag should be set at scanline 240 (count240)"
+    );
 }
 
 #[test]
@@ -1163,5 +1171,8 @@ fn test_irq_routing_rom_pia_only() {
     // With no PIA interrupts enabled, main CPU should have no IRQ
     let state = sys.check_interrupts(BusMaster::Cpu(0));
     assert!(!state.irq);
-    assert!(!state.firq, "FIRQ should never be asserted on Williams gen-1");
+    assert!(
+        !state.firq,
+        "FIRQ should never be asserted on Williams gen-1"
+    );
 }

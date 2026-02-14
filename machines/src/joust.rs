@@ -219,9 +219,9 @@ pub struct JoustSystem {
 
     // Sound board (M6809 stand-in for M6802; audio output not implemented)
     sound_cpu: M6809,
-    sound_ram: [u8; 256],        // 0x0000-0x00FF: 256 bytes RAM
-    sound_pia: Pia6820,          // 0x0400-0x0403: Sound PIA
-    sound_rom: [u8; 0x1000],     // 0xF000-0xFFFF: 4KB sound ROM
+    sound_ram: [u8; 256],    // 0x0000-0x00FF: 256 bytes RAM
+    sound_pia: Pia6820,      // 0x0400-0x0403: Sound PIA
+    sound_rom: [u8; 0x1000], // 0xF000-0xFFFF: 4KB sound ROM
 
     // System state
     watchdog_counter: u32, // Reset by write to 0xCBFF

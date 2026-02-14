@@ -288,19 +288,31 @@ impl M6809 {
     /// Uses `self.opcode` as scratch storage for the postbyte.
     /// Uses `self.indexed_internal` as a countdown for internal cycles.
     pub(crate) fn indexed_resolve<B: Bus<Address = u16, Data = u8> + ?Sized>(
-        &mut self, opcode: u8, cycle: u8, bus: &mut B, master: BusMaster,
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
     ) -> bool {
         self.indexed_resolve_inner(opcode, cycle, bus, master, ExecState::Execute)
     }
 
     pub(crate) fn indexed_resolve_page2<B: Bus<Address = u16, Data = u8> + ?Sized>(
-        &mut self, opcode: u8, cycle: u8, bus: &mut B, master: BusMaster,
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
     ) -> bool {
         self.indexed_resolve_inner(opcode, cycle, bus, master, ExecState::ExecutePage2)
     }
 
     pub(crate) fn indexed_resolve_page3<B: Bus<Address = u16, Data = u8> + ?Sized>(
-        &mut self, opcode: u8, cycle: u8, bus: &mut B, master: BusMaster,
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
     ) -> bool {
         self.indexed_resolve_inner(opcode, cycle, bus, master, ExecState::ExecutePage3)
     }
