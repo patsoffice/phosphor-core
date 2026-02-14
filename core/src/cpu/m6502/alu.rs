@@ -259,7 +259,8 @@ impl M6502 {
                 self.state = ExecState::Execute(self.opcode, 1);
             }
             1 => {
-                // Internal cycle: add X, wrap within zero page
+                // Dummy read from un-indexed zero-page address, then add X (wrap in page 0)
+                let _ = bus.read(master, self.temp_addr);
                 self.temp_addr = (self.temp_addr.wrapping_add(self.x as u16)) & 0xFF;
                 self.state = ExecState::Execute(self.opcode, 2);
             }
@@ -290,7 +291,8 @@ impl M6502 {
                 self.state = ExecState::Execute(self.opcode, 1);
             }
             1 => {
-                // Internal cycle: add Y, wrap within zero page
+                // Dummy read from un-indexed zero-page address, then add Y (wrap in page 0)
+                let _ = bus.read(master, self.temp_addr);
                 self.temp_addr = (self.temp_addr.wrapping_add(self.y as u16)) & 0xFF;
                 self.state = ExecState::Execute(self.opcode, 2);
             }
@@ -369,7 +371,8 @@ impl M6502 {
                 }
             }
             2 => {
-                // Extra cycle for page crossing (read from wrong address)
+                // Page crossing: dummy read from wrong-page address
+                let _ = bus.read(master, self.temp_addr.wrapping_sub(0x0100));
                 self.state = ExecState::Execute(self.opcode, 3);
             }
             3 => {
@@ -410,6 +413,8 @@ impl M6502 {
                 }
             }
             2 => {
+                // Page crossing: dummy read from wrong-page address
+                let _ = bus.read(master, self.temp_addr.wrapping_sub(0x0100));
                 self.state = ExecState::Execute(self.opcode, 3);
             }
             3 => {
@@ -441,7 +446,8 @@ impl M6502 {
                 self.state = ExecState::Execute(self.opcode, 1);
             }
             1 => {
-                // Internal: add X to pointer, wrap in zero page
+                // Dummy read from un-indexed pointer, then add X (wrap in zero page)
+                let _ = bus.read(master, self.temp_data as u16);
                 self.temp_data = self.temp_data.wrapping_add(self.x);
                 self.state = ExecState::Execute(self.opcode, 2);
             }
@@ -503,7 +509,8 @@ impl M6502 {
                 }
             }
             3 => {
-                // Extra cycle for page crossing
+                // Page crossing: dummy read from wrong-page address
+                let _ = bus.read(master, self.temp_addr.wrapping_sub(0x0100));
                 self.state = ExecState::Execute(self.opcode, 4);
             }
             4 => {
@@ -556,6 +563,8 @@ impl M6502 {
                 self.state = ExecState::Execute(self.opcode, 1);
             }
             1 => {
+                // Dummy read from un-indexed zero-page address
+                let _ = bus.read(master, self.temp_addr);
                 self.temp_addr = (self.temp_addr.wrapping_add(self.x as u16)) & 0xFF;
                 self.state = ExecState::Execute(self.opcode, 2);
             }
@@ -583,6 +592,8 @@ impl M6502 {
                 self.state = ExecState::Execute(self.opcode, 1);
             }
             1 => {
+                // Dummy read from un-indexed zero-page address
+                let _ = bus.read(master, self.temp_addr);
                 self.temp_addr = (self.temp_addr.wrapping_add(self.y as u16)) & 0xFF;
                 self.state = ExecState::Execute(self.opcode, 2);
             }
@@ -640,11 +651,15 @@ impl M6502 {
             1 => {
                 let hi = bus.read(master, self.pc) as u16;
                 self.pc = self.pc.wrapping_add(1);
+                // Save base high byte for wrong-page dummy read
+                self.temp_data = hi as u8;
                 self.temp_addr = (hi << 8 | self.temp_addr).wrapping_add(self.x as u16);
                 self.state = ExecState::Execute(self.opcode, 2);
             }
             2 => {
-                // Always takes this cycle (read from potentially wrong address)
+                // Dummy read from possibly-wrong-page address (base_hi : effective_lo)
+                let wrong_page = ((self.temp_data as u16) << 8) | (self.temp_addr & 0x00FF);
+                let _ = bus.read(master, wrong_page);
                 self.state = ExecState::Execute(self.opcode, 3);
             }
             3 => {
@@ -673,10 +688,15 @@ impl M6502 {
             1 => {
                 let hi = bus.read(master, self.pc) as u16;
                 self.pc = self.pc.wrapping_add(1);
+                // Save base high byte for wrong-page dummy read
+                self.temp_data = hi as u8;
                 self.temp_addr = (hi << 8 | self.temp_addr).wrapping_add(self.y as u16);
                 self.state = ExecState::Execute(self.opcode, 2);
             }
             2 => {
+                // Dummy read from possibly-wrong-page address (base_hi : effective_lo)
+                let wrong_page = ((self.temp_data as u16) << 8) | (self.temp_addr & 0x00FF);
+                let _ = bus.read(master, wrong_page);
                 self.state = ExecState::Execute(self.opcode, 3);
             }
             3 => {
@@ -703,6 +723,8 @@ impl M6502 {
                 self.state = ExecState::Execute(self.opcode, 1);
             }
             1 => {
+                // Dummy read from un-indexed pointer, then add X
+                let _ = bus.read(master, self.temp_data as u16);
                 self.temp_data = self.temp_data.wrapping_add(self.x);
                 self.state = ExecState::Execute(self.opcode, 2);
             }
@@ -744,11 +766,16 @@ impl M6502 {
             }
             2 => {
                 let hi = bus.read(master, self.temp_data.wrapping_add(1) as u16) as u16;
-                self.temp_addr = (hi << 8 | self.temp_addr).wrapping_add(self.y as u16);
+                let base = hi << 8 | self.temp_addr;
+                self.temp_addr = base.wrapping_add(self.y as u16);
+                // Save base high byte for wrong-page dummy read
+                self.temp_data = hi as u8;
                 self.state = ExecState::Execute(self.opcode, 3);
             }
             3 => {
-                // Always takes this cycle (write ops don't shortcut)
+                // Dummy read from possibly-wrong-page address (base_hi : effective_lo)
+                let wrong_page = ((self.temp_data as u16) << 8) | (self.temp_addr & 0x00FF);
+                let _ = bus.read(master, wrong_page);
                 self.state = ExecState::Execute(self.opcode, 4);
             }
             4 => {
@@ -761,7 +788,7 @@ impl M6502 {
 
     // ---- Read-Modify-Write addressing mode helpers ----
 
-    /// RMW Zero Page: 4 cycles after fetch. Read addr, read operand, modify, write back.
+    /// RMW Zero Page: 4 cycles after fetch. Read addr, read operand, write old, write new.
     #[inline]
     pub(crate) fn rmw_zp<B: Bus<Address = u16, Data = u8> + ?Sized, F>(
         &mut self,
@@ -783,11 +810,13 @@ impl M6502 {
                 self.state = ExecState::Execute(self.opcode, 2);
             }
             2 => {
-                // Write back unmodified value (6502 RMW quirk), then modify
+                // Write back unmodified value (6502 RMW quirk), then compute
+                bus.write(master, self.temp_addr, self.temp_data);
                 self.temp_data = operation(self, self.temp_data);
                 self.state = ExecState::Execute(self.opcode, 3);
             }
             3 => {
+                // Write modified value
                 bus.write(master, self.temp_addr, self.temp_data);
                 self.state = ExecState::Fetch;
             }
@@ -813,6 +842,8 @@ impl M6502 {
                 self.state = ExecState::Execute(self.opcode, 1);
             }
             1 => {
+                // Dummy read from un-indexed zero-page address
+                let _ = bus.read(master, self.temp_addr);
                 self.temp_addr = (self.temp_addr.wrapping_add(self.x as u16)) & 0xFF;
                 self.state = ExecState::Execute(self.opcode, 2);
             }
@@ -821,10 +852,13 @@ impl M6502 {
                 self.state = ExecState::Execute(self.opcode, 3);
             }
             3 => {
+                // Write back unmodified value (6502 RMW quirk), then compute
+                bus.write(master, self.temp_addr, self.temp_data);
                 self.temp_data = operation(self, self.temp_data);
                 self.state = ExecState::Execute(self.opcode, 4);
             }
             4 => {
+                // Write modified value
                 bus.write(master, self.temp_addr, self.temp_data);
                 self.state = ExecState::Fetch;
             }
@@ -859,10 +893,13 @@ impl M6502 {
                 self.state = ExecState::Execute(self.opcode, 3);
             }
             3 => {
+                // Write back unmodified value (6502 RMW quirk), then compute
+                bus.write(master, self.temp_addr, self.temp_data);
                 self.temp_data = operation(self, self.temp_data);
                 self.state = ExecState::Execute(self.opcode, 4);
             }
             4 => {
+                // Write modified value
                 bus.write(master, self.temp_addr, self.temp_data);
                 self.state = ExecState::Fetch;
             }
@@ -890,11 +927,15 @@ impl M6502 {
             1 => {
                 let hi = bus.read(master, self.pc) as u16;
                 self.pc = self.pc.wrapping_add(1);
+                // Save base high byte for wrong-page dummy read
+                self.temp_data = hi as u8;
                 self.temp_addr = (hi << 8 | self.temp_addr).wrapping_add(self.x as u16);
                 self.state = ExecState::Execute(self.opcode, 2);
             }
             2 => {
-                // Always takes this cycle (RMW never shortcuts page crossing)
+                // Dummy read from possibly-wrong-page address (base_hi : effective_lo)
+                let wrong_page = ((self.temp_data as u16) << 8) | (self.temp_addr & 0x00FF);
+                let _ = bus.read(master, wrong_page);
                 self.state = ExecState::Execute(self.opcode, 3);
             }
             3 => {
@@ -902,10 +943,13 @@ impl M6502 {
                 self.state = ExecState::Execute(self.opcode, 4);
             }
             4 => {
+                // Write back unmodified value (6502 RMW quirk), then compute
+                bus.write(master, self.temp_addr, self.temp_data);
                 self.temp_data = operation(self, self.temp_data);
                 self.state = ExecState::Execute(self.opcode, 5);
             }
             5 => {
+                // Write modified value
                 bus.write(master, self.temp_addr, self.temp_data);
                 self.state = ExecState::Fetch;
             }

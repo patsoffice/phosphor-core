@@ -244,6 +244,7 @@ impl M6502 {
             0x0A => {
                 // ASL Accumulator - 2 cycles
                 if cycle == 0 {
+                    let _ = bus.read(master, self.pc); // dummy read
                     self.a = self.perform_asl(self.a);
                     self.state = ExecState::Fetch;
                 }
@@ -257,6 +258,7 @@ impl M6502 {
             0x4A => {
                 // LSR Accumulator - 2 cycles
                 if cycle == 0 {
+                    let _ = bus.read(master, self.pc); // dummy read
                     self.a = self.perform_lsr(self.a);
                     self.state = ExecState::Fetch;
                 }
@@ -270,6 +272,7 @@ impl M6502 {
             0x2A => {
                 // ROL Accumulator - 2 cycles
                 if cycle == 0 {
+                    let _ = bus.read(master, self.pc); // dummy read
                     self.a = self.perform_rol(self.a);
                     self.state = ExecState::Fetch;
                 }
@@ -283,6 +286,7 @@ impl M6502 {
             0x6A => {
                 // ROR Accumulator - 2 cycles
                 if cycle == 0 {
+                    let _ = bus.read(master, self.pc); // dummy read
                     self.a = self.perform_ror(self.a);
                     self.state = ExecState::Fetch;
                 }
@@ -306,50 +310,50 @@ impl M6502 {
 
             // --- Flag instructions (all 2-cycle implied) ---
             0x18 => {
-                // CLC - Clear Carry
                 if cycle == 0 {
+                    let _ = bus.read(master, self.pc); // dummy read
                     self.set_flag(StatusFlag::C, false);
                     self.state = ExecState::Fetch;
                 }
             }
             0x38 => {
-                // SEC - Set Carry
                 if cycle == 0 {
+                    let _ = bus.read(master, self.pc); // dummy read
                     self.set_flag(StatusFlag::C, true);
                     self.state = ExecState::Fetch;
                 }
             }
             0x58 => {
-                // CLI - Clear Interrupt Disable
                 if cycle == 0 {
+                    let _ = bus.read(master, self.pc); // dummy read
                     self.set_flag(StatusFlag::I, false);
                     self.state = ExecState::Fetch;
                 }
             }
             0x78 => {
-                // SEI - Set Interrupt Disable
                 if cycle == 0 {
+                    let _ = bus.read(master, self.pc); // dummy read
                     self.set_flag(StatusFlag::I, true);
                     self.state = ExecState::Fetch;
                 }
             }
             0xB8 => {
-                // CLV - Clear Overflow
                 if cycle == 0 {
+                    let _ = bus.read(master, self.pc); // dummy read
                     self.set_flag(StatusFlag::V, false);
                     self.state = ExecState::Fetch;
                 }
             }
             0xD8 => {
-                // CLD - Clear Decimal
                 if cycle == 0 {
+                    let _ = bus.read(master, self.pc); // dummy read
                     self.set_flag(StatusFlag::D, false);
                     self.state = ExecState::Fetch;
                 }
             }
             0xF8 => {
-                // SED - Set Decimal
                 if cycle == 0 {
+                    let _ = bus.read(master, self.pc); // dummy read
                     self.set_flag(StatusFlag::D, true);
                     self.state = ExecState::Fetch;
                 }
@@ -357,48 +361,48 @@ impl M6502 {
 
             // --- Transfer instructions (all 2-cycle implied) ---
             0xAA => {
-                // TAX - Transfer A to X. Sets N, Z.
                 if cycle == 0 {
+                    let _ = bus.read(master, self.pc); // dummy read
                     self.x = self.a;
                     self.set_nz(self.x);
                     self.state = ExecState::Fetch;
                 }
             }
             0xA8 => {
-                // TAY - Transfer A to Y. Sets N, Z.
                 if cycle == 0 {
+                    let _ = bus.read(master, self.pc); // dummy read
                     self.y = self.a;
                     self.set_nz(self.y);
                     self.state = ExecState::Fetch;
                 }
             }
             0x8A => {
-                // TXA - Transfer X to A. Sets N, Z.
                 if cycle == 0 {
+                    let _ = bus.read(master, self.pc); // dummy read
                     self.a = self.x;
                     self.set_nz(self.a);
                     self.state = ExecState::Fetch;
                 }
             }
             0x98 => {
-                // TYA - Transfer Y to A. Sets N, Z.
                 if cycle == 0 {
+                    let _ = bus.read(master, self.pc); // dummy read
                     self.a = self.y;
                     self.set_nz(self.a);
                     self.state = ExecState::Fetch;
                 }
             }
             0xBA => {
-                // TSX - Transfer SP to X. Sets N, Z.
                 if cycle == 0 {
+                    let _ = bus.read(master, self.pc); // dummy read
                     self.x = self.sp;
                     self.set_nz(self.x);
                     self.state = ExecState::Fetch;
                 }
             }
             0x9A => {
-                // TXS - Transfer X to SP. Does NOT set flags.
                 if cycle == 0 {
+                    let _ = bus.read(master, self.pc); // dummy read
                     self.sp = self.x;
                     self.state = ExecState::Fetch;
                 }
@@ -406,32 +410,32 @@ impl M6502 {
 
             // --- Register increment/decrement (all 2-cycle implied) ---
             0xE8 => {
-                // INX - Increment X. Sets N, Z.
                 if cycle == 0 {
+                    let _ = bus.read(master, self.pc); // dummy read
                     self.x = self.x.wrapping_add(1);
                     self.set_nz(self.x);
                     self.state = ExecState::Fetch;
                 }
             }
             0xC8 => {
-                // INY - Increment Y. Sets N, Z.
                 if cycle == 0 {
+                    let _ = bus.read(master, self.pc); // dummy read
                     self.y = self.y.wrapping_add(1);
                     self.set_nz(self.y);
                     self.state = ExecState::Fetch;
                 }
             }
             0xCA => {
-                // DEX - Decrement X. Sets N, Z.
                 if cycle == 0 {
+                    let _ = bus.read(master, self.pc); // dummy read
                     self.x = self.x.wrapping_sub(1);
                     self.set_nz(self.x);
                     self.state = ExecState::Fetch;
                 }
             }
             0x88 => {
-                // DEY - Decrement Y. Sets N, Z.
                 if cycle == 0 {
+                    let _ = bus.read(master, self.pc); // dummy read
                     self.y = self.y.wrapping_sub(1);
                     self.set_nz(self.y);
                     self.state = ExecState::Fetch;
@@ -441,6 +445,7 @@ impl M6502 {
             // --- NOP (2-cycle implied) ---
             0xEA => {
                 if cycle == 0 {
+                    let _ = bus.read(master, self.pc); // dummy read
                     self.state = ExecState::Fetch;
                 }
             }

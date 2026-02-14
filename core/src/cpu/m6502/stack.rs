@@ -13,7 +13,8 @@ impl M6502 {
     ) {
         match cycle {
             0 => {
-                // Internal: read and discard
+                // Dummy read from PC (next byte, discarded)
+                let _ = bus.read(master, self.pc);
                 self.state = ExecState::Execute(self.opcode, 1);
             }
             1 => {
@@ -34,11 +35,13 @@ impl M6502 {
     ) {
         match cycle {
             0 => {
-                // Internal: read and discard
+                // Dummy read from PC
+                let _ = bus.read(master, self.pc);
                 self.state = ExecState::Execute(self.opcode, 1);
             }
             1 => {
-                // Internal: increment SP
+                // Dummy read from stack[SP], then increment SP
+                let _ = bus.read(master, 0x0100 | self.sp as u16);
                 self.sp = self.sp.wrapping_add(1);
                 self.state = ExecState::Execute(self.opcode, 2);
             }
@@ -61,7 +64,8 @@ impl M6502 {
     ) {
         match cycle {
             0 => {
-                // Internal: read and discard
+                // Dummy read from PC
+                let _ = bus.read(master, self.pc);
                 self.state = ExecState::Execute(self.opcode, 1);
             }
             1 => {
@@ -84,11 +88,13 @@ impl M6502 {
     ) {
         match cycle {
             0 => {
-                // Internal: read and discard
+                // Dummy read from PC
+                let _ = bus.read(master, self.pc);
                 self.state = ExecState::Execute(self.opcode, 1);
             }
             1 => {
-                // Internal: increment SP
+                // Dummy read from stack[SP], then increment SP
+                let _ = bus.read(master, 0x0100 | self.sp as u16);
                 self.sp = self.sp.wrapping_add(1);
                 self.state = ExecState::Execute(self.opcode, 2);
             }
@@ -115,7 +121,8 @@ impl M6502 {
     ) {
         match cycle {
             0 => {
-                // Read padding byte (BRK is 2 bytes), increment PC
+                // Read padding byte, increment PC
+                let _ = bus.read(master, self.pc);
                 self.pc = self.pc.wrapping_add(1);
                 self.state = ExecState::Execute(self.opcode, 1);
             }

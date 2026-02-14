@@ -29,9 +29,10 @@ impl M6502 {
                 }
             }
             1 => {
+                // Dummy read from next sequential PC
+                let _ = bus.read(master, self.pc);
                 if (self.pc ^ self.temp_addr) & 0xFF00 != 0 {
                     // Page cross — need extra cycle
-                    self.pc = self.temp_addr;
                     self.state = ExecState::Execute(self.opcode, 2);
                 } else {
                     // No page cross — done
@@ -40,7 +41,10 @@ impl M6502 {
                 }
             }
             2 => {
-                // Extra cycle for page crossing fix-up
+                // Dummy read from wrong-page address (old PCH : target PCL)
+                let wrong_page = (self.pc & 0xFF00) | (self.temp_addr & 0x00FF);
+                let _ = bus.read(master, wrong_page);
+                self.pc = self.temp_addr;
                 self.state = ExecState::Fetch;
             }
             _ => self.state = ExecState::Fetch,
@@ -211,7 +215,8 @@ impl M6502 {
                 self.state = ExecState::Execute(self.opcode, 1);
             }
             1 => {
-                // Internal cycle
+                // Dummy read from stack (internal cycle)
+                let _ = bus.read(master, 0x0100 | self.sp as u16);
                 self.state = ExecState::Execute(self.opcode, 2);
             }
             2 => {
@@ -246,11 +251,13 @@ impl M6502 {
     ) {
         match cycle {
             0 => {
-                // Internal: read and discard
+                // Dummy read from PC
+                let _ = bus.read(master, self.pc);
                 self.state = ExecState::Execute(self.opcode, 1);
             }
             1 => {
-                // Internal: increment SP
+                // Dummy read from stack[SP], then increment SP
+                let _ = bus.read(master, 0x0100 | self.sp as u16);
                 self.sp = self.sp.wrapping_add(1);
                 self.state = ExecState::Execute(self.opcode, 2);
             }
@@ -266,7 +273,8 @@ impl M6502 {
                 self.state = ExecState::Execute(self.opcode, 4);
             }
             4 => {
-                // Increment PC (+1 to get past the last byte of JSR)
+                // Dummy read from PC, then increment (add 1 for RTS)
+                let _ = bus.read(master, self.pc);
                 self.pc = self.pc.wrapping_add(1);
                 self.state = ExecState::Fetch;
             }
@@ -284,11 +292,13 @@ impl M6502 {
     ) {
         match cycle {
             0 => {
-                // Internal: read and discard
+                // Dummy read from PC
+                let _ = bus.read(master, self.pc);
                 self.state = ExecState::Execute(self.opcode, 1);
             }
             1 => {
-                // Internal: increment SP
+                // Dummy read from stack[SP], then increment SP
+                let _ = bus.read(master, 0x0100 | self.sp as u16);
                 self.sp = self.sp.wrapping_add(1);
                 self.state = ExecState::Execute(self.opcode, 2);
             }

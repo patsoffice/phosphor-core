@@ -104,6 +104,28 @@ pub struct CpuState {
     pub ram: Vec<(u16, u8)>,
 }
 
+// --- M6502 JSON test vector types (SingleStepTests/65x02 format) ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct M6502TestCase {
+    pub name: String,
+    pub initial: M6502CpuState,
+    #[serde(rename = "final")]
+    pub final_state: M6502CpuState,
+    pub cycles: Vec<(u16, u8, String)>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct M6502CpuState {
+    pub pc: u16,
+    pub s: u8,
+    pub a: u8,
+    pub x: u8,
+    pub y: u8,
+    pub p: u8,
+    pub ram: Vec<(u16, u8)>,
+}
+
 // --- M6800 JSON test vector types ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,3 +1,6 @@
 [submodule "cross-validation/mc6809"]
 	path = cross-validation/mc6809
 	url = https://github.com/elmerucr/MC6809.git
+[submodule "cpu-validation/test_data/65x02"]
+	path = cpu-validation/test_data/65x02
+	url = https://github.com/SingleStepTests/65x02.git
