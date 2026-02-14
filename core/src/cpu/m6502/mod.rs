@@ -1,7 +1,9 @@
 mod alu;
 mod binary;
+mod branch;
 mod load_store;
 mod shift;
+mod stack;
 mod unary;
 
 use crate::core::{
@@ -438,6 +440,32 @@ impl M6502 {
                     self.state = ExecState::Fetch;
                 }
             }
+
+            // --- Branches ---
+            0x10 => self.op_bpl(cycle, bus, master),
+            0x30 => self.op_bmi(cycle, bus, master),
+            0x50 => self.op_bvc(cycle, bus, master),
+            0x70 => self.op_bvs(cycle, bus, master),
+            0x90 => self.op_bcc(cycle, bus, master),
+            0xB0 => self.op_bcs(cycle, bus, master),
+            0xD0 => self.op_bne(cycle, bus, master),
+            0xF0 => self.op_beq(cycle, bus, master),
+
+            // --- Jumps ---
+            0x4C => self.op_jmp_abs(cycle, bus, master),
+            0x6C => self.op_jmp_ind(cycle, bus, master),
+            0x20 => self.op_jsr(cycle, bus, master),
+            0x60 => self.op_rts(cycle, bus, master),
+            0x40 => self.op_rti(cycle, bus, master),
+
+            // --- Stack ---
+            0x48 => self.op_pha(cycle, bus, master),
+            0x68 => self.op_pla(cycle, bus, master),
+            0x08 => self.op_php(cycle, bus, master),
+            0x28 => self.op_plp(cycle, bus, master),
+
+            // --- BRK ---
+            0x00 => self.op_brk(cycle, bus, master),
 
             // Unknown opcode - just fetch next
             _ => {
