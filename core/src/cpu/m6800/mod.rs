@@ -207,6 +207,32 @@ impl M6800 {
             0x5D => self.op_tstb(cycle),
             0x5F => self.op_clrb(cycle),
 
+            // --- 0x6x: Memory unary/shift indexed (7 cycles) ---
+            0x60 => self.op_neg_idx(cycle, bus, master),
+            0x63 => self.op_com_idx(cycle, bus, master),
+            0x64 => self.op_lsr_idx(cycle, bus, master),
+            0x66 => self.op_ror_idx(cycle, bus, master),
+            0x67 => self.op_asr_idx(cycle, bus, master),
+            0x68 => self.op_asl_idx(cycle, bus, master),
+            0x69 => self.op_rol_idx(cycle, bus, master),
+            0x6A => self.op_dec_idx(cycle, bus, master),
+            0x6C => self.op_inc_idx(cycle, bus, master),
+            0x6D => self.op_tst_idx(cycle, bus, master),
+            0x6F => self.op_clr_idx(cycle, bus, master),
+
+            // --- 0x7x: Memory unary/shift extended (6 cycles) ---
+            0x70 => self.op_neg_ext(cycle, bus, master),
+            0x73 => self.op_com_ext(cycle, bus, master),
+            0x74 => self.op_lsr_ext(cycle, bus, master),
+            0x76 => self.op_ror_ext(cycle, bus, master),
+            0x77 => self.op_asr_ext(cycle, bus, master),
+            0x78 => self.op_asl_ext(cycle, bus, master),
+            0x79 => self.op_rol_ext(cycle, bus, master),
+            0x7A => self.op_dec_ext(cycle, bus, master),
+            0x7C => self.op_inc_ext(cycle, bus, master),
+            0x7D => self.op_tst_ext(cycle, bus, master),
+            0x7F => self.op_clr_ext(cycle, bus, master),
+
             // --- 0x8x: A register immediate + 16-bit immediate ---
             0x80 => self.op_suba_imm(cycle, bus, master),
             0x81 => self.op_cmpa_imm(cycle, bus, master),

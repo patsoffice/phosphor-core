@@ -1,3 +1,4 @@
+use crate::core::{Bus, BusMaster};
 use crate::cpu::m6800::{CcFlag, ExecState, M6800};
 
 impl M6800 {
@@ -156,4 +157,66 @@ impl M6800 {
             self.state = ExecState::Fetch;
         }
     }
+
+    // --- Memory shift/rotate ops: indexed (7 cycles) and extended (6 cycles) ---
+
+    /// ASL indexed (0x68): Arithmetic Shift Left memory.
+    /// N, Z, V, C affected. V = N XOR C.
+    pub(crate) fn op_asl_idx<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self, cycle: u8, bus: &mut B, master: BusMaster,
+    ) { self.rmw_indexed(cycle, bus, master, |cpu, val| cpu.perform_asl(val)); }
+
+    /// ASL extended (0x78): Arithmetic Shift Left memory.
+    /// N, Z, V, C affected. V = N XOR C.
+    pub(crate) fn op_asl_ext<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self, cycle: u8, bus: &mut B, master: BusMaster,
+    ) { self.rmw_extended(cycle, bus, master, |cpu, val| cpu.perform_asl(val)); }
+
+    /// ASR indexed (0x67): Arithmetic Shift Right memory.
+    /// N, Z, V, C affected. V = N XOR C.
+    pub(crate) fn op_asr_idx<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self, cycle: u8, bus: &mut B, master: BusMaster,
+    ) { self.rmw_indexed(cycle, bus, master, |cpu, val| cpu.perform_asr(val)); }
+
+    /// ASR extended (0x77): Arithmetic Shift Right memory.
+    /// N, Z, V, C affected. V = N XOR C.
+    pub(crate) fn op_asr_ext<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self, cycle: u8, bus: &mut B, master: BusMaster,
+    ) { self.rmw_extended(cycle, bus, master, |cpu, val| cpu.perform_asr(val)); }
+
+    /// LSR indexed (0x64): Logical Shift Right memory.
+    /// N cleared, Z, V, C affected. V = C (since N=0).
+    pub(crate) fn op_lsr_idx<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self, cycle: u8, bus: &mut B, master: BusMaster,
+    ) { self.rmw_indexed(cycle, bus, master, |cpu, val| cpu.perform_lsr(val)); }
+
+    /// LSR extended (0x74): Logical Shift Right memory.
+    /// N cleared, Z, V, C affected. V = C (since N=0).
+    pub(crate) fn op_lsr_ext<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self, cycle: u8, bus: &mut B, master: BusMaster,
+    ) { self.rmw_extended(cycle, bus, master, |cpu, val| cpu.perform_lsr(val)); }
+
+    /// ROL indexed (0x69): Rotate Left memory through Carry.
+    /// N, Z, V, C affected. V = N XOR C.
+    pub(crate) fn op_rol_idx<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self, cycle: u8, bus: &mut B, master: BusMaster,
+    ) { self.rmw_indexed(cycle, bus, master, |cpu, val| cpu.perform_rol(val)); }
+
+    /// ROL extended (0x79): Rotate Left memory through Carry.
+    /// N, Z, V, C affected. V = N XOR C.
+    pub(crate) fn op_rol_ext<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self, cycle: u8, bus: &mut B, master: BusMaster,
+    ) { self.rmw_extended(cycle, bus, master, |cpu, val| cpu.perform_rol(val)); }
+
+    /// ROR indexed (0x66): Rotate Right memory through Carry.
+    /// N, Z, V, C affected. V = N XOR C.
+    pub(crate) fn op_ror_idx<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self, cycle: u8, bus: &mut B, master: BusMaster,
+    ) { self.rmw_indexed(cycle, bus, master, |cpu, val| cpu.perform_ror(val)); }
+
+    /// ROR extended (0x76): Rotate Right memory through Carry.
+    /// N, Z, V, C affected. V = N XOR C.
+    pub(crate) fn op_ror_ext<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self, cycle: u8, bus: &mut B, master: BusMaster,
+    ) { self.rmw_extended(cycle, bus, master, |cpu, val| cpu.perform_ror(val)); }
 }

@@ -506,7 +506,7 @@ impl M6800 {
     }
 
     /// Generic extended mode read-modify-write helper.
-    /// 7 cycles total: 1 fetch + 1 hi + 1 lo + 1 read + 1 internal + 1 write + 1 internal.
+    /// 6 cycles total: 1 fetch + 1 hi + 1 lo + 1 read + 1 internal + 1 write.
     #[inline]
     pub(crate) fn rmw_extended<B: Bus<Address = u16, Data = u8> + ?Sized, F>(
         &mut self,
@@ -538,9 +538,6 @@ impl M6800 {
             }
             4 => {
                 bus.write(master, self.temp_addr, self.temp_data);
-                self.state = ExecState::Execute(self.opcode, 5);
-            }
-            5 => {
                 self.state = ExecState::Fetch;
             }
             _ => self.state = ExecState::Fetch,

@@ -1,3 +1,4 @@
+use crate::core::{Bus, BusMaster};
 use crate::cpu::m6800::{CcFlag, ExecState, M6800};
 
 impl M6800 {
@@ -176,4 +177,88 @@ impl M6800 {
             self.state = ExecState::Fetch;
         }
     }
+
+    // --- Memory unary ops: indexed (7 cycles) and extended (6 cycles) ---
+
+    /// NEG indexed (0x60): Negate memory (M = 0 - M).
+    /// N, Z, V, C affected.
+    pub(crate) fn op_neg_idx<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self, cycle: u8, bus: &mut B, master: BusMaster,
+    ) { self.rmw_indexed(cycle, bus, master, |cpu, val| cpu.perform_neg(val)); }
+
+    /// NEG extended (0x70): Negate memory (M = 0 - M).
+    /// N, Z, V, C affected.
+    pub(crate) fn op_neg_ext<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self, cycle: u8, bus: &mut B, master: BusMaster,
+    ) { self.rmw_extended(cycle, bus, master, |cpu, val| cpu.perform_neg(val)); }
+
+    /// COM indexed (0x63): Complement memory (M = ~M).
+    /// N, Z affected. V cleared. C set.
+    pub(crate) fn op_com_idx<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self, cycle: u8, bus: &mut B, master: BusMaster,
+    ) { self.rmw_indexed(cycle, bus, master, |cpu, val| cpu.perform_com(val)); }
+
+    /// COM extended (0x73): Complement memory (M = ~M).
+    /// N, Z affected. V cleared. C set.
+    pub(crate) fn op_com_ext<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self, cycle: u8, bus: &mut B, master: BusMaster,
+    ) { self.rmw_extended(cycle, bus, master, |cpu, val| cpu.perform_com(val)); }
+
+    /// INC indexed (0x6C): Increment memory (M = M + 1).
+    /// N, Z, V affected. C not affected.
+    pub(crate) fn op_inc_idx<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self, cycle: u8, bus: &mut B, master: BusMaster,
+    ) { self.rmw_indexed(cycle, bus, master, |cpu, val| cpu.perform_inc(val)); }
+
+    /// INC extended (0x7C): Increment memory (M = M + 1).
+    /// N, Z, V affected. C not affected.
+    pub(crate) fn op_inc_ext<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self, cycle: u8, bus: &mut B, master: BusMaster,
+    ) { self.rmw_extended(cycle, bus, master, |cpu, val| cpu.perform_inc(val)); }
+
+    /// DEC indexed (0x6A): Decrement memory (M = M - 1).
+    /// N, Z, V affected. C not affected.
+    pub(crate) fn op_dec_idx<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self, cycle: u8, bus: &mut B, master: BusMaster,
+    ) { self.rmw_indexed(cycle, bus, master, |cpu, val| cpu.perform_dec(val)); }
+
+    /// DEC extended (0x7A): Decrement memory (M = M - 1).
+    /// N, Z, V affected. C not affected.
+    pub(crate) fn op_dec_ext<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self, cycle: u8, bus: &mut B, master: BusMaster,
+    ) { self.rmw_extended(cycle, bus, master, |cpu, val| cpu.perform_dec(val)); }
+
+    /// TST indexed (0x6D): Test memory (set flags, no modification).
+    /// N, Z affected. V cleared. C cleared.
+    pub(crate) fn op_tst_idx<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self, cycle: u8, bus: &mut B, master: BusMaster,
+    ) {
+        self.rmw_indexed(cycle, bus, master, |cpu, val| {
+            cpu.perform_tst(val);
+            val
+        });
+    }
+
+    /// TST extended (0x7D): Test memory (set flags, no modification).
+    /// N, Z affected. V cleared. C cleared.
+    pub(crate) fn op_tst_ext<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self, cycle: u8, bus: &mut B, master: BusMaster,
+    ) {
+        self.rmw_extended(cycle, bus, master, |cpu, val| {
+            cpu.perform_tst(val);
+            val
+        });
+    }
+
+    /// CLR indexed (0x6F): Clear memory (M = 0).
+    /// N=0, Z=1, V=0, C=0.
+    pub(crate) fn op_clr_idx<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self, cycle: u8, bus: &mut B, master: BusMaster,
+    ) { self.rmw_indexed(cycle, bus, master, |cpu, _val| cpu.perform_clr()); }
+
+    /// CLR extended (0x7F): Clear memory (M = 0).
+    /// N=0, Z=1, V=0, C=0.
+    pub(crate) fn op_clr_ext<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self, cycle: u8, bus: &mut B, master: BusMaster,
+    ) { self.rmw_extended(cycle, bus, master, |cpu, _val| cpu.perform_clr()); }
 }
