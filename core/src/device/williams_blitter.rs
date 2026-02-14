@@ -1,213 +1,382 @@
 use crate::core::{Bus, BusMaster};
 
-/// Williams Special Chip 1 (SC1) — Blitter / DMA engine
+/// Williams Special Chip (SC1/SC2) — Blitter / DMA engine
 ///
 /// Hardware block copy/fill engine used in Williams 2nd-generation arcade boards
 /// (Joust, Robotron 2084, Bubbles, Sinistar, etc.). Operates via DMA, halting
 /// the CPU during transfers. Reads and writes go through the system bus, so the
 /// blitter sees the same address decoding as the CPU (including ROM banking).
 ///
-/// # Register map (offsets 0-7)
+/// Two variants exist:
+/// - **SC1** (VL2001): Has the "XOR 4" bug on width/height registers.
+/// - **SC2** (VL2001A): Fixes the XOR 4 bug.
+///
+/// References:
+/// - MAME: `mamedev/mame` `src/mame/midway/williamsblitter.cpp` / `.h`
+/// - Sean Riddle: <https://seanriddle.com/blitter.html>
+///
+/// # Register map (8 write-only registers at $CA00-$CA07)
+///
+/// Writing to offset 0 (control byte) triggers the blit operation. All other
+/// registers should be written first to configure the transfer parameters.
 ///
 /// | Offset | Name        | Description                                           |
 /// |--------|-------------|-------------------------------------------------------|
-/// | 0      | mask        | Bit plane mask — controls which dest bits are modified|
+/// | 0      | control     | Control byte — **writing triggers the blit**          |
 /// | 1      | solid_color | Source byte for solid fill mode                       |
 /// | 2      | src_hi      | Source address high byte                              |
 /// | 3      | src_lo      | Source address low byte                               |
 /// | 4      | dst_hi      | Destination address high byte                         |
 /// | 5      | dst_lo      | Destination address low byte                          |
-/// | 6      | width       | Width in bytes minus 1 (0 = 1 byte)                   |
-/// | 7      | height      | Height in rows minus 1 — writing triggers the blit    |
+/// | 6      | width       | Blit width (XOR with size_xor on SC1)                 |
+/// | 7      | height      | Blit height (XOR with size_xor on SC1)                |
 ///
-/// # Control flags (set separately via `set_control`)
+/// Registers are write-only on real hardware. Reading $CA00 does NOT initiate
+/// blitting. Registers retain values across blits.
+///
+/// Reference (Sean Riddle): "Omitting register writes reuses previous values."
+///
+/// # Control byte bit assignments (from MAME header)
 ///
 /// | Bit | Flag            | Description                                       |
 /// |-----|-----------------|---------------------------------------------------|
-/// | 0   | (speed)         | Ignored — always 1 byte/cycle                     |
-/// | 1   | foreground_only | Skip writing when source byte is 0x00             |
-/// | 2   | solid           | Use `solid_color` instead of reading from source  |
-/// | 3   | shift           | 4-bit right shift with shift register             |
+/// | 0   | SRC_STRIDE_256  | Source uses stride-256 (column-major)              |
+/// | 1   | DST_STRIDE_256  | Destination uses stride-256 (column-major)        |
+/// | 2   | SLOW            | 0 = fast (1 µs/byte), 1 = slow (2 µs/byte)       |
+/// | 3   | FOREGROUND_ONLY | Per-nibble transparency: skip color-0 pixels      |
+/// | 4   | SOLID           | Use `solid_color` instead of source data           |
+/// | 5   | SHIFT           | Right-shift source pixels by one position (4 bits) |
+/// | 6   | NO_ODD          | Suppress lower nibble (D3-D0) writes               |
+/// | 7   | NO_EVEN         | Suppress upper nibble (D7-D4) writes               |
+///
+/// Reference (Sean Riddle) on slow/fast: "Blits from RAM to RAM have to run
+/// at half speed, 2 microseconds per byte."
+///
+/// # Stride
+///
+/// Stride is controlled per-transfer by bits 0 and 1 of the control byte.
+/// When stride-256 is set, columns advance by 256 (moving right across
+/// screen) and rows advance by 1 within the 256-byte page (moving down).
+/// When stride-1, columns advance by 1 and rows advance by the blit width.
+///
+/// Reference (Sean Riddle): "successive bytes are displayed below one another;
+/// the next pair of pixels to the right of the previous are 256 bytes away."
+///
+/// MAME row advance for stride-256 wraps within the page:
+/// `start = (start & 0xFF00) | ((start + 1) & 0x00FF)`
+///
+/// # SC1 XOR 4 bug
+///
+/// Reference (Sean Riddle): "bit 2 of the width and height to be inverted
+/// (XOR 4)." Game ROMs compensate for this bug by pre-XORing their values.
+/// SC2 fixes this (size_xor = 0).
+///
+/// After XOR, width/height of 0 is clamped to 1.
+/// Reference (Sean Riddle): "Using a width or height of 0 gives the same
+/// results as 1."
+/// MAME: `if (w == 0) w = 1;`
 ///
 /// # DMA integration
 ///
 /// After triggering, `is_active()` returns `true`. The system should halt the
-/// CPU by returning `true` from `Bus::is_halted_for(Cpu(0))` while the blitter
-/// is active. Each call to `do_dma_cycle()` transfers one byte. When the blit
-/// completes, `is_active()` returns `false` and the CPU resumes.
+/// CPU while the blitter is active. Each call to `do_dma_cycle()` transfers
+/// one byte and returns the number of clock cycles consumed (1 for fast,
+/// 2 for slow). When the blit completes, `is_active()` returns `false`.
+///
+/// Reference (Sean Riddle): "CPU completes current instruction, sets BA/BS
+/// high. /BABS signal goes low; blitter gains bus control. [...] Upon
+/// completion, /HALT deasserts; CPU resumes."
 pub struct WilliamsBlitter {
-    // Registers (offsets 0-7)
-    mask: u8,
+    // Registers (offsets 0-7, write-only)
+    control: u8,
     solid_color: u8,
     src_addr: u16,
     dst_addr: u16,
     width: u8,
     height: u8,
 
-    // Control flags (set via separate address)
-    control: u8,
+    // Configuration (set at construction, not via registers)
+    size_xor: u8, // 4 for SC1 (VL2001), 0 for SC2 (VL2001A)
 
     // Execution state
     active: bool,
-    cur_src: u16,
-    cur_dst: u16,
-    col: u16, // u16 to avoid overflow when width=255
-    row: u16, // u16 to avoid overflow when height=255
-    dst_row_start: u16,
-    shift_reg: u8,
+    x: u16,         // current column within row (0..w)
+    w: u16,         // effective width (1-based, post-XOR + clamp)
+    h: u16,         // effective height (1-based, post-XOR + clamp)
+    rows_done: u16, // number of rows completed
+    sstart: u16,    // source row-start address
+    dstart: u16,    // dest row-start address
+    cur_src: u16,   // current source address
+    cur_dst: u16,   // current dest address
+    sxadv: u16,     // source per-column advance (1 or 256)
+    dxadv: u16,     // dest per-column advance (1 or 256)
+    shift_reg: u8,  // previous raw source byte for shift mode
 }
 
-// Control flag bit positions
-const FLAG_FOREGROUND_ONLY: u8 = 0x02; // Bit 1: skip zero source bytes
-const FLAG_SOLID: u8 = 0x04; // Bit 2: use solid_color instead of reading source
-const FLAG_SHIFT: u8 = 0x08; // Bit 3: 4-bit right shift
+// Control byte bit positions (from MAME williamsblitter.h)
+const CTRL_SRC_STRIDE_256: u8 = 0x01; // Bit 0
+const CTRL_DST_STRIDE_256: u8 = 0x02; // Bit 1
+const CTRL_SLOW: u8 = 0x04; // Bit 2
+const CTRL_FOREGROUND_ONLY: u8 = 0x08; // Bit 3
+const CTRL_SOLID: u8 = 0x10; // Bit 4
+const CTRL_SHIFT: u8 = 0x20; // Bit 5
+const CTRL_NO_ODD: u8 = 0x40; // Bit 6
+const CTRL_NO_EVEN: u8 = 0x80; // Bit 7
 
 impl WilliamsBlitter {
+    /// Create a new SC1 (VL2001) blitter with the XOR 4 size bug.
+    pub fn sc1() -> Self {
+        Self::with_size_xor(4)
+    }
+
+    /// Create a new SC2 (VL2001A) blitter without the XOR 4 size bug.
+    pub fn sc2() -> Self {
+        Self::with_size_xor(0)
+    }
+
+    /// Backwards-compatible alias for `sc1()`.
     pub fn new() -> Self {
+        Self::sc1()
+    }
+
+    fn with_size_xor(size_xor: u8) -> Self {
         Self {
-            mask: 0,
+            control: 0,
             solid_color: 0,
             src_addr: 0,
             dst_addr: 0,
             width: 0,
             height: 0,
-            control: 0,
+            size_xor,
             active: false,
+            x: 0,
+            w: 0,
+            h: 0,
+            rows_done: 0,
+            sstart: 0,
+            dstart: 0,
             cur_src: 0,
             cur_dst: 0,
-            col: 0,
-            row: 0,
-            dst_row_start: 0,
+            sxadv: 0,
+            dxadv: 0,
             shift_reg: 0,
         }
     }
 
-    /// Write to a blitter data register (offset 0-7).
-    /// Writing to offset 7 (height) triggers the blit operation.
+    /// Write to a blitter register (offset 0-7).
+    ///
+    /// Writing to offset 0 (control byte) triggers the blit operation. All
+    /// other registers (1-7) should be configured before writing offset 0.
+    ///
+    /// Reference (Sean Riddle): "$CA00 Control Byte: Initiates blit; encodes
+    /// operation flavor."
     pub fn write_register(&mut self, offset: u8, data: u8) {
         match offset {
-            0 => self.mask = data,
+            0 => {
+                self.control = data;
+                self.start_blit();
+            }
             1 => self.solid_color = data,
             2 => self.src_addr = (self.src_addr & 0x00FF) | ((data as u16) << 8),
             3 => self.src_addr = (self.src_addr & 0xFF00) | (data as u16),
             4 => self.dst_addr = (self.dst_addr & 0x00FF) | ((data as u16) << 8),
             5 => self.dst_addr = (self.dst_addr & 0xFF00) | (data as u16),
             6 => self.width = data,
-            7 => {
-                self.height = data;
-                self.start_blit();
-            }
+            7 => self.height = data,
             _ => {}
         }
     }
 
-    /// Read a blitter register (offset 0-7).
-    pub fn read_register(&self, offset: u8) -> u8 {
-        match offset {
-            0 => self.mask,
-            1 => self.solid_color,
-            2 => (self.src_addr >> 8) as u8,
-            3 => self.src_addr as u8,
-            4 => (self.dst_addr >> 8) as u8,
-            5 => self.dst_addr as u8,
-            6 => self.width,
-            7 => self.height,
-            _ => 0,
-        }
-    }
-
-    /// Set the blitter control flags. On Williams hardware, this is written
-    /// to a separate address from the data registers. Must be configured
-    /// before triggering the blit (writing register 7).
-    pub fn set_control(&mut self, flags: u8) {
-        self.control = flags;
-    }
-
     /// Returns true if the blitter is currently executing a DMA transfer.
-    /// When true, the CPU should be halted (TSC asserted).
     pub fn is_active(&self) -> bool {
         self.active
     }
 
-    /// Execute one DMA cycle, reading and writing through the system bus.
-    /// Call this once per clock cycle while `is_active()` returns true.
+    /// Execute one DMA cycle, transferring one byte through the system bus.
+    /// Returns the number of clock cycles consumed: 1 for fast, 2 for slow.
     ///
-    /// The blitter shares the CPU's address bus, so reads go through the
-    /// same address decoding (including ROM banking overlays). This matches
-    /// the real hardware where the blitter can blit from ROM to RAM.
-    pub fn do_dma_cycle(&mut self, bus: &mut dyn Bus<Address = u16, Data = u8>) {
+    /// The blitter shares the CPU's address bus, so reads go through the same
+    /// address decoding (including ROM banking overlays).
+    ///
+    /// Reference (MAME): The inner loop reads source, optionally shifts,
+    /// calls `blit_pixel()` which reads dest, computes keepmask for per-nibble
+    /// transparency and pixel suppression, then writes the result.
+    pub fn do_dma_cycle(&mut self, bus: &mut dyn Bus<Address = u16, Data = u8>) -> u8 {
         if !self.active {
-            return;
+            return 0;
         }
 
-        // Step 1: Get source byte (goes through bus — sees ROM overlay)
-        let raw_src = if (self.control & FLAG_SOLID) != 0 {
-            self.solid_color
+        // Timing: MAME bit 2 (SLOW). 0 = fast (1 cycle), 1 = slow (2 cycles).
+        // Reference (Sean Riddle): "Blits from RAM to RAM have to run at half
+        // speed, 2 microseconds per byte."
+        let cycles: u8 = if (self.control & CTRL_SLOW) != 0 {
+            2
         } else {
-            bus.read(BusMaster::Dma, self.cur_src)
+            1
         };
 
-        // Step 2: Apply shift if enabled
-        let src_byte = if (self.control & FLAG_SHIFT) != 0 {
-            let shifted = ((self.shift_reg as u16) << 8 | (raw_src as u16)) >> 4;
+        // Step 1: Read source byte.
+        // MAME: `const u8 rawval = m_remap[space.read_byte(source)];`
+        // We skip the PROM remap (board-level concern, not blitter logic).
+        let raw_src = bus.read(BusMaster::Dma, self.cur_src);
+
+        // Step 2: Apply shift if enabled — right-shift by one pixel (4 bits).
+        // MAME: `pixdata = (pixdata << 8) | rawval; blit_pixel(dest, (pixdata >> 4) & 0xff);`
+        // Reference (Sean Riddle): "Shift the source data right one pixel when
+        // writing it."
+        let src_byte = if (self.control & CTRL_SHIFT) != 0 {
+            let combined = ((self.shift_reg as u16) << 8) | (raw_src as u16);
             self.shift_reg = raw_src;
-            (shifted & 0xFF) as u8
+            ((combined >> 4) & 0xFF) as u8
         } else {
             raw_src
         };
 
-        // Step 3: Get destination byte for read-modify-write
-        let dst_byte = bus.read(BusMaster::Dma, self.cur_dst);
+        // Step 3: Pixel write with keepmask (matches MAME blit_pixel).
+        //
+        // keepmask starts at 0xFF (keep all dest bits). For each nibble,
+        // the keepmask is cleared (allowing writes) based on the interaction
+        // of FOREGROUND_ONLY and NO_EVEN/NO_ODD flags.
+        //
+        // MAME truth table (per nibble, shown for even/upper):
+        //   fg_only=T, src=0, no_even=T → WRITE (clear dest nibble)
+        //   fg_only=T, src=0, no_even=F → KEEP  (transparent)
+        //   fg_only=T, src≠0, no_even=T → KEEP  (suppressed)
+        //   fg_only=T, src≠0, no_even=F → WRITE (normal)
+        //   fg_only=F, -----, no_even=T → KEEP  (suppressed)
+        //   fg_only=F, -----, no_even=F → WRITE (normal)
+        //
+        // When fg_only + no_even/no_odd are both set, the transparency
+        // behavior inverts: zero pixels ARE written, non-zero are suppressed.
+        //
+        // Reference (Sean Riddle): "Color 0 is not copied to the destination,
+        // allowing for transparency."
+        // Reference (MAME): `blit_pixel()` in `williamsblitter.cpp`
+        let fg_only = (self.control & CTRL_FOREGROUND_ONLY) != 0;
+        let no_even = (self.control & CTRL_NO_EVEN) != 0;
+        let no_odd = (self.control & CTRL_NO_ODD) != 0;
 
-        // Step 4: Check foreground-only mode (transparency)
-        let skip = (self.control & FLAG_FOREGROUND_ONLY) != 0 && src_byte == 0x00;
+        // Dest read bypasses ROM banking — on real hardware the blitter has direct
+        // VRAM access for read-modify-write. MAME: `int curpix = m_vram[dstaddr];`
+        let dst_byte = bus.read(BusMaster::DmaVram, self.cur_dst);
+        let mut keepmask: u8 = 0xFF;
 
-        // Step 5: Write result through mask
-        if !skip {
-            let result = (src_byte & self.mask) | (dst_byte & !self.mask);
-            bus.write(BusMaster::Dma, self.cur_dst, result);
+        // Even pixel (upper nibble D7-D4)
+        if fg_only && (src_byte & 0xF0) == 0 {
+            // Source is transparent (color 0). Normally keep dest, but
+            // NO_EVEN inverts this — write zeros to clear the nibble.
+            if no_even {
+                keepmask &= 0x0F;
+            }
+        } else if !no_even {
+            keepmask &= 0x0F;
         }
 
-        // Step 6: Advance source address (skip in solid mode)
-        if (self.control & FLAG_SOLID) == 0 {
-            self.cur_src = self.cur_src.wrapping_add(1);
+        // Odd pixel (lower nibble D3-D0)
+        if fg_only && (src_byte & 0x0F) == 0 {
+            // Source is transparent. NO_ODD inverts — write zeros.
+            if no_odd {
+                keepmask &= 0xF0;
+            }
+        } else if !no_odd {
+            keepmask &= 0xF0;
         }
 
-        // Step 7: Advance column/row counters
-        self.col += 1;
+        // Apply solid color substitution at write time (MAME does this in
+        // blit_pixel, not at source read).
+        let effective_src = if (self.control & CTRL_SOLID) != 0 {
+            self.solid_color
+        } else {
+            src_byte
+        };
 
-        if self.col > self.width as u16 {
-            // End of row
-            self.col = 0;
-            self.row += 1;
+        let result = (dst_byte & keepmask) | (effective_src & !keepmask);
+        bus.write(BusMaster::Dma, self.cur_dst, result);
 
-            if self.row > self.height as u16 {
-                // Blit complete
+        // Step 4: Advance addresses.
+        // MAME: `source += sxadv; dest += dxadv;` — always, regardless of
+        // solid mode.
+        self.cur_src = self.cur_src.wrapping_add(self.sxadv);
+        self.cur_dst = self.cur_dst.wrapping_add(self.dxadv);
+
+        // Step 5: Advance column/row counters.
+        self.x += 1;
+        if self.x >= self.w {
+            // End of row — advance to next row.
+            self.x = 0;
+            self.rows_done += 1;
+
+            if self.rows_done >= self.h {
                 self.active = false;
-                return;
+                return cycles;
             }
 
-            // Destination: stride of 256 bytes between rows (column-major video RAM)
-            self.dst_row_start = self.dst_row_start.wrapping_add(256);
-            self.cur_dst = self.dst_row_start;
-        } else {
-            self.cur_dst = self.cur_dst.wrapping_add(1);
+            // Row advance: MAME wraps within page for stride-256.
+            // MAME: `dstart = (dstart & 0xff00) | ((dstart + dyadv) & 0xff);`
+            // dyadv = 1 for stride-256, = w for stride-1.
+            if (self.control & CTRL_DST_STRIDE_256) != 0 {
+                self.dstart = (self.dstart & 0xFF00) | (self.dstart.wrapping_add(1) & 0x00FF);
+            } else {
+                self.dstart = self.dstart.wrapping_add(self.w);
+            }
+            if (self.control & CTRL_SRC_STRIDE_256) != 0 {
+                self.sstart = (self.sstart & 0xFF00) | (self.sstart.wrapping_add(1) & 0x00FF);
+            } else {
+                self.sstart = self.sstart.wrapping_add(self.w);
+            }
+            self.cur_src = self.sstart;
+            self.cur_dst = self.dstart;
         }
+
+        cycles
     }
 
+    /// Initialize blit execution state from the configured registers.
+    ///
+    /// Applies the size_xor (SC1 XOR 4 bug) to width and height, clamps
+    /// zero to one, and configures stride advances from control bits.
     fn start_blit(&mut self) {
+        // Width/height: XOR with size_xor, then clamp 0 → 1.
+        // MAME: `int w = m_width ^ m_size_xor; if (w == 0) w = 1;`
+        let mut w = (self.width ^ self.size_xor) as u16;
+        let mut h = (self.height ^ self.size_xor) as u16;
+        if w == 0 {
+            w = 1;
+        }
+        if h == 0 {
+            h = 1;
+        }
+
+        // Stride from control bits.
+        // MAME: `sxadv = src_stride_256 ? 0x100 : 1;`
+        let sxadv = if (self.control & CTRL_SRC_STRIDE_256) != 0 {
+            256
+        } else {
+            1
+        };
+        let dxadv = if (self.control & CTRL_DST_STRIDE_256) != 0 {
+            256
+        } else {
+            1
+        };
+
         self.active = true;
+        self.w = w;
+        self.h = h;
+        self.x = 0;
+        self.rows_done = 0;
+        self.sstart = self.src_addr;
+        self.dstart = self.dst_addr;
         self.cur_src = self.src_addr;
         self.cur_dst = self.dst_addr;
-        self.dst_row_start = self.dst_addr;
-        self.col = 0;
-        self.row = 0;
+        self.sxadv = sxadv;
+        self.dxadv = dxadv;
         self.shift_reg = 0;
     }
 }
 
 impl Default for WilliamsBlitter {
     fn default() -> Self {
-        Self::new()
+        Self::sc1()
     }
 }

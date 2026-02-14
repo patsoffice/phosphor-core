@@ -235,11 +235,23 @@ fn test_pia_addresses_independent() {
 
 #[test]
 fn test_blitter_registers_accessible() {
+    // Blitter registers ($CA00-$CA07) are write-only on real hardware.
+    // Writing to $CA00 triggers the blit; reads return 0.
+    // Reference: https://seanriddle.com/blitter.html
     let mut sys = JoustSystem::new();
-    sys.write(BusMaster::Cpu(0), 0xCA00, 0xFF); // mask
+
+    // Write data registers (1-7) without triggering
     sys.write(BusMaster::Cpu(0), 0xCA01, 0x42); // solid_color
-    assert_eq!(sys.read(BusMaster::Cpu(0), 0xCA00), 0xFF);
-    assert_eq!(sys.read(BusMaster::Cpu(0), 0xCA01), 0x42);
+    sys.write(BusMaster::Cpu(0), 0xCA06, 1 ^ 4); // width (SC1 XOR 4 → effective 1)
+    sys.write(BusMaster::Cpu(0), 0xCA07, 1 ^ 4); // height (SC1 XOR 4 → effective 1)
+
+    // Reads return 0 (write-only registers)
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0xCA00), 0);
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0xCA01), 0);
+
+    // Writing $CA00 triggers the blit — verify CPU gets halted
+    sys.write(BusMaster::Cpu(0), 0xCA00, 0x00); // control: fast copy, triggers blit
+    assert!(sys.is_halted_for(BusMaster::Cpu(0)));
 }
 
 #[test]
@@ -258,13 +270,15 @@ fn test_blitter_halts_cpu() {
     // Record CPU PC — it should be at the BRA instruction
     let pc_before = sys.get_cpu_state().pc;
 
-    // Trigger a large blit: 8x8 solid fill so the blitter runs for 64+ DMA cycles
-    sys.write(BusMaster::Cpu(0), 0xCA00, 0xFF); // mask = 0xFF
+    // Trigger a large blit: 8x8 solid fill so the blitter runs for 64+ DMA cycles.
+    // Write data registers first, then $CA00 (control) last to trigger.
+    // Width/height use XOR 4 for SC1 bug compensation.
     sys.write(BusMaster::Cpu(0), 0xCA01, 0x42); // solid_color
     sys.write(BusMaster::Cpu(0), 0xCA04, 0x00); // dst_hi
     sys.write(BusMaster::Cpu(0), 0xCA05, 0x00); // dst_lo
-    sys.write(BusMaster::Cpu(0), 0xCA06, 0x07); // width = 7 (8 bytes)
-    sys.write(BusMaster::Cpu(0), 0xCA07, 0x07); // height = 7 (8 rows), triggers blit
+    sys.write(BusMaster::Cpu(0), 0xCA06, 8 ^ 4); // width = 8, XOR 4 for SC1
+    sys.write(BusMaster::Cpu(0), 0xCA07, 8 ^ 4); // height = 8, XOR 4 for SC1
+    sys.write(BusMaster::Cpu(0), 0xCA00, 0x10); // control: SOLID (bit 4), fast, triggers blit
 
     // The blitter should now be active. Tick once and verify the CPU PC
     // did NOT advance (blitter halts the CPU via is_halted_for).
@@ -297,14 +311,16 @@ fn test_blitter_writes_to_video_ram() {
     sys.write_video_ram(0x1000, 0xAB);
     sys.write_video_ram(0x1001, 0xCD);
 
-    // Configure blitter for a 2-byte copy (1 row, width=1)
-    sys.write(BusMaster::Cpu(0), 0xCA00, 0xFF); // mask
+    // Configure blitter for a 2-byte copy (1 row, width=1).
+    // Write data registers first, then $CA00 last to trigger.
+    // Width/height XOR 4 for SC1 bug compensation.
     sys.write(BusMaster::Cpu(0), 0xCA02, 0x10); // src_hi = 0x10
     sys.write(BusMaster::Cpu(0), 0xCA03, 0x00); // src_lo = 0x00
     sys.write(BusMaster::Cpu(0), 0xCA04, 0x20); // dst_hi = 0x20
     sys.write(BusMaster::Cpu(0), 0xCA05, 0x00); // dst_lo = 0x00
-    sys.write(BusMaster::Cpu(0), 0xCA06, 0x01); // width = 1 (2 bytes)
-    sys.write(BusMaster::Cpu(0), 0xCA07, 0x00); // height = 0 (1 row), triggers blit
+    sys.write(BusMaster::Cpu(0), 0xCA06, 2 ^ 4); // width = 2 bytes, XOR 4 for SC1
+    sys.write(BusMaster::Cpu(0), 0xCA07, 1 ^ 4); // height = 1 row, XOR 4 for SC1
+    sys.write(BusMaster::Cpu(0), 0xCA00, 0x00); // control: fast linear copy, triggers blit
 
     // Run enough DMA cycles to complete
     for _ in 0..10 {
@@ -554,14 +570,15 @@ fn test_blitter_reads_banked_rom() {
     // Enable ROM bank — blitter shares the CPU's bus, so it sees ROM overlay
     sys.write(BusMaster::Cpu(0), 0xC900, 0x01);
 
-    // Configure blitter to copy from 0x1000 to 0x9000 (2 bytes, dest in upper VRAM)
-    sys.write(BusMaster::Cpu(0), 0xCA00, 0xFF); // mask
+    // Configure blitter to copy from 0x1000 to 0x9000 (2 bytes, dest in upper VRAM).
+    // Write data registers first, then $CA00 last to trigger.
     sys.write(BusMaster::Cpu(0), 0xCA02, 0x10); // src_hi
     sys.write(BusMaster::Cpu(0), 0xCA03, 0x00); // src_lo
     sys.write(BusMaster::Cpu(0), 0xCA04, 0x90); // dst_hi
     sys.write(BusMaster::Cpu(0), 0xCA05, 0x00); // dst_lo
-    sys.write(BusMaster::Cpu(0), 0xCA06, 0x01); // width=1 (2 bytes)
-    sys.write(BusMaster::Cpu(0), 0xCA07, 0x00); // height=0 (1 row), triggers blit
+    sys.write(BusMaster::Cpu(0), 0xCA06, 2 ^ 4); // width = 2 bytes, XOR 4 for SC1
+    sys.write(BusMaster::Cpu(0), 0xCA07, 1 ^ 4); // height = 1 row, XOR 4 for SC1
+    sys.write(BusMaster::Cpu(0), 0xCA00, 0x00); // control: fast linear copy, triggers blit
 
     // Run DMA cycles
     for _ in 0..10 {
@@ -586,14 +603,15 @@ fn test_blitter_reads_video_ram_when_bank_disabled() {
     // Bank disabled (default) — blitter reads from video RAM
     assert_eq!(sys.rom_bank(), 0);
 
-    // Configure blitter to copy from 0x1000 to 0x9000 (2 bytes)
-    sys.write(BusMaster::Cpu(0), 0xCA00, 0xFF); // mask
+    // Configure blitter to copy from 0x1000 to 0x9000 (2 bytes).
+    // Write data registers first, then $CA00 last to trigger.
     sys.write(BusMaster::Cpu(0), 0xCA02, 0x10); // src_hi
     sys.write(BusMaster::Cpu(0), 0xCA03, 0x00); // src_lo
     sys.write(BusMaster::Cpu(0), 0xCA04, 0x90); // dst_hi
     sys.write(BusMaster::Cpu(0), 0xCA05, 0x00); // dst_lo
-    sys.write(BusMaster::Cpu(0), 0xCA06, 0x01); // width=1 (2 bytes)
-    sys.write(BusMaster::Cpu(0), 0xCA07, 0x00); // height=0 (1 row), triggers blit
+    sys.write(BusMaster::Cpu(0), 0xCA06, 2 ^ 4); // width = 2 bytes, XOR 4 for SC1
+    sys.write(BusMaster::Cpu(0), 0xCA07, 1 ^ 4); // height = 1 row, XOR 4 for SC1
+    sys.write(BusMaster::Cpu(0), 0xCA00, 0x00); // control: fast linear copy, triggers blit
 
     // Run DMA cycles
     for _ in 0..10 {
@@ -603,6 +621,55 @@ fn test_blitter_reads_video_ram_when_bank_disabled() {
     // Blitter should have read from video RAM (0xAB, 0xCD)
     assert_eq!(sys.read_video_ram(0x9000), 0xAB);
     assert_eq!(sys.read_video_ram(0x9001), 0xCD);
+}
+
+/// Verify blitter dest reads bypass ROM banking for keepmask blending.
+///
+/// On real hardware (and MAME), the blitter reads destination pixels directly
+/// from VRAM (`m_vram[dstaddr]`), not through the address space. This means
+/// ROM banking does NOT affect dest reads, only source reads.
+///
+/// Without this fix, a transparency blit with ROM banking active would read
+/// ROM data instead of VRAM data for the keepmask blend, corrupting output.
+#[test]
+fn test_blitter_dest_read_bypasses_rom_banking() {
+    let mut sys = JoustSystem::new();
+
+    // Set up VRAM at dest address 0x2000 with known content
+    sys.write_video_ram(0x2000, 0xEE);
+
+    // Put different data in banked ROM at same address
+    sys.load_banked_rom(0x2000, &[0x77]);
+
+    // Source data in upper VRAM (never banked)
+    sys.write_video_ram(0x9000, 0x0F); // upper nibble = 0 (transparent), lower = 0xF
+
+    // Enable ROM banking
+    sys.write(BusMaster::Cpu(0), 0xC900, 0x01);
+
+    // Blit 1 byte from 0x9000 to 0x2000 with FOREGROUND_ONLY (per-nibble transparency)
+    // Control = 0x08 (FOREGROUND_ONLY)
+    // Upper nibble of source (0x0_) is zero → keep dest upper nibble
+    // Lower nibble of source (_F) is non-zero → write source lower nibble
+    sys.write(BusMaster::Cpu(0), 0xCA02, 0x90); // src_hi
+    sys.write(BusMaster::Cpu(0), 0xCA03, 0x00); // src_lo
+    sys.write(BusMaster::Cpu(0), 0xCA04, 0x20); // dst_hi
+    sys.write(BusMaster::Cpu(0), 0xCA05, 0x00); // dst_lo
+    sys.write(BusMaster::Cpu(0), 0xCA06, 1 ^ 4); // width = 1, XOR 4 for SC1
+    sys.write(BusMaster::Cpu(0), 0xCA07, 1 ^ 4); // height = 1, XOR 4 for SC1
+    sys.write(BusMaster::Cpu(0), 0xCA00, 0x08); // control: FOREGROUND_ONLY, triggers blit
+
+    // Run DMA cycles
+    for _ in 0..10 {
+        sys.tick();
+    }
+
+    // Result should blend with VRAM (0xEE), not ROM (0x77):
+    // Upper nibble: transparent → keep VRAM 0xE_
+    // Lower nibble: non-zero → write source _F
+    // Expected: 0xEF (VRAM upper + source lower)
+    // Bug would produce: 0x7F (ROM upper + source lower)
+    assert_eq!(sys.read_video_ram(0x2000), 0xEF);
 }
 
 #[test]

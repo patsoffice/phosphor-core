@@ -2,7 +2,10 @@
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum BusMaster {
     Cpu(usize), // CPU 0, CPU 1, etc.
-    Dma,        // Video DMA, disk controller, etc.
+    Dma,        // DMA reads through the bus (sees ROM banking overlays)
+    DmaVram,    // DMA reads directly from video RAM, bypassing banking overlays
+                // (used by blitter dest reads for keepmask blending — matches MAME's
+                // blit_pixel reading from m_vram[] instead of the address space)
 }
 
 /// Generic bus interface supporting halt/arbitration (TSC, RDY, BUSREQ, etc.)

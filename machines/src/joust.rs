@@ -346,10 +346,13 @@ impl Bus for JoustSystem {
     type Address = u16;
     type Data = u8;
 
-    fn read(&mut self, _master: BusMaster, addr: u16) -> u8 {
+    fn read(&mut self, master: BusMaster, addr: u16) -> u8 {
         match addr {
             0x0000..=0x8FFF => {
-                if self.rom_bank != 0 {
+                // DmaVram reads bypass ROM banking — the blitter reads dest
+                // directly from VRAM for keepmask blending, matching MAME's
+                // blit_pixel which reads from m_vram[] instead of the address space.
+                if master != BusMaster::DmaVram && self.rom_bank != 0 {
                     self.banked_rom[addr as usize]
                 } else {
                     self.video_ram[addr as usize]
@@ -360,7 +363,7 @@ impl Bus for JoustSystem {
             0xC804..=0xC807 => self.widget_pia.read((addr - 0xC804) as u8),
             0xC80C..=0xC80F => self.rom_pia.read((addr - 0xC80C) as u8),
             0xC900 => self.rom_bank,
-            0xCA00..=0xCA07 => self.blitter.read_register((addr - 0xCA00) as u8),
+            0xCA00..=0xCA07 => 0, // Blitter registers are write-only on real hardware
             0xCB00 => {
                 self.watchdog_counter = 0;
                 0
