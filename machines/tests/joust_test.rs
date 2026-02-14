@@ -34,8 +34,8 @@ fn test_render_frame_correct_size() {
 #[test]
 fn test_render_frame_uses_palette() {
     let mut sys = JoustSystem::new();
-    // Set palette entry 5 to a known color: R=7, G=0, B=3 => 0b111_000_11 = 0xE3
-    sys.write(BusMaster::Cpu(0), 0xC005, 0xE3);
+    // Set palette entry 5 to a known BBGGGRRR color: R=7, G=0, B=3 => 0b11_000_111 = 0xC7
+    sys.write(BusMaster::Cpu(0), 0xC005, 0xC7);
 
     // Screen pixel (0,0) maps to VRAM at byte_column=3, row=7 (crop offset 6,7).
     // pixel_x=6 is even, so the upper nibble is used.
@@ -47,7 +47,7 @@ fn test_render_frame_uses_palette() {
     sys.render_frame(&mut buffer);
 
     // Pixel at (0,0) should have color from palette entry 5
-    // R = 7 * 255 / 7 = 255, G = 0, B = 3 * 255 / 3 = 255
+    // R=7 → 255 (resistor weight), G=0 → 0, B=3 → 255
     assert_eq!(buffer[0], 255); // R
     assert_eq!(buffer[1], 0); // G
     assert_eq!(buffer[2], 255); // B
@@ -56,10 +56,10 @@ fn test_render_frame_uses_palette() {
 #[test]
 fn test_render_frame_two_pixels_per_byte() {
     let mut sys = JoustSystem::new();
-    // Palette entry 3: R=0, G=7, B=0 => 0b000_111_00 = 0x1C
-    // Palette entry 9: R=4, G=4, B=2 => 0b100_100_10 = 0x92
-    sys.write(BusMaster::Cpu(0), 0xC003, 0x1C);
-    sys.write(BusMaster::Cpu(0), 0xC009, 0x92);
+    // Palette entry 3 (BBGGGRRR): R=0, G=7, B=0 => 0b00_111_000 = 0x38
+    // Palette entry 9 (BBGGGRRR): R=4, G=4, B=2 => 0b10_100_100 = 0xA4
+    sys.write(BusMaster::Cpu(0), 0xC003, 0x38);
+    sys.write(BusMaster::Cpu(0), 0xC009, 0xA4);
 
     // Screen pixels (0,0) and (1,0) share the same VRAM byte at byte_column=3, row=7.
     // pixel_x=6 (even) reads upper nibble, pixel_x=7 (odd) reads lower nibble.
@@ -75,11 +75,11 @@ fn test_render_frame_two_pixels_per_byte() {
     assert_eq!(buffer[1], 255);
     assert_eq!(buffer[2], 0);
 
-    // Pixel (1,0) = palette entry 9: R=145, G=145, B=170
+    // Pixel (1,0) = palette entry 9: R=137, G=137, B=160 (resistor-weighted)
     let px1 = 3; // offset for pixel x=1
-    assert_eq!(buffer[px1], (4 * 255 / 7) as u8); // R
-    assert_eq!(buffer[px1 + 1], (4 * 255 / 7) as u8); // G
-    assert_eq!(buffer[px1 + 2], (2 * 255 / 3) as u8); // B
+    assert_eq!(buffer[px1], 137); // R (RG_LUT[4])
+    assert_eq!(buffer[px1 + 1], 137); // G (RG_LUT[4])
+    assert_eq!(buffer[px1 + 2], 160); // B (B_LUT[2])
 }
 
 #[test]

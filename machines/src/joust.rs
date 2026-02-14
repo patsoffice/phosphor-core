@@ -545,19 +545,18 @@ impl Machine for JoustSystem {
         let w = width as usize;
         let h = height as usize;
 
-        // Williams palette: each of the 16 entries is an 8-bit byte encoding RGB
-        // in a 3-3-2 format:
-        //   Bits 7-5: Red   (3 bits, 0-7) -> scaled to 0-255 via r * 255 / 7
-        //   Bits 4-2: Green (3 bits, 0-7) -> scaled to 0-255 via g * 255 / 7
-        //   Bits 1-0: Blue  (2 bits, 0-3) -> scaled to 0-255 via b * 255 / 3
+        // Williams palette: 16 entries of BBGGGRRR (from MAME williams_v.cpp).
+        // Resistor-weighted DAC: R/G use 1200/560/330 ohm, B uses 560/330 ohm.
+        const RG_LUT: [u8; 8] = [0, 38, 81, 118, 137, 174, 217, 255];
+        const B_LUT: [u8; 4] = [0, 95, 160, 255];
+
         let mut palette_rgb = [(0u8, 0u8, 0u8); 16];
         for (i, rgb) in palette_rgb.iter_mut().enumerate() {
-            let entry = self.palette_ram[i] as u16;
-            // Widen to u16 before multiply to avoid overflow (e.g. 7 * 255 = 1785)
+            let entry = self.palette_ram[i];
             *rgb = (
-                (((entry >> 5) & 0x07) * 255 / 7) as u8,
-                (((entry >> 2) & 0x07) * 255 / 7) as u8,
-                ((entry & 0x03) * 255 / 3) as u8,
+                RG_LUT[(entry & 0x07) as usize],         // Red   = bits 0-2
+                RG_LUT[((entry >> 3) & 0x07) as usize],  // Green = bits 3-5
+                B_LUT[((entry >> 6) & 0x03) as usize],   // Blue  = bits 6-7
             );
         }
 
