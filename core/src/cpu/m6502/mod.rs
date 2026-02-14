@@ -124,6 +124,39 @@ impl M6502 {
             0xA1 => self.op_lda_ind_x(cycle, bus, master),
             0xB1 => self.op_lda_ind_y(cycle, bus, master),
 
+            // --- LDX ---
+            0xA2 => self.op_ldx_imm(cycle, bus, master),
+            0xA6 => self.op_ldx_zp(cycle, bus, master),
+            0xB6 => self.op_ldx_zp_y(cycle, bus, master),
+            0xAE => self.op_ldx_abs(cycle, bus, master),
+            0xBE => self.op_ldx_abs_y(cycle, bus, master),
+
+            // --- LDY ---
+            0xA0 => self.op_ldy_imm(cycle, bus, master),
+            0xA4 => self.op_ldy_zp(cycle, bus, master),
+            0xB4 => self.op_ldy_zp_x(cycle, bus, master),
+            0xAC => self.op_ldy_abs(cycle, bus, master),
+            0xBC => self.op_ldy_abs_x(cycle, bus, master),
+
+            // --- STA ---
+            0x85 => self.op_sta_zp(cycle, bus, master),
+            0x95 => self.op_sta_zp_x(cycle, bus, master),
+            0x8D => self.op_sta_abs(cycle, bus, master),
+            0x9D => self.op_sta_abs_x(cycle, bus, master),
+            0x99 => self.op_sta_abs_y(cycle, bus, master),
+            0x81 => self.op_sta_ind_x(cycle, bus, master),
+            0x91 => self.op_sta_ind_y(cycle, bus, master),
+
+            // --- STX ---
+            0x86 => self.op_stx_zp(cycle, bus, master),
+            0x96 => self.op_stx_zp_y(cycle, bus, master),
+            0x8E => self.op_stx_abs(cycle, bus, master),
+
+            // --- STY ---
+            0x84 => self.op_sty_zp(cycle, bus, master),
+            0x94 => self.op_sty_zp_x(cycle, bus, master),
+            0x8C => self.op_sty_abs(cycle, bus, master),
+
             // Unknown opcode - just fetch next
             _ => {
                 self.state = ExecState::Fetch;
