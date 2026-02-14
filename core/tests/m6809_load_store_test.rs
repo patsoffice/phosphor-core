@@ -36,8 +36,8 @@ fn test_reset() {
 
     // Run cycles to execute both instructions
     // LDA #$FF: 2 cycles (fetch opcode, execute and load)
-    // STA $00: 3 cycles (fetch opcode, fetch address, store)
-    tick(&mut cpu, &mut bus, 5);
+    // STA $00: 4 cycles (fetch opcode, fetch address, internal, store)
+    tick(&mut cpu, &mut bus, 6);
 
     // Verify the CPU state after execution
     // After LDA #$FF, the A register should contain 0xFF
@@ -67,8 +67,8 @@ fn test_store_accumulator_direct() {
     // Load: LDA #$55, STA $10
     bus.load(0, &[0x86, 0x55, 0x97, 0x10]);
 
-    // LDA #$55: 2 cycles + STA $10: 3 cycles = 5 cycles
-    tick(&mut cpu, &mut bus, 5);
+    // LDA #$55: 2 cycles + STA $10: 4 cycles = 6 cycles
+    tick(&mut cpu, &mut bus, 6);
 
     // Verify the value was stored
     assert_eq!(cpu.a, 0x55, "A register should be 0x55");
@@ -97,8 +97,8 @@ fn test_multiple_loads_and_stores() {
         ],
     );
 
-    // Run enough cycles to execute all 4 instructions (2+3+2+3 = 10 cycles)
-    tick(&mut cpu, &mut bus, 10);
+    // Run enough cycles to execute all 4 instructions (2+4+2+4 = 12 cycles)
+    tick(&mut cpu, &mut bus, 12);
 
     // Verify all values were loaded and stored
     assert_eq!(cpu.a, 0x22, "A register should be 0x22 (last loaded value)");
@@ -152,8 +152,8 @@ fn test_ldy_direct() {
     bus.memory[0x0020] = 0xAB;
     bus.memory[0x0021] = 0xCD;
 
-    // LDY direct: 5 cycles (2 prefix + 3 execute)
-    tick(&mut cpu, &mut bus, 5);
+    // LDY direct: 6 cycles (2 prefix + 4 execute)
+    tick(&mut cpu, &mut bus, 6);
 
     assert_eq!(cpu.y, 0xABCD, "Y should be 0xABCD");
     assert_eq!(
@@ -173,8 +173,8 @@ fn test_ldy_extended() {
     bus.memory[0x2000] = 0x56;
     bus.memory[0x2001] = 0x78;
 
-    // LDY extended: 6 cycles (2 prefix + 4 execute)
-    tick(&mut cpu, &mut bus, 6);
+    // LDY extended: 7 cycles (2 prefix + 5 execute)
+    tick(&mut cpu, &mut bus, 7);
 
     assert_eq!(cpu.y, 0x5678);
     assert_eq!(cpu.cc & (CcFlag::N as u8), 0, "N should be clear");
@@ -188,8 +188,8 @@ fn test_sty_direct() {
     // LDY #$ABCD, STY $30 (0x10 0x9F 0x30)
     bus.load(0, &[0x10, 0x8E, 0xAB, 0xCD, 0x10, 0x9F, 0x30]);
 
-    // LDY (4 cycles) + STY direct (5 cycles) = 9 cycles
-    tick(&mut cpu, &mut bus, 9);
+    // LDY (4 cycles) + STY direct (6 cycles) = 10 cycles
+    tick(&mut cpu, &mut bus, 10);
 
     assert_eq!(bus.memory[0x0030], 0xAB, "High byte stored");
     assert_eq!(bus.memory[0x0031], 0xCD, "Low byte stored");
@@ -208,8 +208,8 @@ fn test_sty_extended() {
     // LDY #$1234, STY $2000 (0x10 0xBF 0x20 0x00)
     bus.load(0, &[0x10, 0x8E, 0x12, 0x34, 0x10, 0xBF, 0x20, 0x00]);
 
-    // LDY (4 cycles) + STY extended (6 cycles) = 10 cycles
-    tick(&mut cpu, &mut bus, 10);
+    // LDY (4 cycles) + STY extended (7 cycles) = 11 cycles
+    tick(&mut cpu, &mut bus, 11);
 
     assert_eq!(bus.memory[0x2000], 0x12, "High byte stored");
     assert_eq!(bus.memory[0x2001], 0x34, "Low byte stored");
@@ -237,8 +237,8 @@ fn test_sts_direct() {
     // LDS #$BEEF, STS $40 (0x10 0xDF 0x40)
     bus.load(0, &[0x10, 0xCE, 0xBE, 0xEF, 0x10, 0xDF, 0x40]);
 
-    // LDS (4 cycles) + STS direct (5 cycles) = 9 cycles
-    tick(&mut cpu, &mut bus, 9);
+    // LDS (4 cycles) + STS direct (6 cycles) = 10 cycles
+    tick(&mut cpu, &mut bus, 10);
 
     assert_eq!(bus.memory[0x0040], 0xBE, "High byte stored");
     assert_eq!(bus.memory[0x0041], 0xEF, "Low byte stored");

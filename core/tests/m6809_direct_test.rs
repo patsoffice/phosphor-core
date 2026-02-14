@@ -13,7 +13,8 @@ fn test_lda_direct_dp_zero() {
     bus.memory[0x20] = 0x42;
     bus.load(0, &[0x96, 0x20]); // LDA $20
 
-    // 3 cycles: fetch opcode, fetch addr + form DP:addr, read operand
+    // 4 cycles: fetch opcode, fetch addr, form DP:addr, read operand
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
@@ -37,6 +38,7 @@ fn test_lda_direct_dp_nonzero() {
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
 
     assert_eq!(cpu.a, 0x7F);
     assert_eq!(cpu.dp, 0x10);
@@ -49,6 +51,8 @@ fn test_lda_direct_negative() {
     bus.memory[0x10] = 0x80;
     bus.load(0, &[0x96, 0x10]); // LDA $10
 
+    // 4 cycles: fetch opcode, fetch addr, form DP:addr, read operand
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
@@ -65,6 +69,8 @@ fn test_lda_direct_zero() {
     // RAM defaults to 0
     bus.load(0, &[0x96, 0x10]); // LDA $10
 
+    // 4 cycles: fetch opcode, fetch addr, form DP:addr, read operand
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
@@ -81,6 +87,8 @@ fn test_ldb_direct() {
     bus.memory[0x30] = 0xAB;
     bus.load(0, &[0xD6, 0x30]); // LDB $30
 
+    // 4 cycles: fetch opcode, fetch addr, form DP:addr, read operand
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
@@ -101,7 +109,8 @@ fn test_sta_direct_dp_combining() {
     // LDA #$55: 2 cycles
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
-    // STA $20: 3 cycles (fetch opcode, fetch addr, write)
+    // STA $20: 4 cycles (fetch opcode, fetch addr, form DP:addr, write)
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
@@ -122,7 +131,8 @@ fn test_stb_direct() {
     // LDB #$77: 2 cycles
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
-    // STB $40: 3 cycles
+    // STB $40: 4 cycles (fetch opcode, fetch addr, form DP:addr, write)
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
@@ -146,7 +156,8 @@ fn test_adda_direct() {
     // LDA: 2 cycles
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
-    // ADDA direct: 3 cycles
+    // ADDA direct: 4 cycles
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
@@ -165,7 +176,10 @@ fn test_suba_direct() {
     // LDA #$10, SUBA $10
     bus.load(0, &[0x86, 0x10, 0x90, 0x10]);
 
+    // LDA: 2 cycles
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    // SUBA direct: 4 cycles
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
@@ -185,7 +199,10 @@ fn test_cmpa_direct() {
     // LDA #$10, CMPA $10 -> equal
     bus.load(0, &[0x86, 0x10, 0x91, 0x10]);
 
+    // LDA: 2 cycles
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    // CMPA direct: 4 cycles
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
@@ -205,7 +222,10 @@ fn test_anda_direct() {
     // LDA #$CC, ANDA $10 -> CC & F0 = C0
     bus.load(0, &[0x86, 0xCC, 0x94, 0x10]);
 
+    // LDA: 2 cycles
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    // ANDA direct: 4 cycles
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
@@ -224,7 +244,10 @@ fn test_ora_direct() {
     // LDA #$C0, ORA $10 -> C0 | 03 = C3
     bus.load(0, &[0x86, 0xC0, 0x9A, 0x10]);
 
+    // LDA: 2 cycles
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    // ORA direct: 4 cycles
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
@@ -241,7 +264,10 @@ fn test_eora_direct() {
     // LDA #$CC, EORA $10 -> CC ^ FF = 33
     bus.load(0, &[0x86, 0xCC, 0x98, 0x10]);
 
+    // LDA: 2 cycles
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    // EORA direct: 4 cycles
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
@@ -259,7 +285,10 @@ fn test_bita_direct() {
     // LDA #$FF, BITA $10 -> FF & 00 = 00, Z=1
     bus.load(0, &[0x86, 0xFF, 0x95, 0x10]);
 
+    // LDA: 2 cycles
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    // BITA direct: 4 cycles
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
@@ -281,9 +310,11 @@ fn test_adca_direct() {
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0)); // LDA
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0)); // ADDA -> A=00, C=1
+    // ADCA direct: 4 cycles
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
-    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0)); // ADCA direct
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
 
     assert_eq!(cpu.a, 0x01);
 }
@@ -300,9 +331,11 @@ fn test_sbca_direct() {
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0)); // LDA
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0)); // SUBA -> A=FF, C=1
+    // SBCA direct: 4 cycles
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
-    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0)); // SBCA direct
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
 
     assert_eq!(cpu.a, 0xFD);
 }
@@ -317,7 +350,10 @@ fn test_addb_direct() {
     // LDB #$10, ADDB $10
     bus.load(0, &[0xC6, 0x10, 0xDB, 0x10]);
 
+    // LDB: 2 cycles
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    // ADDB direct: 4 cycles
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
@@ -334,7 +370,10 @@ fn test_subb_direct() {
     // LDB #$10, SUBB $10
     bus.load(0, &[0xC6, 0x10, 0xD0, 0x10]);
 
+    // LDB: 2 cycles
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    // SUBB direct: 4 cycles
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
@@ -351,7 +390,10 @@ fn test_cmpb_direct() {
     // LDB #$10, CMPB $10 -> 10 - 20 = F0, N=1, C=1
     bus.load(0, &[0xC6, 0x10, 0xD1, 0x10]);
 
+    // LDB: 2 cycles
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    // CMPB direct: 4 cycles
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
@@ -370,7 +412,10 @@ fn test_andb_direct() {
     // LDB #$FF, ANDB $10 -> FF & 0F = 0F
     bus.load(0, &[0xC6, 0xFF, 0xD4, 0x10]);
 
+    // LDB: 2 cycles
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    // ANDB direct: 4 cycles
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
@@ -389,7 +434,8 @@ fn test_ldd_direct() {
     bus.memory[0x21] = 0x34;
     bus.load(0, &[0xDC, 0x20]); // LDD $20
 
-    // 4 cycles: fetch opcode, fetch addr, read high byte, read low byte
+    // 5 cycles: fetch opcode, fetch addr, form DP:addr, read high byte, read low byte
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
@@ -411,6 +457,8 @@ fn test_ldd_direct_dp_nonzero() {
     bus.memory[0x0511] = 0xCD;
     bus.load(0, &[0xDC, 0x10]); // LDD $10 (effective: $0510)
 
+    // 5 cycles: fetch opcode, fetch addr, form DP:addr, read high byte, read low byte
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
@@ -431,7 +479,8 @@ fn test_std_direct() {
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
-    // STD: 4 cycles (fetch opcode, fetch addr, write high, write low)
+    // STD: 5 cycles (fetch opcode, fetch addr, form DP:addr, write high, write low)
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
@@ -449,6 +498,8 @@ fn test_ldx_direct() {
     bus.memory[0x21] = 0x78;
     bus.load(0, &[0x9E, 0x20]); // LDX $20
 
+    // 5 cycles: fetch opcode, fetch addr, form DP:addr, read high byte, read low byte
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
@@ -468,7 +519,8 @@ fn test_stx_direct() {
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
-    // STX: 4 cycles
+    // STX: 5 cycles (fetch opcode, fetch addr, form DP:addr, write high, write low)
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
@@ -486,6 +538,8 @@ fn test_ldu_direct() {
     bus.memory[0x21] = 0xBC;
     bus.load(0, &[0xDE, 0x20]); // LDU $20
 
+    // 5 cycles: fetch opcode, fetch addr, form DP:addr, read high byte, read low byte
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
@@ -506,7 +560,8 @@ fn test_stu_direct() {
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
-    // STU: 4 cycles
+    // STU: 5 cycles (fetch opcode, fetch addr, form DP:addr, write high, write low)
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
@@ -531,7 +586,9 @@ fn test_subd_direct() {
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
-    // SUBD direct: 4 cycles (fetch opcode, fetch addr, read high, read low + execute)
+    // SUBD direct: 6 cycles (fetch opcode, fetch addr, form DP:addr, read high, read low, execute)
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
@@ -557,7 +614,9 @@ fn test_addd_direct() {
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
-    // ADDD direct: 4 cycles
+    // ADDD direct: 6 cycles (fetch opcode, fetch addr, form DP:addr, read high, read low, execute)
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
@@ -583,7 +642,9 @@ fn test_cmpx_direct() {
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
-    // CMPX direct: 4 cycles
+    // CMPX direct: 6 cycles (fetch opcode, fetch addr, form DP:addr, read high, read low, execute)
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
@@ -604,7 +665,11 @@ fn test_cmpx_direct_less() {
     // LDX #$0001, CMPX $20 -> 0001 - FFFF, C=1
     bus.load(0, &[0x8E, 0x00, 0x01, 0x9C, 0x20]);
 
+    // LDX: 3 cycles
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    // CMPX direct: 6 cycles
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
@@ -626,7 +691,10 @@ fn test_adda_direct_overflow() {
     // LDA #$7F, ADDA $10 -> 7F + 01 = 80, V=1 (signed overflow)
     bus.load(0, &[0x86, 0x7F, 0x9B, 0x10]);
 
+    // LDA: 2 cycles
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    // ADDA direct: 4 cycles
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
@@ -647,7 +715,10 @@ fn test_adda_direct_carry() {
     // LDA #$FF, ADDA $10 -> FF + 01 = 00, C=1, Z=1
     bus.load(0, &[0x86, 0xFF, 0x9B, 0x10]);
 
+    // LDA: 2 cycles
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+    // ADDA direct: 4 cycles
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
@@ -676,14 +747,16 @@ fn test_load_store_roundtrip_direct() {
     // LDA #$42: 2 cycles
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
-    // STA $30: 3 cycles
+    // STA $30: 4 cycles
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     // LDA #$00: 2 cycles
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
-    // LDA $30: 3 cycles
+    // LDA $30: 4 cycles
+    cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));

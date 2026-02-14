@@ -16,7 +16,7 @@ impl M6809 {
     fn perform_asr(&mut self, val: u8) -> u8 {
         let carry = val & 0x01 != 0;
         let result = ((val as i8) >> 1) as u8;
-        self.set_flags_shift(result, carry);
+        self.set_flags_shift_right(result, carry);
         result
     }
 
@@ -24,7 +24,7 @@ impl M6809 {
     fn perform_lsr(&mut self, val: u8) -> u8 {
         let carry = val & 0x01 != 0;
         let result = val >> 1;
-        self.set_flags_shift(result, carry);
+        self.set_flags_shift_right(result, carry);
         result
     }
 
@@ -42,7 +42,7 @@ impl M6809 {
         let old_carry = self.cc & (CcFlag::C as u8) != 0;
         let new_carry = val & 0x01 != 0;
         let result = (val >> 1) | ((old_carry as u8) << 7);
-        self.set_flags_shift(result, new_carry);
+        self.set_flags_shift_right(result, new_carry);
         result
     }
 

@@ -852,8 +852,8 @@ fn test_tst_indexed() {
     bus.memory[0x2000] = 0x00;
 
     bus.load(0x0000, &[0x6D, 0x84]);
-    // TST uses alu_indexed (read-only): 1 fetch + 1 postbyte + 1 read operand = 3
-    run_cycles(&mut cpu, &mut bus, 3);
+    // TST uses rmw_indexed: 1 fetch + 1 postbyte + 1 read + 1 write-back = 4
+    run_cycles(&mut cpu, &mut bus, 4);
 
     assert_ne!(cpu.cc & (CcFlag::Z as u8), 0); // zero
     assert_eq!(bus.memory[0x2000], 0x00); // unchanged

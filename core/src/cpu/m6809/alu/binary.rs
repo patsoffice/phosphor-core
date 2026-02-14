@@ -190,14 +190,22 @@ impl M6809 {
 
     /// MUL inherent (0x3D): Multiplies A and B (unsigned), result in D (A=high, B=low).
     /// Z set if 16-bit result is zero. C set if bit 7 of B (low byte) is set.
+    /// 11 total cycles: 1 fetch + 10 exec (9 internal + compute).
     pub(crate) fn op_mul(&mut self, cycle: u8) {
-        if cycle == 0 {
-            let result = (self.a as u16) * (self.b as u16);
-            self.a = (result >> 8) as u8;
-            self.b = (result & 0xFF) as u8;
-            self.set_flag(CcFlag::Z, result == 0);
-            self.set_flag(CcFlag::C, self.b & 0x80 != 0);
-            self.state = ExecState::Fetch;
+        match cycle {
+            0..=8 => {
+                // Internal cycles (multiply computation)
+                self.state = ExecState::Execute(0x3D, cycle + 1);
+            }
+            9 => {
+                let result = (self.a as u16) * (self.b as u16);
+                self.a = (result >> 8) as u8;
+                self.b = (result & 0xFF) as u8;
+                self.set_flag(CcFlag::Z, result == 0);
+                self.set_flag(CcFlag::C, self.b & 0x80 != 0);
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
         }
     }
 

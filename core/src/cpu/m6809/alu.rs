@@ -68,33 +68,55 @@ impl M6809 {
 
     /// ORCC immediate (0x1A): OR immediate value into CC register.
     /// All CC bits may be set by the OR operand.
+    /// 3 total cycles: 1 fetch + 2 exec (read operand + internal apply).
     pub(crate) fn op_orcc<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
         bus: &mut B,
         master: BusMaster,
     ) {
-        self.alu_imm(cycle, bus, master, |cpu, operand| {
-            cpu.cc |= operand;
-        });
+        match cycle {
+            0 => {
+                self.opcode = bus.read(master, self.pc);
+                self.pc = self.pc.wrapping_add(1);
+                self.state = ExecState::Execute(0x1A, 1);
+            }
+            1 => {
+                // Internal cycle — apply
+                self.cc |= self.opcode;
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
     }
 
     /// ANDCC immediate (0x1C): AND immediate value into CC register.
     /// Used to clear specific CC bits (e.g., ANDCC #$FE clears C flag).
+    /// 3 total cycles: 1 fetch + 2 exec (read operand + internal apply).
     pub(crate) fn op_andcc<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
         bus: &mut B,
         master: BusMaster,
     ) {
-        self.alu_imm(cycle, bus, master, |cpu, operand| {
-            cpu.cc &= operand;
-        });
+        match cycle {
+            0 => {
+                self.opcode = bus.read(master, self.pc);
+                self.pc = self.pc.wrapping_add(1);
+                self.state = ExecState::Execute(0x1C, 1);
+            }
+            1 => {
+                // Internal cycle — apply
+                self.cc &= self.opcode;
+                self.state = ExecState::Fetch;
+            }
+            _ => {}
+        }
     }
 
     /// Generic helper for Direct Addressing Mode ALU instructions.
-    /// Two execute cycles: cycle 0 fetches the address byte and forms DP:addr,
-    /// cycle 1 reads the operand from the effective address and runs the operation.
+    /// Three execute cycles: cycle 0 fetches the address byte and forms DP:addr,
+    /// cycle 1 is an internal cycle, cycle 2 reads the operand and runs the operation.
     #[inline]
     pub(crate) fn alu_direct<B: Bus<Address = u16, Data = u8> + ?Sized, F>(
         &mut self,
@@ -114,6 +136,10 @@ impl M6809 {
                 self.state = ExecState::Execute(opcode, 1);
             }
             1 => {
+                // Internal cycle (address computation)
+                self.state = ExecState::Execute(opcode, 2);
+            }
+            2 => {
                 let operand = bus.read(master, self.temp_addr);
                 operation(self, operand);
                 self.state = ExecState::Fetch;
@@ -123,10 +149,11 @@ impl M6809 {
     }
 
     /// Generic helper for Extended Addressing Mode ALU instructions.
-    /// Three execute cycles:
+    /// Four execute cycles:
     /// Cycle 0: Fetch high byte of address.
     /// Cycle 1: Fetch low byte of address, form effective address.
-    /// Cycle 2: Read operand from the effective address and run the operation.
+    /// Cycle 2: Internal cycle.
+    /// Cycle 3: Read operand from the effective address and run the operation.
     #[inline]
     pub(crate) fn alu_extended<B: Bus<Address = u16, Data = u8> + ?Sized, F>(
         &mut self,
@@ -152,6 +179,10 @@ impl M6809 {
                 self.state = ExecState::Execute(opcode, 2);
             }
             2 => {
+                // Internal cycle
+                self.state = ExecState::Execute(opcode, 3);
+            }
+            3 => {
                 let operand = bus.read(master, self.temp_addr);
                 operation(self, operand);
                 self.state = ExecState::Fetch;
@@ -162,14 +193,23 @@ impl M6809 {
 
     // --- Shift and Rotate instructions ---
 
-    /// Helper to set N, Z, V, C flags for shift/rotate operations.
-    /// V is always set to N XOR C (post-operation) per 6809 datasheet.
+    /// Helper to set N, Z, V, C flags for left-shift/rotate operations (ASL, ROL).
+    /// V = N XOR C (post-operation) per 6809 datasheet.
     #[inline]
     pub(crate) fn set_flags_shift(&mut self, result: u8, carry: bool) {
         let n = result & 0x80 != 0;
         self.set_flag(CcFlag::N, n);
         self.set_flag(CcFlag::Z, result == 0);
         self.set_flag(CcFlag::V, n ^ carry);
+        self.set_flag(CcFlag::C, carry);
+    }
+
+    /// Helper to set N, Z, C flags for right-shift/rotate operations (LSR, ASR, ROR).
+    /// V is not affected by right-shift operations.
+    #[inline]
+    pub(crate) fn set_flags_shift_right(&mut self, result: u8, carry: bool) {
+        self.set_flag(CcFlag::N, result & 0x80 != 0);
+        self.set_flag(CcFlag::Z, result == 0);
         self.set_flag(CcFlag::C, carry);
     }
 
@@ -922,8 +962,10 @@ impl M6809 {
     /// Generic helper for Direct Addressing Mode read-modify-write instructions.
     /// Used by memory-modify ops in the 0x00-0x0F range (NEG, COM, LSR, etc.).
     /// Cycle 0: fetch address byte, form DP:addr.
-    /// Cycle 1: read value from EA.
-    /// Cycle 2: modify and write back.
+    /// Cycle 1: internal cycle.
+    /// Cycle 2: read value from EA.
+    /// Cycle 3: internal cycle (modify).
+    /// Cycle 4: write result back.
     pub(crate) fn rmw_direct<B: Bus<Address = u16, Data = u8> + ?Sized, F>(
         &mut self,
         opcode: u8,
@@ -942,10 +984,18 @@ impl M6809 {
                 self.state = ExecState::Execute(opcode, 1);
             }
             1 => {
-                self.opcode = bus.read(master, self.temp_addr);
+                // Internal cycle
                 self.state = ExecState::Execute(opcode, 2);
             }
             2 => {
+                self.opcode = bus.read(master, self.temp_addr);
+                self.state = ExecState::Execute(opcode, 3);
+            }
+            3 => {
+                // Internal cycle (modify)
+                self.state = ExecState::Execute(opcode, 4);
+            }
+            4 => {
                 let result = operation(self, self.opcode);
                 bus.write(master, self.temp_addr, result);
                 self.state = ExecState::Fetch;
@@ -958,8 +1008,10 @@ impl M6809 {
     /// Used by memory-modify ops in the 0x70-0x7F range (NEG, COM, LSR, etc.).
     /// Cycle 0: fetch address high byte.
     /// Cycle 1: fetch address low byte.
-    /// Cycle 2: read value from EA.
-    /// Cycle 3: modify and write back.
+    /// Cycle 2: internal cycle.
+    /// Cycle 3: read value from EA.
+    /// Cycle 4: internal cycle (modify).
+    /// Cycle 5: write result back.
     pub(crate) fn rmw_extended<B: Bus<Address = u16, Data = u8> + ?Sized, F>(
         &mut self,
         opcode: u8,
@@ -984,10 +1036,18 @@ impl M6809 {
                 self.state = ExecState::Execute(opcode, 2);
             }
             2 => {
-                self.opcode = bus.read(master, self.temp_addr);
+                // Internal cycle
                 self.state = ExecState::Execute(opcode, 3);
             }
             3 => {
+                self.opcode = bus.read(master, self.temp_addr);
+                self.state = ExecState::Execute(opcode, 4);
+            }
+            4 => {
+                // Internal cycle (modify)
+                self.state = ExecState::Execute(opcode, 5);
+            }
+            5 => {
                 let result = operation(self, self.opcode);
                 bus.write(master, self.temp_addr, result);
                 self.state = ExecState::Fetch;

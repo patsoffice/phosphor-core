@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 pub enum BusOp {
     Read,
     Write,
+    Internal,
 }
 
 #[derive(Clone, Debug)]

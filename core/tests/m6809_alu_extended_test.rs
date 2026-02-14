@@ -18,8 +18,8 @@ fn test_adda_extended() {
     );
     bus.memory[0x1000] = 0x30;
 
-    // Run 6 cycles (2 for LDA, 4 for ADDA)
-    for _ in 0..6 {
+    // Run 7 cycles (2 for LDA, 5 for ADDA)
+    for _ in 0..7 {
         cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     }
 
@@ -43,7 +43,7 @@ fn test_subb_extended() {
     );
     bus.memory[0x0500] = 0x10;
 
-    for _ in 0..6 {
+    for _ in 0..7 {
         cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     }
 
@@ -65,7 +65,7 @@ fn test_cmpa_extended() {
     );
     bus.memory[0x2000] = 0x40;
 
-    for _ in 0..6 {
+    for _ in 0..7 {
         cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     }
 
@@ -88,7 +88,7 @@ fn test_anda_extended() {
     );
     bus.memory[0x3000] = 0x0F;
 
-    for _ in 0..6 {
+    for _ in 0..7 {
         cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     }
 
@@ -108,13 +108,13 @@ fn test_adcb_extended_with_carry() {
         &[
             0xC6, 0x00, // LDB #$00 (2 cycles)
             0x43, // COMA (2 cycles) - Sets C=1
-            0xF9, 0x40, 0x00, // ADCB $4000 (4 cycles)
+            0xF9, 0x40, 0x00, // ADCB $4000 (5 cycles)
         ],
     );
     bus.memory[0x4000] = 0x10;
 
-    // Total 8 cycles
-    for _ in 0..8 {
+    // Total 9 cycles
+    for _ in 0..9 {
         cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     }
 
@@ -136,7 +136,7 @@ fn test_orb_extended() {
     );
     bus.memory[0x5000] = 0x0F;
 
-    for _ in 0..6 {
+    for _ in 0..7 {
         cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     }
 

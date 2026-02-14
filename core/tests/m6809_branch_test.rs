@@ -498,7 +498,7 @@ fn test_neg_direct_alias_0x01() {
     bus.load(0, &[0x01, 0x10]); // NEG $10
     bus.memory[0x10] = 0x05;
 
-    tick(&mut cpu, &mut bus, 4); // RMW direct: 4 cycles
+    tick(&mut cpu, &mut bus, 6); // RMW direct: 6 cycles
     assert_eq!(bus.memory[0x10], 0xFB, "NEG $05 = $FB (-5)");
     assert_ne!(cpu.cc & (CcFlag::N as u8), 0, "N should be set");
     assert_ne!(
@@ -516,7 +516,7 @@ fn test_lsr_direct_alias_0x05() {
     bus.load(0, &[0x05, 0x10]); // LSR $10
     bus.memory[0x10] = 0x04;
 
-    tick(&mut cpu, &mut bus, 4);
+    tick(&mut cpu, &mut bus, 6); // RMW direct: 6 cycles
     assert_eq!(bus.memory[0x10], 0x02, "LSR $04 = $02");
     assert_eq!(cpu.cc & (CcFlag::C as u8), 0, "C should be clear");
 }
@@ -529,7 +529,7 @@ fn test_dec_direct_alias_0x0b() {
     bus.load(0, &[0x0B, 0x10]); // DEC $10
     bus.memory[0x10] = 0x01;
 
-    tick(&mut cpu, &mut bus, 4);
+    tick(&mut cpu, &mut bus, 6); // RMW direct: 6 cycles
     assert_eq!(bus.memory[0x10], 0x00, "DEC $01 = $00");
     assert_ne!(cpu.cc & (CcFlag::Z as u8), 0, "Z should be set");
 }

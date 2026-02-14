@@ -32,6 +32,7 @@ impl M6809 {
     /// ADDD immediate (0xC3): Adds a 16-bit immediate value to the D register.
     /// N set if result bit 15 is set. Z set if result is zero.
     /// V set if signed overflow occurred. C set if unsigned carry out of bit 15.
+    /// 4 total cycles: 1 fetch + 3 exec.
     pub(crate) fn op_addd_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -41,17 +42,20 @@ impl M6809 {
     ) {
         match cycle {
             0 => {
-                // Fetch high byte of operand
                 let high = bus.read(master, self.pc) as u16;
                 self.pc = self.pc.wrapping_add(1);
                 self.temp_addr = high << 8;
                 self.state = ExecState::Execute(opcode, 1);
             }
             1 => {
-                // Fetch low byte, execute
                 let low = bus.read(master, self.pc) as u16;
                 self.pc = self.pc.wrapping_add(1);
-                let operand = self.temp_addr | low;
+                self.temp_addr |= low;
+                self.state = ExecState::Execute(opcode, 2);
+            }
+            2 => {
+                // Internal cycle — compute
+                let operand = self.temp_addr;
                 self.perform_addd(operand);
                 self.state = ExecState::Fetch;
             }
@@ -62,6 +66,7 @@ impl M6809 {
     /// SUBD immediate (0x83): Subtracts a 16-bit immediate value from the D register.
     /// N set if result bit 15 is set. Z set if result is zero.
     /// V set if signed overflow occurred. C set if unsigned borrow occurred.
+    /// 4 total cycles: 1 fetch + 3 exec.
     pub(crate) fn op_subd_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -71,17 +76,20 @@ impl M6809 {
     ) {
         match cycle {
             0 => {
-                // Fetch high byte of operand
                 let high = bus.read(master, self.pc) as u16;
                 self.pc = self.pc.wrapping_add(1);
                 self.temp_addr = high << 8;
                 self.state = ExecState::Execute(opcode, 1);
             }
             1 => {
-                // Fetch low byte, execute
                 let low = bus.read(master, self.pc) as u16;
                 self.pc = self.pc.wrapping_add(1);
-                let operand = self.temp_addr | low;
+                self.temp_addr |= low;
+                self.state = ExecState::Execute(opcode, 2);
+            }
+            2 => {
+                // Internal cycle — compute
+                let operand = self.temp_addr;
                 self.perform_subd(operand);
                 self.state = ExecState::Fetch;
             }
@@ -330,6 +338,7 @@ impl M6809 {
     /// SUBD direct (0x93): Subtracts the 16-bit value at DP:addr from the D register.
     /// N set if result bit 15 is set. Z set if result is zero.
     /// V set if signed overflow occurred. C set if unsigned borrow occurred.
+    /// 6 total cycles: 1 fetch + 5 exec.
     pub(crate) fn op_subd_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -345,14 +354,25 @@ impl M6809 {
                 self.state = ExecState::Execute(opcode, 1);
             }
             1 => {
-                let high = bus.read(master, self.temp_addr) as u16;
-                self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high as u8; // reuse opcode field to store high byte temporarily
+                // Internal cycle
                 self.state = ExecState::Execute(opcode, 2);
             }
             2 => {
+                let high = bus.read(master, self.temp_addr) as u16;
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.opcode = high as u8;
+                self.state = ExecState::Execute(opcode, 3);
+            }
+            3 => {
                 let low = bus.read(master, self.temp_addr) as u16;
                 let operand = ((self.opcode as u16) << 8) | low;
+                self.state = ExecState::Execute(opcode, 4);
+                // Store operand for next cycle
+                self.temp_addr = operand;
+            }
+            4 => {
+                // Internal cycle — compute
+                let operand = self.temp_addr;
                 self.perform_subd(operand);
                 self.state = ExecState::Fetch;
             }
@@ -363,6 +383,7 @@ impl M6809 {
     /// ADDD direct (0xD3): Adds the 16-bit value at DP:addr to the D register.
     /// N set if result bit 15 is set. Z set if result is zero.
     /// V set if signed overflow occurred. C set if unsigned carry out of bit 15.
+    /// 6 total cycles: 1 fetch + 5 exec.
     pub(crate) fn op_addd_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -378,14 +399,24 @@ impl M6809 {
                 self.state = ExecState::Execute(opcode, 1);
             }
             1 => {
-                let high = bus.read(master, self.temp_addr) as u16;
-                self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high as u8;
+                // Internal cycle
                 self.state = ExecState::Execute(opcode, 2);
             }
             2 => {
+                let high = bus.read(master, self.temp_addr) as u16;
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.opcode = high as u8;
+                self.state = ExecState::Execute(opcode, 3);
+            }
+            3 => {
                 let low = bus.read(master, self.temp_addr) as u16;
                 let operand = ((self.opcode as u16) << 8) | low;
+                self.temp_addr = operand;
+                self.state = ExecState::Execute(opcode, 4);
+            }
+            4 => {
+                // Internal cycle — compute
+                let operand = self.temp_addr;
                 self.perform_addd(operand);
                 self.state = ExecState::Fetch;
             }
@@ -460,6 +491,7 @@ impl M6809 {
     /// CMPX direct (0x9C): Compare X with 16-bit value at DP:addr.
     /// N set if result bit 15 is set. Z set if result is zero.
     /// V set if signed overflow occurred. C set if unsigned borrow occurred.
+    /// 6 total cycles: 1 fetch + 5 exec.
     pub(crate) fn op_cmpx_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -475,14 +507,24 @@ impl M6809 {
                 self.state = ExecState::Execute(opcode, 1);
             }
             1 => {
-                let high = bus.read(master, self.temp_addr) as u16;
-                self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high as u8;
+                // Internal cycle
                 self.state = ExecState::Execute(opcode, 2);
             }
             2 => {
+                let high = bus.read(master, self.temp_addr) as u16;
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.opcode = high as u8;
+                self.state = ExecState::Execute(opcode, 3);
+            }
+            3 => {
                 let low = bus.read(master, self.temp_addr) as u16;
                 let operand = ((self.opcode as u16) << 8) | low;
+                self.temp_addr = operand;
+                self.state = ExecState::Execute(opcode, 4);
+            }
+            4 => {
+                // Internal cycle — compute
+                let operand = self.temp_addr;
                 self.perform_cmp16(self.x, operand);
                 self.state = ExecState::Fetch;
             }
@@ -495,6 +537,7 @@ impl M6809 {
     /// SUBD extended (0xB3): Subtracts the 16-bit value at the extended address from D.
     /// N set if result bit 15 is set. Z set if result is zero.
     /// V set if signed overflow occurred. C set if unsigned borrow occurred.
+    /// 7 total cycles: 1 fetch + 6 exec.
     pub(crate) fn op_subd_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -516,14 +559,24 @@ impl M6809 {
                 self.state = ExecState::Execute(opcode, 2);
             }
             2 => {
-                let high = bus.read(master, self.temp_addr) as u16;
-                self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high as u8; // reuse opcode field to store high byte
+                // Internal cycle
                 self.state = ExecState::Execute(opcode, 3);
             }
             3 => {
+                let high = bus.read(master, self.temp_addr) as u16;
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.opcode = high as u8;
+                self.state = ExecState::Execute(opcode, 4);
+            }
+            4 => {
                 let low = bus.read(master, self.temp_addr) as u16;
                 let operand = ((self.opcode as u16) << 8) | low;
+                self.temp_addr = operand;
+                self.state = ExecState::Execute(opcode, 5);
+            }
+            5 => {
+                // Internal cycle — compute
+                let operand = self.temp_addr;
                 self.perform_subd(operand);
                 self.state = ExecState::Fetch;
             }
@@ -758,6 +811,7 @@ impl M6809 {
     /// ADDD extended (0xF3): Adds the 16-bit value at the extended address to D.
     /// N set if result bit 15 is set. Z set if result is zero.
     /// V set if signed overflow occurred. C set if unsigned carry out of bit 15.
+    /// 7 total cycles: 1 fetch + 6 exec.
     pub(crate) fn op_addd_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -779,14 +833,24 @@ impl M6809 {
                 self.state = ExecState::Execute(opcode, 2);
             }
             2 => {
-                let high = bus.read(master, self.temp_addr) as u16;
-                self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high as u8;
+                // Internal cycle
                 self.state = ExecState::Execute(opcode, 3);
             }
             3 => {
+                let high = bus.read(master, self.temp_addr) as u16;
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.opcode = high as u8;
+                self.state = ExecState::Execute(opcode, 4);
+            }
+            4 => {
                 let low = bus.read(master, self.temp_addr) as u16;
                 let operand = ((self.opcode as u16) << 8) | low;
+                self.temp_addr = operand;
+                self.state = ExecState::Execute(opcode, 5);
+            }
+            5 => {
+                // Internal cycle — compute
+                let operand = self.temp_addr;
                 self.perform_addd(operand);
                 self.state = ExecState::Fetch;
             }
@@ -797,6 +861,7 @@ impl M6809 {
     /// CMPX extended (0xBC): Compare X with 16-bit value at extended address.
     /// N set if result bit 15 is set. Z set if result is zero.
     /// V set if signed overflow occurred. C set if unsigned borrow occurred.
+    /// 7 total cycles: 1 fetch + 6 exec.
     pub(crate) fn op_cmpx_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -818,14 +883,24 @@ impl M6809 {
                 self.state = ExecState::Execute(opcode, 2);
             }
             2 => {
-                let high = bus.read(master, self.temp_addr) as u16;
-                self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high as u8;
+                // Internal cycle
                 self.state = ExecState::Execute(opcode, 3);
             }
             3 => {
+                let high = bus.read(master, self.temp_addr) as u16;
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.opcode = high as u8;
+                self.state = ExecState::Execute(opcode, 4);
+            }
+            4 => {
                 let low = bus.read(master, self.temp_addr) as u16;
                 let operand = ((self.opcode as u16) << 8) | low;
+                self.temp_addr = operand;
+                self.state = ExecState::Execute(opcode, 5);
+            }
+            5 => {
+                // Internal cycle — compute
+                let operand = self.temp_addr;
                 self.perform_cmp16(self.x, operand);
                 self.state = ExecState::Fetch;
             }

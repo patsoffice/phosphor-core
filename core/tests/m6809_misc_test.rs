@@ -98,7 +98,7 @@ fn test_abx_basic() {
     cpu.b = 0x10;
     bus.load(0, &[0x3A]); // ABX
 
-    tick(&mut cpu, &mut bus, 2);
+    tick(&mut cpu, &mut bus, 3); // 1 fetch + 2 execute
 
     assert_eq!(cpu.x, 0x1010);
     assert_eq!(cpu.b, 0x10); // B unchanged
@@ -113,7 +113,7 @@ fn test_abx_unsigned() {
     cpu.b = 0xFF;
     bus.load(0, &[0x3A]); // ABX
 
-    tick(&mut cpu, &mut bus, 2);
+    tick(&mut cpu, &mut bus, 3); // 1 fetch + 2 execute
 
     assert_eq!(cpu.x, 0x10FF); // 0x1000 + 255 = 0x10FF
 }
@@ -126,7 +126,7 @@ fn test_abx_wrapping() {
     cpu.b = 0x20;
     bus.load(0, &[0x3A]); // ABX
 
-    tick(&mut cpu, &mut bus, 2);
+    tick(&mut cpu, &mut bus, 3); // 1 fetch + 2 execute
 
     assert_eq!(cpu.x, 0x0010); // wraps around
 }
@@ -141,7 +141,7 @@ fn test_abx_no_flags() {
     cpu.cc = CcFlag::Z as u8 | CcFlag::N as u8;
     bus.load(0, &[0x3A]); // ABX
 
-    tick(&mut cpu, &mut bus, 2);
+    tick(&mut cpu, &mut bus, 3); // 1 fetch + 2 execute
 
     assert_eq!(cpu.cc, CcFlag::Z as u8 | CcFlag::N as u8); // flags unchanged
 }
@@ -222,7 +222,7 @@ fn test_orcc_set_carry() {
     cpu.cc = 0x00;
     bus.load(0, &[0x1A, CcFlag::C as u8]); // ORCC #$01
 
-    tick(&mut cpu, &mut bus, 2); // 1 fetch + 1 execute
+    tick(&mut cpu, &mut bus, 3); // 1 fetch + 2 execute
 
     assert_eq!(cpu.cc & (CcFlag::C as u8), CcFlag::C as u8);
     assert_eq!(cpu.pc, 2);
@@ -236,7 +236,7 @@ fn test_orcc_set_multiple() {
     let mask = CcFlag::I as u8 | CcFlag::F as u8;
     bus.load(0, &[0x1A, mask]); // ORCC #$50
 
-    tick(&mut cpu, &mut bus, 2);
+    tick(&mut cpu, &mut bus, 3); // 1 fetch + 2 execute
 
     assert_eq!(cpu.cc & mask, mask);
     assert_eq!(cpu.cc & (CcFlag::Z as u8), CcFlag::Z as u8); // preserved
@@ -249,7 +249,7 @@ fn test_orcc_no_change() {
     cpu.cc = CcFlag::C as u8 | CcFlag::Z as u8;
     bus.load(0, &[0x1A, CcFlag::C as u8]); // ORCC #$01 (C already set)
 
-    tick(&mut cpu, &mut bus, 2);
+    tick(&mut cpu, &mut bus, 3); // 1 fetch + 2 execute
 
     assert_eq!(cpu.cc, CcFlag::C as u8 | CcFlag::Z as u8); // unchanged
 }
@@ -263,7 +263,7 @@ fn test_andcc_clear_carry() {
     cpu.cc = CcFlag::C as u8 | CcFlag::Z as u8 | CcFlag::N as u8;
     bus.load(0, &[0x1C, !(CcFlag::C as u8)]); // ANDCC #$FE (clear C)
 
-    tick(&mut cpu, &mut bus, 2);
+    tick(&mut cpu, &mut bus, 3); // 1 fetch + 2 execute
 
     assert_eq!(cpu.cc & (CcFlag::C as u8), 0); // C cleared
     assert_eq!(cpu.cc & (CcFlag::Z as u8), CcFlag::Z as u8); // Z preserved
@@ -278,7 +278,7 @@ fn test_andcc_clear_interrupts() {
     let mask = !(CcFlag::I as u8 | CcFlag::F as u8);
     bus.load(0, &[0x1C, mask]); // ANDCC #$AF (clear I and F)
 
-    tick(&mut cpu, &mut bus, 2);
+    tick(&mut cpu, &mut bus, 3); // 1 fetch + 2 execute
 
     assert_eq!(cpu.cc & (CcFlag::I as u8), 0);
     assert_eq!(cpu.cc & (CcFlag::F as u8), 0);
@@ -292,7 +292,7 @@ fn test_andcc_clear_all() {
     cpu.cc = 0xFF;
     bus.load(0, &[0x1C, 0x00]); // ANDCC #$00
 
-    tick(&mut cpu, &mut bus, 2);
+    tick(&mut cpu, &mut bus, 3); // 1 fetch + 2 execute
 
     assert_eq!(cpu.cc, 0x00);
 }
@@ -353,8 +353,8 @@ fn test_cmpu_direct() {
     bus.memory[0x0051] = 0x78;
     bus.load(0, &[0x11, 0x93, 0x50]); // CMPU $50
 
-    // 1 fetch + 1 prefix + 3 execute (addr, high read, low read)
-    tick(&mut cpu, &mut bus, 5);
+    // 2 prefix + 5 execute (addr, high read, low read, 2 internal)
+    tick(&mut cpu, &mut bus, 7);
 
     assert_eq!(cpu.cc & (CcFlag::Z as u8), CcFlag::Z as u8); // equal
 }
@@ -370,8 +370,8 @@ fn test_cmpu_extended() {
     bus.memory[0x2001] = 0x00;
     bus.load(0, &[0x11, 0xB3, 0x20, 0x00]); // CMPU $2000
 
-    // 1 fetch + 1 prefix + 4 execute (addr hi, addr lo, data hi, data lo)
-    tick(&mut cpu, &mut bus, 6);
+    // 2 prefix + 6 execute (addr hi, addr lo, data hi, data lo, 2 internal)
+    tick(&mut cpu, &mut bus, 8);
 
     assert_eq!(cpu.cc & (CcFlag::Z as u8), CcFlag::Z as u8);
 }
@@ -449,7 +449,8 @@ fn test_cmps_direct() {
     bus.memory[0x0021] = 0x34;
     bus.load(0, &[0x11, 0x9C, 0x20]); // CMPS $20
 
-    tick(&mut cpu, &mut bus, 5);
+    // 2 prefix + 5 execute (addr, high read, low read, 2 internal)
+    tick(&mut cpu, &mut bus, 7);
 
     assert_eq!(cpu.cc & (CcFlag::Z as u8), CcFlag::Z as u8);
 }
@@ -465,7 +466,8 @@ fn test_cmps_extended() {
     bus.memory[0x4001] = 0x00;
     bus.load(0, &[0x11, 0xBC, 0x40, 0x00]); // CMPS $4000
 
-    tick(&mut cpu, &mut bus, 6);
+    // 2 prefix + 6 execute (addr hi, addr lo, data hi, data lo, 2 internal)
+    tick(&mut cpu, &mut bus, 8);
 
     assert_eq!(cpu.cc & (CcFlag::C as u8), CcFlag::C as u8); // S < operand
     assert_eq!(cpu.cc & (CcFlag::N as u8), CcFlag::N as u8); // negative result

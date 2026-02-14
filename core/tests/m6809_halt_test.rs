@@ -95,7 +95,7 @@ fn test_halt_during_multi_cycle_instruction() {
     cpu.s = 0x0100;
     cpu.a = 0x00;
 
-    // LDA $1000 (extended addressing: 0xB6, 0x10, 0x00) = 4 cycles
+    // LDA $1000 (extended addressing: 0xB6, 0x10, 0x00) = 5 cycles
     // Then NOP (0x12)
     bus.load(0x0000, &[0xB6, 0x10, 0x00, 0x12]);
     bus.memory[0x1000] = 0xAB;
@@ -114,8 +114,8 @@ fn test_halt_during_multi_cycle_instruction() {
     // One dead cycle for re-sync
     tick(&mut cpu, &mut bus, 1);
 
-    // Remaining 3 cycles of LDA extended (read addr_hi, addr_lo, read data)
-    tick(&mut cpu, &mut bus, 3);
+    // Remaining 4 cycles of LDA extended (read addr_hi, addr_lo, internal, read data)
+    tick(&mut cpu, &mut bus, 4);
 
     assert_eq!(cpu.a, 0xAB, "LDA extended should complete after resume");
     assert_eq!(cpu.pc, 0x0003);

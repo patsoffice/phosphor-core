@@ -215,7 +215,7 @@ fn test_mul_basic() {
         ],
     );
 
-    for _ in 0..6 {
+    for _ in 0..15 {
         cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     }
 
@@ -243,7 +243,7 @@ fn test_mul_large_result() {
         ],
     );
 
-    for _ in 0..6 {
+    for _ in 0..15 {
         cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     }
 
@@ -271,7 +271,7 @@ fn test_mul_zero() {
         ],
     );
 
-    for _ in 0..6 {
+    for _ in 0..15 {
         cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     }
 
@@ -298,7 +298,7 @@ fn test_mul_carry_set() {
         ],
     );
 
-    for _ in 0..6 {
+    for _ in 0..15 {
         cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     }
 
@@ -324,7 +324,7 @@ fn test_mul_carry_set() {
         ],
     );
 
-    for _ in 0..6 {
+    for _ in 0..15 {
         cpu2.tick_with_bus(&mut bus2, BusMaster::Cpu(0));
     }
 

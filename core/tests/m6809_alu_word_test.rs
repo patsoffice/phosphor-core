@@ -21,8 +21,8 @@ fn test_addd_immediate() {
     assert_eq!(cpu.a, 0x10);
     assert_eq!(cpu.b, 0x00);
 
-    // ADDD (3 cycles)
-    tick(&mut cpu, &mut bus, 3);
+    // ADDD (4 cycles: 1 fetch + 3 exec)
+    tick(&mut cpu, &mut bus, 4);
     assert_eq!(cpu.a, 0x11, "A should be high byte of 0x1123");
     assert_eq!(cpu.b, 0x23, "B should be low byte of 0x1123");
     assert_eq!(cpu.cc & (CcFlag::N as u8), 0);
@@ -41,8 +41,8 @@ fn test_subd_immediate() {
     // LDD (3 cycles)
     tick(&mut cpu, &mut bus, 3);
 
-    // SUBD (3 cycles)
-    tick(&mut cpu, &mut bus, 3);
+    // SUBD (4 cycles: 1 fetch + 3 exec)
+    tick(&mut cpu, &mut bus, 4);
     // 0x1000 - 0x0001 = 0x0FFF
     assert_eq!(cpu.a, 0x0F, "A should be high byte of 0x0FFF");
     assert_eq!(cpu.b, 0xFF, "B should be low byte of 0x0FFF");
@@ -82,8 +82,8 @@ fn test_addd_extended() {
     bus.memory[0x2000] = 0x01;
     bus.memory[0x2001] = 0x23;
 
-    // LDD (3 cycles) + ADDD (5 cycles) = 8 cycles
-    tick(&mut cpu, &mut bus, 8);
+    // LDD (3 cycles) + ADDD (7 cycles) = 10 cycles
+    tick(&mut cpu, &mut bus, 10);
 
     assert_eq!(cpu.a, 0x11);
     assert_eq!(cpu.b, 0x23);
@@ -98,8 +98,8 @@ fn test_subd_extended() {
     bus.memory[0x3000] = 0x00;
     bus.memory[0x3001] = 0x01;
 
-    // LDD (3 cycles) + SUBD (5 cycles) = 8 cycles
-    tick(&mut cpu, &mut bus, 8);
+    // LDD (3 cycles) + SUBD (7 cycles) = 10 cycles
+    tick(&mut cpu, &mut bus, 10);
 
     assert_eq!(cpu.a, 0x0F);
     assert_eq!(cpu.b, 0xFF);
@@ -114,8 +114,8 @@ fn test_cmpx_extended() {
     bus.memory[0x4000] = 0x50;
     bus.memory[0x4001] = 0x00;
 
-    // LDX (3 cycles) + CMPX (5 cycles) = 8 cycles
-    tick(&mut cpu, &mut bus, 8);
+    // LDX (3 cycles) + CMPX (7 cycles) = 10 cycles
+    tick(&mut cpu, &mut bus, 10);
 
     assert_eq!(cpu.cc & (CcFlag::Z as u8), CcFlag::Z as u8);
 }
@@ -174,8 +174,8 @@ fn test_cmpy_direct() {
     bus.memory[0x0020] = 0x50;
     bus.memory[0x0021] = 0x00;
 
-    // CMPY direct: 5 cycles (2 prefix + 3 execute)
-    tick(&mut cpu, &mut bus, 5);
+    // CMPY direct: 7 cycles (2 prefix + 5 execute)
+    tick(&mut cpu, &mut bus, 7);
 
     assert_eq!(
         cpu.cc & (CcFlag::Z as u8),
@@ -194,8 +194,8 @@ fn test_cmpy_extended() {
     bus.memory[0x4000] = 0x50;
     bus.memory[0x4001] = 0x00;
 
-    // CMPY extended: 6 cycles (2 prefix + 4 execute)
-    tick(&mut cpu, &mut bus, 6);
+    // CMPY extended: 8 cycles (2 prefix + 6 execute)
+    tick(&mut cpu, &mut bus, 8);
 
     assert_eq!(
         cpu.cc & (CcFlag::Z as u8),
