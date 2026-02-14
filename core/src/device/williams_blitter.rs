@@ -1,8 +1,11 @@
+use crate::core::{Bus, BusMaster};
+
 /// Williams Special Chip 1 (SC1) — Blitter / DMA engine
 ///
 /// Hardware block copy/fill engine used in Williams 2nd-generation arcade boards
-/// (Joust, Robotron 2084, Bubbles, Sinistar, etc.). Operates on video RAM via DMA,
-/// halting the CPU during transfers.
+/// (Joust, Robotron 2084, Bubbles, Sinistar, etc.). Operates via DMA, halting
+/// the CPU during transfers. Reads and writes go through the system bus, so the
+/// blitter sees the same address decoding as the CPU (including ROM banking).
 ///
 /// # Register map (offsets 0-7)
 ///
@@ -126,22 +129,22 @@ impl WilliamsBlitter {
         self.active
     }
 
-    /// Execute one DMA cycle. Reads/writes directly to video RAM.
+    /// Execute one DMA cycle, reading and writing through the system bus.
     /// Call this once per clock cycle while `is_active()` returns true.
     ///
-    /// The blitter accesses video RAM directly rather than going through
-    /// the Bus trait. This is physically accurate (the blitter has its own
-    /// address bus connection to video RAM) and avoids borrow conflicts.
-    pub fn do_dma_cycle(&mut self, video_ram: &mut [u8]) {
+    /// The blitter shares the CPU's address bus, so reads go through the
+    /// same address decoding (including ROM banking overlays). This matches
+    /// the real hardware where the blitter can blit from ROM to RAM.
+    pub fn do_dma_cycle(&mut self, bus: &mut dyn Bus<Address = u16, Data = u8>) {
         if !self.active {
             return;
         }
 
-        // Step 1: Get source byte
+        // Step 1: Get source byte (goes through bus — sees ROM overlay)
         let raw_src = if (self.control & FLAG_SOLID) != 0 {
             self.solid_color
         } else {
-            video_ram.get(self.cur_src as usize).copied().unwrap_or(0)
+            bus.read(BusMaster::Dma, self.cur_src)
         };
 
         // Step 2: Apply shift if enabled
@@ -154,14 +157,15 @@ impl WilliamsBlitter {
         };
 
         // Step 3: Get destination byte for read-modify-write
-        let dst_byte = video_ram.get(self.cur_dst as usize).copied().unwrap_or(0);
+        let dst_byte = bus.read(BusMaster::Dma, self.cur_dst);
 
         // Step 4: Check foreground-only mode (transparency)
         let skip = (self.control & FLAG_FOREGROUND_ONLY) != 0 && src_byte == 0x00;
 
         // Step 5: Write result through mask
-        if !skip && let Some(dst) = video_ram.get_mut(self.cur_dst as usize) {
-            *dst = (src_byte & self.mask) | (dst_byte & !self.mask);
+        if !skip {
+            let result = (src_byte & self.mask) | (dst_byte & !self.mask);
+            bus.write(BusMaster::Dma, self.cur_dst, result);
         }
 
         // Step 6: Advance source address (skip in solid mode)

@@ -1,14 +1,51 @@
+use phosphor_core::core::{Bus, BusMaster, InterruptState};
 use phosphor_core::device::williams_blitter::WilliamsBlitter;
 
-fn make_vram() -> Vec<u8> {
-    vec![0u8; 0xC000] // 48KB, same as Joust video RAM
+/// Simple flat-memory Bus for blitter unit tests.
+struct TestBus {
+    mem: Vec<u8>,
+}
+
+impl TestBus {
+    fn new(size: usize) -> Self {
+        Self {
+            mem: vec![0u8; size],
+        }
+    }
+
+    fn make_vram() -> Self {
+        Self::new(0x10000) // 64KB address space
+    }
+}
+
+impl Bus for TestBus {
+    type Address = u16;
+    type Data = u8;
+
+    fn read(&mut self, _master: BusMaster, addr: u16) -> u8 {
+        *self.mem.get(addr as usize).unwrap_or(&0)
+    }
+
+    fn write(&mut self, _master: BusMaster, addr: u16, data: u8) {
+        if let Some(byte) = self.mem.get_mut(addr as usize) {
+            *byte = data;
+        }
+    }
+
+    fn is_halted_for(&self, _master: BusMaster) -> bool {
+        false
+    }
+
+    fn check_interrupts(&self, _target: BusMaster) -> InterruptState {
+        InterruptState::default()
+    }
 }
 
 /// Run the blitter to completion, returning the number of cycles consumed.
-fn run_to_completion(blitter: &mut WilliamsBlitter, vram: &mut [u8]) -> usize {
+fn run_to_completion(blitter: &mut WilliamsBlitter, bus: &mut TestBus) -> usize {
     let mut cycles = 0;
     while blitter.is_active() {
-        blitter.do_dma_cycle(vram);
+        blitter.do_dma_cycle(bus);
         cycles += 1;
         assert!(cycles < 100_000, "blit did not complete");
     }
@@ -69,8 +106,8 @@ fn test_write_height_triggers_blit() {
 #[test]
 fn test_copy_1x1() {
     let mut blitter = WilliamsBlitter::new();
-    let mut vram = make_vram();
-    vram[0x0100] = 0xAB; // Source byte
+    let mut bus = TestBus::make_vram();
+    bus.mem[0x0100] = 0xAB; // Source byte
 
     blitter.set_control(0x00); // Pure copy mode
     blitter.write_register(0, 0xFF); // mask = all bits
@@ -81,22 +118,22 @@ fn test_copy_1x1() {
     blitter.write_register(6, 0); // width = 1 byte
     blitter.write_register(7, 0); // height = 1 row, trigger
 
-    let cycles = run_to_completion(&mut blitter, &mut vram);
+    let cycles = run_to_completion(&mut blitter, &mut bus);
     assert_eq!(cycles, 1, "1x1 blit should take 1 cycle");
     assert!(!blitter.is_active());
-    assert_eq!(vram[0x0200], 0xAB);
+    assert_eq!(bus.mem[0x0200], 0xAB);
 }
 
 #[test]
 fn test_copy_4x1() {
     let mut blitter = WilliamsBlitter::new();
-    let mut vram = make_vram();
+    let mut bus = TestBus::make_vram();
 
     // Source data: 4 bytes starting at 0x0100
-    vram[0x0100] = 0x11;
-    vram[0x0101] = 0x22;
-    vram[0x0102] = 0x33;
-    vram[0x0103] = 0x44;
+    bus.mem[0x0100] = 0x11;
+    bus.mem[0x0101] = 0x22;
+    bus.mem[0x0102] = 0x33;
+    bus.mem[0x0103] = 0x44;
 
     blitter.set_control(0x00);
     blitter.write_register(0, 0xFF); // mask = all
@@ -107,12 +144,12 @@ fn test_copy_4x1() {
     blitter.write_register(6, 3); // width = 4 bytes (0-based)
     blitter.write_register(7, 0); // height = 1 row, trigger
 
-    let cycles = run_to_completion(&mut blitter, &mut vram);
+    let cycles = run_to_completion(&mut blitter, &mut bus);
     assert_eq!(cycles, 4, "4x1 blit should take 4 cycles");
-    assert_eq!(vram[0x0200], 0x11);
-    assert_eq!(vram[0x0201], 0x22);
-    assert_eq!(vram[0x0202], 0x33);
-    assert_eq!(vram[0x0203], 0x44);
+    assert_eq!(bus.mem[0x0200], 0x11);
+    assert_eq!(bus.mem[0x0201], 0x22);
+    assert_eq!(bus.mem[0x0202], 0x33);
+    assert_eq!(bus.mem[0x0203], 0x44);
 }
 
 #[test]
@@ -121,15 +158,15 @@ fn test_copy_2x3() {
     // Destination stride between rows = 256
     // Source is packed linearly
     let mut blitter = WilliamsBlitter::new();
-    let mut vram = make_vram();
+    let mut bus = TestBus::make_vram();
 
     // Source: 6 bytes packed at 0x0100
-    vram[0x0100] = 0xA1; // row 0, col 0
-    vram[0x0101] = 0xA2; // row 0, col 1
-    vram[0x0102] = 0xB1; // row 1, col 0
-    vram[0x0103] = 0xB2; // row 1, col 1
-    vram[0x0104] = 0xC1; // row 2, col 0
-    vram[0x0105] = 0xC2; // row 2, col 1
+    bus.mem[0x0100] = 0xA1; // row 0, col 0
+    bus.mem[0x0101] = 0xA2; // row 0, col 1
+    bus.mem[0x0102] = 0xB1; // row 1, col 0
+    bus.mem[0x0103] = 0xB2; // row 1, col 1
+    bus.mem[0x0104] = 0xC1; // row 2, col 0
+    bus.mem[0x0105] = 0xC2; // row 2, col 1
 
     blitter.set_control(0x00);
     blitter.write_register(0, 0xFF);
@@ -140,18 +177,18 @@ fn test_copy_2x3() {
     blitter.write_register(6, 1); // width = 2 (0-based)
     blitter.write_register(7, 2); // height = 3 (0-based), trigger
 
-    let cycles = run_to_completion(&mut blitter, &mut vram);
+    let cycles = run_to_completion(&mut blitter, &mut bus);
     assert_eq!(cycles, 6, "2x3 blit should take 6 cycles");
 
     // Row 0: dst = 0x2000, 0x2001
-    assert_eq!(vram[0x2000], 0xA1);
-    assert_eq!(vram[0x2001], 0xA2);
+    assert_eq!(bus.mem[0x2000], 0xA1);
+    assert_eq!(bus.mem[0x2001], 0xA2);
     // Row 1: dst = 0x2100, 0x2101 (stride 256)
-    assert_eq!(vram[0x2100], 0xB1);
-    assert_eq!(vram[0x2101], 0xB2);
+    assert_eq!(bus.mem[0x2100], 0xB1);
+    assert_eq!(bus.mem[0x2101], 0xB2);
     // Row 2: dst = 0x2200, 0x2201
-    assert_eq!(vram[0x2200], 0xC1);
-    assert_eq!(vram[0x2201], 0xC2);
+    assert_eq!(bus.mem[0x2200], 0xC1);
+    assert_eq!(bus.mem[0x2201], 0xC2);
 }
 
 // ===== Solid Fill =====
@@ -159,7 +196,7 @@ fn test_copy_2x3() {
 #[test]
 fn test_solid_fill() {
     let mut blitter = WilliamsBlitter::new();
-    let mut vram = make_vram();
+    let mut bus = TestBus::make_vram();
 
     blitter.set_control(0x04); // Solid flag (bit 2)
     blitter.write_register(0, 0xFF); // mask = all
@@ -171,17 +208,17 @@ fn test_solid_fill() {
     blitter.write_register(6, 2); // width = 3
     blitter.write_register(7, 1); // height = 2, trigger
 
-    let cycles = run_to_completion(&mut blitter, &mut vram);
+    let cycles = run_to_completion(&mut blitter, &mut bus);
     assert_eq!(cycles, 6, "3x2 solid fill should take 6 cycles");
 
     // Row 0
-    assert_eq!(vram[0x1000], 0x55);
-    assert_eq!(vram[0x1001], 0x55);
-    assert_eq!(vram[0x1002], 0x55);
+    assert_eq!(bus.mem[0x1000], 0x55);
+    assert_eq!(bus.mem[0x1001], 0x55);
+    assert_eq!(bus.mem[0x1002], 0x55);
     // Row 1 (stride 256)
-    assert_eq!(vram[0x1100], 0x55);
-    assert_eq!(vram[0x1101], 0x55);
-    assert_eq!(vram[0x1102], 0x55);
+    assert_eq!(bus.mem[0x1100], 0x55);
+    assert_eq!(bus.mem[0x1101], 0x55);
+    assert_eq!(bus.mem[0x1102], 0x55);
 }
 
 // ===== Mask =====
@@ -189,10 +226,10 @@ fn test_solid_fill() {
 #[test]
 fn test_mask_partial() {
     let mut blitter = WilliamsBlitter::new();
-    let mut vram = make_vram();
+    let mut bus = TestBus::make_vram();
 
-    vram[0x0100] = 0xAB; // Source
-    vram[0x0200] = 0xCD; // Existing destination
+    bus.mem[0x0100] = 0xAB; // Source
+    bus.mem[0x0200] = 0xCD; // Existing destination
 
     blitter.set_control(0x00);
     blitter.write_register(0, 0xF0); // mask = upper nibble only
@@ -203,19 +240,19 @@ fn test_mask_partial() {
     blitter.write_register(6, 0); // width = 1
     blitter.write_register(7, 0); // height = 1, trigger
 
-    run_to_completion(&mut blitter, &mut vram);
+    run_to_completion(&mut blitter, &mut bus);
 
     // Upper nibble from source (0xA_), lower nibble preserved from dest (_D)
-    assert_eq!(vram[0x0200], 0xAD);
+    assert_eq!(bus.mem[0x0200], 0xAD);
 }
 
 #[test]
 fn test_mask_ff_full_write() {
     let mut blitter = WilliamsBlitter::new();
-    let mut vram = make_vram();
+    let mut bus = TestBus::make_vram();
 
-    vram[0x0100] = 0xAB;
-    vram[0x0200] = 0xCD;
+    bus.mem[0x0100] = 0xAB;
+    bus.mem[0x0200] = 0xCD;
 
     blitter.set_control(0x00);
     blitter.write_register(0, 0xFF); // mask = all bits
@@ -226,10 +263,10 @@ fn test_mask_ff_full_write() {
     blitter.write_register(6, 0);
     blitter.write_register(7, 0);
 
-    run_to_completion(&mut blitter, &mut vram);
+    run_to_completion(&mut blitter, &mut bus);
 
     assert_eq!(
-        vram[0x0200], 0xAB,
+        bus.mem[0x0200], 0xAB,
         "Full mask should write entire source byte"
     );
 }
@@ -239,10 +276,10 @@ fn test_mask_ff_full_write() {
 #[test]
 fn test_foreground_only_skips_zero() {
     let mut blitter = WilliamsBlitter::new();
-    let mut vram = make_vram();
+    let mut bus = TestBus::make_vram();
 
-    vram[0x0100] = 0x00; // Source is zero
-    vram[0x0200] = 0xCC; // Existing destination
+    bus.mem[0x0100] = 0x00; // Source is zero
+    bus.mem[0x0200] = 0xCC; // Existing destination
 
     blitter.set_control(0x02); // Foreground-only flag (bit 1)
     blitter.write_register(0, 0xFF);
@@ -253,10 +290,10 @@ fn test_foreground_only_skips_zero() {
     blitter.write_register(6, 0);
     blitter.write_register(7, 0);
 
-    run_to_completion(&mut blitter, &mut vram);
+    run_to_completion(&mut blitter, &mut bus);
 
     assert_eq!(
-        vram[0x0200], 0xCC,
+        bus.mem[0x0200], 0xCC,
         "Zero source should not overwrite destination in foreground-only mode"
     );
 }
@@ -264,10 +301,10 @@ fn test_foreground_only_skips_zero() {
 #[test]
 fn test_foreground_only_writes_nonzero() {
     let mut blitter = WilliamsBlitter::new();
-    let mut vram = make_vram();
+    let mut bus = TestBus::make_vram();
 
-    vram[0x0100] = 0x42; // Non-zero source
-    vram[0x0200] = 0xCC; // Existing destination
+    bus.mem[0x0100] = 0x42; // Non-zero source
+    bus.mem[0x0200] = 0xCC; // Existing destination
 
     blitter.set_control(0x02); // Foreground-only
     blitter.write_register(0, 0xFF);
@@ -278,10 +315,10 @@ fn test_foreground_only_writes_nonzero() {
     blitter.write_register(6, 0);
     blitter.write_register(7, 0);
 
-    run_to_completion(&mut blitter, &mut vram);
+    run_to_completion(&mut blitter, &mut bus);
 
     assert_eq!(
-        vram[0x0200], 0x42,
+        bus.mem[0x0200], 0x42,
         "Non-zero source should be written in foreground-only mode"
     );
 }
@@ -291,7 +328,7 @@ fn test_foreground_only_writes_nonzero() {
 #[test]
 fn test_cycle_count() {
     let mut blitter = WilliamsBlitter::new();
-    let mut vram = make_vram();
+    let mut bus = TestBus::make_vram();
 
     blitter.set_control(0x00);
     blitter.write_register(0, 0xFF);
@@ -302,7 +339,7 @@ fn test_cycle_count() {
     blitter.write_register(6, 3); // width = 4
     blitter.write_register(7, 2); // height = 3, trigger
 
-    let cycles = run_to_completion(&mut blitter, &mut vram);
+    let cycles = run_to_completion(&mut blitter, &mut bus);
     assert_eq!(cycles, 12, "4x3 blit should take exactly 12 cycles");
 }
 
@@ -311,7 +348,7 @@ fn test_cycle_count() {
 #[test]
 fn test_completion_clears_active() {
     let mut blitter = WilliamsBlitter::new();
-    let mut vram = make_vram();
+    let mut bus = TestBus::make_vram();
 
     blitter.set_control(0x00);
     blitter.write_register(0, 0xFF);
@@ -323,7 +360,7 @@ fn test_completion_clears_active() {
     blitter.write_register(7, 0);
 
     assert!(blitter.is_active());
-    blitter.do_dma_cycle(&mut vram);
+    blitter.do_dma_cycle(&mut bus);
     assert!(!blitter.is_active(), "Active should clear after completion");
 }
 
@@ -332,19 +369,19 @@ fn test_completion_clears_active() {
 #[test]
 fn test_out_of_bounds_safe() {
     let mut blitter = WilliamsBlitter::new();
-    let mut vram = vec![0u8; 256]; // Tiny VRAM
+    let mut bus = TestBus::new(256); // Tiny memory
 
     blitter.set_control(0x00);
     blitter.write_register(0, 0xFF);
-    blitter.write_register(2, 0xFF); // src = 0xFF00 (beyond vram)
+    blitter.write_register(2, 0xFF); // src = 0xFF00 (beyond memory)
     blitter.write_register(3, 0x00);
-    blitter.write_register(4, 0xFE); // dst = 0xFE00 (beyond vram)
+    blitter.write_register(4, 0xFE); // dst = 0xFE00 (beyond memory)
     blitter.write_register(5, 0x00);
     blitter.write_register(6, 0);
     blitter.write_register(7, 0);
 
     // Should not panic
-    run_to_completion(&mut blitter, &mut vram);
+    run_to_completion(&mut blitter, &mut bus);
 }
 
 // ===== Re-trigger =====
@@ -352,10 +389,10 @@ fn test_out_of_bounds_safe() {
 #[test]
 fn test_retrigger_after_completion() {
     let mut blitter = WilliamsBlitter::new();
-    let mut vram = make_vram();
+    let mut bus = TestBus::make_vram();
 
     // First blit: copy 0xAA
-    vram[0x0100] = 0xAA;
+    bus.mem[0x0100] = 0xAA;
     blitter.set_control(0x00);
     blitter.write_register(0, 0xFF);
     blitter.write_register(2, 0x01);
@@ -365,20 +402,20 @@ fn test_retrigger_after_completion() {
     blitter.write_register(6, 0);
     blitter.write_register(7, 0);
 
-    run_to_completion(&mut blitter, &mut vram);
-    assert_eq!(vram[0x0200], 0xAA);
+    run_to_completion(&mut blitter, &mut bus);
+    assert_eq!(bus.mem[0x0200], 0xAA);
     assert!(!blitter.is_active());
 
     // Second blit: copy 0xBB to a different location
-    vram[0x0300] = 0xBB;
+    bus.mem[0x0300] = 0xBB;
     blitter.write_register(2, 0x03); // src = 0x0300
     blitter.write_register(3, 0x00);
     blitter.write_register(4, 0x04); // dst = 0x0400
     blitter.write_register(5, 0x00);
     blitter.write_register(7, 0); // re-trigger
 
-    run_to_completion(&mut blitter, &mut vram);
-    assert_eq!(vram[0x0400], 0xBB);
+    run_to_completion(&mut blitter, &mut bus);
+    assert_eq!(bus.mem[0x0400], 0xBB);
 }
 
 // ===== Shift Mode =====
@@ -386,14 +423,14 @@ fn test_retrigger_after_completion() {
 #[test]
 fn test_shift_mode() {
     let mut blitter = WilliamsBlitter::new();
-    let mut vram = make_vram();
+    let mut bus = TestBus::make_vram();
 
     // Source bytes: 0xAB, 0xCD
     // With shift mode, shift register starts at 0:
     //   byte 0: output = (0x00 << 8 | 0xAB) >> 4 = 0x0A, shift_reg = 0xAB
     //   byte 1: output = (0xAB << 8 | 0xCD) >> 4 = 0xABC (& 0xFF) = 0xBC, shift_reg = 0xCD
-    vram[0x0100] = 0xAB;
-    vram[0x0101] = 0xCD;
+    bus.mem[0x0100] = 0xAB;
+    bus.mem[0x0101] = 0xCD;
 
     blitter.set_control(0x08); // Shift flag (bit 3)
     blitter.write_register(0, 0xFF);
@@ -404,10 +441,10 @@ fn test_shift_mode() {
     blitter.write_register(6, 1); // width = 2
     blitter.write_register(7, 0); // height = 1, trigger
 
-    run_to_completion(&mut blitter, &mut vram);
+    run_to_completion(&mut blitter, &mut bus);
 
-    assert_eq!(vram[0x0200], 0x0A, "First shifted byte");
-    assert_eq!(vram[0x0201], 0xBC, "Second shifted byte");
+    assert_eq!(bus.mem[0x0200], 0x0A, "First shifted byte");
+    assert_eq!(bus.mem[0x0201], 0xBC, "Second shifted byte");
 }
 
 // ===== Solid + Foreground-Only =====
@@ -415,9 +452,9 @@ fn test_shift_mode() {
 #[test]
 fn test_solid_foreground_zero_skips() {
     let mut blitter = WilliamsBlitter::new();
-    let mut vram = make_vram();
+    let mut bus = TestBus::make_vram();
 
-    vram[0x0200] = 0xEE; // Pre-existing destination data
+    bus.mem[0x0200] = 0xEE; // Pre-existing destination data
 
     // Solid fill with color=0x00 + foreground-only: should skip all writes
     blitter.set_control(0x06); // Solid (bit 2) + Foreground-only (bit 1)
@@ -428,10 +465,10 @@ fn test_solid_foreground_zero_skips() {
     blitter.write_register(6, 0);
     blitter.write_register(7, 0);
 
-    run_to_completion(&mut blitter, &mut vram);
+    run_to_completion(&mut blitter, &mut bus);
 
     assert_eq!(
-        vram[0x0200], 0xEE,
+        bus.mem[0x0200], 0xEE,
         "Solid color 0x00 with foreground-only should skip write"
     );
 }

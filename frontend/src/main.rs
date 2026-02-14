@@ -1,6 +1,6 @@
 use phosphor_core::core::machine::Machine;
 use phosphor_machines::JoustSystem;
-use phosphor_machines::joust::{JOUST_BANKED_ROM, JOUST_DECODER_PROM, JOUST_SOUND_ROM};
+use phosphor_machines::joust::{JOUST_DECODER_PROM, JOUST_SOUND_ROM};
 
 mod emulator;
 mod input;
@@ -21,10 +21,7 @@ fn main() {
         "joust" => {
             let rom_set = rom_path::load_rom_set("joust", rom_path).expect("Failed to load ROMs");
 
-            // Validate all ROM regions (even those not yet wired into memory)
-            JOUST_BANKED_ROM
-                .load(&rom_set)
-                .expect("Failed to load banked ROMs");
+            // Validate ROM regions not yet wired into memory
             JOUST_SOUND_ROM
                 .load(&rom_set)
                 .expect("Failed to load sound ROM");
@@ -44,9 +41,31 @@ fn main() {
         }
     };
 
+    // Load battery-backed NVRAM from disk (if available)
+    let nvram_path = nvram_path_for(machine_name, rom_path);
+    if let Ok(data) = std::fs::read(&nvram_path) {
+        machine.load_nvram(&data);
+    }
+
     let key_map = input::default_key_map(machine.input_map());
     machine.reset();
     emulator::run(machine.as_mut(), &key_map, scale);
+
+    // Save battery-backed NVRAM to disk on exit
+    if let Some(data) = machine.save_nvram() {
+        if let Err(e) = std::fs::write(&nvram_path, data) {
+            eprintln!("Warning: failed to save NVRAM: {e}");
+        }
+    }
+}
+
+fn nvram_path_for(machine_name: &str, rom_path: &str) -> std::path::PathBuf {
+    let path = std::path::Path::new(rom_path);
+    if path.is_dir() {
+        path.join(format!("{machine_name}.nvram"))
+    } else {
+        path.with_extension("nvram")
+    }
 }
 
 fn parse_scale_arg(args: &[String]) -> Option<u32> {

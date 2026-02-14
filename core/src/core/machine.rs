@@ -42,4 +42,12 @@ pub trait Machine {
 
     /// Reset the machine to its initial power-on state.
     fn reset(&mut self);
+
+    /// Return battery-backed RAM contents for saving, or None if this machine has none.
+    fn save_nvram(&self) -> Option<&[u8]> {
+        None
+    }
+
+    /// Load battery-backed RAM contents from a previous save.
+    fn load_nvram(&mut self, _data: &[u8]) {}
 }

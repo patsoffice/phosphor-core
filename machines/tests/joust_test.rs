@@ -436,6 +436,249 @@ fn test_rom_bank_select() {
     assert_eq!(sys.read(BusMaster::Cpu(0), 0xC900), 0x03);
 }
 
+// =================================================================
+// Bank Switching Tests
+// =================================================================
+
+#[test]
+fn test_bank_switch_disabled_reads_video_ram() {
+    let mut sys = JoustSystem::new();
+    sys.load_banked_rom(0x1000, &[0xAA]);
+    sys.write_video_ram(0x1000, 0xBB);
+
+    // Bank 0 (default): reads should return video RAM
+    assert_eq!(sys.rom_bank(), 0);
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0x1000), 0xBB);
+}
+
+#[test]
+fn test_bank_switch_enabled_reads_banked_rom() {
+    let mut sys = JoustSystem::new();
+    sys.load_banked_rom(0x1000, &[0xAA]);
+    sys.write_video_ram(0x1000, 0xBB);
+
+    // Enable ROM bank
+    sys.write(BusMaster::Cpu(0), 0xC900, 0x01);
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0x1000), 0xAA);
+}
+
+#[test]
+fn test_bank_switch_writes_always_to_video_ram() {
+    let mut sys = JoustSystem::new();
+    sys.load_banked_rom(0x2000, &[0xAA]);
+
+    // Enable ROM bank and write through it
+    sys.write(BusMaster::Cpu(0), 0xC900, 0x01);
+    sys.write(BusMaster::Cpu(0), 0x2000, 0xCC);
+
+    // Video RAM should have the written value
+    assert_eq!(sys.read_video_ram(0x2000), 0xCC);
+
+    // Disable bank: read should return the written video RAM value
+    sys.write(BusMaster::Cpu(0), 0xC900, 0x00);
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0x2000), 0xCC);
+
+    // Re-enable bank: ROM should still be intact (write went to video RAM, not ROM)
+    sys.write(BusMaster::Cpu(0), 0xC900, 0x01);
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0x2000), 0xAA);
+}
+
+#[test]
+fn test_upper_video_ram_unaffected_by_bank() {
+    let mut sys = JoustSystem::new();
+    sys.write_video_ram(0x9000, 0x55);
+    sys.write_video_ram(0xBFFF, 0x66);
+
+    // Enable ROM bank
+    sys.write(BusMaster::Cpu(0), 0xC900, 0x01);
+
+    // Upper video RAM should still return video RAM data
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0x9000), 0x55);
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0xBFFF), 0x66);
+}
+
+#[test]
+fn test_bank_switch_boundary_addresses() {
+    let mut sys = JoustSystem::new();
+    sys.load_banked_rom(0x8FFF, &[0xDD]);
+    sys.write_video_ram(0x8FFF, 0xEE);
+    sys.write_video_ram(0x9000, 0xFF);
+
+    sys.write(BusMaster::Cpu(0), 0xC900, 0x01);
+
+    // 0x8FFF should return ROM data (within banked range)
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0x8FFF), 0xDD);
+    // 0x9000 should return video RAM data (outside banked range)
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0x9000), 0xFF);
+}
+
+#[test]
+fn test_bank_switch_address_zero() {
+    let mut sys = JoustSystem::new();
+    sys.load_banked_rom(0, &[0x42]);
+    sys.write_video_ram(0, 0x99);
+
+    sys.write(BusMaster::Cpu(0), 0xC900, 0x01);
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0x0000), 0x42);
+
+    sys.write(BusMaster::Cpu(0), 0xC900, 0x00);
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0x0000), 0x99);
+}
+
+#[test]
+fn test_bank_switch_toggle() {
+    let mut sys = JoustSystem::new();
+    sys.load_banked_rom(0x4000, &[0x11]);
+    sys.write_video_ram(0x4000, 0x22);
+
+    // Off -> On -> Off -> On
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0x4000), 0x22);
+    sys.write(BusMaster::Cpu(0), 0xC900, 0x01);
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0x4000), 0x11);
+    sys.write(BusMaster::Cpu(0), 0xC900, 0x00);
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0x4000), 0x22);
+    sys.write(BusMaster::Cpu(0), 0xC900, 0x01);
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0x4000), 0x11);
+}
+
+#[test]
+fn test_blitter_reads_banked_rom() {
+    let mut sys = JoustSystem::new();
+    // Put source data in video RAM
+    sys.write_video_ram(0x1000, 0xAB);
+    sys.write_video_ram(0x1001, 0xCD);
+
+    // Load different data into banked ROM at same address
+    sys.load_banked_rom(0x1000, &[0x11, 0x22]);
+
+    // Enable ROM bank — blitter shares the CPU's bus, so it sees ROM overlay
+    sys.write(BusMaster::Cpu(0), 0xC900, 0x01);
+
+    // Configure blitter to copy from 0x1000 to 0x9000 (2 bytes, dest in upper VRAM)
+    sys.write(BusMaster::Cpu(0), 0xCA00, 0xFF); // mask
+    sys.write(BusMaster::Cpu(0), 0xCA02, 0x10); // src_hi
+    sys.write(BusMaster::Cpu(0), 0xCA03, 0x00); // src_lo
+    sys.write(BusMaster::Cpu(0), 0xCA04, 0x90); // dst_hi
+    sys.write(BusMaster::Cpu(0), 0xCA05, 0x00); // dst_lo
+    sys.write(BusMaster::Cpu(0), 0xCA06, 0x01); // width=1 (2 bytes)
+    sys.write(BusMaster::Cpu(0), 0xCA07, 0x00); // height=0 (1 row), triggers blit
+
+    // Run DMA cycles
+    for _ in 0..10 {
+        sys.tick();
+    }
+
+    // Blitter should have read from banked ROM (0x11, 0x22), not video RAM (0xAB, 0xCD)
+    assert_eq!(sys.read_video_ram(0x9000), 0x11);
+    assert_eq!(sys.read_video_ram(0x9001), 0x22);
+}
+
+#[test]
+fn test_blitter_reads_video_ram_when_bank_disabled() {
+    let mut sys = JoustSystem::new();
+    // Put source data in video RAM
+    sys.write_video_ram(0x1000, 0xAB);
+    sys.write_video_ram(0x1001, 0xCD);
+
+    // Load different data into banked ROM at same address
+    sys.load_banked_rom(0x1000, &[0x11, 0x22]);
+
+    // Bank disabled (default) — blitter reads from video RAM
+    assert_eq!(sys.rom_bank(), 0);
+
+    // Configure blitter to copy from 0x1000 to 0x9000 (2 bytes)
+    sys.write(BusMaster::Cpu(0), 0xCA00, 0xFF); // mask
+    sys.write(BusMaster::Cpu(0), 0xCA02, 0x10); // src_hi
+    sys.write(BusMaster::Cpu(0), 0xCA03, 0x00); // src_lo
+    sys.write(BusMaster::Cpu(0), 0xCA04, 0x90); // dst_hi
+    sys.write(BusMaster::Cpu(0), 0xCA05, 0x00); // dst_lo
+    sys.write(BusMaster::Cpu(0), 0xCA06, 0x01); // width=1 (2 bytes)
+    sys.write(BusMaster::Cpu(0), 0xCA07, 0x00); // height=0 (1 row), triggers blit
+
+    // Run DMA cycles
+    for _ in 0..10 {
+        sys.tick();
+    }
+
+    // Blitter should have read from video RAM (0xAB, 0xCD)
+    assert_eq!(sys.read_video_ram(0x9000), 0xAB);
+    assert_eq!(sys.read_video_ram(0x9001), 0xCD);
+}
+
+#[test]
+fn test_cpu_reads_banked_rom() {
+    let mut sys = JoustSystem::new();
+    // Place known value in banked ROM at address 0x1000
+    sys.load_banked_rom(0x1000, &[0x42]);
+
+    // Program at 0xD000:
+    //   LDA #$01       -- enable ROM bank
+    //   STA $C900
+    //   LDB $1000      -- read from banked ROM
+    //   STB $9100      -- store to upper video RAM (always accessible)
+    //   BRA *
+    sys.load_program_rom(
+        0,
+        &[
+            0x86, 0x01, // LDA #$01
+            0xB7, 0xC9, 0x00, // STA $C900
+            0xF6, 0x10, 0x00, // LDB $1000
+            0xF7, 0x91, 0x00, // STB $9100
+            0x20, 0xFE, // BRA *
+        ],
+    );
+    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.reset();
+
+    for _ in 0..60 {
+        sys.tick();
+    }
+
+    assert_eq!(sys.read_video_ram(0x9100), 0x42);
+    assert_eq!(sys.rom_bank(), 0x01);
+}
+
+#[test]
+fn test_reset_clears_bank_preserves_rom() {
+    let mut sys = JoustSystem::new();
+    sys.load_banked_rom(0x0000, &[0xAA]);
+    sys.write(BusMaster::Cpu(0), 0xC900, 0x01);
+    assert_eq!(sys.rom_bank(), 0x01);
+
+    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.reset();
+
+    // Bank register should be 0 after reset
+    assert_eq!(sys.rom_bank(), 0x00);
+
+    // Banked ROM data should be preserved
+    sys.write(BusMaster::Cpu(0), 0xC900, 0x01);
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0x0000), 0xAA);
+}
+
+#[test]
+fn test_load_banked_rom_all_chips() {
+    let mut sys = JoustSystem::new();
+    // Load each 4KB chip with a distinct byte
+    for i in 0..9u8 {
+        let offset = i as usize * 0x1000;
+        sys.load_banked_rom(offset, &[i + 1; 0x1000]);
+    }
+
+    sys.write(BusMaster::Cpu(0), 0xC900, 0x01);
+
+    // Verify first byte of each 4KB chip
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0x0000), 0x01); // chip 1
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0x1000), 0x02); // chip 2
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0x2000), 0x03); // chip 3
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0x3000), 0x04); // chip 4
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0x4000), 0x05); // chip 5
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0x5000), 0x06); // chip 6
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0x6000), 0x07); // chip 7
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0x7000), 0x08); // chip 8
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0x8000), 0x09); // chip 9
+}
+
 #[test]
 fn test_watchdog_reset_on_read() {
     let mut sys = JoustSystem::new();

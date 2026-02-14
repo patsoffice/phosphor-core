@@ -197,6 +197,7 @@ pub struct JoustSystem {
 
     // Memory regions
     video_ram: [u8; 0xC000],   // 0x0000-0xBFFF: 48KB video/color RAM
+    banked_rom: [u8; 0x9000],  // 0x0000-0x8FFF: 36KB banked ROM overlay (when rom_bank != 0)
     palette_ram: [u8; 16],     // 0xC000-0xC00F: 16-color palette
     cmos_ram: CmosRam,         // 0xCC00-0xCFFF: 1KB battery-backed
     program_rom: [u8; 0x3000], // 0xD000-0xFFFF: 12KB program ROM
@@ -223,6 +224,7 @@ impl JoustSystem {
         Self {
             cpu: M6809::new(),
             video_ram: [0; 0xC000],
+            banked_rom: [0; 0x9000],
             palette_ram: [0; 16],
             cmos_ram: CmosRam::new(),
             program_rom: [0; 0x3000],
@@ -245,12 +247,12 @@ impl JoustSystem {
             self.widget_pia.set_cb1(false); // VBLANK end (~100us pulse)
         }
 
-        if self.blitter.is_active() {
-            self.blitter.do_dma_cycle(&mut self.video_ram);
-        } else {
-            let bus_ptr: *mut Self = self;
-            unsafe {
-                let bus = &mut *bus_ptr as &mut dyn Bus<Address = u16, Data = u8>;
+        let bus_ptr: *mut Self = self;
+        unsafe {
+            let bus = &mut *bus_ptr as &mut dyn Bus<Address = u16, Data = u8>;
+            if self.blitter.is_active() {
+                self.blitter.do_dma_cycle(bus);
+            } else {
                 self.cpu.execute_cycle(bus, BusMaster::Cpu(0));
             }
         }
@@ -267,6 +269,14 @@ impl JoustSystem {
         self.program_rom[offset..end].copy_from_slice(&data[..len]);
     }
 
+    /// Load banked ROM from a byte slice at the given offset (for testing).
+    /// Offset is relative to the start of the banked ROM region (0 = address 0x0000).
+    pub fn load_banked_rom(&mut self, offset: usize, data: &[u8]) {
+        let end = (offset + data.len()).min(self.banked_rom.len());
+        let len = end - offset;
+        self.banked_rom[offset..end].copy_from_slice(&data[..len]);
+    }
+
     /// Load program ROM from a RomSet using the Joust ROM mapping.
     ///
     /// Matches ROM files by CRC32 checksum (for MAME ROMs with any filename)
@@ -275,6 +285,9 @@ impl JoustSystem {
         &mut self,
         rom_set: &crate::rom_loader::RomSet,
     ) -> Result<(), crate::rom_loader::RomLoadError> {
+        let banked_data = JOUST_BANKED_ROM.load(rom_set)?;
+        self.banked_rom.copy_from_slice(&banked_data);
+
         let rom_data = JOUST_PROGRAM_ROM.load(rom_set)?;
         self.program_rom.copy_from_slice(&rom_data);
         Ok(())
@@ -335,7 +348,14 @@ impl Bus for JoustSystem {
 
     fn read(&mut self, _master: BusMaster, addr: u16) -> u8 {
         match addr {
-            0x0000..=0xBFFF => self.video_ram[addr as usize],
+            0x0000..=0x8FFF => {
+                if self.rom_bank != 0 {
+                    self.banked_rom[addr as usize]
+                } else {
+                    self.video_ram[addr as usize]
+                }
+            }
+            0x9000..=0xBFFF => self.video_ram[addr as usize],
             0xC000..=0xC00F => self.palette_ram[(addr - 0xC000) as usize],
             0xC804..=0xC807 => self.widget_pia.read((addr - 0xC804) as u8),
             0xC80C..=0xC80F => self.rom_pia.read((addr - 0xC80C) as u8),
@@ -509,5 +529,13 @@ impl Machine for JoustSystem {
         self.input_port_a = 0xFF;
         self.input_port_b = 0xFF;
         // CMOS RAM and video RAM NOT cleared (battery-backed / not cleared by hardware)
+    }
+
+    fn save_nvram(&self) -> Option<&[u8]> {
+        Some(self.cmos_ram.snapshot())
+    }
+
+    fn load_nvram(&mut self, data: &[u8]) {
+        self.cmos_ram.load_from(data);
     }
 }
