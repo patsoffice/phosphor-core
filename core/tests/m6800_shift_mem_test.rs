@@ -119,8 +119,8 @@ fn test_lsr_ext_carry() {
     assert_eq!(bus.memory[0x4000], 0x00);
     assert_ne!(cpu.cc & (CcFlag::C as u8), 0);
     assert_ne!(cpu.cc & (CcFlag::Z as u8), 0);
-    // V = N XOR C = 0 XOR 1 = 1
-    assert_ne!(cpu.cc & (CcFlag::V as u8), 0);
+    // V unchanged by right-shift (stays 0 from init)
+    assert_eq!(cpu.cc & (CcFlag::V as u8), 0);
 }
 
 // ---- ROL memory ----

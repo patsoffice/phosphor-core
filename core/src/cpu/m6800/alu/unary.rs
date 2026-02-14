@@ -60,10 +60,11 @@ impl M6800 {
     }
 
     /// Test: set flags based on val, no modification.
-    /// N, Z affected. V cleared.
+    /// N, Z affected. V cleared. C cleared.
     #[inline]
     pub(crate) fn perform_tst(&mut self, val: u8) {
         self.set_flags_logical(val);
+        self.set_flag(CcFlag::C, false);
     }
 
     // --- Inherent register ops (2 cycles: 1 fetch + 1 internal) ---

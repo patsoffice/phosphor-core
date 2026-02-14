@@ -536,7 +536,7 @@ impl M6800 {
     }
 
     /// DAA (0x19): Decimal Adjust A after BCD addition.
-    /// N, Z affected. C can be set (never cleared). V undefined.
+    /// N, Z affected. V cleared. C can be set (never cleared).
     fn op_daa(&mut self, cycle: u8) {
         if cycle == 0 {
             let mut correction: u8 = 0;
@@ -556,6 +556,7 @@ impl M6800 {
             self.a = result;
             self.set_flag(CcFlag::N, self.a & 0x80 != 0);
             self.set_flag(CcFlag::Z, self.a == 0);
+            self.set_flag(CcFlag::V, false);
             self.set_flag(CcFlag::C, carry);
             self.state = ExecState::Fetch;
         }

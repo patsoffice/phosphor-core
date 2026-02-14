@@ -12,3 +12,7 @@ rand = "0.8"
 [[bin]]
 name = "gen_m6809_tests"
 path = "src/bin/gen_m6809_tests.rs"
+
+[[bin]]
+name = "gen_m6800_tests"
+path = "src/bin/gen_m6800_tests.rs"

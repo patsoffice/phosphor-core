@@ -78,7 +78,7 @@ ROMs are matched by CRC32 checksum, so any MAME ROM naming convention works. All
 | **ROM Loader** | Complete | MAME ZIP support, CRC32-based ROM matching, multi-variant support |
 | **Joust System** | Complete | Williams board: CPU + video RAM + PIAs + blitter + CMOS + ROM |
 | **Machine Trait** | Complete | Frontend-agnostic interface: display, input, render, reset |
-| **CPU Validation** | Complete | 266 opcodes, 266,000 test vectors cross-validated against elmerucr/MC6809 |
+| **CPU Validation** | Complete | M6809: 266K vectors vs elmerucr/MC6809 (100%), M6800: 192K vectors vs mame4all (99.998%) |
 | **Test Suite** | Complete | 561 tests across core, devices, and machine integration |
 
 ### 6809 Instructions
@@ -140,33 +140,17 @@ SDL2-based windowed frontend — external dependencies: SDL2, zip:
 
 ### CPU Validation Crate (`phosphor-cpu-validation`)
 
-[SingleStepTests](https://github.com/SingleStepTests/65x02)-style test infrastructure for validating CPU implementations against randomized test vectors with cycle-by-cycle bus traces:
+[SingleStepTests](https://github.com/SingleStepTests/65x02)-style test infrastructure for validating CPU implementations against randomized test vectors with cycle-by-cycle bus traces. Cross-validates against independent reference emulators to catch flag, timing, and behavioral bugs.
 
-- **TracingBus** — flat 64KB memory bus that records every read/write cycle
-- **Test generator** — produces 100 randomized test vectors per opcode as JSON (266 opcodes, 266,000 total)
-- **Test runner** — replays test vectors against phosphor-core, asserting registers, memory, and bus cycles
-- **Validity filtering** — skips undefined indexed postbytes and undefined EXG/TFR register codes
-
-```bash
-# Generate test vectors for a single opcode
-cargo run -p phosphor-cpu-validation --bin gen_m6809_tests -- 0x86
-
-# Generate all 266 opcodes (page 1, page 2, page 3)
-cargo run -p phosphor-cpu-validation --bin gen_m6809_tests -- all
-
-# Run validation tests
-cargo test -p phosphor-cpu-validation
-```
+- **M6809** — 266 opcodes, 266,000 test vectors, cross-validated against [elmerucr/MC6809](https://github.com/elmerucr/MC6809). See [cpu-validation/README_6809.md](cpu-validation/README_6809.md).
+- **M6800** — 192 opcodes, 192,000 test vectors, cross-validated against [mame4all](https://github.com/mamedev/mame) M6800. See [cpu-validation/README_6800.md](cpu-validation/README_6800.md).
 
 ### Cross-Validation (`cross-validation/`)
 
-C++ harness that validates phosphor-core's test vectors against [elmerucr/MC6809](https://github.com/elmerucr/MC6809), an independent 6809 emulator. Compares registers, memory, and cycle counts. **266,000/266,000 tests pass** across all 266 defined M6809 opcodes.
+C++ harnesses that validate phosphor-core's test vectors against independent reference emulators. Compares registers, memory, and cycle counts.
 
-```bash
-git submodule update --init
-make -C cross-validation
-./cross-validation/validate cpu-validation/test_data/m6809/*.json
-```
+- **M6809** — 266,000/266,000 tests pass (100%)
+- **M6800** — 191,996/192,000 tests pass (99.998%)
 
 ## Project Structure
 
@@ -240,16 +224,19 @@ phosphor-core/
 │       └── joust_test.rs           # Joust system integration tests (39 tests)
 ├── cpu-validation/                 # phosphor-cpu-validation crate
 │   ├── Cargo.toml                  # Deps: phosphor-core, serde, rand
+│   ├── README_6809.md              # M6809 cross-validation details
+│   ├── README_6800.md              # M6800 cross-validation details & MAME differences
 │   ├── src/
 │   │   ├── lib.rs                  # TracingBus + JSON types
 │   │   └── bin/
-│   │       └── gen_m6809_tests.rs  # Test vector generator
+│   │       ├── gen_m6809_tests.rs  # M6809 test vector generator
+│   │       └── gen_m6800_tests.rs  # M6800 test vector generator
 │   ├── tests/
-│   │   └── m6809_single_step_test.rs  # Validates phosphor-core against JSON
-│   └── test_data/m6809/            # Generated JSON test vectors (266 files)
-│       ├── 86.json                 # Page 1 opcodes (e.g., LDA #imm)
-│       ├── 10_8e.json              # Page 2 opcodes (e.g., LDY #imm)
-│       └── 11_83.json              # Page 3 opcodes (e.g., CMPU #imm)
+│   │   ├── m6809_single_step_test.rs  # Validates M6809 against JSON
+│   │   └── m6800_single_step_test.rs  # Validates M6800 against JSON
+│   └── test_data/
+│       ├── m6809/                  # Generated M6809 test vectors (266 files)
+│       └── m6800/                  # Generated M6800 test vectors (192 files)
 ├── frontend/                       # phosphor-frontend crate (SDL2 frontend)
 │   ├── Cargo.toml                  # Deps: phosphor-core, phosphor-machines, sdl2, zip
 │   └── src/
@@ -260,10 +247,11 @@ phosphor-core/
 │       └── input.rs                # Keyboard → Machine::set_input() mapping
 └── cross-validation/               # C++ reference validation
     ├── Makefile
-    ├── validate.cpp                # Test harness using elmerucr/MC6809
+    ├── validate.cpp                # M6809 harness using elmerucr/MC6809
+    ├── validate_m6800.cpp          # M6800 harness using mame4all
     ├── mc6809/                     # Git submodule: elmerucr/MC6809
-    ├── include/nlohmann/json.hpp   # Single-header JSON parser
-    └── README.md
+    ├── m6800/                      # mame4all M6800 CPU core + shim
+    └── include/nlohmann/json.hpp   # Single-header JSON parser
 ```
 
 ## How It Works
@@ -393,7 +381,7 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 - [x] Interrupt handling (IRQ, FIRQ, NMI)
 - [x] CWAI and SYNC instructions
 - [x] Move SimpleSystem components to separate crate
-- [x] Cycle-accurate timing validation (266 opcodes, 266,000 tests cross-validated against elmerucr/MC6809)
+- [x] Cycle-accurate timing validation (M6809: 266K tests vs elmerucr/MC6809, M6800: 192K tests vs mame4all)
 - [ ] Reset vector fetch from 0xFFFE/0xFFFF
 - [ ] Instruction disassembler
 - [ ] Save state support

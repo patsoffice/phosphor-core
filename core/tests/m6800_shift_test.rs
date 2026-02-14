@@ -177,8 +177,8 @@ fn test_lsra_carry_out() {
     assert_eq!(cpu.a, 0x00);
     assert_eq!(cpu.cc & CcFlag::C as u8, CcFlag::C as u8);
     assert_eq!(cpu.cc & CcFlag::Z as u8, CcFlag::Z as u8);
-    // V = N XOR C = 0 XOR 1 = 1
-    assert_eq!(cpu.cc & CcFlag::V as u8, CcFlag::V as u8);
+    // V unchanged (stays 0 from init)
+    assert_eq!(cpu.cc & CcFlag::V as u8, 0);
 }
 
 #[test]
@@ -324,7 +324,7 @@ fn test_rorb_with_carry_in() {
 }
 
 // =============================================================================
-// V flag (N XOR C) verification
+// V flag verification: V = N XOR C for left shifts (ASL/ROL), unchanged for right shifts
 // =============================================================================
 
 #[test]
@@ -356,28 +356,31 @@ fn test_asl_v_flag_n0_c1() {
 }
 
 #[test]
-fn test_lsr_v_equals_c() {
-    // LSR: N always 0, so V = 0 XOR C = C
+fn test_lsr_v_unchanged() {
+    // LSR does not modify V flag on M6800 — V retains previous value
     let mut cpu = M6800::new();
     let mut bus = TestBus::new();
-    cpu.a = 0x03; // bit 0 = 1 → C=1, V=1
+    cpu.a = 0x03; // bit 0 = 1 → C=1
+    cpu.cc = CcFlag::V as u8; // V=1 before LSR
     bus.load(0, &[0x44]); // LSRA
     tick(&mut cpu, &mut bus, 2);
     assert_eq!(cpu.a, 0x01);
     assert_eq!(cpu.cc & CcFlag::C as u8, CcFlag::C as u8);
-    assert_eq!(cpu.cc & CcFlag::V as u8, CcFlag::V as u8); // V = C = 1
+    assert_eq!(cpu.cc & CcFlag::V as u8, CcFlag::V as u8); // V unchanged (still 1)
 }
 
 #[test]
-fn test_lsr_v_clear_when_c_clear() {
+fn test_lsr_v_stays_clear() {
+    // LSR does not modify V flag — if V=0 before, V=0 after
     let mut cpu = M6800::new();
     let mut bus = TestBus::new();
-    cpu.a = 0x02; // bit 0 = 0 → C=0, V=0
+    cpu.a = 0x02; // bit 0 = 0 → C=0
+    // V=0 by default (M6800::new() initializes cc=0)
     bus.load(0, &[0x44]); // LSRA
     tick(&mut cpu, &mut bus, 2);
     assert_eq!(cpu.a, 0x01);
     assert_eq!(cpu.cc & CcFlag::C as u8, 0);
-    assert_eq!(cpu.cc & CcFlag::V as u8, 0); // V = C = 0
+    assert_eq!(cpu.cc & CcFlag::V as u8, 0); // V unchanged (still 0)
 }
 
 // =============================================================================

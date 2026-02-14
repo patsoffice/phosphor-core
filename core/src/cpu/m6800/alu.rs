@@ -31,15 +31,24 @@ impl M6800 {
         self.set_flag(CcFlag::V, false);
     }
 
-    /// Helper to set N, Z, C flags for shift/rotate operations.
-    /// V = N XOR C (post-operation).
+    /// Helper to set N, Z, V, C flags for left-shift/rotate operations (ASL, ROL).
+    /// V = N XOR C (post-operation) per M6800 datasheet.
     #[inline]
-    pub(crate) fn set_flags_shift(&mut self, result: u8, carry: bool) {
+    pub(crate) fn set_flags_shift_left(&mut self, result: u8, carry: bool) {
+        let n = result & 0x80 != 0;
+        self.set_flag(CcFlag::N, n);
+        self.set_flag(CcFlag::Z, result == 0);
+        self.set_flag(CcFlag::C, carry);
+        self.set_flag(CcFlag::V, n ^ carry);
+    }
+
+    /// Helper to set N, Z, C flags for right-shift/rotate operations (LSR, ASR, ROR).
+    /// V is not affected by right-shift operations on M6800.
+    #[inline]
+    pub(crate) fn set_flags_shift_right(&mut self, result: u8, carry: bool) {
         self.set_flag(CcFlag::N, result & 0x80 != 0);
         self.set_flag(CcFlag::Z, result == 0);
         self.set_flag(CcFlag::C, carry);
-        let n = result & 0x80 != 0;
-        self.set_flag(CcFlag::V, n ^ carry);
     }
 
     /// Generic immediate mode helper.
