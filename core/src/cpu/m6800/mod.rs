@@ -39,6 +39,8 @@ pub struct M6800 {
     pub(crate) state: ExecState,
     pub(crate) opcode: u8,
     pub(crate) temp_addr: u16,
+    /// Temporary data storage for multi-cycle operations (RMW operand, 16-bit hi byte)
+    pub(crate) temp_data: u8,
     /// Interrupt type being processed: 0=none, 1=NMI, 2=IRQ, 3=SWI
     pub(crate) interrupt_type: u8,
     /// Previous NMI line state for edge detection
@@ -76,6 +78,7 @@ impl M6800 {
             state: ExecState::Fetch,
             opcode: 0,
             temp_addr: 0,
+            temp_data: 0,
             interrupt_type: 0,
             nmi_previous: false,
         }
@@ -204,7 +207,7 @@ impl M6800 {
             0x5D => self.op_tstb(cycle),
             0x5F => self.op_clrb(cycle),
 
-            // --- Immediate mode ALU A register (2 cycles) ---
+            // --- 0x8x: A register immediate + 16-bit immediate ---
             0x80 => self.op_suba_imm(cycle, bus, master),
             0x81 => self.op_cmpa_imm(cycle, bus, master),
             0x82 => self.op_sbca_imm(cycle, bus, master),
@@ -215,12 +218,58 @@ impl M6800 {
             0x89 => self.op_adca_imm(cycle, bus, master),
             0x8A => self.op_oraa_imm(cycle, bus, master),
             0x8B => self.op_adda_imm(cycle, bus, master),
-
-            // --- 16-bit immediate ops (3 cycles) ---
             0x8C => self.op_cpx_imm(cycle, bus, master),
             0x8E => self.op_lds_imm(cycle, bus, master),
 
-            // --- Immediate mode ALU B register (2 cycles) ---
+            // --- 0x9x: A register direct + 16-bit direct ---
+            0x90 => self.op_suba_dir(cycle, bus, master),
+            0x91 => self.op_cmpa_dir(cycle, bus, master),
+            0x92 => self.op_sbca_dir(cycle, bus, master),
+            0x94 => self.op_anda_dir(cycle, bus, master),
+            0x95 => self.op_bita_dir(cycle, bus, master),
+            0x96 => self.op_ldaa_dir(cycle, bus, master),
+            0x97 => self.op_staa_dir(cycle, bus, master),
+            0x98 => self.op_eora_dir(cycle, bus, master),
+            0x99 => self.op_adca_dir(cycle, bus, master),
+            0x9A => self.op_oraa_dir(cycle, bus, master),
+            0x9B => self.op_adda_dir(cycle, bus, master),
+            0x9C => self.op_cpx_dir(cycle, bus, master),
+            0x9E => self.op_lds_dir(cycle, bus, master),
+            0x9F => self.op_sts_dir(cycle, bus, master),
+
+            // --- 0xAx: A register indexed + 16-bit indexed ---
+            0xA0 => self.op_suba_idx(cycle, bus, master),
+            0xA1 => self.op_cmpa_idx(cycle, bus, master),
+            0xA2 => self.op_sbca_idx(cycle, bus, master),
+            0xA4 => self.op_anda_idx(cycle, bus, master),
+            0xA5 => self.op_bita_idx(cycle, bus, master),
+            0xA6 => self.op_ldaa_idx(cycle, bus, master),
+            0xA7 => self.op_staa_idx(cycle, bus, master),
+            0xA8 => self.op_eora_idx(cycle, bus, master),
+            0xA9 => self.op_adca_idx(cycle, bus, master),
+            0xAA => self.op_oraa_idx(cycle, bus, master),
+            0xAB => self.op_adda_idx(cycle, bus, master),
+            0xAC => self.op_cpx_idx(cycle, bus, master),
+            0xAE => self.op_lds_idx(cycle, bus, master),
+            0xAF => self.op_sts_idx(cycle, bus, master),
+
+            // --- 0xBx: A register extended + 16-bit extended ---
+            0xB0 => self.op_suba_ext(cycle, bus, master),
+            0xB1 => self.op_cmpa_ext(cycle, bus, master),
+            0xB2 => self.op_sbca_ext(cycle, bus, master),
+            0xB4 => self.op_anda_ext(cycle, bus, master),
+            0xB5 => self.op_bita_ext(cycle, bus, master),
+            0xB6 => self.op_ldaa_ext(cycle, bus, master),
+            0xB7 => self.op_staa_ext(cycle, bus, master),
+            0xB8 => self.op_eora_ext(cycle, bus, master),
+            0xB9 => self.op_adca_ext(cycle, bus, master),
+            0xBA => self.op_oraa_ext(cycle, bus, master),
+            0xBB => self.op_adda_ext(cycle, bus, master),
+            0xBC => self.op_cpx_ext(cycle, bus, master),
+            0xBE => self.op_lds_ext(cycle, bus, master),
+            0xBF => self.op_sts_ext(cycle, bus, master),
+
+            // --- 0xCx: B register immediate + 16-bit immediate ---
             0xC0 => self.op_subb_imm(cycle, bus, master),
             0xC1 => self.op_cmpb_imm(cycle, bus, master),
             0xC2 => self.op_sbcb_imm(cycle, bus, master),
@@ -231,9 +280,52 @@ impl M6800 {
             0xC9 => self.op_adcb_imm(cycle, bus, master),
             0xCA => self.op_orab_imm(cycle, bus, master),
             0xCB => self.op_addb_imm(cycle, bus, master),
-
-            // --- 16-bit immediate ops ---
             0xCE => self.op_ldx_imm(cycle, bus, master),
+
+            // --- 0xDx: B register direct + 16-bit direct ---
+            0xD0 => self.op_subb_dir(cycle, bus, master),
+            0xD1 => self.op_cmpb_dir(cycle, bus, master),
+            0xD2 => self.op_sbcb_dir(cycle, bus, master),
+            0xD4 => self.op_andb_dir(cycle, bus, master),
+            0xD5 => self.op_bitb_dir(cycle, bus, master),
+            0xD6 => self.op_ldab_dir(cycle, bus, master),
+            0xD7 => self.op_stab_dir(cycle, bus, master),
+            0xD8 => self.op_eorb_dir(cycle, bus, master),
+            0xD9 => self.op_adcb_dir(cycle, bus, master),
+            0xDA => self.op_orab_dir(cycle, bus, master),
+            0xDB => self.op_addb_dir(cycle, bus, master),
+            0xDE => self.op_ldx_dir(cycle, bus, master),
+            0xDF => self.op_stx_dir(cycle, bus, master),
+
+            // --- 0xEx: B register indexed + 16-bit indexed ---
+            0xE0 => self.op_subb_idx(cycle, bus, master),
+            0xE1 => self.op_cmpb_idx(cycle, bus, master),
+            0xE2 => self.op_sbcb_idx(cycle, bus, master),
+            0xE4 => self.op_andb_idx(cycle, bus, master),
+            0xE5 => self.op_bitb_idx(cycle, bus, master),
+            0xE6 => self.op_ldab_idx(cycle, bus, master),
+            0xE7 => self.op_stab_idx(cycle, bus, master),
+            0xE8 => self.op_eorb_idx(cycle, bus, master),
+            0xE9 => self.op_adcb_idx(cycle, bus, master),
+            0xEA => self.op_orab_idx(cycle, bus, master),
+            0xEB => self.op_addb_idx(cycle, bus, master),
+            0xEE => self.op_ldx_idx(cycle, bus, master),
+            0xEF => self.op_stx_idx(cycle, bus, master),
+
+            // --- 0xFx: B register extended + 16-bit extended ---
+            0xF0 => self.op_subb_ext(cycle, bus, master),
+            0xF1 => self.op_cmpb_ext(cycle, bus, master),
+            0xF2 => self.op_sbcb_ext(cycle, bus, master),
+            0xF4 => self.op_andb_ext(cycle, bus, master),
+            0xF5 => self.op_bitb_ext(cycle, bus, master),
+            0xF6 => self.op_ldab_ext(cycle, bus, master),
+            0xF7 => self.op_stab_ext(cycle, bus, master),
+            0xF8 => self.op_eorb_ext(cycle, bus, master),
+            0xF9 => self.op_adcb_ext(cycle, bus, master),
+            0xFA => self.op_orab_ext(cycle, bus, master),
+            0xFB => self.op_addb_ext(cycle, bus, master),
+            0xFE => self.op_ldx_ext(cycle, bus, master),
+            0xFF => self.op_stx_ext(cycle, bus, master),
 
             // Unknown opcode - just fetch next
             _ => {

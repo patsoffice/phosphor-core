@@ -169,6 +169,305 @@ impl M6800 {
         }
     }
 
+    // ---- 8-bit Store helpers ----
+
+    /// Store 8-bit value to direct address.
+    /// 4 cycles total: 1 fetch + 1 read addr + 1 internal + 1 write.
+    #[inline]
+    pub(crate) fn store_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+        data: u8,
+    ) {
+        match cycle {
+            0 => {
+                self.temp_addr = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.state = ExecState::Execute(self.opcode, 1);
+            }
+            1 => {
+                self.state = ExecState::Execute(self.opcode, 2);
+            }
+            2 => {
+                bus.write(master, self.temp_addr, data);
+                self.state = ExecState::Fetch;
+            }
+            _ => self.state = ExecState::Fetch,
+        }
+    }
+
+    /// Store 8-bit value to extended (16-bit) address.
+    /// 5 cycles total: 1 fetch + 1 read addr hi + 1 read addr lo + 1 internal + 1 write.
+    #[inline]
+    pub(crate) fn store_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+        data: u8,
+    ) {
+        match cycle {
+            0 => {
+                self.temp_addr = (bus.read(master, self.pc) as u16) << 8;
+                self.pc = self.pc.wrapping_add(1);
+                self.state = ExecState::Execute(self.opcode, 1);
+            }
+            1 => {
+                self.temp_addr |= bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.state = ExecState::Execute(self.opcode, 2);
+            }
+            2 => {
+                self.state = ExecState::Execute(self.opcode, 3);
+            }
+            3 => {
+                bus.write(master, self.temp_addr, data);
+                self.state = ExecState::Fetch;
+            }
+            _ => self.state = ExecState::Fetch,
+        }
+    }
+
+    /// Store 8-bit value to indexed address (X + offset).
+    /// 6 cycles total: 1 fetch + 1 read offset + 3 internal + 1 write.
+    #[inline]
+    pub(crate) fn store_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+        data: u8,
+    ) {
+        match cycle {
+            0 => {
+                let offset = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = self.x.wrapping_add(offset);
+                self.state = ExecState::Execute(self.opcode, 1);
+            }
+            1 | 2 | 3 => {
+                self.state = ExecState::Execute(self.opcode, cycle + 1);
+            }
+            4 => {
+                bus.write(master, self.temp_addr, data);
+                self.state = ExecState::Fetch;
+            }
+            _ => self.state = ExecState::Fetch,
+        }
+    }
+
+    // ---- 16-bit Read helpers ----
+
+    /// Read 16-bit value from direct address and apply operation.
+    /// 4 cycles total: 1 fetch + 1 read addr + 1 read hi + 1 read lo.
+    #[inline]
+    pub(crate) fn alu16_direct<B: Bus<Address = u16, Data = u8> + ?Sized, F>(
+        &mut self,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+        operation: F,
+    ) where
+        F: FnOnce(&mut Self, u16),
+    {
+        match cycle {
+            0 => {
+                self.temp_addr = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.state = ExecState::Execute(self.opcode, 1);
+            }
+            1 => {
+                self.temp_data = bus.read(master, self.temp_addr);
+                self.state = ExecState::Execute(self.opcode, 2);
+            }
+            2 => {
+                let lo = bus.read(master, self.temp_addr.wrapping_add(1));
+                let val = (self.temp_data as u16) << 8 | lo as u16;
+                operation(self, val);
+                self.state = ExecState::Fetch;
+            }
+            _ => self.state = ExecState::Fetch,
+        }
+    }
+
+    /// Read 16-bit value from extended address and apply operation.
+    /// 5 cycles total: 1 fetch + 1 read addr hi + 1 read addr lo + 1 read hi + 1 read lo.
+    #[inline]
+    pub(crate) fn alu16_extended<B: Bus<Address = u16, Data = u8> + ?Sized, F>(
+        &mut self,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+        operation: F,
+    ) where
+        F: FnOnce(&mut Self, u16),
+    {
+        match cycle {
+            0 => {
+                self.temp_addr = (bus.read(master, self.pc) as u16) << 8;
+                self.pc = self.pc.wrapping_add(1);
+                self.state = ExecState::Execute(self.opcode, 1);
+            }
+            1 => {
+                self.temp_addr |= bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.state = ExecState::Execute(self.opcode, 2);
+            }
+            2 => {
+                self.temp_data = bus.read(master, self.temp_addr);
+                self.state = ExecState::Execute(self.opcode, 3);
+            }
+            3 => {
+                let lo = bus.read(master, self.temp_addr.wrapping_add(1));
+                let val = (self.temp_data as u16) << 8 | lo as u16;
+                operation(self, val);
+                self.state = ExecState::Fetch;
+            }
+            _ => self.state = ExecState::Fetch,
+        }
+    }
+
+    /// Read 16-bit value from indexed address (X + offset) and apply operation.
+    /// 6 cycles total: 1 fetch + 1 read offset + 2 internal + 1 read hi + 1 read lo.
+    #[inline]
+    pub(crate) fn alu16_indexed<B: Bus<Address = u16, Data = u8> + ?Sized, F>(
+        &mut self,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+        operation: F,
+    ) where
+        F: FnOnce(&mut Self, u16),
+    {
+        match cycle {
+            0 => {
+                let offset = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = self.x.wrapping_add(offset);
+                self.state = ExecState::Execute(self.opcode, 1);
+            }
+            1 | 2 => {
+                self.state = ExecState::Execute(self.opcode, cycle + 1);
+            }
+            3 => {
+                self.temp_data = bus.read(master, self.temp_addr);
+                self.state = ExecState::Execute(self.opcode, 4);
+            }
+            4 => {
+                let lo = bus.read(master, self.temp_addr.wrapping_add(1));
+                let val = (self.temp_data as u16) << 8 | lo as u16;
+                operation(self, val);
+                self.state = ExecState::Fetch;
+            }
+            _ => self.state = ExecState::Fetch,
+        }
+    }
+
+    // ---- 16-bit Store helpers ----
+
+    /// Store 16-bit value to direct address.
+    /// 5 cycles total: 1 fetch + 1 read addr + 1 internal + 1 write hi + 1 write lo.
+    #[inline]
+    pub(crate) fn store16_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+        data: u16,
+    ) {
+        match cycle {
+            0 => {
+                self.temp_addr = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.state = ExecState::Execute(self.opcode, 1);
+            }
+            1 => {
+                self.state = ExecState::Execute(self.opcode, 2);
+            }
+            2 => {
+                bus.write(master, self.temp_addr, (data >> 8) as u8);
+                self.state = ExecState::Execute(self.opcode, 3);
+            }
+            3 => {
+                bus.write(master, self.temp_addr.wrapping_add(1), data as u8);
+                self.state = ExecState::Fetch;
+            }
+            _ => self.state = ExecState::Fetch,
+        }
+    }
+
+    /// Store 16-bit value to extended (16-bit) address.
+    /// 6 cycles total: 1 fetch + 1 read addr hi + 1 read addr lo + 1 internal + 1 write hi + 1 write lo.
+    #[inline]
+    pub(crate) fn store16_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+        data: u16,
+    ) {
+        match cycle {
+            0 => {
+                self.temp_addr = (bus.read(master, self.pc) as u16) << 8;
+                self.pc = self.pc.wrapping_add(1);
+                self.state = ExecState::Execute(self.opcode, 1);
+            }
+            1 => {
+                self.temp_addr |= bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.state = ExecState::Execute(self.opcode, 2);
+            }
+            2 => {
+                self.state = ExecState::Execute(self.opcode, 3);
+            }
+            3 => {
+                bus.write(master, self.temp_addr, (data >> 8) as u8);
+                self.state = ExecState::Execute(self.opcode, 4);
+            }
+            4 => {
+                bus.write(master, self.temp_addr.wrapping_add(1), data as u8);
+                self.state = ExecState::Fetch;
+            }
+            _ => self.state = ExecState::Fetch,
+        }
+    }
+
+    /// Store 16-bit value to indexed address (X + offset).
+    /// 7 cycles total: 1 fetch + 1 read offset + 3 internal + 1 write hi + 1 write lo.
+    #[inline]
+    pub(crate) fn store16_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+        data: u16,
+    ) {
+        match cycle {
+            0 => {
+                let offset = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = self.x.wrapping_add(offset);
+                self.state = ExecState::Execute(self.opcode, 1);
+            }
+            1 | 2 | 3 => {
+                self.state = ExecState::Execute(self.opcode, cycle + 1);
+            }
+            4 => {
+                bus.write(master, self.temp_addr, (data >> 8) as u8);
+                self.state = ExecState::Execute(self.opcode, 5);
+            }
+            5 => {
+                bus.write(master, self.temp_addr.wrapping_add(1), data as u8);
+                self.state = ExecState::Fetch;
+            }
+            _ => self.state = ExecState::Fetch,
+        }
+    }
+
+    // ---- Read-Modify-Write helpers ----
+
     /// Generic direct mode read-modify-write helper.
     /// 6 cycles total: 1 fetch + 1 read addr + 1 read operand + 1 internal + 1 write + 1 internal.
     #[inline]
@@ -188,25 +487,18 @@ impl M6800 {
                 self.state = ExecState::Execute(self.opcode, 1);
             }
             1 => {
-                // Read operand
-                let operand = bus.read(master, self.temp_addr);
-                // Store operand in opcode field temporarily (reuse available storage)
-                self.opcode = operand;
+                self.temp_data = bus.read(master, self.temp_addr);
                 self.state = ExecState::Execute(self.opcode, 2);
             }
             2 => {
-                // Internal: perform operation
-                let result = operation(self, self.opcode);
-                self.opcode = result;
+                self.temp_data = operation(self, self.temp_data);
                 self.state = ExecState::Execute(self.opcode, 3);
             }
             3 => {
-                // Write result back
-                bus.write(master, self.temp_addr, self.opcode);
+                bus.write(master, self.temp_addr, self.temp_data);
                 self.state = ExecState::Execute(self.opcode, 4);
             }
             4 => {
-                // Final internal cycle
                 self.state = ExecState::Fetch;
             }
             _ => self.state = ExecState::Fetch,
@@ -237,17 +529,15 @@ impl M6800 {
                 self.state = ExecState::Execute(self.opcode, 2);
             }
             2 => {
-                let operand = bus.read(master, self.temp_addr);
-                self.opcode = operand;
+                self.temp_data = bus.read(master, self.temp_addr);
                 self.state = ExecState::Execute(self.opcode, 3);
             }
             3 => {
-                let result = operation(self, self.opcode);
-                self.opcode = result;
+                self.temp_data = operation(self, self.temp_data);
                 self.state = ExecState::Execute(self.opcode, 4);
             }
             4 => {
-                bus.write(master, self.temp_addr, self.opcode);
+                bus.write(master, self.temp_addr, self.temp_data);
                 self.state = ExecState::Execute(self.opcode, 5);
             }
             5 => {
@@ -277,21 +567,18 @@ impl M6800 {
                 self.state = ExecState::Execute(self.opcode, 1);
             }
             1 | 2 => {
-                // Internal cycles
                 self.state = ExecState::Execute(self.opcode, cycle + 1);
             }
             3 => {
-                let operand = bus.read(master, self.temp_addr);
-                self.opcode = operand;
+                self.temp_data = bus.read(master, self.temp_addr);
                 self.state = ExecState::Execute(self.opcode, 4);
             }
             4 => {
-                let result = operation(self, self.opcode);
-                self.opcode = result;
+                self.temp_data = operation(self, self.temp_data);
                 self.state = ExecState::Execute(self.opcode, 5);
             }
             5 => {
-                bus.write(master, self.temp_addr, self.opcode);
+                bus.write(master, self.temp_addr, self.temp_data);
                 self.state = ExecState::Fetch;
             }
             _ => self.state = ExecState::Fetch,
