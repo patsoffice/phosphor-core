@@ -1,7 +1,95 @@
+/// Atari POKEY (C012294) — Programmable sound, I/O, and timer chip
+///
+/// The POKEY provides four independently programmable audio channels,
+/// polynomial counter-based noise/tone generation, potentiometer (paddle)
+/// input scanning, keyboard scanning, serial I/O, and an interrupt
+/// controller. It was used in Atari 400/800 home computers and numerous
+/// Atari coin-op arcade boards (Missile Command, Centipede, etc.).
+///
+/// This implementation covers the audio, timer/IRQ, pot scanning, and
+/// random number subsystems. Keyboard and serial I/O are stubbed for
+/// arcade use (directly settable via helper methods).
+///
+/// References:
+/// - Atari C012294 datasheet (the definitive POKEY reference)
+/// - De Re Atari, Chapter 7: "Sound"
+/// - Altirra Hardware Reference Manual, POKEY section
+/// - MAME: `mamedev/mame` `src/devices/sound/pokey.cpp` / `.h`
+///
+/// # Write registers (offsets 0x00-0x0F)
+///
+/// | Offset | Name   | Description                                      |
+/// |--------|--------|--------------------------------------------------|
+/// | 0x00   | AUDF1  | Channel 1 frequency divider (period = N+1)       |
+/// | 0x01   | AUDC1  | Channel 1 control: volume, distortion, tone gate |
+/// | 0x02   | AUDF2  | Channel 2 frequency divider                      |
+/// | 0x03   | AUDC2  | Channel 2 control                                |
+/// | 0x04   | AUDF3  | Channel 3 frequency divider                      |
+/// | 0x05   | AUDC3  | Channel 3 control                                |
+/// | 0x06   | AUDF4  | Channel 4 frequency divider                      |
+/// | 0x07   | AUDC4  | Channel 4 control                                |
+/// | 0x08   | AUDCTL | Master audio control                             |
+/// | 0x09   | STIMER | Reset audio timers (write any value)              |
+/// | 0x0A   | SKREST | Reset serial port status bits                     |
+/// | 0x0B   | POTGO  | Start potentiometer scan                          |
+/// | 0x0D   | SEROUT | Serial output data                               |
+/// | 0x0E   | IRQEN  | Interrupt enable mask                            |
+/// | 0x0F   | SKCTL  | Serial port control                              |
+///
+/// # Read registers (offsets 0x00-0x0F)
+///
+/// | Offset | Name   | Description                                      |
+/// |--------|--------|--------------------------------------------------|
+/// | 0x00-7 | POT0-7 | Potentiometer counter values                     |
+/// | 0x08   | ALLPOT | Pot scan completion bitmap (1 = still scanning)  |
+/// | 0x09   | KBCODE | Keyboard code                                    |
+/// | 0x0A   | RANDOM | Random number (from polynomial counter)          |
+/// | 0x0D   | SERIN  | Serial input data                                |
+/// | 0x0E   | IRQST  | Interrupt status (active-low: 0 = pending)       |
+/// | 0x0F   | SKSTAT | Serial/keyboard status                           |
+///
+/// # AUDCTL bit assignments
+///
+/// | Bit | Constant          | Description                                   |
+/// |-----|-------------------|-----------------------------------------------|
+/// | 7   | `AUDCTL_POLY9`    | 0 = 17-bit polynomial, 1 = 9-bit polynomial  |
+/// | 6   | `AUDCTL_CH1_179MHZ` | 0 = base clock, 1 = 1.79 MHz for Ch1       |
+/// | 5   | `AUDCTL_CH3_179MHZ` | 0 = base clock, 1 = 1.79 MHz for Ch3       |
+/// | 4   | `AUDCTL_CH12_LINKED` | 1 = Ch1+Ch2 form 16-bit counter            |
+/// | 3   | `AUDCTL_CH34_LINKED` | 1 = Ch3+Ch4 form 16-bit counter            |
+/// | 2   | `AUDCTL_HPF_CH1`  | 1 = High-pass filter Ch1 (clocked by Ch3)     |
+/// | 1   | `AUDCTL_HPF_CH2`  | 1 = High-pass filter Ch2 (clocked by Ch4)     |
+/// | 0   | `AUDCTL_CLOCK_15KHZ` | 0 = 64 kHz base, 1 = 15 kHz base           |
+///
+/// # Audio pipeline (per tick at 1.79 MHz master clock)
+///
+/// 1. **Polynomial counters** step: 4-bit, 5-bit, 9-bit, and 17-bit LFSRs
+///    advance one position every tick, producing pseudo-random bit streams.
+/// 2. **Base clock dividers** count down: divide-by-28 produces the 64 kHz
+///    tick, divide-by-114 produces the 15 kHz tick.
+/// 3. **Channel dividers** count down on their selected clock edge. On
+///    underflow the divider reloads and the channel's square-wave output
+///    (`div_out`) toggles. In 16-bit linked mode, AUDF of the paired
+///    channels forms one 16-bit reload value.
+/// 4. **High-pass filters** (optional per AUDCTL): the source channel's
+///    output is captured into a flip-flop on the modulating channel's
+///    underflow edge, then XORed with the source to produce the filtered
+///    signal.
+/// 5. **Distortion gating**: the channel's square wave is ANDed with
+///    selected polynomial counter output. The 3-bit distortion field in
+///    AUDC selects which combination of 4-bit, 5-bit, and 17/9-bit
+///    polynomials to use.
+/// 6. **Volume scaling**: the gated signal (0 or 1) selects between 0 and
+///    the 4-bit volume level from AUDC. If AUDC bit 4 is clear, the output
+///    is forced to the volume level regardless of tone/poly state ("volume
+///    only" mode, used for DAC-style sample playback).
+/// 7. **Mixing**: all four channels are summed and normalized.
+/// 8. **Resampling**: a Bresenham accumulator downsamples the 1.79 MHz
+///    mixed output to the host audio sample rate using box-filter averaging.
 pub struct Pokey {
     // Audio channel registers (CPU-written)
     audf: [u8; 4], // AUDF1-4: frequency divider reload values
-    audc: [u8; 4], // AUDC1-4: volume (bits 3:0)  distortion (bits 7:5)  tone gate (bit 4)
+    audc: [u8; 4], // AUDC1-4: volume (bits 3:0), distortion (bits 7:5), tone gate (bit 4)
     audctl: u8,    // Master audio control
 
     // Audio channel runtime state
@@ -25,6 +113,7 @@ pub struct Pokey {
     pot_counter: [u8; 8], // Scan counter per pot
     pot_done: u8,         // ALLPOT completion bitmap
     pot_scanning: bool,
+    pot_scan_count: u8, // Global scan tick counter (stops at POT_SCAN_MAX)
 
     // Keyboard / serial (stubbed for arcade use)
     kbcode: u8,
@@ -46,7 +135,42 @@ pub struct Pokey {
     master_clock_hz: u32, // 1_789_773 (NTSC)
 }
 
+// AUDCTL bit positions (from Atari C012294 datasheet)
+const AUDCTL_POLY9: u8 = 0x80; // Bit 7: 0 = 17-bit poly, 1 = 9-bit poly
+const AUDCTL_CH1_179MHZ: u8 = 0x40; // Bit 6: 0 = base clock, 1 = 1.79 MHz for Ch1
+const AUDCTL_CH3_179MHZ: u8 = 0x20; // Bit 5: 0 = base clock, 1 = 1.79 MHz for Ch3
+const AUDCTL_CH12_LINKED: u8 = 0x10; // Bit 4: 0 = independent, 1 = Ch1+2 16-bit
+const AUDCTL_CH34_LINKED: u8 = 0x08; // Bit 3: 0 = independent, 1 = Ch3+4 16-bit
+const AUDCTL_HPF_CH1: u8 = 0x04; // Bit 2: High-pass filter Ch1 (clocked by Ch3)
+const AUDCTL_HPF_CH2: u8 = 0x02; // Bit 1: High-pass filter Ch2 (clocked by Ch4)
+const AUDCTL_CLOCK_15KHZ: u8 = 0x01; // Bit 0: 0 = 64 kHz base, 1 = 15 kHz base
+
+// AUDC (per-channel control) bit positions
+const AUDC_DIST_MASK: u8 = 0xE0; // Bits 7:5: distortion (polynomial select)
+const AUDC_DIST_SHIFT: u8 = 5; // Right-shift to extract distortion field
+const AUDC_TONE_GATE: u8 = 0x10; // Bit 4: 1 = use poly/tone, 0 = force constant output
+const AUDC_VOL_MASK: u8 = 0x0F; // Bits 3:0: volume (0-15)
+
+// IRQEN / IRQST bit positions (active-low in IRQST: 0 = pending)
+const IRQ_TIMER1: u8 = 0x01; // Bit 0: Ch1 timer underflow
+const IRQ_TIMER2: u8 = 0x02; // Bit 1: Ch2 timer underflow
+const IRQ_TIMER4: u8 = 0x04; // Bit 2: Ch4 timer underflow
+
+// SKSTAT bits cleared by SKREST (write to 0x0A).
+// Only resets serial error flags, not keyboard status bits.
+const SKSTAT_FRAME_ERR: u8 = 0x80; // Bit 7: Serial frame error
+const SKSTAT_OVERRUN: u8 = 0x40; // Bit 6: Serial data overrun
+const SKSTAT_DATA_READY: u8 = 0x08; // Bit 3: Serial data ready
+const SKSTAT_RESET_MASK: u8 = SKSTAT_FRAME_ERR | SKSTAT_OVERRUN | SKSTAT_DATA_READY;
+
+/// Maximum pot scan count. Hardware stops scanning after 228 clocks
+/// (one NTSC frame's worth of scanlines at the 15 kHz rate).
+const POT_SCAN_MAX: u8 = 228;
+
 impl Pokey {
+    /// Create a new POKEY with all registers cleared and polynomial counters
+    /// seeded to their maximum values. The `output_sample_rate` determines
+    /// the Bresenham resampling ratio (e.g. 44100 or 48000 Hz).
     pub fn new(output_sample_rate: u32) -> Self {
         Self {
             audf: [0; 4],
@@ -66,6 +190,7 @@ impl Pokey {
             pot_counter: [0; 8],
             pot_done: 0xFF,
             pot_scanning: false,
+            pot_scan_count: 0,
             kbcode: 0xFF,
             serin: 0,
             serout: 0,
@@ -82,6 +207,20 @@ impl Pokey {
         }
     }
 
+    /// Read from a POKEY register. `offset` is masked to 4 bits (0x00-0x0F).
+    ///
+    /// | Offset | Register | Returns                                     |
+    /// |--------|----------|---------------------------------------------|
+    /// | 0x00-7 | POTn     | Potentiometer counter value for pot n       |
+    /// | 0x08   | ALLPOT   | Pot scan status bitmap (1=still scanning)   |
+    /// | 0x09   | KBCODE   | Last keyboard scan code                     |
+    /// | 0x0A   | RANDOM   | Bits from polynomial counter (8 bits)       |
+    /// | 0x0D   | SERIN    | Serial input data byte                      |
+    /// | 0x0E   | IRQST    | Interrupt status (active-low: 0=pending)    |
+    /// | 0x0F   | SKSTAT   | Serial/keyboard status                      |
+    ///
+    /// Reading RANDOM returns the upper bits of either the 9-bit or 17-bit
+    /// polynomial counter, selected by AUDCTL bit 7.
     pub fn read(&mut self, offset: u8) -> u8 {
         match offset & 0x0F {
             0x00..=0x07 => {
@@ -93,11 +232,9 @@ impl Pokey {
             0x09 => self.kbcode,   // KBCODE
             0x0A => {
                 // RANDOM: High bits of poly counter
-                if self.audctl & 0x80 != 0 {
-                    // 9-bit poly
+                if self.audctl & AUDCTL_POLY9 != 0 {
                     (self.poly9 >> 1) as u8
                 } else {
-                    // 17-bit poly
                     (self.poly17 >> 9) as u8
                 }
             }
@@ -108,6 +245,22 @@ impl Pokey {
         }
     }
 
+    /// Write to a POKEY register. `offset` is masked to 4 bits (0x00-0x0F).
+    ///
+    /// | Offset | Register | Effect                                       |
+    /// |--------|----------|----------------------------------------------|
+    /// | 0x00/02/04/06 | AUDFn | Set frequency divider reload for channel n |
+    /// | 0x01/03/05/07 | AUDCn | Set volume, distortion, and tone gate      |
+    /// | 0x08   | AUDCTL   | Set master audio control flags               |
+    /// | 0x09   | STIMER   | Reset all channel dividers to reload values  |
+    /// | 0x0A   | SKREST   | Reset serial status error bits               |
+    /// | 0x0B   | POTGO    | Start potentiometer scan cycle               |
+    /// | 0x0D   | SEROUT   | Write serial output data byte                |
+    /// | 0x0E   | IRQEN    | Set interrupt enable mask                    |
+    /// | 0x0F   | SKCTL    | Set serial port control                      |
+    ///
+    /// Writing IRQEN also clears any pending interrupts for newly-disabled
+    /// sources (sets the corresponding IRQST bits to 1).
     pub fn write(&mut self, offset: u8, data: u8) {
         let masked_offset = offset & 0x0F;
         match masked_offset {
@@ -123,22 +276,24 @@ impl Pokey {
             }
             0x08 => self.audctl = data, // AUDCTL
             0x09 => {
-                // STIMER: Reset all dividers
+                // STIMER: Reset all channel dividers to their reload values.
+                // Only resets channel counters and output flip-flops; the
+                // base clock dividers (28/114) are free-running and unaffected.
                 for i in 0..4 {
                     self.divider[i] = self.audf[i] as u16;
                     self.div_out[i] = false;
                 }
-                // Also reset base clocks? Usually not, but let's reset counters to reload values
-                self.base_div28 = 28;
-                self.base_div114 = 114;
             }
             0x0A => {
-                // SKREST: Reset serial status
-                self.skstat = 0xFF; // Simplified
+                // SKREST: Reset serial status error bits only.
+                // Clears frame error (bit 7), overrun (bit 6), and data ready (bit 3).
+                // Does NOT affect keyboard-related bits (5, 4) or other status.
+                self.skstat |= SKSTAT_RESET_MASK;
             }
             0x0B => {
                 // POTGO: Start pot scan
                 self.pot_scanning = true;
+                self.pot_scan_count = 0;
                 self.pot_counter = [0; 8];
                 self.pot_done = 0xFF;
             }
@@ -154,6 +309,12 @@ impl Pokey {
         }
     }
 
+    /// Advance the POKEY by one master clock cycle (1.79 MHz).
+    ///
+    /// This executes the full audio pipeline: polynomial counter step,
+    /// base clock division, channel divider clocking, high-pass filtering,
+    /// distortion gating, volume mixing, resampling, and pot scanning.
+    /// Call this once per CPU clock cycle.
     pub fn tick(&mut self) {
         // 1. Advance polynomial counters
         self.step_polys();
@@ -175,45 +336,34 @@ impl Pokey {
         }
 
         // 3. Clock channels
-        // Determine clock source for each channel
-        // AUDCTL bits:
-        // 0: Base clock select (0=64k, 1=15k)
-        // 1: Ch2 HPF
-        // 2: Ch1 HPF
-        // 3: Ch3/4 Linked (16-bit)
-        // 4: Ch1/2 Linked (16-bit)
-        // 5: Ch3 1.79MHz
-        // 6: Ch1 1.79MHz
-        // 7: 9-bit/17-bit poly select
-
-        let base_tick = if (self.audctl & 0x01) != 0 {
+        let base_tick = if (self.audctl & AUDCTL_CLOCK_15KHZ) != 0 {
             tick_15k
         } else {
             tick_64k
         };
 
         // Channel 1
-        let ch1_tick = if (self.audctl & 0x40) != 0 {
+        let ch1_tick = if (self.audctl & AUDCTL_CH1_179MHZ) != 0 {
             true
         } else {
             base_tick
         };
-        let ch1_linked = (self.audctl & 0x10) != 0;
+        let ch1_linked = (self.audctl & AUDCTL_CH12_LINKED) != 0;
 
         if ch1_linked {
-            // 16-bit mode for Ch1Ch2
+            // 16-bit mode for Ch1+Ch2
             if ch1_tick {
                 if self.divider[0] == 0 {
-                    // Reload 16-bit value: AUDF1 (low)  AUDF2 (high)
+                    // Reload 16-bit value: AUDF1 (low) + AUDF2 (high)
                     let reload = (self.audf[0] as u16) | ((self.audf[1] as u16) << 8);
                     self.divider[0] = reload;
 
-                    // Toggle Ch2 output (Ch1 output is usually ignored or acts as intermediate)
+                    // Toggle Ch2 output (Ch1 output is ignored in linked mode)
                     self.div_out[1] = !self.div_out[1];
 
                     // IRQ for Ch2 (Timer 2)
-                    if (self.irqen & 0x02) != 0 {
-                        self.irqst &= !0x02;
+                    if (self.irqen & IRQ_TIMER2) != 0 {
+                        self.irqst &= !IRQ_TIMER2;
                     }
                 } else {
                     self.divider[0] -= 1;
@@ -226,23 +376,22 @@ impl Pokey {
                     self.divider[0] = self.audf[0] as u16;
                     self.div_out[0] = !self.div_out[0];
                     // IRQ for Ch1 (Timer 1)
-                    if (self.irqen & 0x01) != 0 {
-                        self.irqst &= !0x01;
+                    if (self.irqen & IRQ_TIMER1) != 0 {
+                        self.irqst &= !IRQ_TIMER1;
                     }
                 } else {
                     self.divider[0] -= 1;
                 }
             }
 
-            // 8-bit mode for Ch2
-            // Ch2 always uses base clock in 8-bit mode
+            // 8-bit mode for Ch2 (always uses base clock in 8-bit mode)
             if base_tick {
                 if self.divider[1] == 0 {
                     self.divider[1] = self.audf[1] as u16;
                     self.div_out[1] = !self.div_out[1];
                     // IRQ for Ch2 (Timer 2)
-                    if (self.irqen & 0x02) != 0 {
-                        self.irqst &= !0x02;
+                    if (self.irqen & IRQ_TIMER2) != 0 {
+                        self.irqst &= !IRQ_TIMER2;
                     }
                 } else {
                     self.divider[1] -= 1;
@@ -251,15 +400,15 @@ impl Pokey {
         }
 
         // Channel 3
-        let ch3_tick = if (self.audctl & 0x20) != 0 {
+        let ch3_tick = if (self.audctl & AUDCTL_CH3_179MHZ) != 0 {
             true
         } else {
             base_tick
         };
-        let ch3_linked = (self.audctl & 0x08) != 0;
+        let ch3_linked = (self.audctl & AUDCTL_CH34_LINKED) != 0;
 
         if ch3_linked {
-            // 16-bit mode for Ch3Ch4
+            // 16-bit mode for Ch3+Ch4
             if ch3_tick {
                 if self.divider[2] == 0 {
                     let reload = (self.audf[2] as u16) | ((self.audf[3] as u16) << 8);
@@ -267,9 +416,14 @@ impl Pokey {
 
                     self.div_out[3] = !self.div_out[3];
 
+                    // Capture Ch2 output into HPF flip-flop on Ch4 underflow edge
+                    if (self.audctl & AUDCTL_HPF_CH2) != 0 {
+                        self.hp_ff[1] = self.div_out[1];
+                    }
+
                     // IRQ for Ch4 (Timer 4)
-                    if (self.irqen & 0x04) != 0 {
-                        self.irqst &= !0x04;
+                    if (self.irqen & IRQ_TIMER4) != 0 {
+                        self.irqst &= !IRQ_TIMER4;
                     }
                 } else {
                     self.divider[2] -= 1;
@@ -281,6 +435,11 @@ impl Pokey {
                 if self.divider[2] == 0 {
                     self.divider[2] = self.audf[2] as u16;
                     self.div_out[2] = !self.div_out[2];
+
+                    // Capture Ch1 output into HPF flip-flop on Ch3 underflow edge
+                    if (self.audctl & AUDCTL_HPF_CH1) != 0 {
+                        self.hp_ff[0] = self.div_out[0];
+                    }
                     // Ch3 has no IRQ
                 } else {
                     self.divider[2] -= 1;
@@ -292,9 +451,15 @@ impl Pokey {
                 if self.divider[3] == 0 {
                     self.divider[3] = self.audf[3] as u16;
                     self.div_out[3] = !self.div_out[3];
+
+                    // Capture Ch2 output into HPF flip-flop on Ch4 underflow edge
+                    if (self.audctl & AUDCTL_HPF_CH2) != 0 {
+                        self.hp_ff[1] = self.div_out[1];
+                    }
+
                     // IRQ for Ch4 (Timer 4)
-                    if (self.irqen & 0x04) != 0 {
-                        self.irqst &= !0x04;
+                    if (self.irqen & IRQ_TIMER4) != 0 {
+                        self.irqst &= !IRQ_TIMER4;
                     }
                 } else {
                     self.divider[3] -= 1;
@@ -302,40 +467,34 @@ impl Pokey {
             }
         }
 
-        // 4. High-pass filter flip-flops
-        // Ch1 filtered by Ch3: toggles when Ch3 output toggles?
-        // Prompt: "XOR with flip-flop clocked by the filter channel's divider"
-        // This means we need to detect the underflow event of the filter channel.
-        // We can use the fact that div_out toggles on underflow.
-        // But we need the edge.
-        // Actually, div_out IS the flip-flop.
-        // So HPF logic is just XORing with the other channel's div_out?
-        // Let's assume div_out represents the state of the flip-flop.
-
-        // 5. Generate audio output
+        // 4. Generate audio output
         let mut mixed_sample = 0.0;
 
         for i in 0..4 {
             let audc = self.audc[i];
-            let vol = audc & 0x0F;
-            let dist = (audc >> 5) & 0x07;
-            let vol_only = (audc & 0x10) == 0;
+            let vol = audc & AUDC_VOL_MASK;
+            let dist = (audc & AUDC_DIST_MASK) >> AUDC_DIST_SHIFT;
 
-            let mut signal = if vol_only {
+            // When AUDC bit 4 is clear, the channel output is forced high
+            // (constant volume level, bypassing tone/polynomial gating).
+            // This is "volume only" mode, used for DAC-style sample playback.
+            let force_constant = (audc & AUDC_TONE_GATE) == 0;
+
+            let mut signal = if force_constant {
                 true
             } else {
                 let poly_val = self.get_poly_output(dist);
                 self.div_out[i] && poly_val
             };
 
-            // High-pass filter
-            // Ch1 filtered by Ch3 (AUDCTL.2)
-            if i == 0 && (self.audctl & 0x04) != 0 {
-                signal ^= self.div_out[2];
+            // High-pass filter: XOR with captured flip-flop value.
+            // The flip-flop captures the source channel's output on the
+            // modulating channel's divider underflow edge (see step 3 above).
+            if i == 0 && (self.audctl & AUDCTL_HPF_CH1) != 0 {
+                signal ^= self.hp_ff[0];
             }
-            // Ch2 filtered by Ch4 (AUDCTL.1)
-            if i == 1 && (self.audctl & 0x02) != 0 {
-                signal ^= self.div_out[3];
+            if i == 1 && (self.audctl & AUDCTL_HPF_CH2) != 0 {
+                signal ^= self.hp_ff[1];
             }
 
             self.channel_out[i] = signal;
@@ -348,7 +507,7 @@ impl Pokey {
         // Normalize (max vol 15 * 4 = 60)
         mixed_sample /= 60.0;
 
-        // 6. Resample
+        // 5. Resample
         self.sample_accum += mixed_sample;
         self.sample_count += 1;
         self.sample_phase += self.output_sample_rate as u64;
@@ -361,26 +520,29 @@ impl Pokey {
             self.sample_count = 0;
         }
 
-        // 7. Pot scanning
-        if self.pot_scanning {
-            // Use 15kHz tick for pot counters (approx scanline rate)
-            if tick_15k {
-                for i in 0..8 {
-                    // If pot not yet done
-                    if (self.pot_done & (1 << i)) != 0 {
-                        self.pot_counter[i] = self.pot_counter[i].wrapping_add(1);
-                        if self.pot_counter[i] >= self.pot_input[i] {
-                            // Mark as done (clear bit)
-                            self.pot_done &= !(1 << i);
-                        }
+        // 6. Pot scanning (runs at 15 kHz, stops after POT_SCAN_MAX ticks)
+        if self.pot_scanning && tick_15k {
+            self.pot_scan_count = self.pot_scan_count.saturating_add(1);
+            for i in 0..8 {
+                if (self.pot_done & (1 << i)) != 0 {
+                    self.pot_counter[i] = self.pot_counter[i].wrapping_add(1);
+                    if self.pot_counter[i] >= self.pot_input[i] {
+                        self.pot_done &= !(1 << i);
                     }
                 }
-                // Stop scanning if maxed out? (usually 228)
-                // For now, just let it run until all done or re-triggered.
+            }
+            if self.pot_scan_count >= POT_SCAN_MAX {
+                self.pot_scanning = false;
             }
         }
     }
 
+    /// Advance all four polynomial counters (LFSRs) by one step.
+    ///
+    /// - 4-bit:  taps at bits 3,2; period 15
+    /// - 5-bit:  taps at bits 4,2; period 31
+    /// - 9-bit:  taps at bits 8,3; period 511
+    /// - 17-bit: taps at bits 16,4; period 131071
     fn step_polys(&mut self) {
         // 4-bit: feedback = bit3 XOR bit2, shift left
         let bit3 = (self.poly4 >> 3) & 1;
@@ -397,18 +559,34 @@ impl Pokey {
         // 9-bit: feedback = bit8 XOR bit3
         let bit8 = (self.poly9 >> 8) & 1;
         let bit3 = (self.poly9 >> 3) & 1;
-        let new_bit = (bit8 ^ bit3) as u16;
+        let new_bit = bit8 ^ bit3;
         self.poly9 = ((self.poly9 << 1) | new_bit) & 0x1FF;
 
         // 17-bit: feedback = bit16 XOR bit4
         let bit16 = (self.poly17 >> 16) & 1;
         let bit4 = (self.poly17 >> 4) & 1;
-        let new_bit = (bit16 ^ bit4) as u32;
+        let new_bit = bit16 ^ bit4;
         self.poly17 = ((self.poly17 << 1) | new_bit) & 0x1FFFF;
     }
 
+    /// Return the current output bit for the given distortion mode.
+    ///
+    /// The 3-bit `dist` field from AUDC bits 7:5 selects which polynomial
+    /// counter combination gates the channel's square wave:
+    ///
+    /// | dist | Polynomials      | Sound character            |
+    /// |------|------------------|----------------------------|
+    /// | 0    | 5-bit AND 17-bit | Harsh noise                |
+    /// | 1,3  | 5-bit only       | Buzzy tone                 |
+    /// | 2    | 5-bit AND 4-bit  | Gritty buzz                |
+    /// | 4    | 17-bit only      | White noise                |
+    /// | 5,7  | None (pure tone) | Clean square wave          |
+    /// | 6    | 4-bit only       | "Metallic" 15-cycle noise  |
+    ///
+    /// When AUDCTL bit 7 is set, the 17-bit counter is replaced by the
+    /// 9-bit counter (shorter period = coarser noise).
     fn get_poly_output(&self, dist: u8) -> bool {
-        let poly9_mode = (self.audctl & 0x80) != 0;
+        let poly9_mode = (self.audctl & AUDCTL_POLY9) != 0;
         let p4 = (self.poly4 & 1) != 0;
         let p5 = (self.poly5 & 1) != 0;
         let p17 = if poly9_mode {
@@ -427,29 +605,52 @@ impl Pokey {
         }
     }
 
+    /// Take the accumulated resampled audio buffer and return it.
+    ///
+    /// Returns a `Vec<f32>` of mono samples in the range \[0.0, 1.0\],
+    /// resampled from 1.79 MHz to the configured output sample rate.
+    /// The buffer is emptied after this call.
     pub fn drain_audio(&mut self) -> Vec<f32> {
         std::mem::take(&mut self.sample_buffer)
     }
 
+    /// Check if the POKEY's IRQ output line is asserted.
+    ///
+    /// Returns `true` if any enabled interrupt source is pending:
+    /// `(NOT IRQST) AND IRQEN != 0`.
     pub fn irq(&self) -> bool {
         (!self.irqst & self.irqen) != 0
     }
 
+    /// Set the external potentiometer input value for a given pot (0-7).
+    ///
+    /// Called by board logic to provide the target value that the pot scan
+    /// counter will count up to. When the counter reaches this value, the
+    /// corresponding ALLPOT bit clears.
     pub fn set_pot_input(&mut self, pot: usize, value: u8) {
         if pot < 8 {
             self.pot_input[pot] = value;
         }
     }
 
+    /// Set the keyboard code register (called by board logic).
     pub fn set_kbcode(&mut self, code: u8) {
         self.kbcode = code;
     }
 
+    /// Set the serial input data register (called by board logic).
     pub fn set_serin(&mut self, data: u8) {
         self.serin = data;
     }
 
+    /// Read the serial output data register (called by board logic).
     pub fn read_serout(&self) -> u8 {
         self.serout
+    }
+}
+
+impl Default for Pokey {
+    fn default() -> Self {
+        Self::new(44100)
     }
 }
