@@ -304,16 +304,25 @@ src/cpu/m6809/
 
 ### Commit Message Style
 
-Follow established pattern (see `git log --oneline`):
+Follow conventional commit format with a summary line and detailed body:
+
+- **Summary line**: `type: Short description with counts (N tests)` — under 80 chars
+- **Body**: Each logical change on its own line, prefixed with `-`
+- **Types**: `feat` (new functionality), `fix` (bug fix), `refactor` (restructuring), `test` (test-only), `docs` (documentation)
+- Include opcode/test counts where relevant
+- Each bullet should describe **what** was added/changed, not just file names
 
 ```text
-refactor(test): Convert test files to TestBus harness
+feat: Add M6800 inherent mode instructions with 32 opcodes (73 tests)
 
-- Convert m6502_basic_test.rs to use M6502 + TestBus instead of Simple6502System
-- Convert z80_basic_test.rs to use Z80 + TestBus instead of SimpleZ80System  
-- Fix m6809_alu_shift_test.rs state reference compilation issues
-- Update TestBus Bus trait implementation for missing master parameter
-- Complete migration from Simple*System pattern to direct CPU + bus testing
+- Add unary ALU ops: NEG/COM/INC/DEC/CLR/TST for A and B registers
+- Add accumulator transfers: TAB/TBA with N/Z/V flag updates
+- Add CC register transfers: TAP/TPA with bits 6-7 forced high on read
+- Add accumulator arithmetic: ABA (with H flag), SBA, CBA
+- Add DAA decimal adjust with BCD correction and carry-only-set behavior
+- Add flag set/clear: CLC/SEC/CLV/SEV/CLI/SEI
+- Add 16-bit register ops (4 cycles): INX/DEX (Z-only), INS/DES, TSX/TXS
+- Add 73 integration tests covering edge cases, flag isolation, and sequences
 ```
 
 ### Performance Guidelines
