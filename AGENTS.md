@@ -10,37 +10,44 @@ This document provides essential information for AI agents and automated tools w
 
 **Current Status:**
 
-- M6809: 285/~280 opcodes implemented (100%+ with undocumented aliases)
+- M6809: 285/~280 opcodes implemented (100%+ with undocumented aliases), cycle-accurate timing cross-validated
 - M6502: 1/~151 opcodes implemented (initial)
 - Z80: 1/~1582 opcodes implemented (initial)
-- 316 integration tests passing
+- 474 integration tests passing, 266,000 cross-validated test vectors across 266 opcodes
 - Focus on educational clarity and correctness over performance
 
 ### Repository Structure
 
 ```text
 phosphor-core/
-├── Cargo.toml              # [workspace] members = ["core", "machines"]
+├── Cargo.toml              # [workspace] members = ["core", "machines", "cpu-validation", "frontend"]
 ├── core/                   # phosphor-core crate
 │   ├── src/
 │   │   ├── core/           # Core abstractions (Bus, Component traits)
 │   │   ├── cpu/            # CPU implementations (m6809/, m6502/, z80/)
 │   │   │   ├── state.rs     # CpuStateTrait + state structs
-│   │   │   ├── m6809/      # M6809 implementation
+│   │   │   ├── m6809/      # M6809 implementation (285 opcodes, cycle-accurate)
 │   │   │   ├── m6502/       # M6502 implementation
 │   │   │   └── z80/         # Z80 implementation
-│   │   └── device/         # Peripheral devices (PIA 6820 stub)
+│   │   └── device/         # Peripheral devices (PIA 6821, blitter, CMOS RAM)
 │   │   └── lib.rs         # Library exports + prelude
-│   └── tests/             # Integration tests (316 total)
+│   └── tests/             # Integration tests (474 total)
 │       ├── common/mod.rs   # TestBus harness for direct CPU testing
 │       └── m*_test.rs     # CPU-specific test files
 ├── machines/               # phosphor-machines crate
 │   ├── src/
-│   │   ├── lib.rs         # Exports Simple6809System, Simple6502System, SimpleZ80System
+│   │   ├── lib.rs         # Exports JoustSystem, Simple*System types
+│   │   ├── joust.rs        # Joust arcade board (Williams 2nd-gen)
 │   │   ├── simple6809.rs   # M6809 system implementation
 │   │   ├── simple6502.rs   # M6502 system implementation
 │   │   └── simplez80.rs    # Z80 system implementation
 │   └── Cargo.toml         # Machines crate manifest
+├── cpu-validation/         # phosphor-cpu-validation crate
+│   ├── src/bin/gen_m6809_tests.rs  # Test vector generator (266 opcodes)
+│   ├── tests/              # Self-validation tests
+│   └── test_data/m6809/    # 266,000 JSON test vectors
+├── cross-validation/       # C++ reference validation (elmerucr/MC6809)
+├── frontend/               # phosphor-frontend crate (SDL2)
 ├── CLAUDE.md             # Development guidelines (REQUIRED READING)
 ├── README.md              # Project documentation
 └── AGENTS.md              # This file - agent guidelines
@@ -349,7 +356,6 @@ assert_eq!(sys.read_ram(0x10), 0x42);
 #### High Priority (What needs help)
 
 - **Reset vector** - Read PC from 0xFFFE/0xFFFF on reset (requires bus access)
-- **Reset vector** - Read PC from 0xFFFE/0xFFFF on reset (requires bus access)
 
 #### Medium Priority
 
@@ -358,7 +364,7 @@ assert_eq!(sys.read_ram(0x10), 0x42);
 
 #### Low Priority
 
-- **Peripheral devices** - PIA 6820, ACIA 6850, PTM 6840
+- **Peripheral devices** - ACIA 6850, PTM 6840
 - **Debugger interface** - Breakpoints, step execution, memory viewer
 
 ### Safety Guidelines

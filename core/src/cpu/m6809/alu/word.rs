@@ -425,6 +425,7 @@ impl M6809 {
     }
 
     /// CMPD direct (0x1093): Compare D with 16-bit value at DP:addr.
+    /// 7 total cycles: 2 prefix + 5 exec (same exec pattern as SUBD direct).
     pub(crate) fn op_cmpd_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -440,14 +441,24 @@ impl M6809 {
                 self.state = ExecState::ExecutePage2(opcode, 1);
             }
             1 => {
-                let high = bus.read(master, self.temp_addr) as u16;
-                self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high as u8;
+                // Internal cycle
                 self.state = ExecState::ExecutePage2(opcode, 2);
             }
             2 => {
+                let high = bus.read(master, self.temp_addr) as u16;
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.opcode = high as u8;
+                self.state = ExecState::ExecutePage2(opcode, 3);
+            }
+            3 => {
                 let low = bus.read(master, self.temp_addr) as u16;
                 let operand = ((self.opcode as u16) << 8) | low;
+                self.temp_addr = operand;
+                self.state = ExecState::ExecutePage2(opcode, 4);
+            }
+            4 => {
+                // Internal cycle — compute
+                let operand = self.temp_addr;
                 self.perform_cmp16(self.get_d(), operand);
                 self.state = ExecState::Fetch;
             }
@@ -458,6 +469,7 @@ impl M6809 {
     /// CMPY direct (0x109C): Compare Y with 16-bit value at DP:addr.
     /// N set if result bit 15 is set. Z set if result is zero.
     /// V set if signed overflow occurred. C set if unsigned borrow occurred.
+    /// 7 total cycles: 2 prefix + 5 exec (same exec pattern as CMPX direct).
     pub(crate) fn op_cmpy_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -473,14 +485,24 @@ impl M6809 {
                 self.state = ExecState::ExecutePage2(opcode, 1);
             }
             1 => {
-                let high = bus.read(master, self.temp_addr) as u16;
-                self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high as u8;
+                // Internal cycle
                 self.state = ExecState::ExecutePage2(opcode, 2);
             }
             2 => {
+                let high = bus.read(master, self.temp_addr) as u16;
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.opcode = high as u8;
+                self.state = ExecState::ExecutePage2(opcode, 3);
+            }
+            3 => {
                 let low = bus.read(master, self.temp_addr) as u16;
                 let operand = ((self.opcode as u16) << 8) | low;
+                self.temp_addr = operand;
+                self.state = ExecState::ExecutePage2(opcode, 4);
+            }
+            4 => {
+                // Internal cycle — compute
+                let operand = self.temp_addr;
                 self.perform_cmp16(self.y, operand);
                 self.state = ExecState::Fetch;
             }
@@ -585,6 +607,7 @@ impl M6809 {
     }
 
     /// CMPD extended (0x10B3): Compare D with 16-bit value at extended address.
+    /// 8 total cycles: 2 prefix + 6 exec (same exec pattern as SUBD extended).
     pub(crate) fn op_cmpd_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -606,14 +629,24 @@ impl M6809 {
                 self.state = ExecState::ExecutePage2(opcode, 2);
             }
             2 => {
-                let high = bus.read(master, self.temp_addr) as u16;
-                self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high as u8;
+                // Internal cycle
                 self.state = ExecState::ExecutePage2(opcode, 3);
             }
             3 => {
+                let high = bus.read(master, self.temp_addr) as u16;
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.opcode = high as u8;
+                self.state = ExecState::ExecutePage2(opcode, 4);
+            }
+            4 => {
                 let low = bus.read(master, self.temp_addr) as u16;
                 let operand = ((self.opcode as u16) << 8) | low;
+                self.temp_addr = operand;
+                self.state = ExecState::ExecutePage2(opcode, 5);
+            }
+            5 => {
+                // Internal cycle — compute
+                let operand = self.temp_addr;
                 self.perform_cmp16(self.get_d(), operand);
                 self.state = ExecState::Fetch;
             }
@@ -624,6 +657,7 @@ impl M6809 {
     /// CMPY extended (0x10BC): Compare Y with 16-bit value at extended address.
     /// N set if result bit 15 is set. Z set if result is zero.
     /// V set if signed overflow occurred. C set if unsigned borrow occurred.
+    /// 8 total cycles: 2 prefix + 6 exec (same exec pattern as CMPX extended).
     pub(crate) fn op_cmpy_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -645,14 +679,24 @@ impl M6809 {
                 self.state = ExecState::ExecutePage2(opcode, 2);
             }
             2 => {
-                let high = bus.read(master, self.temp_addr) as u16;
-                self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high as u8;
+                // Internal cycle
                 self.state = ExecState::ExecutePage2(opcode, 3);
             }
             3 => {
+                let high = bus.read(master, self.temp_addr) as u16;
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.opcode = high as u8;
+                self.state = ExecState::ExecutePage2(opcode, 4);
+            }
+            4 => {
                 let low = bus.read(master, self.temp_addr) as u16;
                 let operand = ((self.opcode as u16) << 8) | low;
+                self.temp_addr = operand;
+                self.state = ExecState::ExecutePage2(opcode, 5);
+            }
+            5 => {
+                // Internal cycle — compute
+                let operand = self.temp_addr;
                 self.perform_cmp16(self.y, operand);
                 self.state = ExecState::Fetch;
             }
@@ -662,6 +706,7 @@ impl M6809 {
 
     /// LDY extended (0x10BE): Load Y from 16-bit value at extended address.
     /// N set if result bit 15 is set. Z set if result is zero. V always cleared.
+    /// 7 total cycles: 2 prefix + 5 exec (same exec pattern as LDX extended).
     pub(crate) fn op_ldy_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -683,12 +728,16 @@ impl M6809 {
                 self.state = ExecState::ExecutePage2(opcode, 2);
             }
             2 => {
-                let high = bus.read(master, self.temp_addr) as u16;
-                self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.y = high << 8;
+                // Internal cycle
                 self.state = ExecState::ExecutePage2(opcode, 3);
             }
             3 => {
+                let high = bus.read(master, self.temp_addr) as u16;
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.y = high << 8;
+                self.state = ExecState::ExecutePage2(opcode, 4);
+            }
+            4 => {
                 let low = bus.read(master, self.temp_addr) as u16;
                 self.y |= low;
                 self.set_flags_logical16(self.y);
@@ -700,6 +749,7 @@ impl M6809 {
 
     /// STY extended (0x10BF): Store Y to 16-bit extended address.
     /// N set if result bit 15 is set. Z set if result is zero. V always cleared.
+    /// 7 total cycles: 2 prefix + 5 exec (same exec pattern as STX extended).
     pub(crate) fn op_sty_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -721,11 +771,15 @@ impl M6809 {
                 self.state = ExecState::ExecutePage2(opcode, 2);
             }
             2 => {
-                bus.write(master, self.temp_addr, (self.y >> 8) as u8);
-                self.temp_addr = self.temp_addr.wrapping_add(1);
+                // Internal cycle
                 self.state = ExecState::ExecutePage2(opcode, 3);
             }
             3 => {
+                bus.write(master, self.temp_addr, (self.y >> 8) as u8);
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.state = ExecState::ExecutePage2(opcode, 4);
+            }
+            4 => {
                 bus.write(master, self.temp_addr, self.y as u8);
                 self.set_flags_logical16(self.y);
                 self.state = ExecState::Fetch;
@@ -736,6 +790,7 @@ impl M6809 {
 
     /// LDS extended (0x10FE): Load S from 16-bit value at extended address.
     /// N set if result bit 15 is set. Z set if result is zero. V always cleared.
+    /// 7 total cycles: 2 prefix + 5 exec (same exec pattern as LDX extended).
     pub(crate) fn op_lds_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -757,12 +812,16 @@ impl M6809 {
                 self.state = ExecState::ExecutePage2(opcode, 2);
             }
             2 => {
-                let high = bus.read(master, self.temp_addr) as u16;
-                self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.s = high << 8;
+                // Internal cycle
                 self.state = ExecState::ExecutePage2(opcode, 3);
             }
             3 => {
+                let high = bus.read(master, self.temp_addr) as u16;
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.s = high << 8;
+                self.state = ExecState::ExecutePage2(opcode, 4);
+            }
+            4 => {
                 let low = bus.read(master, self.temp_addr) as u16;
                 self.s |= low;
                 self.set_flags_logical16(self.s);
@@ -774,6 +833,7 @@ impl M6809 {
 
     /// STS extended (0x10FF): Store S to 16-bit extended address.
     /// N set if result bit 15 is set. Z set if result is zero. V always cleared.
+    /// 7 total cycles: 2 prefix + 5 exec (same exec pattern as STX extended).
     pub(crate) fn op_sts_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -795,11 +855,15 @@ impl M6809 {
                 self.state = ExecState::ExecutePage2(opcode, 2);
             }
             2 => {
-                bus.write(master, self.temp_addr, (self.s >> 8) as u8);
-                self.temp_addr = self.temp_addr.wrapping_add(1);
+                // Internal cycle
                 self.state = ExecState::ExecutePage2(opcode, 3);
             }
             3 => {
+                bus.write(master, self.temp_addr, (self.s >> 8) as u8);
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.state = ExecState::ExecutePage2(opcode, 4);
+            }
+            4 => {
                 bus.write(master, self.temp_addr, self.s as u8);
                 self.set_flags_logical16(self.s);
                 self.state = ExecState::Fetch;
@@ -932,9 +996,17 @@ impl M6809 {
                 self.perform_subd(operand);
                 self.state = ExecState::Fetch;
             }
+            39 => {
+                // Base internal cycle 1
+                self.state = ExecState::Execute(opcode, 40);
+            }
+            40 => {
+                // Base internal cycle 2
+                self.state = ExecState::Execute(opcode, 50);
+            }
             _ => {
                 if self.indexed_resolve(opcode, cycle, bus, master) {
-                    self.state = ExecState::Execute(opcode, 50);
+                    self.state = ExecState::Execute(opcode, 39);
                 }
             }
         }
@@ -961,9 +1033,15 @@ impl M6809 {
                 self.perform_addd(operand);
                 self.state = ExecState::Fetch;
             }
+            39 => {
+                self.state = ExecState::Execute(opcode, 40);
+            }
+            40 => {
+                self.state = ExecState::Execute(opcode, 50);
+            }
             _ => {
                 if self.indexed_resolve(opcode, cycle, bus, master) {
-                    self.state = ExecState::Execute(opcode, 50);
+                    self.state = ExecState::Execute(opcode, 39);
                 }
             }
         }
@@ -990,9 +1068,15 @@ impl M6809 {
                 self.perform_cmp16(self.x, operand);
                 self.state = ExecState::Fetch;
             }
+            39 => {
+                self.state = ExecState::Execute(opcode, 40);
+            }
+            40 => {
+                self.state = ExecState::Execute(opcode, 50);
+            }
             _ => {
                 if self.indexed_resolve(opcode, cycle, bus, master) {
-                    self.state = ExecState::Execute(opcode, 50);
+                    self.state = ExecState::Execute(opcode, 39);
                 }
             }
         }
@@ -1021,9 +1105,15 @@ impl M6809 {
                 self.perform_cmp16(self.get_d(), operand);
                 self.state = ExecState::Fetch;
             }
+            39 => {
+                self.state = ExecState::ExecutePage2(opcode, 40);
+            }
+            40 => {
+                self.state = ExecState::ExecutePage2(opcode, 50);
+            }
             _ => {
                 if self.indexed_resolve_page2(opcode, cycle, bus, master) {
-                    self.state = ExecState::ExecutePage2(opcode, 50);
+                    self.state = ExecState::ExecutePage2(opcode, 39);
                 }
             }
         }
@@ -1050,9 +1140,15 @@ impl M6809 {
                 self.perform_cmp16(self.y, operand);
                 self.state = ExecState::Fetch;
             }
+            39 => {
+                self.state = ExecState::ExecutePage2(opcode, 40);
+            }
+            40 => {
+                self.state = ExecState::ExecutePage2(opcode, 50);
+            }
             _ => {
                 if self.indexed_resolve_page2(opcode, cycle, bus, master) {
-                    self.state = ExecState::ExecutePage2(opcode, 50);
+                    self.state = ExecState::ExecutePage2(opcode, 39);
                 }
             }
         }
@@ -1095,6 +1191,7 @@ impl M6809 {
     /// CMPU direct (0x1193): Compare U with 16-bit value at DP:addr.
     /// N set if result bit 15 is set. Z set if result is zero.
     /// V set if signed overflow occurred. C set if unsigned borrow occurred.
+    /// 7 total cycles: 2 prefix + 5 exec (same exec pattern as CMPX direct).
     pub(crate) fn op_cmpu_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -1110,14 +1207,24 @@ impl M6809 {
                 self.state = ExecState::ExecutePage3(opcode, 1);
             }
             1 => {
-                let high = bus.read(master, self.temp_addr) as u16;
-                self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high as u8;
+                // Internal cycle
                 self.state = ExecState::ExecutePage3(opcode, 2);
             }
             2 => {
+                let high = bus.read(master, self.temp_addr) as u16;
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.opcode = high as u8;
+                self.state = ExecState::ExecutePage3(opcode, 3);
+            }
+            3 => {
                 let low = bus.read(master, self.temp_addr) as u16;
                 let operand = ((self.opcode as u16) << 8) | low;
+                self.temp_addr = operand;
+                self.state = ExecState::ExecutePage3(opcode, 4);
+            }
+            4 => {
+                // Internal cycle — compute
+                let operand = self.temp_addr;
                 self.perform_cmp16(self.u, operand);
                 self.state = ExecState::Fetch;
             }
@@ -1128,6 +1235,7 @@ impl M6809 {
     /// CMPU extended (0x11B3): Compare U with 16-bit value at extended address.
     /// N set if result bit 15 is set. Z set if result is zero.
     /// V set if signed overflow occurred. C set if unsigned borrow occurred.
+    /// 8 total cycles: 2 prefix + 6 exec (same exec pattern as CMPX extended).
     pub(crate) fn op_cmpu_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -1149,14 +1257,24 @@ impl M6809 {
                 self.state = ExecState::ExecutePage3(opcode, 2);
             }
             2 => {
-                let high = bus.read(master, self.temp_addr) as u16;
-                self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high as u8;
+                // Internal cycle
                 self.state = ExecState::ExecutePage3(opcode, 3);
             }
             3 => {
+                let high = bus.read(master, self.temp_addr) as u16;
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.opcode = high as u8;
+                self.state = ExecState::ExecutePage3(opcode, 4);
+            }
+            4 => {
                 let low = bus.read(master, self.temp_addr) as u16;
                 let operand = ((self.opcode as u16) << 8) | low;
+                self.temp_addr = operand;
+                self.state = ExecState::ExecutePage3(opcode, 5);
+            }
+            5 => {
+                // Internal cycle — compute
+                let operand = self.temp_addr;
                 self.perform_cmp16(self.u, operand);
                 self.state = ExecState::Fetch;
             }
@@ -1187,9 +1305,15 @@ impl M6809 {
                 self.perform_cmp16(self.u, operand);
                 self.state = ExecState::Fetch;
             }
+            39 => {
+                self.state = ExecState::ExecutePage3(opcode, 40);
+            }
+            40 => {
+                self.state = ExecState::ExecutePage3(opcode, 50);
+            }
             _ => {
                 if self.indexed_resolve_page3(opcode, cycle, bus, master) {
-                    self.state = ExecState::ExecutePage3(opcode, 50);
+                    self.state = ExecState::ExecutePage3(opcode, 39);
                 }
             }
         }
@@ -1230,6 +1354,7 @@ impl M6809 {
     /// CMPS direct (0x119C): Compare S with 16-bit value at DP:addr.
     /// N set if result bit 15 is set. Z set if result is zero.
     /// V set if signed overflow occurred. C set if unsigned borrow occurred.
+    /// 7 total cycles: 2 prefix + 5 exec (same exec pattern as CMPX direct).
     pub(crate) fn op_cmps_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -1245,14 +1370,24 @@ impl M6809 {
                 self.state = ExecState::ExecutePage3(opcode, 1);
             }
             1 => {
-                let high = bus.read(master, self.temp_addr) as u16;
-                self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high as u8;
+                // Internal cycle
                 self.state = ExecState::ExecutePage3(opcode, 2);
             }
             2 => {
+                let high = bus.read(master, self.temp_addr) as u16;
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.opcode = high as u8;
+                self.state = ExecState::ExecutePage3(opcode, 3);
+            }
+            3 => {
                 let low = bus.read(master, self.temp_addr) as u16;
                 let operand = ((self.opcode as u16) << 8) | low;
+                self.temp_addr = operand;
+                self.state = ExecState::ExecutePage3(opcode, 4);
+            }
+            4 => {
+                // Internal cycle — compute
+                let operand = self.temp_addr;
                 self.perform_cmp16(self.s, operand);
                 self.state = ExecState::Fetch;
             }
@@ -1263,6 +1398,7 @@ impl M6809 {
     /// CMPS extended (0x11BC): Compare S with 16-bit value at extended address.
     /// N set if result bit 15 is set. Z set if result is zero.
     /// V set if signed overflow occurred. C set if unsigned borrow occurred.
+    /// 8 total cycles: 2 prefix + 6 exec (same exec pattern as CMPX extended).
     pub(crate) fn op_cmps_extended<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -1284,14 +1420,24 @@ impl M6809 {
                 self.state = ExecState::ExecutePage3(opcode, 2);
             }
             2 => {
-                let high = bus.read(master, self.temp_addr) as u16;
-                self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high as u8;
+                // Internal cycle
                 self.state = ExecState::ExecutePage3(opcode, 3);
             }
             3 => {
+                let high = bus.read(master, self.temp_addr) as u16;
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.opcode = high as u8;
+                self.state = ExecState::ExecutePage3(opcode, 4);
+            }
+            4 => {
                 let low = bus.read(master, self.temp_addr) as u16;
                 let operand = ((self.opcode as u16) << 8) | low;
+                self.temp_addr = operand;
+                self.state = ExecState::ExecutePage3(opcode, 5);
+            }
+            5 => {
+                // Internal cycle — compute
+                let operand = self.temp_addr;
                 self.perform_cmp16(self.s, operand);
                 self.state = ExecState::Fetch;
             }
@@ -1322,9 +1468,15 @@ impl M6809 {
                 self.perform_cmp16(self.s, operand);
                 self.state = ExecState::Fetch;
             }
+            39 => {
+                self.state = ExecState::ExecutePage3(opcode, 40);
+            }
+            40 => {
+                self.state = ExecState::ExecutePage3(opcode, 50);
+            }
             _ => {
                 if self.indexed_resolve_page3(opcode, cycle, bus, master) {
-                    self.state = ExecState::ExecutePage3(opcode, 50);
+                    self.state = ExecState::ExecutePage3(opcode, 39);
                 }
             }
         }

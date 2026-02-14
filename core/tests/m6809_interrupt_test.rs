@@ -190,8 +190,8 @@ fn test_irq_then_rti_roundtrip() {
     // Deassert IRQ before RTI
     bus.irq = false;
 
-    // RTI with E=1: 1 fetch + 12 execute = 13 cycles
-    tick(&mut cpu, &mut bus, 13);
+    // RTI with E=1: 1 fetch + 1 internal + 12 pulls + 1 internal = 15 cycles
+    tick(&mut cpu, &mut bus, 15);
 
     // All registers should be restored
     assert_eq!(cpu.a, 0xAA, "A restored");
@@ -306,8 +306,8 @@ fn test_firq_then_rti_fast_return() {
 
     bus.firq = false;
 
-    // RTI with E=0: 1 fetch + 3 execute (pull CC + PC) = 4 cycles
-    tick(&mut cpu, &mut bus, 4);
+    // RTI with E=0: 1 fetch + 1 internal + 1 pull CC + 1 internal + 2 pull PC = 6 cycles
+    tick(&mut cpu, &mut bus, 6);
 
     assert_eq!(cpu.pc, 0x0000, "PC restored");
     assert_eq!(cpu.s, 0x0100, "S restored");
@@ -619,8 +619,8 @@ fn test_cwai_then_rti_roundtrip() {
     // Deassert IRQ
     bus.irq = false;
 
-    // RTI with E=1: 13 cycles
-    tick(&mut cpu, &mut bus, 13);
+    // RTI with E=1: 1 fetch + 1 internal + 12 pulls + 1 internal = 15 cycles
+    tick(&mut cpu, &mut bus, 15);
 
     // All registers restored
     assert_eq!(cpu.a, 0xAA);

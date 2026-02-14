@@ -344,6 +344,7 @@ impl M6809 {
 
     /// LDY direct (0x109E): Load Y from memory at DP:addr (16-bit).
     /// N set if result bit 15 is set. Z set if result is zero. V always cleared.
+    /// 6 total cycles: 2 prefix + 4 exec (same exec pattern as LDX direct).
     pub(crate) fn op_ldy_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -359,12 +360,16 @@ impl M6809 {
                 self.state = ExecState::ExecutePage2(opcode, 1);
             }
             1 => {
-                let high = bus.read(master, self.temp_addr) as u16;
-                self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.y = high << 8;
+                // Internal cycle
                 self.state = ExecState::ExecutePage2(opcode, 2);
             }
             2 => {
+                let high = bus.read(master, self.temp_addr) as u16;
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.y = high << 8;
+                self.state = ExecState::ExecutePage2(opcode, 3);
+            }
+            3 => {
                 let low = bus.read(master, self.temp_addr) as u16;
                 self.y |= low;
                 self.set_flags_logical16(self.y);
@@ -376,6 +381,7 @@ impl M6809 {
 
     /// STY direct (0x109F): Store Y to memory at DP:addr (16-bit).
     /// N set if result bit 15 is set. Z set if result is zero. V always cleared.
+    /// 6 total cycles: 2 prefix + 4 exec (same exec pattern as STX direct).
     pub(crate) fn op_sty_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -391,11 +397,15 @@ impl M6809 {
                 self.state = ExecState::ExecutePage2(opcode, 1);
             }
             1 => {
-                bus.write(master, self.temp_addr, (self.y >> 8) as u8);
-                self.temp_addr = self.temp_addr.wrapping_add(1);
+                // Internal cycle
                 self.state = ExecState::ExecutePage2(opcode, 2);
             }
             2 => {
+                bus.write(master, self.temp_addr, (self.y >> 8) as u8);
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.state = ExecState::ExecutePage2(opcode, 3);
+            }
+            3 => {
                 bus.write(master, self.temp_addr, self.y as u8);
                 self.set_flags_logical16(self.y);
                 self.state = ExecState::Fetch;
@@ -406,6 +416,7 @@ impl M6809 {
 
     /// LDS direct (0x10DE): Load S from memory at DP:addr (16-bit).
     /// N set if result bit 15 is set. Z set if result is zero. V always cleared.
+    /// 6 total cycles: 2 prefix + 4 exec (same exec pattern as LDX direct).
     pub(crate) fn op_lds_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -421,12 +432,16 @@ impl M6809 {
                 self.state = ExecState::ExecutePage2(opcode, 1);
             }
             1 => {
-                let high = bus.read(master, self.temp_addr) as u16;
-                self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.s = high << 8;
+                // Internal cycle
                 self.state = ExecState::ExecutePage2(opcode, 2);
             }
             2 => {
+                let high = bus.read(master, self.temp_addr) as u16;
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.s = high << 8;
+                self.state = ExecState::ExecutePage2(opcode, 3);
+            }
+            3 => {
                 let low = bus.read(master, self.temp_addr) as u16;
                 self.s |= low;
                 self.set_flags_logical16(self.s);
@@ -438,6 +453,7 @@ impl M6809 {
 
     /// STS direct (0x10DF): Store S to memory at DP:addr (16-bit).
     /// N set if result bit 15 is set. Z set if result is zero. V always cleared.
+    /// 6 total cycles: 2 prefix + 4 exec (same exec pattern as STX direct).
     pub(crate) fn op_sts_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -453,11 +469,15 @@ impl M6809 {
                 self.state = ExecState::ExecutePage2(opcode, 1);
             }
             1 => {
-                bus.write(master, self.temp_addr, (self.s >> 8) as u8);
-                self.temp_addr = self.temp_addr.wrapping_add(1);
+                // Internal cycle
                 self.state = ExecState::ExecutePage2(opcode, 2);
             }
             2 => {
+                bus.write(master, self.temp_addr, (self.s >> 8) as u8);
+                self.temp_addr = self.temp_addr.wrapping_add(1);
+                self.state = ExecState::ExecutePage2(opcode, 3);
+            }
+            3 => {
                 bus.write(master, self.temp_addr, self.s as u8);
                 self.set_flags_logical16(self.s);
                 self.state = ExecState::Fetch;
@@ -885,14 +905,21 @@ impl M6809 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        if cycle == 50 {
-            bus.write(master, self.temp_addr, self.a);
-            self.set_flags_logical(self.a);
-            self.state = ExecState::Fetch;
-            return;
-        }
-        if self.indexed_resolve(opcode, cycle, bus, master) {
-            self.state = ExecState::Execute(opcode, 50);
+        match cycle {
+            40 => {
+                // Base internal cycle
+                self.state = ExecState::Execute(opcode, 50);
+            }
+            50 => {
+                bus.write(master, self.temp_addr, self.a);
+                self.set_flags_logical(self.a);
+                self.state = ExecState::Fetch;
+            }
+            _ => {
+                if self.indexed_resolve(opcode, cycle, bus, master) {
+                    self.state = ExecState::Execute(opcode, 40);
+                }
+            }
         }
     }
 
@@ -920,14 +947,21 @@ impl M6809 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        if cycle == 50 {
-            bus.write(master, self.temp_addr, self.b);
-            self.set_flags_logical(self.b);
-            self.state = ExecState::Fetch;
-            return;
-        }
-        if self.indexed_resolve(opcode, cycle, bus, master) {
-            self.state = ExecState::Execute(opcode, 50);
+        match cycle {
+            40 => {
+                // Base internal cycle
+                self.state = ExecState::Execute(opcode, 50);
+            }
+            50 => {
+                bus.write(master, self.temp_addr, self.b);
+                self.set_flags_logical(self.b);
+                self.state = ExecState::Fetch;
+            }
+            _ => {
+                if self.indexed_resolve(opcode, cycle, bus, master) {
+                    self.state = ExecState::Execute(opcode, 40);
+                }
+            }
         }
     }
 
@@ -955,9 +989,13 @@ impl M6809 {
                 self.set_flags_logical16(val);
                 self.state = ExecState::Fetch;
             }
+            40 => {
+                // Base internal cycle
+                self.state = ExecState::Execute(opcode, 50);
+            }
             _ => {
                 if self.indexed_resolve(opcode, cycle, bus, master) {
-                    self.state = ExecState::Execute(opcode, 50);
+                    self.state = ExecState::Execute(opcode, 40);
                 }
             }
         }
@@ -984,9 +1022,13 @@ impl M6809 {
                 self.set_flags_logical16(val);
                 self.state = ExecState::Fetch;
             }
+            40 => {
+                // Base internal cycle
+                self.state = ExecState::Execute(opcode, 50);
+            }
             _ => {
                 if self.indexed_resolve(opcode, cycle, bus, master) {
-                    self.state = ExecState::Execute(opcode, 50);
+                    self.state = ExecState::Execute(opcode, 40);
                 }
             }
         }
@@ -1014,9 +1056,13 @@ impl M6809 {
                 self.set_flags_logical16(self.x);
                 self.state = ExecState::Fetch;
             }
+            40 => {
+                // Base internal cycle
+                self.state = ExecState::Execute(opcode, 50);
+            }
             _ => {
                 if self.indexed_resolve(opcode, cycle, bus, master) {
-                    self.state = ExecState::Execute(opcode, 50);
+                    self.state = ExecState::Execute(opcode, 40);
                 }
             }
         }
@@ -1042,9 +1088,13 @@ impl M6809 {
                 self.set_flags_logical16(self.x);
                 self.state = ExecState::Fetch;
             }
+            40 => {
+                // Base internal cycle
+                self.state = ExecState::Execute(opcode, 50);
+            }
             _ => {
                 if self.indexed_resolve(opcode, cycle, bus, master) {
-                    self.state = ExecState::Execute(opcode, 50);
+                    self.state = ExecState::Execute(opcode, 40);
                 }
             }
         }
@@ -1072,9 +1122,13 @@ impl M6809 {
                 self.set_flags_logical16(self.u);
                 self.state = ExecState::Fetch;
             }
+            40 => {
+                // Base internal cycle
+                self.state = ExecState::Execute(opcode, 50);
+            }
             _ => {
                 if self.indexed_resolve(opcode, cycle, bus, master) {
-                    self.state = ExecState::Execute(opcode, 50);
+                    self.state = ExecState::Execute(opcode, 40);
                 }
             }
         }
@@ -1100,9 +1154,13 @@ impl M6809 {
                 self.set_flags_logical16(self.u);
                 self.state = ExecState::Fetch;
             }
+            40 => {
+                // Base internal cycle
+                self.state = ExecState::Execute(opcode, 50);
+            }
             _ => {
                 if self.indexed_resolve(opcode, cycle, bus, master) {
-                    self.state = ExecState::Execute(opcode, 50);
+                    self.state = ExecState::Execute(opcode, 40);
                 }
             }
         }
@@ -1112,6 +1170,7 @@ impl M6809 {
 
     /// LEAX indexed (0x30): Load Effective Address into X.
     /// Z set if result is zero. No other flags affected.
+    /// 4+ total cycles: 1 fetch + 1 postbyte + mode overhead + 2 base internal.
     pub(crate) fn op_leax<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -1119,15 +1178,28 @@ impl M6809 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        if self.indexed_resolve(opcode, cycle, bus, master) {
-            self.x = self.temp_addr;
-            self.set_flag(CcFlag::Z, self.x == 0);
-            self.state = ExecState::Fetch;
+        match cycle {
+            39 => {
+                // Base internal cycle 1
+                self.state = ExecState::Execute(opcode, 40);
+            }
+            40 => {
+                // Base internal cycle 2
+                self.x = self.temp_addr;
+                self.set_flag(CcFlag::Z, self.x == 0);
+                self.state = ExecState::Fetch;
+            }
+            _ => {
+                if self.indexed_resolve(opcode, cycle, bus, master) {
+                    self.state = ExecState::Execute(opcode, 39);
+                }
+            }
         }
     }
 
     /// LEAY indexed (0x31): Load Effective Address into Y.
     /// Z set if result is zero. No other flags affected.
+    /// 4+ total cycles: 1 fetch + 1 postbyte + mode overhead + 2 base internal.
     pub(crate) fn op_leay<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -1135,15 +1207,26 @@ impl M6809 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        if self.indexed_resolve(opcode, cycle, bus, master) {
-            self.y = self.temp_addr;
-            self.set_flag(CcFlag::Z, self.y == 0);
-            self.state = ExecState::Fetch;
+        match cycle {
+            39 => {
+                self.state = ExecState::Execute(opcode, 40);
+            }
+            40 => {
+                self.y = self.temp_addr;
+                self.set_flag(CcFlag::Z, self.y == 0);
+                self.state = ExecState::Fetch;
+            }
+            _ => {
+                if self.indexed_resolve(opcode, cycle, bus, master) {
+                    self.state = ExecState::Execute(opcode, 39);
+                }
+            }
         }
     }
 
     /// LEAS indexed (0x32): Load Effective Address into S.
     /// No flags affected.
+    /// 4+ total cycles: 1 fetch + 1 postbyte + mode overhead + 2 base internal.
     pub(crate) fn op_leas<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -1151,14 +1234,25 @@ impl M6809 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        if self.indexed_resolve(opcode, cycle, bus, master) {
-            self.s = self.temp_addr;
-            self.state = ExecState::Fetch;
+        match cycle {
+            39 => {
+                self.state = ExecState::Execute(opcode, 40);
+            }
+            40 => {
+                self.s = self.temp_addr;
+                self.state = ExecState::Fetch;
+            }
+            _ => {
+                if self.indexed_resolve(opcode, cycle, bus, master) {
+                    self.state = ExecState::Execute(opcode, 39);
+                }
+            }
         }
     }
 
     /// LEAU indexed (0x33): Load Effective Address into U.
     /// No flags affected.
+    /// 4+ total cycles: 1 fetch + 1 postbyte + mode overhead + 2 base internal.
     pub(crate) fn op_leau<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -1166,9 +1260,19 @@ impl M6809 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        if self.indexed_resolve(opcode, cycle, bus, master) {
-            self.u = self.temp_addr;
-            self.state = ExecState::Fetch;
+        match cycle {
+            39 => {
+                self.state = ExecState::Execute(opcode, 40);
+            }
+            40 => {
+                self.u = self.temp_addr;
+                self.state = ExecState::Fetch;
+            }
+            _ => {
+                if self.indexed_resolve(opcode, cycle, bus, master) {
+                    self.state = ExecState::Execute(opcode, 39);
+                }
+            }
         }
     }
 
@@ -1196,9 +1300,13 @@ impl M6809 {
                 self.set_flags_logical16(self.y);
                 self.state = ExecState::Fetch;
             }
+            40 => {
+                // Base internal cycle
+                self.state = ExecState::ExecutePage2(opcode, 50);
+            }
             _ => {
                 if self.indexed_resolve_page2(opcode, cycle, bus, master) {
-                    self.state = ExecState::ExecutePage2(opcode, 50);
+                    self.state = ExecState::ExecutePage2(opcode, 40);
                 }
             }
         }
@@ -1224,9 +1332,13 @@ impl M6809 {
                 self.set_flags_logical16(self.y);
                 self.state = ExecState::Fetch;
             }
+            40 => {
+                // Base internal cycle
+                self.state = ExecState::ExecutePage2(opcode, 50);
+            }
             _ => {
                 if self.indexed_resolve_page2(opcode, cycle, bus, master) {
-                    self.state = ExecState::ExecutePage2(opcode, 50);
+                    self.state = ExecState::ExecutePage2(opcode, 40);
                 }
             }
         }
@@ -1254,9 +1366,13 @@ impl M6809 {
                 self.set_flags_logical16(self.s);
                 self.state = ExecState::Fetch;
             }
+            40 => {
+                // Base internal cycle
+                self.state = ExecState::ExecutePage2(opcode, 50);
+            }
             _ => {
                 if self.indexed_resolve_page2(opcode, cycle, bus, master) {
-                    self.state = ExecState::ExecutePage2(opcode, 50);
+                    self.state = ExecState::ExecutePage2(opcode, 40);
                 }
             }
         }
@@ -1282,9 +1398,13 @@ impl M6809 {
                 self.set_flags_logical16(self.s);
                 self.state = ExecState::Fetch;
             }
+            40 => {
+                // Base internal cycle
+                self.state = ExecState::ExecutePage2(opcode, 50);
+            }
             _ => {
                 if self.indexed_resolve_page2(opcode, cycle, bus, master) {
-                    self.state = ExecState::ExecutePage2(opcode, 50);
+                    self.state = ExecState::ExecutePage2(opcode, 40);
                 }
             }
         }

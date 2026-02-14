@@ -389,8 +389,8 @@ fn test_cmpu_indexed() {
     // CMPU ,X (no offset, postbyte = 0x84: bit7=1, reg=X(00), indirect=0, mode=0x04)
     bus.load(0, &[0x11, 0xA3, 0x84]); // CMPU ,X
 
-    // 1 fetch + 1 prefix + 1 postbyte + 2 sentinel (hi+lo read)
-    tick(&mut cpu, &mut bus, 5);
+    // 2 prefix + 1 postbyte + 2 base internal + 2 read = 7
+    tick(&mut cpu, &mut bus, 7);
 
     assert_eq!(cpu.cc & (CcFlag::Z as u8), CcFlag::Z as u8);
 }
@@ -486,7 +486,8 @@ fn test_cmps_indexed() {
     // CMPS ,X (postbyte 0x84)
     bus.load(0, &[0x11, 0xAC, 0x84]); // CMPS ,X
 
-    tick(&mut cpu, &mut bus, 5);
+    // 2 prefix + 1 postbyte + 2 base internal + 2 read = 7
+    tick(&mut cpu, &mut bus, 7);
 
     assert_eq!(cpu.cc & (CcFlag::Z as u8), CcFlag::Z as u8);
 }

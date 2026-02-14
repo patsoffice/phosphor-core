@@ -56,11 +56,30 @@ cargo run --package phosphor-frontend -- joust /path/to/roms --scale 3
 - Include edge cases: zero, overflow, sign boundary (0x7F/0x80), carry propagation
 - Use `CcFlag::X as u8` in assertions, not raw hex
 
+### CPU Validation
+
+Cross-validation infrastructure for M6809 (266 opcodes, 266,000 test vectors):
+
+```bash
+# Generate test vectors for all opcodes
+cd cpu-validation && cargo run --bin gen_m6809_tests -- all
+
+# Self-validation (phosphor-core against its own test vectors)
+cargo test -p phosphor-cpu-validation
+
+# Cross-validation (against elmerucr/MC6809 reference emulator)
+cd cross-validation && make && ./validate ../cpu-validation/test_data/m6809/*.json
+```
+
+- Test generator filters undefined indexed postbytes and undefined EXG/TFR register codes
+- SYNC (0x13) and CWAI (0x3C) are intentionally excluded (they halt waiting for interrupts)
+- If cross-validation differs from datasheet for timings, use the datasheet values
+
 ### Commit Style
 
 - Summarize what was added (opcodes, tests) and why
 
 ### README
 
-- Update opcode/test counts in all locations when adding instructions
+- Update opcode/test counts in README.md, AGENTS.md, and CLAUDE.md when adding instructions
 - Keep roadmap checkboxes current

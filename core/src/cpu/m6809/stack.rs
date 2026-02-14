@@ -12,6 +12,7 @@ impl M6809 {
     /// Pushes registers from High ID (PC=7) to Low ID (CC=0).
     /// Stack grows downward.
     /// 16-bit regs: Push Low byte, then High byte (so High is at lower addr).
+    /// Timing: 5+n cycles (1 fetch + 1 read postbyte + 2 internal + n push bytes).
     fn op_push<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -30,7 +31,13 @@ impl M6809 {
             return;
         }
 
-        // Cycle 1+: Process registers
+        // Cycles 1-2: Internal cycles (datasheet: 5+n = 1 fetch + 1 postbyte + 2 internal + n push + 1 done-check)
+        if cycle <= 2 {
+            self.state = ExecState::Execute(opcode, cycle + 1);
+            return;
+        }
+
+        // Cycle 3+: Process registers
         // Check if we are currently processing a 16-bit register (second byte)
         let mut mask = (self.temp_addr & 0xFF) as u8;
         let state = (self.temp_addr >> 8) as u8;
@@ -144,6 +151,7 @@ impl M6809 {
     /// Pulls registers from Low ID (CC=0) to High ID (PC=7).
     /// Stack grows upward (incrementing).
     /// 16-bit regs: Pull High byte, then Low byte.
+    /// Timing: 5+n cycles (1 fetch + 1 read postbyte + 3 internal + n pull bytes).
     fn op_pull<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -157,6 +165,12 @@ impl M6809 {
             self.pc = self.pc.wrapping_add(1);
             self.temp_addr = mask as u16;
             self.state = ExecState::Execute(opcode, 1);
+            return;
+        }
+
+        // Cycles 1-2: Internal cycles (datasheet: 5+n = 1 fetch + 1 postbyte + 2 internal + n pull + 1 done-check)
+        if cycle <= 2 {
+            self.state = ExecState::Execute(opcode, cycle + 1);
             return;
         }
 
@@ -309,7 +323,7 @@ impl M6809 {
     /// SWI (0x3F): Software Interrupt.
     /// Sets E flag, pushes all registers onto S stack, sets I+F flags,
     /// then vectors through 0xFFFA/0xFFFB.
-    /// No flags affected directly (E, I, F are set as part of interrupt sequence).
+    /// 19 cycles total: 1 fetch + 2 internal + 12 push + 1 internal + 2 vector + 1 internal.
     pub(crate) fn op_swi<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
@@ -318,31 +332,39 @@ impl M6809 {
     ) {
         match cycle {
             0 => {
-                // Set E flag to indicate entire state saved
+                // Internal: set E flag
                 self.cc |= CcFlag::E as u8;
-                // Push PC low byte
-                self.s = self.s.wrapping_sub(1);
-                bus.write(master, self.s, self.swi_push_byte(0));
                 self.state = ExecState::Execute(0x3F, 1);
             }
-            c @ 1..=11 => {
-                // Push remaining registers
+            1 => {
+                // Internal cycle
+                self.state = ExecState::Execute(0x3F, 2);
+            }
+            c @ 2..=13 => {
+                // Push 12 register bytes
                 self.s = self.s.wrapping_sub(1);
-                bus.write(master, self.s, self.swi_push_byte(c));
+                bus.write(master, self.s, self.swi_push_byte(c - 2));
                 self.state = ExecState::Execute(0x3F, c + 1);
             }
-            12 => {
-                // Mask both IRQ and FIRQ
+            14 => {
+                // Internal: set mask flags
                 self.cc |= CcFlag::I as u8 | CcFlag::F as u8;
+                self.state = ExecState::Execute(0x3F, 15);
+            }
+            15 => {
                 // Read vector high byte
                 let hi = bus.read(master, 0xFFFA);
                 self.temp_addr = (hi as u16) << 8;
-                self.state = ExecState::Execute(0x3F, 13);
+                self.state = ExecState::Execute(0x3F, 16);
             }
-            13 => {
-                // Read vector low byte, jump to handler
+            16 => {
+                // Read vector low byte
                 let lo = bus.read(master, 0xFFFB);
                 self.pc = self.temp_addr | (lo as u16);
+                self.state = ExecState::Execute(0x3F, 17);
+            }
+            17 => {
+                // Internal cycle (done)
                 self.state = ExecState::Fetch;
             }
             _ => {}
@@ -352,6 +374,7 @@ impl M6809 {
     /// SWI2 (0x103F): Software Interrupt 2.
     /// Sets E flag, pushes all registers onto S stack. Does NOT mask interrupts.
     /// Vectors through 0xFFF4/0xFFF5.
+    /// 20 cycles total: 2 prefix + 2 internal + 12 push + 1 internal + 2 vector + 1 internal.
     pub(crate) fn op_swi2<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
@@ -360,25 +383,36 @@ impl M6809 {
     ) {
         match cycle {
             0 => {
+                // Internal: set E flag
                 self.cc |= CcFlag::E as u8;
-                self.s = self.s.wrapping_sub(1);
-                bus.write(master, self.s, self.swi_push_byte(0));
                 self.state = ExecState::ExecutePage2(0x3F, 1);
             }
-            c @ 1..=11 => {
+            1 => {
+                // Internal cycle
+                self.state = ExecState::ExecutePage2(0x3F, 2);
+            }
+            c @ 2..=13 => {
+                // Push 12 register bytes
                 self.s = self.s.wrapping_sub(1);
-                bus.write(master, self.s, self.swi_push_byte(c));
+                bus.write(master, self.s, self.swi_push_byte(c - 2));
                 self.state = ExecState::ExecutePage2(0x3F, c + 1);
             }
-            12 => {
-                // SWI2 does NOT mask interrupts
+            14 => {
+                // Internal: SWI2 does NOT mask interrupts
+                self.state = ExecState::ExecutePage2(0x3F, 15);
+            }
+            15 => {
                 let hi = bus.read(master, 0xFFF4);
                 self.temp_addr = (hi as u16) << 8;
-                self.state = ExecState::ExecutePage2(0x3F, 13);
+                self.state = ExecState::ExecutePage2(0x3F, 16);
             }
-            13 => {
+            16 => {
                 let lo = bus.read(master, 0xFFF5);
                 self.pc = self.temp_addr | (lo as u16);
+                self.state = ExecState::ExecutePage2(0x3F, 17);
+            }
+            17 => {
+                // Internal cycle (done)
                 self.state = ExecState::Fetch;
             }
             _ => {}
@@ -388,6 +422,7 @@ impl M6809 {
     /// SWI3 (0x113F): Software Interrupt 3.
     /// Sets E flag, pushes all registers onto S stack. Does NOT mask interrupts.
     /// Vectors through 0xFFF2/0xFFF3.
+    /// 20 cycles total: 2 prefix + 2 internal + 12 push + 1 internal + 2 vector + 1 internal.
     pub(crate) fn op_swi3<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
@@ -396,25 +431,36 @@ impl M6809 {
     ) {
         match cycle {
             0 => {
+                // Internal: set E flag
                 self.cc |= CcFlag::E as u8;
-                self.s = self.s.wrapping_sub(1);
-                bus.write(master, self.s, self.swi_push_byte(0));
                 self.state = ExecState::ExecutePage3(0x3F, 1);
             }
-            c @ 1..=11 => {
+            1 => {
+                // Internal cycle
+                self.state = ExecState::ExecutePage3(0x3F, 2);
+            }
+            c @ 2..=13 => {
+                // Push 12 register bytes
                 self.s = self.s.wrapping_sub(1);
-                bus.write(master, self.s, self.swi_push_byte(c));
+                bus.write(master, self.s, self.swi_push_byte(c - 2));
                 self.state = ExecState::ExecutePage3(0x3F, c + 1);
             }
-            12 => {
-                // SWI3 does NOT mask interrupts
+            14 => {
+                // Internal: SWI3 does NOT mask interrupts
+                self.state = ExecState::ExecutePage3(0x3F, 15);
+            }
+            15 => {
                 let hi = bus.read(master, 0xFFF2);
                 self.temp_addr = (hi as u16) << 8;
-                self.state = ExecState::ExecutePage3(0x3F, 13);
+                self.state = ExecState::ExecutePage3(0x3F, 16);
             }
-            13 => {
+            16 => {
                 let lo = bus.read(master, 0xFFF3);
                 self.pc = self.temp_addr | (lo as u16);
+                self.state = ExecState::ExecutePage3(0x3F, 17);
+            }
+            17 => {
+                // Internal cycle (done)
                 self.state = ExecState::Fetch;
             }
             _ => {}
@@ -673,6 +719,8 @@ impl M6809 {
     /// Pulls CC from S stack. If E flag is set in pulled CC, pulls all registers
     /// (A, B, DP, X, Y, U, PC). If E is clear, pulls only PC (fast FIRQ return).
     /// CC is restored from the stack (all flags affected).
+    /// E=0: 6 cycles (1 fetch + 1 internal + 1 pull CC + 1 internal + 2 pull PC).
+    /// E=1: 15 cycles (1 fetch + 1 internal + 12 pulls + 1 internal).
     pub(crate) fn op_rti<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
@@ -681,76 +729,92 @@ impl M6809 {
     ) {
         match cycle {
             0 => {
+                // Internal cycle
+                self.state = ExecState::Execute(0x3B, 1);
+            }
+            1 => {
                 // Pull CC
                 self.cc = bus.read(master, self.s);
                 self.s = self.s.wrapping_add(1);
                 if self.cc & (CcFlag::E as u8) != 0 {
                     // E set: pull all registers
-                    self.state = ExecState::Execute(0x3B, 1);
+                    self.state = ExecState::Execute(0x3B, 2);
                 } else {
                     // E clear: pull PC only (fast FIRQ return)
-                    self.state = ExecState::Execute(0x3B, 10);
+                    self.state = ExecState::Execute(0x3B, 20);
                 }
             }
-            1 => {
-                self.a = bus.read(master, self.s);
-                self.s = self.s.wrapping_add(1);
-                self.state = ExecState::Execute(0x3B, 2);
-            }
+            // === E=1 path: pull A, B, DP, X, Y, U, PC ===
             2 => {
-                self.b = bus.read(master, self.s);
+                self.a = bus.read(master, self.s);
                 self.s = self.s.wrapping_add(1);
                 self.state = ExecState::Execute(0x3B, 3);
             }
             3 => {
-                self.dp = bus.read(master, self.s);
+                self.b = bus.read(master, self.s);
                 self.s = self.s.wrapping_add(1);
                 self.state = ExecState::Execute(0x3B, 4);
             }
             4 => {
-                // X high byte
-                self.x = (bus.read(master, self.s) as u16) << 8;
+                self.dp = bus.read(master, self.s);
                 self.s = self.s.wrapping_add(1);
                 self.state = ExecState::Execute(0x3B, 5);
             }
             5 => {
-                // X low byte
-                self.x |= bus.read(master, self.s) as u16;
+                self.x = (bus.read(master, self.s) as u16) << 8;
                 self.s = self.s.wrapping_add(1);
                 self.state = ExecState::Execute(0x3B, 6);
             }
             6 => {
-                // Y high byte
-                self.y = (bus.read(master, self.s) as u16) << 8;
+                self.x |= bus.read(master, self.s) as u16;
                 self.s = self.s.wrapping_add(1);
                 self.state = ExecState::Execute(0x3B, 7);
             }
             7 => {
-                // Y low byte
-                self.y |= bus.read(master, self.s) as u16;
+                self.y = (bus.read(master, self.s) as u16) << 8;
                 self.s = self.s.wrapping_add(1);
                 self.state = ExecState::Execute(0x3B, 8);
             }
             8 => {
-                // U high byte
-                self.u = (bus.read(master, self.s) as u16) << 8;
+                self.y |= bus.read(master, self.s) as u16;
                 self.s = self.s.wrapping_add(1);
                 self.state = ExecState::Execute(0x3B, 9);
             }
             9 => {
-                // U low byte
-                self.u |= bus.read(master, self.s) as u16;
+                self.u = (bus.read(master, self.s) as u16) << 8;
                 self.s = self.s.wrapping_add(1);
                 self.state = ExecState::Execute(0x3B, 10);
             }
             10 => {
-                // PC high byte (shared by E=0 and E=1 paths)
-                self.pc = (bus.read(master, self.s) as u16) << 8;
+                self.u |= bus.read(master, self.s) as u16;
                 self.s = self.s.wrapping_add(1);
                 self.state = ExecState::Execute(0x3B, 11);
             }
             11 => {
-                // PC low byte
+                self.pc = (bus.read(master, self.s) as u16) << 8;
+                self.s = self.s.wrapping_add(1);
+                self.state = ExecState::Execute(0x3B, 12);
+            }
+            12 => {
+                self.pc |= bus.read(master, self.s) as u16;
+                self.s = self.s.wrapping_add(1);
+                self.state = ExecState::Execute(0x3B, 13);
+            }
+            13 => {
+                // Internal cycle (E=1 done)
+                self.state = ExecState::Fetch;
+            }
+            // === E=0 path: internal + pull PC only ===
+            20 => {
+                // Internal cycle
+                self.state = ExecState::Execute(0x3B, 21);
+            }
+            21 => {
+                self.pc = (bus.read(master, self.s) as u16) << 8;
+                self.s = self.s.wrapping_add(1);
+                self.state = ExecState::Execute(0x3B, 22);
+            }
+            22 => {
                 self.pc |= bus.read(master, self.s) as u16;
                 self.s = self.s.wrapping_add(1);
                 self.state = ExecState::Fetch;

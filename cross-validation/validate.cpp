@@ -146,6 +146,9 @@ int main(int argc, char *argv[]) {
         }
 
         printf("  Results: %d passed, %d failed\n", file_passed, file_failed);
+        if (file_failed > 0 && !failures.empty()) {
+            printf("  First error: %s\n", failures.back().detail.c_str());
+        }
     }
 
     // Summary
@@ -154,15 +157,11 @@ int main(int argc, char *argv[]) {
            total_tests, total_passed, total_failed);
 
     if (!failures.empty()) {
-        printf("\nFirst %zu failures:\n",
-               failures.size() > 10 ? (size_t)10 : failures.size());
-        for (size_t i = 0; i < failures.size() && i < 10; i++) {
+        printf("\nAll %zu failures:\n", failures.size());
+        for (size_t i = 0; i < failures.size(); i++) {
             printf("  FAIL %s: %s\n",
                    failures[i].test_name.c_str(),
                    failures[i].detail.c_str());
-        }
-        if (failures.size() > 10) {
-            printf("  ... and %zu more\n", failures.size() - 10);
         }
     }
 

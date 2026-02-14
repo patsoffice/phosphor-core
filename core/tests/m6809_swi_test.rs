@@ -33,7 +33,7 @@ fn test_swi_pushes_all_registers() {
 
     bus.load(0, &[0x3F]); // SWI
 
-    tick(&mut cpu, &mut bus, 15); // 1 fetch + 14 execute
+    tick(&mut cpu, &mut bus, 19); // 1 fetch + 2 internal + 12 push + 1 internal + 2 vector + 1 internal
 
     // S should be decremented by 12 (all registers)
     assert_eq!(cpu.s, 0x0100 - 12);
@@ -75,7 +75,7 @@ fn test_swi_masks_interrupts() {
     bus.memory[0xFFFB] = 0x00;
     bus.load(0, &[0x3F]); // SWI
 
-    tick(&mut cpu, &mut bus, 15);
+    tick(&mut cpu, &mut bus, 19);
 
     // I and F should be set after SWI
     assert_ne!(cpu.cc & (CcFlag::I as u8), 0);
@@ -103,7 +103,7 @@ fn test_swi_preserves_existing_interrupt_mask() {
     bus.memory[0xFFFB] = 0x00;
     bus.load(0, &[0x3F]); // SWI
 
-    tick(&mut cpu, &mut bus, 15);
+    tick(&mut cpu, &mut bus, 19);
 
     // CC on stack should have I set (it was already set) plus E
     let s = cpu.s as usize;
@@ -134,7 +134,7 @@ fn test_swi2_pushes_all_registers() {
 
     bus.load(0, &[0x10, 0x3F]); // SWI2
 
-    tick(&mut cpu, &mut bus, 16); // 2 (prefix) + 14 execute
+    tick(&mut cpu, &mut bus, 20); // 2 prefix + 18 execute
 
     assert_eq!(cpu.s, 0x0200 - 12);
     assert_eq!(cpu.pc, 0x3000);
@@ -165,7 +165,7 @@ fn test_swi2_does_not_mask_interrupts() {
     bus.memory[0xFFF5] = 0x00;
     bus.load(0, &[0x10, 0x3F]); // SWI2
 
-    tick(&mut cpu, &mut bus, 16);
+    tick(&mut cpu, &mut bus, 20);
 
     // I and F should NOT be set (SWI2 doesn't mask)
     assert_eq!(cpu.cc & (CcFlag::I as u8), 0);
@@ -196,7 +196,7 @@ fn test_swi3_pushes_all_registers() {
 
     bus.load(0, &[0x11, 0x3F]); // SWI3
 
-    tick(&mut cpu, &mut bus, 16); // 2 (prefix) + 14 execute
+    tick(&mut cpu, &mut bus, 20); // 2 prefix + 18 execute
 
     assert_eq!(cpu.s, 0x0300 - 12);
     assert_eq!(cpu.pc, 0x4000);
@@ -220,7 +220,7 @@ fn test_swi3_does_not_mask_interrupts() {
     bus.memory[0xFFF3] = 0x00;
     bus.load(0, &[0x11, 0x3F]); // SWI3
 
-    tick(&mut cpu, &mut bus, 16);
+    tick(&mut cpu, &mut bus, 20);
 
     // I and F should NOT be set
     assert_eq!(cpu.cc & (CcFlag::I as u8), 0);
@@ -239,7 +239,7 @@ fn test_swi3_uses_correct_vector() {
     bus.memory[0xFFF3] = 0xCD;
     bus.load(0, &[0x11, 0x3F]); // SWI3
 
-    tick(&mut cpu, &mut bus, 16);
+    tick(&mut cpu, &mut bus, 20);
 
     assert_eq!(cpu.pc, 0xABCD);
 }
@@ -274,7 +274,7 @@ fn test_rti_full_restore_e_set() {
     cpu.pc = 0x2000;
     bus.memory[0x2000] = 0x3B; // RTI
 
-    tick(&mut cpu, &mut bus, 13); // 1 fetch + 12 execute (pull CC + 9 regs + PC)
+    tick(&mut cpu, &mut bus, 15); // 1 fetch + 1 internal + 12 pulls + 1 internal
 
     assert_eq!(cpu.cc, cc_on_stack);
     assert_eq!(cpu.a, 0x11);
@@ -312,7 +312,7 @@ fn test_rti_fast_return_e_clear() {
     cpu.pc = 0x2000;
     bus.memory[0x2000] = 0x3B; // RTI
 
-    tick(&mut cpu, &mut bus, 4); // 1 fetch + 3 execute (pull CC + PC_hi + PC_lo)
+    tick(&mut cpu, &mut bus, 6); // 1 fetch + 1 internal + 1 pull CC + 1 internal + 2 pull PC
 
     assert_eq!(cpu.cc, cc_on_stack);
     assert_eq!(cpu.pc, 0x5000);
@@ -347,7 +347,7 @@ fn test_rti_restores_flags() {
     cpu.pc = 0x2000;
     bus.memory[0x2000] = 0x3B; // RTI
 
-    tick(&mut cpu, &mut bus, 4);
+    tick(&mut cpu, &mut bus, 6);
 
     // CC should be restored from stack
     assert_eq!(cpu.cc, original_cc);
@@ -381,8 +381,8 @@ fn test_swi_then_rti_roundtrip() {
     // RTI at handler address
     bus.memory[0x2000] = 0x3B;
 
-    // Execute SWI (15 cycles)
-    tick(&mut cpu, &mut bus, 15);
+    // Execute SWI (19 cycles)
+    tick(&mut cpu, &mut bus, 19);
     assert_eq!(cpu.pc, 0x2000);
 
     // Save the post-SWI state
@@ -391,8 +391,8 @@ fn test_swi_then_rti_roundtrip() {
     assert_ne!(swi_cc & (CcFlag::I as u8), 0);
     assert_ne!(swi_cc & (CcFlag::F as u8), 0);
 
-    // Execute RTI (13 cycles for E=1)
-    tick(&mut cpu, &mut bus, 13);
+    // Execute RTI (15 cycles for E=1)
+    tick(&mut cpu, &mut bus, 15);
 
     // All registers should be restored to pre-SWI values
     assert_eq!(cpu.a, 0x11);
@@ -437,12 +437,12 @@ fn test_swi2_then_rti_roundtrip() {
     bus.load(0, &[0x10, 0x3F]); // SWI2
     bus.memory[0x3000] = 0x3B; // RTI
 
-    // Execute SWI2 (16 cycles)
-    tick(&mut cpu, &mut bus, 16);
+    // Execute SWI2 (20 cycles)
+    tick(&mut cpu, &mut bus, 20);
     assert_eq!(cpu.pc, 0x3000);
 
-    // Execute RTI (13 cycles for E=1)
-    tick(&mut cpu, &mut bus, 13);
+    // Execute RTI (15 cycles for E=1)
+    tick(&mut cpu, &mut bus, 15);
 
     assert_eq!(cpu.a, 0xAA);
     assert_eq!(cpu.b, 0xBB);
@@ -464,7 +464,7 @@ fn test_swi_vector_address() {
     bus.memory[0xFFFB] = 0xAD;
     bus.load(0, &[0x3F]); // SWI
 
-    tick(&mut cpu, &mut bus, 15);
+    tick(&mut cpu, &mut bus, 19);
 
     assert_eq!(cpu.pc, 0xDEAD);
 }
@@ -479,7 +479,7 @@ fn test_swi2_vector_address() {
     bus.memory[0xFFF5] = 0xEF;
     bus.load(0, &[0x10, 0x3F]); // SWI2
 
-    tick(&mut cpu, &mut bus, 16);
+    tick(&mut cpu, &mut bus, 20);
 
     assert_eq!(cpu.pc, 0xBEEF);
 }
@@ -494,7 +494,7 @@ fn test_swi_stack_pointer_decrement() {
     bus.memory[0xFFFB] = 0x00;
     bus.load(0, &[0x3F]); // SWI
 
-    tick(&mut cpu, &mut bus, 15);
+    tick(&mut cpu, &mut bus, 19);
 
     // S should be decremented by 12 (all registers)
     assert_eq!(cpu.s, 0x0100 - 12);
@@ -527,7 +527,7 @@ fn test_rti_e_set_restores_interrupt_mask() {
     cpu.cc = 0; // Currently no flags
     bus.memory[0x2000] = 0x3B; // RTI
 
-    tick(&mut cpu, &mut bus, 13);
+    tick(&mut cpu, &mut bus, 15);
 
     // I and F should be restored from stack
     assert_ne!(cpu.cc & (CcFlag::I as u8), 0);
@@ -545,7 +545,7 @@ fn test_swi_with_all_flags_set() {
     bus.memory[0xFFFB] = 0x00;
     bus.load(0, &[0x3F]); // SWI
 
-    tick(&mut cpu, &mut bus, 15);
+    tick(&mut cpu, &mut bus, 19);
 
     // CC on stack should have all flags set (including E which was already set)
     let s = cpu.s as usize;

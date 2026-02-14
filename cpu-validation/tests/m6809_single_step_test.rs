@@ -78,9 +78,7 @@ fn run_test_case(tc: &TestCase) {
         expected_bus.len()
     );
 
-    for (bus_idx, (exp_idx, (exp_addr, exp_data, exp_op))) in
-        expected_bus.iter().enumerate()
-    {
+    for (bus_idx, (exp_idx, (exp_addr, exp_data, exp_op))) in expected_bus.iter().enumerate() {
         let actual = &bus.cycles[bus_idx];
         assert_eq!(
             actual.addr, *exp_addr,

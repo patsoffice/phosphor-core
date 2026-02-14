@@ -643,6 +643,7 @@ impl M6809 {
 
     /// JMP indexed (0x6E): Jump to indexed EA.
     /// No flags affected.
+    /// 3+ total cycles: 1 fetch + 1 postbyte + mode overhead + 1 base internal.
     pub(crate) fn op_jmp_indexed<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -650,9 +651,17 @@ impl M6809 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        if self.indexed_resolve(opcode, cycle, bus, master) {
-            self.pc = self.temp_addr;
-            self.state = ExecState::Fetch;
+        match cycle {
+            40 => {
+                // Base internal cycle
+                self.pc = self.temp_addr;
+                self.state = ExecState::Fetch;
+            }
+            _ => {
+                if self.indexed_resolve(opcode, cycle, bus, master) {
+                    self.state = ExecState::Execute(opcode, 40);
+                }
+            }
         }
     }
 
@@ -688,9 +697,13 @@ impl M6809 {
                 self.pc = self.temp_addr;
                 self.state = ExecState::Fetch;
             }
+            40 => {
+                // Base internal cycle
+                self.state = ExecState::Execute(opcode, 50);
+            }
             _ => {
                 if self.indexed_resolve(opcode, cycle, bus, master) {
-                    self.state = ExecState::Execute(opcode, 50);
+                    self.state = ExecState::Execute(opcode, 40);
                 }
             }
         }

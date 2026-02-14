@@ -49,6 +49,8 @@ pub struct M6809 {
     pub(crate) interrupt_type: u8,
     /// Previous NMI line state for edge detection
     pub(crate) nmi_previous: bool,
+    /// Countdown for internal cycles during indexed addressing
+    pub(crate) indexed_internal: u8,
     #[allow(dead_code)]
     resume_delay: u8, // For TSC/RDY release timing
 }
@@ -93,6 +95,7 @@ impl M6809 {
             temp_addr: 0,
             interrupt_type: 0,
             nmi_previous: false,
+            indexed_internal: 0,
             resume_delay: 0,
         }
     }

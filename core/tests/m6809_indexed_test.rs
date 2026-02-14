@@ -32,8 +32,8 @@ fn test_lda_indexed_5bit_zero_offset() {
     // Load program: 0xA6 (LDA indexed), 0x00 (,X with 0 offset)
     bus.load(0x0000, &[0xA6, 0x00]);
 
-    // 1 fetch + 1 postbyte resolve (cycle 0) + 1 read operand (cycle 50) = 3 total
-    run_cycles(&mut cpu, &mut bus, 3);
+    // 1 fetch + 1 postbyte + 1 mode internal + 1 base internal + 1 read = 5 total
+    run_cycles(&mut cpu, &mut bus, 5);
 
     assert_eq!(cpu.a, 0x42);
     assert_eq!(cpu.cc & (CcFlag::Z as u8), 0); // not zero
@@ -52,7 +52,7 @@ fn test_lda_indexed_5bit_positive_offset() {
     bus.memory[0x2005] = 0x80; // negative value
 
     bus.load(0x0000, &[0xA6, 0x05]);
-    run_cycles(&mut cpu, &mut bus, 3);
+    run_cycles(&mut cpu, &mut bus, 5);
 
     assert_eq!(cpu.a, 0x80);
     assert_ne!(cpu.cc & (CcFlag::N as u8), 0); // negative
@@ -69,7 +69,7 @@ fn test_lda_indexed_5bit_negative_offset() {
     bus.memory[0x2000] = 0x55;
 
     bus.load(0x0000, &[0xA6, 0x1D]);
-    run_cycles(&mut cpu, &mut bus, 3);
+    run_cycles(&mut cpu, &mut bus, 5);
 
     assert_eq!(cpu.a, 0x55);
 }
@@ -85,7 +85,7 @@ fn test_lda_indexed_5bit_y_register() {
     bus.memory[0x3002] = 0xAA;
 
     bus.load(0x0000, &[0xA6, 0x22]);
-    run_cycles(&mut cpu, &mut bus, 3);
+    run_cycles(&mut cpu, &mut bus, 5);
 
     assert_eq!(cpu.a, 0xAA);
 }
@@ -101,7 +101,7 @@ fn test_lda_indexed_5bit_u_register() {
     bus.memory[0x4001] = 0x33;
 
     bus.load(0x0000, &[0xA6, 0x41]);
-    run_cycles(&mut cpu, &mut bus, 3);
+    run_cycles(&mut cpu, &mut bus, 5);
 
     assert_eq!(cpu.a, 0x33);
 }
@@ -117,7 +117,7 @@ fn test_lda_indexed_5bit_s_register() {
     bus.memory[0x5000] = 0x77;
 
     bus.load(0x0000, &[0xA6, 0x60]);
-    run_cycles(&mut cpu, &mut bus, 3);
+    run_cycles(&mut cpu, &mut bus, 5);
 
     assert_eq!(cpu.a, 0x77);
 }
@@ -137,7 +137,7 @@ fn test_lda_indexed_post_increment_1() {
     bus.memory[0x2000] = 0x42;
 
     bus.load(0x0000, &[0xA6, 0x80]);
-    run_cycles(&mut cpu, &mut bus, 3);
+    run_cycles(&mut cpu, &mut bus, 6);
 
     assert_eq!(cpu.a, 0x42);
     assert_eq!(cpu.x, 0x2001); // X incremented by 1
@@ -154,7 +154,7 @@ fn test_lda_indexed_post_increment_2() {
     bus.memory[0x2000] = 0x55;
 
     bus.load(0x0000, &[0xA6, 0x81]);
-    run_cycles(&mut cpu, &mut bus, 3);
+    run_cycles(&mut cpu, &mut bus, 7);
 
     assert_eq!(cpu.a, 0x55);
     assert_eq!(cpu.x, 0x2002); // X incremented by 2
@@ -171,7 +171,7 @@ fn test_lda_indexed_pre_decrement_1() {
     bus.memory[0x2000] = 0x99;
 
     bus.load(0x0000, &[0xA6, 0x82]);
-    run_cycles(&mut cpu, &mut bus, 3);
+    run_cycles(&mut cpu, &mut bus, 6);
 
     assert_eq!(cpu.a, 0x99);
     assert_eq!(cpu.x, 0x2000); // X decremented by 1
@@ -188,7 +188,7 @@ fn test_lda_indexed_pre_decrement_2() {
     bus.memory[0x2000] = 0xBB;
 
     bus.load(0x0000, &[0xA6, 0x83]);
-    run_cycles(&mut cpu, &mut bus, 3);
+    run_cycles(&mut cpu, &mut bus, 7);
 
     assert_eq!(cpu.a, 0xBB);
     assert_eq!(cpu.x, 0x2000); // X decremented by 2
@@ -210,7 +210,7 @@ fn test_lda_indexed_b_offset() {
     bus.memory[0x2005] = 0xCC;
 
     bus.load(0x0000, &[0xA6, 0x85]);
-    run_cycles(&mut cpu, &mut bus, 3);
+    run_cycles(&mut cpu, &mut bus, 5);
 
     assert_eq!(cpu.a, 0xCC);
 }
@@ -227,7 +227,7 @@ fn test_lda_indexed_a_offset() {
     bus.memory[0x200A] = 0xDD;
 
     bus.load(0x0000, &[0xA6, 0x86]);
-    run_cycles(&mut cpu, &mut bus, 3);
+    run_cycles(&mut cpu, &mut bus, 5);
 
     assert_eq!(cpu.a, 0xDD);
 }
@@ -245,7 +245,7 @@ fn test_lda_indexed_d_offset() {
     bus.memory[0x1010] = 0xEE;
 
     bus.load(0x0000, &[0xA6, 0x8B]);
-    run_cycles(&mut cpu, &mut bus, 3);
+    run_cycles(&mut cpu, &mut bus, 8);
 
     assert_eq!(cpu.a, 0xEE);
 }
@@ -262,7 +262,7 @@ fn test_lda_indexed_b_offset_negative() {
     bus.memory[0x2000] = 0x44;
 
     bus.load(0x0000, &[0xA6, 0x85]);
-    run_cycles(&mut cpu, &mut bus, 3);
+    run_cycles(&mut cpu, &mut bus, 5);
 
     assert_eq!(cpu.a, 0x44);
 }
@@ -284,8 +284,8 @@ fn test_lda_indexed_8bit_offset() {
     // Opcode + postbyte + offset byte
     bus.load(0x0000, &[0xA6, 0x88, 0x10]);
 
-    // 1 fetch + 1 read postbyte + 1 read offset + 1 read operand = 4
-    run_cycles(&mut cpu, &mut bus, 4);
+    // 1 fetch + 1 postbyte + 1 offset + 1 base internal + 1 read = 5
+    run_cycles(&mut cpu, &mut bus, 5);
 
     assert_eq!(cpu.a, 0x66);
 }
@@ -301,7 +301,7 @@ fn test_lda_indexed_8bit_negative_offset() {
     bus.memory[0x2000] = 0x77;
 
     bus.load(0x0000, &[0xA6, 0x88, 0xFB]);
-    run_cycles(&mut cpu, &mut bus, 4);
+    run_cycles(&mut cpu, &mut bus, 5);
 
     assert_eq!(cpu.a, 0x77);
 }
@@ -323,8 +323,8 @@ fn test_lda_indexed_16bit_offset() {
     // Opcode + postbyte + offset high + offset low
     bus.load(0x0000, &[0xA6, 0x89, 0x12, 0x34]);
 
-    // 1 fetch + 1 postbyte + 1 offset hi + 1 offset lo + 1 read operand = 5
-    run_cycles(&mut cpu, &mut bus, 5);
+    // 1 fetch + 1 postbyte + 2 offset + 2 mode internal + 1 base internal + 1 read = 8
+    run_cycles(&mut cpu, &mut bus, 8);
 
     assert_eq!(cpu.a, 0x88);
 }
@@ -344,7 +344,7 @@ fn test_lda_indexed_no_offset() {
     bus.memory[0x3000] = 0x11;
 
     bus.load(0x0000, &[0xA6, 0x84]);
-    run_cycles(&mut cpu, &mut bus, 3);
+    run_cycles(&mut cpu, &mut bus, 4);
 
     assert_eq!(cpu.a, 0x11);
 }
@@ -365,7 +365,7 @@ fn test_lda_indexed_8bit_pc_relative() {
     bus.memory[0x0008] = 0x99;
     bus.load(0x0000, &[0xA6, 0x8C, 0x05]);
 
-    run_cycles(&mut cpu, &mut bus, 4);
+    run_cycles(&mut cpu, &mut bus, 5);
 
     assert_eq!(cpu.a, 0x99);
 }
@@ -382,7 +382,7 @@ fn test_lda_indexed_16bit_pc_relative() {
     bus.memory[0x0104] = 0xAB;
     bus.load(0x0000, &[0xA6, 0x8D, 0x01, 0x00]);
 
-    run_cycles(&mut cpu, &mut bus, 5);
+    run_cycles(&mut cpu, &mut bus, 9);
 
     assert_eq!(cpu.a, 0xAB);
 }
@@ -402,7 +402,7 @@ fn test_sta_indexed_5bit_offset() {
     cpu.a = 0x42;
 
     bus.load(0x0000, &[0xA7, 0x03]);
-    run_cycles(&mut cpu, &mut bus, 3);
+    run_cycles(&mut cpu, &mut bus, 5);
 
     assert_eq!(bus.memory[0x2003], 0x42);
     assert_eq!(cpu.cc & (CcFlag::V as u8), 0); // V always cleared
@@ -419,7 +419,7 @@ fn test_stb_indexed_post_inc() {
     cpu.b = 0xFF;
 
     bus.load(0x0000, &[0xE7, 0xA1]);
-    run_cycles(&mut cpu, &mut bus, 3);
+    run_cycles(&mut cpu, &mut bus, 7);
 
     assert_eq!(bus.memory[0x3000], 0xFF);
     assert_eq!(cpu.y, 0x3002);
@@ -443,8 +443,8 @@ fn test_ldd_indexed() {
 
     bus.load(0x0000, &[0xEC, 0x00]);
 
-    // 1 fetch + 1 postbyte + 1 read hi (cycle 50) + 1 read lo (cycle 51) = 4
-    run_cycles(&mut cpu, &mut bus, 4);
+    // 1 fetch + 1 postbyte + 1 mode internal + 1 base internal + 2 read = 6
+    run_cycles(&mut cpu, &mut bus, 6);
 
     assert_eq!(cpu.a, 0x12);
     assert_eq!(cpu.b, 0x34);
@@ -463,7 +463,7 @@ fn test_std_indexed() {
     cpu.b = 0xCD;
 
     bus.load(0x0000, &[0xED, 0x20]);
-    run_cycles(&mut cpu, &mut bus, 4);
+    run_cycles(&mut cpu, &mut bus, 6);
 
     assert_eq!(bus.memory[0x3000], 0xAB);
     assert_eq!(bus.memory[0x3001], 0xCD);
@@ -481,7 +481,7 @@ fn test_ldx_indexed() {
     bus.memory[0x4001] = 0x78;
 
     bus.load(0x0000, &[0xAE, 0x40]);
-    run_cycles(&mut cpu, &mut bus, 4);
+    run_cycles(&mut cpu, &mut bus, 6);
 
     assert_eq!(cpu.x, 0x5678);
 }
@@ -497,7 +497,7 @@ fn test_stx_indexed() {
     cpu.x = 0xBEEF;
 
     bus.load(0x0000, &[0xAF, 0x61]);
-    run_cycles(&mut cpu, &mut bus, 4);
+    run_cycles(&mut cpu, &mut bus, 6);
 
     assert_eq!(bus.memory[0x5001], 0xBE);
     assert_eq!(bus.memory[0x5002], 0xEF);
@@ -514,7 +514,7 @@ fn test_ldu_indexed() {
     bus.memory[0x2001] = 0xFE;
 
     bus.load(0x0000, &[0xEE, 0x00]);
-    run_cycles(&mut cpu, &mut bus, 4);
+    run_cycles(&mut cpu, &mut bus, 6);
 
     assert_eq!(cpu.u, 0xCAFE);
 }
@@ -530,7 +530,7 @@ fn test_stu_indexed() {
     cpu.u = 0xDEAD;
 
     bus.load(0x0000, &[0xEF, 0x81]);
-    run_cycles(&mut cpu, &mut bus, 4);
+    run_cycles(&mut cpu, &mut bus, 8);
 
     assert_eq!(bus.memory[0x2000], 0xDE);
     assert_eq!(bus.memory[0x2001], 0xAD);
@@ -552,8 +552,8 @@ fn test_leax_5bit_offset() {
 
     bus.load(0x0000, &[0x30, 0x05]);
 
-    // 1 fetch + 1 postbyte = 2 cycles
-    run_cycles(&mut cpu, &mut bus, 2);
+    // 1 fetch + 1 postbyte + 1 mode internal + 2 base internal = 5
+    run_cycles(&mut cpu, &mut bus, 5);
 
     assert_eq!(cpu.x, 0x2005);
     assert_eq!(cpu.cc & (CcFlag::Z as u8), 0); // not zero
@@ -569,7 +569,7 @@ fn test_leax_zero_result() {
     cpu.x = 0x0005;
 
     bus.load(0x0000, &[0x30, 0x1B]); // -5 in 5-bit = 0b11011
-    run_cycles(&mut cpu, &mut bus, 2);
+    run_cycles(&mut cpu, &mut bus, 5);
 
     assert_eq!(cpu.x, 0x0000);
     assert_ne!(cpu.cc & (CcFlag::Z as u8), 0); // Z set
@@ -585,7 +585,7 @@ fn test_leay_post_increment() {
     cpu.x = 0x3000;
 
     bus.load(0x0000, &[0x31, 0x81]);
-    run_cycles(&mut cpu, &mut bus, 2);
+    run_cycles(&mut cpu, &mut bus, 7);
 
     assert_eq!(cpu.y, 0x3000); // Y gets old X value
     assert_eq!(cpu.x, 0x3002); // X incremented by 2
@@ -601,7 +601,7 @@ fn test_leas_offset() {
     cpu.s = 0x7FF0;
 
     bus.load(0x0000, &[0x32, 0x64]);
-    run_cycles(&mut cpu, &mut bus, 2);
+    run_cycles(&mut cpu, &mut bus, 5);
 
     assert_eq!(cpu.s, 0x7FF4);
 }
@@ -616,7 +616,7 @@ fn test_leau_negative_offset() {
     cpu.u = 0x4000;
 
     bus.load(0x0000, &[0x33, 0x5E]);
-    run_cycles(&mut cpu, &mut bus, 2);
+    run_cycles(&mut cpu, &mut bus, 5);
 
     assert_eq!(cpu.u, 0x3FFE);
 }
@@ -636,7 +636,7 @@ fn test_adda_indexed() {
     bus.memory[0x2000] = 0x20;
 
     bus.load(0x0000, &[0xAB, 0x00]);
-    run_cycles(&mut cpu, &mut bus, 3);
+    run_cycles(&mut cpu, &mut bus, 5);
 
     assert_eq!(cpu.a, 0x30);
 }
@@ -652,7 +652,7 @@ fn test_suba_indexed_carry() {
     bus.memory[0x2000] = 0x20; // 0x10 - 0x20 = borrow
 
     bus.load(0x0000, &[0xA0, 0x00]);
-    run_cycles(&mut cpu, &mut bus, 3);
+    run_cycles(&mut cpu, &mut bus, 5);
 
     assert_eq!(cpu.a, 0xF0);
     assert_ne!(cpu.cc & (CcFlag::C as u8), 0); // carry/borrow set
@@ -670,7 +670,7 @@ fn test_cmpa_indexed() {
     bus.memory[0x2000] = 0x50;
 
     bus.load(0x0000, &[0xA1, 0x00]);
-    run_cycles(&mut cpu, &mut bus, 3);
+    run_cycles(&mut cpu, &mut bus, 5);
 
     assert_ne!(cpu.cc & (CcFlag::Z as u8), 0); // equal
     assert_eq!(cpu.a, 0x50); // A unchanged
@@ -687,7 +687,7 @@ fn test_anda_indexed() {
     bus.memory[0x2000] = 0x0F;
 
     bus.load(0x0000, &[0xA4, 0x00]);
-    run_cycles(&mut cpu, &mut bus, 3);
+    run_cycles(&mut cpu, &mut bus, 5);
 
     assert_eq!(cpu.a, 0x00);
     assert_ne!(cpu.cc & (CcFlag::Z as u8), 0); // zero
@@ -708,8 +708,8 @@ fn test_subd_indexed() {
     // 0xA3 SUBD indexed, postbyte 0x00 (,X)
     bus.load(0x0000, &[0xA3, 0x00]);
 
-    // 1 fetch + 1 postbyte + 1 read hi (50) + 1 read lo (51) = 4
-    run_cycles(&mut cpu, &mut bus, 4);
+    // 1 fetch + 1 postbyte + 1 mode internal + 2 base internal + 2 read = 7
+    run_cycles(&mut cpu, &mut bus, 7);
 
     assert_eq!(cpu.a, 0x0F); // D = 0x1000 - 0x0100 = 0x0F00
     assert_eq!(cpu.b, 0x00);
@@ -728,7 +728,7 @@ fn test_addd_indexed() {
     bus.memory[0x2001] = 0x34;
 
     bus.load(0x0000, &[0xE3, 0x00]);
-    run_cycles(&mut cpu, &mut bus, 4);
+    run_cycles(&mut cpu, &mut bus, 7);
 
     assert_eq!(cpu.a, 0x12);
     assert_eq!(cpu.b, 0x34);
@@ -747,7 +747,7 @@ fn test_cmpx_indexed() {
     bus.memory[0x2001] = 0x34;
 
     bus.load(0x0000, &[0xAC, 0x20]);
-    run_cycles(&mut cpu, &mut bus, 4);
+    run_cycles(&mut cpu, &mut bus, 7);
 
     assert_ne!(cpu.cc & (CcFlag::Z as u8), 0); // equal
 }
@@ -768,8 +768,8 @@ fn test_neg_indexed() {
     // Postbyte 0x84 = ,X (no offset, extended mode)
     bus.load(0x0000, &[0x60, 0x84]);
 
-    // 1 fetch + 1 postbyte + 1 read val (50) + 1 write result (51) = 4
-    run_cycles(&mut cpu, &mut bus, 4);
+    // 1 fetch + 1 postbyte + 2 base internal + 1 read + 1 write = 6
+    run_cycles(&mut cpu, &mut bus, 6);
 
     assert_eq!(bus.memory[0x2000], 0xFF); // NEG of 0x01 = 0xFF
     assert_ne!(cpu.cc & (CcFlag::N as u8), 0); // negative
@@ -786,7 +786,7 @@ fn test_inc_indexed() {
     bus.memory[0x2000] = 0x7F;
 
     bus.load(0x0000, &[0x6C, 0x84]);
-    run_cycles(&mut cpu, &mut bus, 4);
+    run_cycles(&mut cpu, &mut bus, 6);
 
     assert_eq!(bus.memory[0x2000], 0x80);
     assert_ne!(cpu.cc & (CcFlag::V as u8), 0); // overflow 0x7F->0x80
@@ -803,7 +803,7 @@ fn test_clr_indexed() {
     bus.memory[0x2000] = 0xFF;
 
     bus.load(0x0000, &[0x6F, 0x84]);
-    run_cycles(&mut cpu, &mut bus, 4);
+    run_cycles(&mut cpu, &mut bus, 6);
 
     assert_eq!(bus.memory[0x2000], 0x00);
     assert_ne!(cpu.cc & (CcFlag::Z as u8), 0); // zero
@@ -820,7 +820,7 @@ fn test_asl_indexed() {
     bus.memory[0x2000] = 0x81; // 10000001
 
     bus.load(0x0000, &[0x68, 0x84]);
-    run_cycles(&mut cpu, &mut bus, 4);
+    run_cycles(&mut cpu, &mut bus, 6);
 
     assert_eq!(bus.memory[0x2000], 0x02); // shifted left
     assert_ne!(cpu.cc & (CcFlag::C as u8), 0); // old bit 7 was 1
@@ -836,7 +836,7 @@ fn test_lsr_indexed() {
     bus.memory[0x2000] = 0x03; // 00000011
 
     bus.load(0x0000, &[0x64, 0x84]);
-    run_cycles(&mut cpu, &mut bus, 4);
+    run_cycles(&mut cpu, &mut bus, 6);
 
     assert_eq!(bus.memory[0x2000], 0x01); // shifted right
     assert_ne!(cpu.cc & (CcFlag::C as u8), 0); // old bit 0 was 1
@@ -852,8 +852,8 @@ fn test_tst_indexed() {
     bus.memory[0x2000] = 0x00;
 
     bus.load(0x0000, &[0x6D, 0x84]);
-    // TST uses rmw_indexed: 1 fetch + 1 postbyte + 1 read + 1 write-back = 4
-    run_cycles(&mut cpu, &mut bus, 4);
+    // TST uses rmw_indexed: 1 fetch + 1 postbyte + 2 base internal + 1 read + 1 write-back = 6
+    run_cycles(&mut cpu, &mut bus, 6);
 
     assert_ne!(cpu.cc & (CcFlag::Z as u8), 0); // zero
     assert_eq!(bus.memory[0x2000], 0x00); // unchanged
@@ -873,7 +873,7 @@ fn test_jmp_indexed() {
 
     // Postbyte 0x84 = ,X (no offset)
     bus.load(0x0000, &[0x6E, 0x84]);
-    run_cycles(&mut cpu, &mut bus, 2);
+    run_cycles(&mut cpu, &mut bus, 3);
 
     assert_eq!(cpu.pc, 0x4000);
 }
@@ -887,7 +887,7 @@ fn test_jmp_indexed_8bit_offset() {
 
     cpu.x = 0x2000;
     bus.load(0x0000, &[0x6E, 0x88, 0x10]);
-    run_cycles(&mut cpu, &mut bus, 3);
+    run_cycles(&mut cpu, &mut bus, 4);
 
     assert_eq!(cpu.pc, 0x2010);
 }
@@ -904,8 +904,8 @@ fn test_jsr_indexed() {
     // Postbyte 0x84 = ,X (no offset)
     bus.load(0x0000, &[0xAD, 0x84]);
 
-    // 1 fetch + 1 postbyte + 1 internal (50) + 1 push lo (51) + 1 push hi (52) + 1 jump (53) = 6
-    run_cycles(&mut cpu, &mut bus, 6);
+    // 1 fetch + 1 postbyte + 1 base internal + 1 internal + 1 push lo + 1 push hi + 1 jump = 7
+    run_cycles(&mut cpu, &mut bus, 7);
 
     assert_eq!(cpu.pc, 0x4000);
     // Return address (0x0002 = after opcode+postbyte) pushed onto stack
@@ -934,8 +934,8 @@ fn test_lda_indexed_indirect_no_offset() {
 
     bus.load(0x0000, &[0xA6, 0x94]);
 
-    // 1 fetch + 1 postbyte(→10) + 1 indirect hi(10→11) + 1 indirect lo(11→50) + 1 read(50) = 5
-    run_cycles(&mut cpu, &mut bus, 5);
+    // 1 fetch + 1 postbyte + 2 indirect + 1 mode internal + 1 base internal + 1 read = 7
+    run_cycles(&mut cpu, &mut bus, 7);
 
     assert_eq!(cpu.a, 0x42);
 }
@@ -954,7 +954,7 @@ fn test_lda_indexed_indirect_post_inc_2() {
     bus.memory[0x5000] = 0xBB;
 
     bus.load(0x0000, &[0xA6, 0x91]);
-    run_cycles(&mut cpu, &mut bus, 5);
+    run_cycles(&mut cpu, &mut bus, 10);
 
     assert_eq!(cpu.a, 0xBB);
     assert_eq!(cpu.x, 0x2002);
@@ -975,8 +975,8 @@ fn test_lda_indexed_extended_indirect() {
     // Opcode + postbyte + addr high + addr low
     bus.load(0x0000, &[0xA6, 0x9F, 0x12, 0x34]);
 
-    // 1 fetch + 1 postbyte(→1) + 1 addr hi(1→2) + 1 addr lo(2→10) + 1 ind hi(10→11) + 1 ind lo(11→50) + 1 read(50) = 7
-    run_cycles(&mut cpu, &mut bus, 7);
+    // 1 fetch + 1 postbyte + 2 offset + 2 indirect + 1 mode internal + 1 base internal + 1 read = 9
+    run_cycles(&mut cpu, &mut bus, 9);
 
     assert_eq!(cpu.a, 0xCC);
 }
@@ -1000,8 +1000,8 @@ fn test_cmpd_indexed() {
     // Page 2 prefix + opcode + postbyte (,X no offset = 0x00)
     bus.load(0x0000, &[0x10, 0xA3, 0x00]);
 
-    // 1 fetch(0x10) + 1 prefix decode(→page2) + 1 postbyte + 1 read hi(50) + 1 read lo(51) = 5
-    run_cycles(&mut cpu, &mut bus, 5);
+    // 2 prefix + 1 postbyte + 1 mode internal + 2 base internal + 2 read = 8
+    run_cycles(&mut cpu, &mut bus, 8);
 
     assert_ne!(cpu.cc & (CcFlag::Z as u8), 0); // equal
 }
@@ -1018,7 +1018,7 @@ fn test_cmpy_indexed() {
     bus.memory[0x2001] = 0x00;
 
     bus.load(0x0000, &[0x10, 0xAC, 0x00]);
-    run_cycles(&mut cpu, &mut bus, 5);
+    run_cycles(&mut cpu, &mut bus, 8);
 
     assert_eq!(cpu.cc & (CcFlag::Z as u8), 0); // not equal (0x5000 > 0x4000)
     assert_eq!(cpu.cc & (CcFlag::C as u8), 0); // no borrow
@@ -1035,7 +1035,7 @@ fn test_ldy_indexed() {
     bus.memory[0x2001] = 0xCD;
 
     bus.load(0x0000, &[0x10, 0xAE, 0x00]);
-    run_cycles(&mut cpu, &mut bus, 5);
+    run_cycles(&mut cpu, &mut bus, 7);
 
     assert_eq!(cpu.y, 0xABCD);
 }
@@ -1050,7 +1050,7 @@ fn test_sty_indexed() {
     cpu.y = 0xFACE;
 
     bus.load(0x0000, &[0x10, 0xAF, 0x00]);
-    run_cycles(&mut cpu, &mut bus, 5);
+    run_cycles(&mut cpu, &mut bus, 7);
 
     assert_eq!(bus.memory[0x2000], 0xFA);
     assert_eq!(bus.memory[0x2001], 0xCE);
@@ -1067,7 +1067,7 @@ fn test_lds_indexed() {
     bus.memory[0x2001] = 0x00;
 
     bus.load(0x0000, &[0x10, 0xEE, 0x00]);
-    run_cycles(&mut cpu, &mut bus, 5);
+    run_cycles(&mut cpu, &mut bus, 7);
 
     assert_eq!(cpu.s, 0x8000);
 }
@@ -1082,7 +1082,7 @@ fn test_sts_indexed() {
     cpu.s = 0x7FFF;
 
     bus.load(0x0000, &[0x10, 0xEF, 0x00]);
-    run_cycles(&mut cpu, &mut bus, 5);
+    run_cycles(&mut cpu, &mut bus, 7);
 
     assert_eq!(bus.memory[0x2000], 0x7F);
     assert_eq!(bus.memory[0x2001], 0xFF);
@@ -1103,7 +1103,7 @@ fn test_subb_indexed() {
     bus.memory[0x2000] = 0x10;
 
     bus.load(0x0000, &[0xE0, 0x00]);
-    run_cycles(&mut cpu, &mut bus, 3);
+    run_cycles(&mut cpu, &mut bus, 5);
 
     assert_eq!(cpu.b, 0x20);
 }
@@ -1119,7 +1119,7 @@ fn test_addb_indexed() {
     bus.memory[0x2000] = 0x05;
 
     bus.load(0x0000, &[0xEB, 0x00]);
-    run_cycles(&mut cpu, &mut bus, 3);
+    run_cycles(&mut cpu, &mut bus, 5);
 
     assert_eq!(cpu.b, 0x15);
 }
@@ -1135,7 +1135,7 @@ fn test_orb_indexed() {
     bus.memory[0x2000] = 0x0F;
 
     bus.load(0x0000, &[0xEA, 0x00]);
-    run_cycles(&mut cpu, &mut bus, 3);
+    run_cycles(&mut cpu, &mut bus, 5);
 
     assert_eq!(cpu.b, 0xFF);
     assert_ne!(cpu.cc & (CcFlag::N as u8), 0);
@@ -1155,7 +1155,7 @@ fn test_indexed_address_wrapping() {
     bus.memory[0xFFFF] = 0x42;
 
     bus.load(0x0000, &[0xA6, 0x00]); // 5-bit offset=0
-    run_cycles(&mut cpu, &mut bus, 3);
+    run_cycles(&mut cpu, &mut bus, 5);
 
     assert_eq!(cpu.a, 0x42);
 }
@@ -1170,7 +1170,7 @@ fn test_post_increment_wrapping() {
     bus.memory[0xFFFF] = 0x11;
 
     bus.load(0x0000, &[0xA6, 0x80]);
-    run_cycles(&mut cpu, &mut bus, 3);
+    run_cycles(&mut cpu, &mut bus, 6);
 
     assert_eq!(cpu.a, 0x11);
     assert_eq!(cpu.x, 0x0000); // wrapped

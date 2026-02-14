@@ -33,8 +33,8 @@ fn test_pshs_puls_all() {
     );
 
     // Execute setup
-    // LDU(3) + TFR(2) + LDA(2) + LDB(2) + LDX(3) = 12 cycles
-    for _ in 0..12 {
+    // LDU(3) + TFR(6) + LDA(2) + LDB(2) + LDX(3) = 16 cycles
+    for _ in 0..16 {
         cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     }
 
@@ -43,10 +43,8 @@ fn test_pshs_puls_all() {
     assert_eq!(cpu.a, 0xAA);
     assert_eq!(cpu.x, 0x1234);
 
-    // Execute PSHS
-    // PSHS A,B,X:
-    // Implementation takes 7 cycles (Fetch + ReadMask + 4 pushes + DoneCheck)
-    for _ in 0..7 {
+    // Execute PSHS A,B,X: 5+4 = 9 cycles (1 fetch + 1 postbyte + 2 internal + 4 push + 1 done-check)
+    for _ in 0..9 {
         cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     }
 
@@ -72,8 +70,8 @@ fn test_pshs_puls_all() {
     assert_eq!(cpu.b, 0x00);
     assert_eq!(cpu.x, 0x0000);
 
-    // Execute PULS (7 cycles)
-    for _ in 0..7 {
+    // Execute PULS A,B,X: 5+4 = 9 cycles
+    for _ in 0..9 {
         cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     }
 

@@ -4,11 +4,11 @@
 
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-440%20passing-brightgreen.svg)](core/tests/)
+[![Tests](https://img.shields.io/badge/tests-474%20passing-brightgreen.svg)](core/tests/)
 
 A modular emulator framework for retro CPUs, designed for extensibility and educational purposes. Features a trait-based architecture that allows easy addition of new CPUs, peripherals, and complete systems.
 
-**Current Focus:** Joust (1982) arcade board emulation — M6809 CPU (285 opcodes), MC6821 PIA, Williams SC1 blitter, CMOS RAM, Machine trait for frontend abstraction. 440 tests passing
+**Current Focus:** Joust (1982) arcade board emulation — M6809 CPU (285 opcodes), MC6821 PIA, Williams SC1 blitter, CMOS RAM, Machine trait for frontend abstraction. 474 tests passing, 266,000 cross-validated test vectors across 266 opcodes
 
 ## Quick Start
 
@@ -30,7 +30,7 @@ cargo build
 cargo test
 
 # Expected output:
-#   test result: ok. 440 passed; 0 failed
+#   test result: ok. 474 passed; 0 failed
 ```
 
 ### Running the Emulator
@@ -77,8 +77,8 @@ ROMs are matched by CRC32 checksum, so any MAME ROM naming convention works. All
 | **ROM Loader** | Complete | MAME ZIP support, CRC32-based ROM matching, multi-variant support |
 | **Joust System** | Complete | Williams board: CPU + video RAM + PIAs + blitter + CMOS + ROM |
 | **Machine Trait** | Complete | Frontend-agnostic interface: display, input, render, reset |
-| **CPU Validation** | In progress | SingleStepTests framework, opcode 0x86 validated |
-| **Test Suite** | Complete | 440 tests across core, devices, and machine integration |
+| **CPU Validation** | Complete | 266 opcodes, 266,000 test vectors cross-validated against elmerucr/MC6809 |
+| **Test Suite** | Complete | 474 tests across core, devices, and machine integration |
 
 ### 6809 Instructions
 
@@ -141,12 +141,16 @@ SDL2-based windowed frontend — external dependencies: SDL2, zip:
 [SingleStepTests](https://github.com/SingleStepTests/65x02)-style test infrastructure for validating CPU implementations against randomized test vectors with cycle-by-cycle bus traces:
 
 - **TracingBus** — flat 64KB memory bus that records every read/write cycle
-- **Test generator** — produces 1000 randomized test vectors per opcode as JSON
+- **Test generator** — produces 100 randomized test vectors per opcode as JSON (266 opcodes, 266,000 total)
 - **Test runner** — replays test vectors against phosphor-core, asserting registers, memory, and bus cycles
+- **Validity filtering** — skips undefined indexed postbytes and undefined EXG/TFR register codes
 
 ```bash
-# Generate test vectors for an opcode (uses phosphor-core as reference)
+# Generate test vectors for a single opcode
 cargo run -p phosphor-cpu-validation --bin gen_m6809_tests -- 0x86
+
+# Generate all 266 opcodes (page 1, page 2, page 3)
+cargo run -p phosphor-cpu-validation --bin gen_m6809_tests -- all
 
 # Run validation tests
 cargo test -p phosphor-cpu-validation
@@ -154,12 +158,12 @@ cargo test -p phosphor-cpu-validation
 
 ### Cross-Validation (`cross-validation/`)
 
-C++ harness that validates phosphor-core's test vectors against [elmerucr/MC6809](https://github.com/elmerucr/MC6809), an independent 6809 emulator. Compares registers, memory, and cycle counts.
+C++ harness that validates phosphor-core's test vectors against [elmerucr/MC6809](https://github.com/elmerucr/MC6809), an independent 6809 emulator. Compares registers, memory, and cycle counts. **266,000/266,000 tests pass** across all 266 defined M6809 opcodes.
 
 ```bash
 git submodule update --init
 make -C cross-validation
-./cross-validation/validate cpu-validation/test_data/m6809/86.json
+./cross-validation/validate cpu-validation/test_data/m6809/*.json
 ```
 
 ## Project Structure
@@ -202,7 +206,7 @@ phosphor-core/
 │   │       ├── williams_blitter.rs # Williams SC1 DMA blitter (copy/fill/shift/mask)
 │   │       ├── cmos_ram.rs         # 1KB battery-backed CMOS RAM
 │   │       └── mod.rs              # Module exports
-│   └── tests/                      # Integration tests (440 tests)
+│   └── tests/                      # Integration tests (474 tests)
 │       ├── common/mod.rs           # TestBus harness
 │       ├── m6809_*_test.rs         # M6809 tests (16 files)
 │       ├── pia6820_test.rs         # MC6821 PIA tests (23 tests)
@@ -228,8 +232,10 @@ phosphor-core/
 │   │       └── gen_m6809_tests.rs  # Test vector generator
 │   ├── tests/
 │   │   └── m6809_single_step_test.rs  # Validates phosphor-core against JSON
-│   └── test_data/m6809/            # Generated JSON test vectors
-│       └── 86.json                 # 1000 vectors for LDA #imm
+│   └── test_data/m6809/            # Generated JSON test vectors (266 files)
+│       ├── 86.json                 # Page 1 opcodes (e.g., LDA #imm)
+│       ├── 10_8e.json              # Page 2 opcodes (e.g., LDY #imm)
+│       └── 11_83.json              # Page 3 opcodes (e.g., CMPU #imm)
 ├── frontend/                       # phosphor-frontend crate (SDL2 frontend)
 │   ├── Cargo.toml                  # Deps: phosphor-core, phosphor-machines, sdl2, zip
 │   └── src/
@@ -366,14 +372,14 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 
 ### Phase 1: M6809 CPU ✅
 
-285 opcodes implemented (280 documented + 15 undocumented aliases), 316 integration tests passing. Complete hardware interrupt handling (NMI, FIRQ, IRQ), CWAI, SYNC.
+285 opcodes implemented (280 documented + 15 undocumented aliases), 474 integration tests passing. Complete hardware interrupt handling (NMI, FIRQ, IRQ), CWAI, SYNC. Cycle-accurate timing validated against independent reference emulator.
 
 ### Phase 2: Core Infrastructure
 
 - [x] Interrupt handling (IRQ, FIRQ, NMI)
 - [x] CWAI and SYNC instructions
 - [x] Move SimpleSystem components to separate crate
-- [ ] Cycle-accurate timing validation (SingleStepTests in progress — opcode 0x86 validated)
+- [x] Cycle-accurate timing validation (266 opcodes, 266,000 tests cross-validated against elmerucr/MC6809)
 - [ ] Reset vector fetch from 0xFFFE/0xFFFF
 - [ ] Instruction disassembler
 - [ ] Save state support
