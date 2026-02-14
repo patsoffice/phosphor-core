@@ -1,3 +1,4 @@
+mod alu;
 mod load_store;
 
 use crate::core::{
@@ -35,14 +36,21 @@ pub struct M6502 {
     // Internal state
     pub(crate) state: ExecState,
     pub(crate) opcode: u8,
-    #[allow(dead_code)]
     pub(crate) temp_addr: u16,
+    /// Temporary data storage for multi-cycle operations (RMW operand, address bytes)
+    pub(crate) temp_data: u8,
+    /// Interrupt type being processed: 0=none, 1=NMI, 2=IRQ, 3=BRK
+    pub(crate) interrupt_type: u8,
+    /// Previous NMI line state for edge detection
+    pub(crate) nmi_previous: bool,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) enum ExecState {
     Fetch,
     Execute(u8, u8), // (opcode, cycle)
+    /// Hardware interrupt response sequence (NMI/IRQ push + vector)
+    Interrupt(u8),
 }
 
 impl Default for M6502 {
@@ -63,6 +71,9 @@ impl M6502 {
             state: ExecState::Fetch,
             opcode: 0,
             temp_addr: 0,
+            temp_data: 0,
+            interrupt_type: 0,
+            nmi_previous: false,
         }
     }
 
@@ -89,6 +100,9 @@ impl M6502 {
             ExecState::Execute(op, cyc) => {
                 self.execute_instruction(op, cyc, bus, master);
             }
+            ExecState::Interrupt(cycle) => {
+                self.execute_interrupt(cycle, bus, master);
+            }
         }
     }
 
@@ -100,10 +114,31 @@ impl M6502 {
         master: BusMaster,
     ) {
         match opcode {
-            // LDA Immediate
+            // --- LDA ---
             0xA9 => self.op_lda_imm(cycle, bus, master),
-            _ => self.state = ExecState::Fetch,
+            0xA5 => self.op_lda_zp(cycle, bus, master),
+            0xB5 => self.op_lda_zp_x(cycle, bus, master),
+            0xAD => self.op_lda_abs(cycle, bus, master),
+            0xBD => self.op_lda_abs_x(cycle, bus, master),
+            0xB9 => self.op_lda_abs_y(cycle, bus, master),
+            0xA1 => self.op_lda_ind_x(cycle, bus, master),
+            0xB1 => self.op_lda_ind_y(cycle, bus, master),
+
+            // Unknown opcode - just fetch next
+            _ => {
+                self.state = ExecState::Fetch;
+            }
         }
+    }
+
+    /// Placeholder for interrupt execution (will be implemented in Phase 7)
+    fn execute_interrupt<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        _cycle: u8,
+        _bus: &mut B,
+        _master: BusMaster,
+    ) {
+        self.state = ExecState::Fetch;
     }
 }
 
