@@ -157,6 +157,26 @@ impl M6800 {
                 }
             }
 
+            // --- Branches (4 cycles) ---
+            0x20 => self.op_bra(cycle, bus, master),
+            0x22 => self.op_bhi(cycle, bus, master),
+            0x23 => self.op_bls(cycle, bus, master),
+            0x24 => self.op_bcc(cycle, bus, master),
+            0x25 => self.op_bcs(cycle, bus, master),
+            0x26 => self.op_bne(cycle, bus, master),
+            0x27 => self.op_beq(cycle, bus, master),
+            0x28 => self.op_bvc(cycle, bus, master),
+            0x29 => self.op_bvs(cycle, bus, master),
+            0x2A => self.op_bpl(cycle, bus, master),
+            0x2B => self.op_bmi(cycle, bus, master),
+            0x2C => self.op_bge(cycle, bus, master),
+            0x2D => self.op_blt(cycle, bus, master),
+            0x2E => self.op_bgt(cycle, bus, master),
+            0x2F => self.op_ble(cycle, bus, master),
+
+            // --- RTS (5 cycles) ---
+            0x39 => self.op_rts(cycle, bus, master),
+
             // --- Transfer / Flag / Misc inherent ops (2 cycles) ---
             0x06 => self.op_tap(cycle),
             0x07 => self.op_tpa(cycle),
@@ -218,6 +238,7 @@ impl M6800 {
             0x6A => self.op_dec_idx(cycle, bus, master),
             0x6C => self.op_inc_idx(cycle, bus, master),
             0x6D => self.op_tst_idx(cycle, bus, master),
+            0x6E => self.op_jmp_idx(cycle, bus, master),
             0x6F => self.op_clr_idx(cycle, bus, master),
 
             // --- 0x7x: Memory unary/shift extended (6 cycles) ---
@@ -231,6 +252,7 @@ impl M6800 {
             0x7A => self.op_dec_ext(cycle, bus, master),
             0x7C => self.op_inc_ext(cycle, bus, master),
             0x7D => self.op_tst_ext(cycle, bus, master),
+            0x7E => self.op_jmp_ext(cycle, bus, master),
             0x7F => self.op_clr_ext(cycle, bus, master),
 
             // --- 0x8x: A register immediate + 16-bit immediate ---
@@ -245,6 +267,7 @@ impl M6800 {
             0x8A => self.op_oraa_imm(cycle, bus, master),
             0x8B => self.op_adda_imm(cycle, bus, master),
             0x8C => self.op_cpx_imm(cycle, bus, master),
+            0x8D => self.op_bsr(cycle, bus, master),
             0x8E => self.op_lds_imm(cycle, bus, master),
 
             // --- 0x9x: A register direct + 16-bit direct ---
@@ -276,6 +299,7 @@ impl M6800 {
             0xAA => self.op_oraa_idx(cycle, bus, master),
             0xAB => self.op_adda_idx(cycle, bus, master),
             0xAC => self.op_cpx_idx(cycle, bus, master),
+            0xAD => self.op_jsr_idx(cycle, bus, master),
             0xAE => self.op_lds_idx(cycle, bus, master),
             0xAF => self.op_sts_idx(cycle, bus, master),
 
@@ -292,6 +316,7 @@ impl M6800 {
             0xBA => self.op_oraa_ext(cycle, bus, master),
             0xBB => self.op_adda_ext(cycle, bus, master),
             0xBC => self.op_cpx_ext(cycle, bus, master),
+            0xBD => self.op_jsr_ext(cycle, bus, master),
             0xBE => self.op_lds_ext(cycle, bus, master),
             0xBF => self.op_sts_ext(cycle, bus, master),
 
