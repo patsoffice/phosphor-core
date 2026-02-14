@@ -157,6 +157,147 @@ impl M6502 {
             0x94 => self.op_sty_zp_x(cycle, bus, master),
             0x8C => self.op_sty_abs(cycle, bus, master),
 
+            // --- Flag instructions (all 2-cycle implied) ---
+            0x18 => {
+                // CLC - Clear Carry
+                if cycle == 0 {
+                    self.set_flag(StatusFlag::C, false);
+                    self.state = ExecState::Fetch;
+                }
+            }
+            0x38 => {
+                // SEC - Set Carry
+                if cycle == 0 {
+                    self.set_flag(StatusFlag::C, true);
+                    self.state = ExecState::Fetch;
+                }
+            }
+            0x58 => {
+                // CLI - Clear Interrupt Disable
+                if cycle == 0 {
+                    self.set_flag(StatusFlag::I, false);
+                    self.state = ExecState::Fetch;
+                }
+            }
+            0x78 => {
+                // SEI - Set Interrupt Disable
+                if cycle == 0 {
+                    self.set_flag(StatusFlag::I, true);
+                    self.state = ExecState::Fetch;
+                }
+            }
+            0xB8 => {
+                // CLV - Clear Overflow
+                if cycle == 0 {
+                    self.set_flag(StatusFlag::V, false);
+                    self.state = ExecState::Fetch;
+                }
+            }
+            0xD8 => {
+                // CLD - Clear Decimal
+                if cycle == 0 {
+                    self.set_flag(StatusFlag::D, false);
+                    self.state = ExecState::Fetch;
+                }
+            }
+            0xF8 => {
+                // SED - Set Decimal
+                if cycle == 0 {
+                    self.set_flag(StatusFlag::D, true);
+                    self.state = ExecState::Fetch;
+                }
+            }
+
+            // --- Transfer instructions (all 2-cycle implied) ---
+            0xAA => {
+                // TAX - Transfer A to X. Sets N, Z.
+                if cycle == 0 {
+                    self.x = self.a;
+                    self.set_nz(self.x);
+                    self.state = ExecState::Fetch;
+                }
+            }
+            0xA8 => {
+                // TAY - Transfer A to Y. Sets N, Z.
+                if cycle == 0 {
+                    self.y = self.a;
+                    self.set_nz(self.y);
+                    self.state = ExecState::Fetch;
+                }
+            }
+            0x8A => {
+                // TXA - Transfer X to A. Sets N, Z.
+                if cycle == 0 {
+                    self.a = self.x;
+                    self.set_nz(self.a);
+                    self.state = ExecState::Fetch;
+                }
+            }
+            0x98 => {
+                // TYA - Transfer Y to A. Sets N, Z.
+                if cycle == 0 {
+                    self.a = self.y;
+                    self.set_nz(self.a);
+                    self.state = ExecState::Fetch;
+                }
+            }
+            0xBA => {
+                // TSX - Transfer SP to X. Sets N, Z.
+                if cycle == 0 {
+                    self.x = self.sp;
+                    self.set_nz(self.x);
+                    self.state = ExecState::Fetch;
+                }
+            }
+            0x9A => {
+                // TXS - Transfer X to SP. Does NOT set flags.
+                if cycle == 0 {
+                    self.sp = self.x;
+                    self.state = ExecState::Fetch;
+                }
+            }
+
+            // --- Register increment/decrement (all 2-cycle implied) ---
+            0xE8 => {
+                // INX - Increment X. Sets N, Z.
+                if cycle == 0 {
+                    self.x = self.x.wrapping_add(1);
+                    self.set_nz(self.x);
+                    self.state = ExecState::Fetch;
+                }
+            }
+            0xC8 => {
+                // INY - Increment Y. Sets N, Z.
+                if cycle == 0 {
+                    self.y = self.y.wrapping_add(1);
+                    self.set_nz(self.y);
+                    self.state = ExecState::Fetch;
+                }
+            }
+            0xCA => {
+                // DEX - Decrement X. Sets N, Z.
+                if cycle == 0 {
+                    self.x = self.x.wrapping_sub(1);
+                    self.set_nz(self.x);
+                    self.state = ExecState::Fetch;
+                }
+            }
+            0x88 => {
+                // DEY - Decrement Y. Sets N, Z.
+                if cycle == 0 {
+                    self.y = self.y.wrapping_sub(1);
+                    self.set_nz(self.y);
+                    self.state = ExecState::Fetch;
+                }
+            }
+
+            // --- NOP (2-cycle implied) ---
+            0xEA => {
+                if cycle == 0 {
+                    self.state = ExecState::Fetch;
+                }
+            }
+
             // Unknown opcode - just fetch next
             _ => {
                 self.state = ExecState::Fetch;
