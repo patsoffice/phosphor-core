@@ -19,6 +19,132 @@ impl M6502 {
         self.set_flag(StatusFlag::C, carry);
     }
 
+    // ---- ALU operation helpers ----
+
+    /// Perform ADC (Add with Carry). Sets N, Z, C, V. Handles BCD mode.
+    /// Binary: A = A + M + C
+    /// BCD: A = BCD(A + M + C). N,V from intermediate; Z from binary; C from BCD.
+    #[inline]
+    pub(crate) fn perform_adc(&mut self, operand: u8) {
+        let a = self.a;
+        let c: u8 = if self.p & (StatusFlag::C as u8) != 0 {
+            1
+        } else {
+            0
+        };
+
+        if self.p & (StatusFlag::D as u8) != 0 {
+            // NMOS 6502 decimal mode ADC
+            let mut al = (a & 0x0F) as u16 + (operand & 0x0F) as u16 + c as u16;
+            if al >= 0x0A {
+                al = ((al + 0x06) & 0x0F) + 0x10;
+            }
+            let mut sum = (a as u16 & 0xF0) + (operand as u16 & 0xF0) + al;
+
+            // N, V from intermediate (before high nibble BCD correction)
+            self.set_flag(StatusFlag::N, sum & 0x80 != 0);
+            self.set_flag(
+                StatusFlag::V,
+                (!(a as u16 ^ operand as u16) & (a as u16 ^ sum)) & 0x80 != 0,
+            );
+
+            if sum >= 0xA0 {
+                sum += 0x60;
+            }
+            self.set_flag(StatusFlag::C, sum >= 0x100);
+
+            // Z from binary result (NMOS quirk)
+            let binary = a as u16 + operand as u16 + c as u16;
+            self.set_flag(StatusFlag::Z, (binary & 0xFF) == 0);
+
+            self.a = sum as u8;
+        } else {
+            // Binary mode ADC
+            let sum = a as u16 + operand as u16 + c as u16;
+            let result = sum as u8;
+            self.set_flag(StatusFlag::C, sum > 0xFF);
+            self.set_flag(StatusFlag::V, ((!(a ^ operand)) & (a ^ result)) & 0x80 != 0);
+            self.a = result;
+            self.set_nz(result);
+        }
+    }
+
+    /// Perform SBC (Subtract with Carry/Borrow). Sets N, Z, C, V. Handles BCD mode.
+    /// Binary: A = A - M - !C (equivalently A + ~M + C)
+    /// BCD: All flags from binary result (NMOS quirk); only A gets BCD correction.
+    #[inline]
+    pub(crate) fn perform_sbc(&mut self, operand: u8) {
+        let a = self.a;
+        let c: u8 = if self.p & (StatusFlag::C as u8) != 0 {
+            1
+        } else {
+            0
+        };
+
+        // Binary subtraction: A + ~M + C
+        let diff = a as u16 + (operand ^ 0xFF) as u16 + c as u16;
+        let result = diff as u8;
+
+        // Flags always from binary result (even in BCD mode on NMOS)
+        self.set_flag(StatusFlag::C, diff > 0xFF);
+        self.set_flag(StatusFlag::V, ((a ^ operand) & (a ^ result)) & 0x80 != 0);
+        self.set_nz(result);
+
+        if self.p & (StatusFlag::D as u8) != 0 {
+            // BCD correction for accumulator only
+            let borrow = 1 - c;
+            let mut lo = (a & 0x0F) as i16 - (operand & 0x0F) as i16 - borrow as i16;
+            let lo_borrow = lo < 0;
+            if lo < 0 {
+                lo -= 6;
+            }
+            let mut hi = (a >> 4) as i16 - (operand >> 4) as i16 - if lo_borrow { 1 } else { 0 };
+            if hi < 0 {
+                hi -= 6;
+            }
+            self.a = ((hi as u8 & 0x0F) << 4) | (lo as u8 & 0x0F);
+        } else {
+            self.a = result;
+        }
+    }
+
+    /// Perform compare (CMP/CPX/CPY). Sets N, Z, C. Does not affect V or any register.
+    #[inline]
+    pub(crate) fn perform_compare(&mut self, register: u8, operand: u8) {
+        let result = register.wrapping_sub(operand);
+        self.set_flag(StatusFlag::C, register >= operand);
+        self.set_nz(result);
+    }
+
+    /// Perform AND. A = A & M, sets N, Z.
+    #[inline]
+    pub(crate) fn perform_and(&mut self, operand: u8) {
+        self.a &= operand;
+        self.set_nz(self.a);
+    }
+
+    /// Perform ORA. A = A | M, sets N, Z.
+    #[inline]
+    pub(crate) fn perform_ora(&mut self, operand: u8) {
+        self.a |= operand;
+        self.set_nz(self.a);
+    }
+
+    /// Perform EOR. A = A ^ M, sets N, Z.
+    #[inline]
+    pub(crate) fn perform_eor(&mut self, operand: u8) {
+        self.a ^= operand;
+        self.set_nz(self.a);
+    }
+
+    /// Perform BIT test. N = M bit 7, V = M bit 6, Z = (A & M) == 0. A is not modified.
+    #[inline]
+    pub(crate) fn perform_bit(&mut self, operand: u8) {
+        self.set_flag(StatusFlag::N, operand & 0x80 != 0);
+        self.set_flag(StatusFlag::V, operand & 0x40 != 0);
+        self.set_flag(StatusFlag::Z, (self.a & operand) == 0);
+    }
+
     // ---- Read addressing mode helpers ----
     // Each reads an operand and applies a closure, following M6800's alu_imm/alu_direct pattern.
 

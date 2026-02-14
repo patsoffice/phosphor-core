@@ -1,4 +1,5 @@
 mod alu;
+mod binary;
 mod load_store;
 
 use crate::core::{
@@ -156,6 +157,80 @@ impl M6502 {
             0x84 => self.op_sty_zp(cycle, bus, master),
             0x94 => self.op_sty_zp_x(cycle, bus, master),
             0x8C => self.op_sty_abs(cycle, bus, master),
+
+            // --- ADC ---
+            0x69 => self.op_adc_imm(cycle, bus, master),
+            0x65 => self.op_adc_zp(cycle, bus, master),
+            0x75 => self.op_adc_zp_x(cycle, bus, master),
+            0x6D => self.op_adc_abs(cycle, bus, master),
+            0x7D => self.op_adc_abs_x(cycle, bus, master),
+            0x79 => self.op_adc_abs_y(cycle, bus, master),
+            0x61 => self.op_adc_ind_x(cycle, bus, master),
+            0x71 => self.op_adc_ind_y(cycle, bus, master),
+
+            // --- SBC ---
+            0xE9 => self.op_sbc_imm(cycle, bus, master),
+            0xE5 => self.op_sbc_zp(cycle, bus, master),
+            0xF5 => self.op_sbc_zp_x(cycle, bus, master),
+            0xED => self.op_sbc_abs(cycle, bus, master),
+            0xFD => self.op_sbc_abs_x(cycle, bus, master),
+            0xF9 => self.op_sbc_abs_y(cycle, bus, master),
+            0xE1 => self.op_sbc_ind_x(cycle, bus, master),
+            0xF1 => self.op_sbc_ind_y(cycle, bus, master),
+
+            // --- CMP ---
+            0xC9 => self.op_cmp_imm(cycle, bus, master),
+            0xC5 => self.op_cmp_zp(cycle, bus, master),
+            0xD5 => self.op_cmp_zp_x(cycle, bus, master),
+            0xCD => self.op_cmp_abs(cycle, bus, master),
+            0xDD => self.op_cmp_abs_x(cycle, bus, master),
+            0xD9 => self.op_cmp_abs_y(cycle, bus, master),
+            0xC1 => self.op_cmp_ind_x(cycle, bus, master),
+            0xD1 => self.op_cmp_ind_y(cycle, bus, master),
+
+            // --- AND ---
+            0x29 => self.op_and_imm(cycle, bus, master),
+            0x25 => self.op_and_zp(cycle, bus, master),
+            0x35 => self.op_and_zp_x(cycle, bus, master),
+            0x2D => self.op_and_abs(cycle, bus, master),
+            0x3D => self.op_and_abs_x(cycle, bus, master),
+            0x39 => self.op_and_abs_y(cycle, bus, master),
+            0x21 => self.op_and_ind_x(cycle, bus, master),
+            0x31 => self.op_and_ind_y(cycle, bus, master),
+
+            // --- ORA ---
+            0x09 => self.op_ora_imm(cycle, bus, master),
+            0x05 => self.op_ora_zp(cycle, bus, master),
+            0x15 => self.op_ora_zp_x(cycle, bus, master),
+            0x0D => self.op_ora_abs(cycle, bus, master),
+            0x1D => self.op_ora_abs_x(cycle, bus, master),
+            0x19 => self.op_ora_abs_y(cycle, bus, master),
+            0x01 => self.op_ora_ind_x(cycle, bus, master),
+            0x11 => self.op_ora_ind_y(cycle, bus, master),
+
+            // --- EOR ---
+            0x49 => self.op_eor_imm(cycle, bus, master),
+            0x45 => self.op_eor_zp(cycle, bus, master),
+            0x55 => self.op_eor_zp_x(cycle, bus, master),
+            0x4D => self.op_eor_abs(cycle, bus, master),
+            0x5D => self.op_eor_abs_x(cycle, bus, master),
+            0x59 => self.op_eor_abs_y(cycle, bus, master),
+            0x41 => self.op_eor_ind_x(cycle, bus, master),
+            0x51 => self.op_eor_ind_y(cycle, bus, master),
+
+            // --- BIT ---
+            0x24 => self.op_bit_zp(cycle, bus, master),
+            0x2C => self.op_bit_abs(cycle, bus, master),
+
+            // --- CPX ---
+            0xE0 => self.op_cpx_imm(cycle, bus, master),
+            0xE4 => self.op_cpx_zp(cycle, bus, master),
+            0xEC => self.op_cpx_abs(cycle, bus, master),
+
+            // --- CPY ---
+            0xC0 => self.op_cpy_imm(cycle, bus, master),
+            0xC4 => self.op_cpy_zp(cycle, bus, master),
+            0xCC => self.op_cpy_abs(cycle, bus, master),
 
             // --- Flag instructions (all 2-cycle implied) ---
             0x18 => {
