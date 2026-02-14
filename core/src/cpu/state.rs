@@ -31,6 +31,17 @@ pub struct M6502State {
     pub p: u8,   // Status register (flags)
 }
 
+/// M6800 CPU state snapshot
+#[derive(Debug, Clone, PartialEq)]
+pub struct M6800State {
+    pub a: u8,   // Accumulator A
+    pub b: u8,   // Accumulator B
+    pub x: u16,  // Index register X
+    pub sp: u16, // Stack pointer
+    pub pc: u16, // Program counter
+    pub cc: u8,  // Condition codes
+}
+
 /// Z80 CPU state snapshot
 #[derive(Debug, Clone, PartialEq)]
 pub struct Z80State {

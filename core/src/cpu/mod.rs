@@ -14,9 +14,12 @@ pub trait Cpu: BusMasterComponent + CpuStateTrait {
 
 // Re-export state types
 pub mod state;
-pub use state::{CpuStateTrait, M6502State, M6809State, Z80State};
+pub use state::{CpuStateTrait, M6502State, M6800State, M6809State, Z80State};
 
 // Re-export specific CPUs
+pub mod m6800;
+pub use m6800::M6800;
+
 pub mod m6809;
 pub use m6809::M6809;
 

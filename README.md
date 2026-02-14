@@ -4,11 +4,11 @@
 
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-474%20passing-brightgreen.svg)](core/tests/)
+[![Tests](https://img.shields.io/badge/tests-475%20passing-brightgreen.svg)](core/tests/)
 
 A modular emulator framework for retro CPUs, designed for extensibility and educational purposes. Features a trait-based architecture that allows easy addition of new CPUs, peripherals, and complete systems.
 
-**Current Focus:** Joust (1982) arcade board emulation — M6809 CPU (285 opcodes), MC6821 PIA, Williams SC1 blitter, CMOS RAM, Machine trait for frontend abstraction. 474 tests passing, 266,000 cross-validated test vectors across 266 opcodes
+**Current Focus:** Joust (1982) arcade board emulation — M6809 CPU (285 opcodes), MC6821 PIA, Williams SC1 blitter, CMOS RAM, Machine trait for frontend abstraction. 475 tests passing, 266,000 cross-validated test vectors across 266 opcodes
 
 ## Quick Start
 
@@ -30,7 +30,7 @@ cargo build
 cargo test
 
 # Expected output:
-#   test result: ok. 474 passed; 0 failed
+#   test result: ok. 475 passed; 0 failed
 ```
 
 ### Running the Emulator
@@ -69,6 +69,7 @@ ROMs are matched by CRC32 checksum, so any MAME ROM naming convention works. All
 |-----------|--------|-------|
 | **Core Framework** | Complete | Bus trait, Machine trait, component system, arbitration |
 | **M6809 CPU** | Complete | 285 opcodes, cycle-accurate, all addressing modes |
+| **M6800 CPU** | In Progress | Skeleton with NOP, addressing mode helpers, interrupt framework |
 | **M6502 CPU** | Partial | Initial structure, LDA immediate only |
 | **Z80 CPU** | Partial | Initial structure, LD A, n only |
 | **MC6821 PIA** | Complete | Full register set, interrupts, edge detection, control lines |
@@ -78,7 +79,7 @@ ROMs are matched by CRC32 checksum, so any MAME ROM naming convention works. All
 | **Joust System** | Complete | Williams board: CPU + video RAM + PIAs + blitter + CMOS + ROM |
 | **Machine Trait** | Complete | Frontend-agnostic interface: display, input, render, reset |
 | **CPU Validation** | Complete | 266 opcodes, 266,000 test vectors cross-validated against elmerucr/MC6809 |
-| **Test Suite** | Complete | 474 tests across core, devices, and machine integration |
+| **Test Suite** | Complete | 475 tests across core, devices, and machine integration |
 
 ### 6809 Instructions
 
@@ -112,7 +113,7 @@ This project uses a **workspace structure** to separate reusable components from
 
 Contains all reusable components — zero external dependencies:
 
-- CPU implementations (M6809, M6502, Z80)
+- CPU implementations (M6800, M6809, M6502, Z80)
 - Bus and component abstractions
 - Machine trait (frontend-agnostic display/input/render interface)
 - Peripheral devices (MC6821 PIA, Williams SC1 blitter, CMOS RAM)
@@ -122,6 +123,7 @@ Contains all reusable components — zero external dependencies:
 Complete system implementations that wire core components together:
 
 - **JoustSystem** — Williams arcade board (M6809 + 48KB video RAM + two PIAs + blitter + CMOS + 12KB ROM)
+- Simple6800System (M6800 + RAM/ROM)
 - Simple6809System (M6809 + RAM/ROM + PIA)
 - Simple6502System (M6502 + flat memory)
 - SimpleZ80System (Z80 + flat memory)
@@ -184,6 +186,12 @@ phosphor-core/
 │   │   ├── cpu/                    # CPU implementations
 │   │   │   ├── mod.rs              # Generic Cpu trait + CpuStateTrait
 │   │   │   ├── state.rs            # CpuStateTrait + state structs
+│   │   │   ├── m6800/              # M6800 CPU (in progress)
+│   │   │   │   ├── mod.rs          # Struct, state machine, dispatch
+│   │   │   │   ├── alu.rs          # ALU helpers and module exports
+│   │   │   │   ├── branch.rs       # Branch/subroutine ops
+│   │   │   │   ├── load_store.rs   # Load/store ops
+│   │   │   │   └── stack.rs        # Stack ops + interrupts
 │   │   │   ├── m6809/              # Working M6809 (285 opcodes)
 │   │   │   │   ├── mod.rs          # Struct, state machine, dispatch
 │   │   │   │   ├── alu.rs          # ALU helpers and module exports
@@ -206,7 +214,7 @@ phosphor-core/
 │   │       ├── williams_blitter.rs # Williams SC1 DMA blitter (copy/fill/shift/mask)
 │   │       ├── cmos_ram.rs         # 1KB battery-backed CMOS RAM
 │   │       └── mod.rs              # Module exports
-│   └── tests/                      # Integration tests (474 tests)
+│   └── tests/                      # Integration tests (475 tests)
 │       ├── common/mod.rs           # TestBus harness
 │       ├── m6809_*_test.rs         # M6809 tests (16 files)
 │       ├── pia6820_test.rs         # MC6821 PIA tests (23 tests)
@@ -219,6 +227,7 @@ phosphor-core/
 │   │   ├── lib.rs                  # Exports system types
 │   │   ├── joust.rs                # Joust arcade board (Williams 2nd-gen)
 │   │   ├── rom_loader.rs           # ROM loading with CRC32 matching, multi-variant support
+│   │   ├── simple6800.rs           # M6800 + RAM/ROM
 │   │   ├── simple6809.rs           # M6809 + RAM/ROM
 │   │   ├── simple6502.rs           # M6502 + flat memory
 │   │   └── simplez80.rs            # Z80 + flat memory
@@ -386,6 +395,7 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 
 ### Phase 3: Additional CPUs
 
+- [ ] Motorola 6800 CPU (in progress — skeleton complete, ~197 opcodes planned)
 - [ ] MOS 6502 CPU (addressing modes, instruction set, BCD arithmetic)
 - [ ] Zilog Z80 CPU (instruction prefixes, alternate register set)
 - [ ] Motorola 68000 CPU (32-bit address space, 16-bit data bus)

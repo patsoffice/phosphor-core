@@ -6,14 +6,15 @@ This document provides essential information for AI agents and automated tools w
 
 ### Quick Overview
 
-**Phosphor Emulator** is a modular, cycle-accurate emulator framework for retro CPUs built in Rust. It uses a trait-based architecture to support multiple CPU types (Motorola 6809, MOS 6502, Zilog Z80) with zero runtime overhead.
+**Phosphor Emulator** is a modular, cycle-accurate emulator framework for retro CPUs built in Rust. It uses a trait-based architecture to support multiple CPU types (Motorola 6800, Motorola 6809, MOS 6502, Zilog Z80) with zero runtime overhead.
 
 **Current Status:**
 
+- M6800: 1/~197 opcodes implemented (skeleton with NOP, addressing mode helpers, interrupt framework)
 - M6809: 285/~280 opcodes implemented (100%+ with undocumented aliases), cycle-accurate timing cross-validated
 - M6502: 1/~151 opcodes implemented (initial)
 - Z80: 1/~1582 opcodes implemented (initial)
-- 474 integration tests passing, 266,000 cross-validated test vectors across 266 opcodes
+- 475 integration tests passing, 266,000 cross-validated test vectors across 266 opcodes
 - Focus on educational clarity and correctness over performance
 
 ### Repository Structure
@@ -24,8 +25,9 @@ phosphor-core/
 ├── core/                   # phosphor-core crate
 │   ├── src/
 │   │   ├── core/           # Core abstractions (Bus, Component traits)
-│   │   ├── cpu/            # CPU implementations (m6809/, m6502/, z80/)
+│   │   ├── cpu/            # CPU implementations (m6800/, m6809/, m6502/, z80/)
 │   │   │   ├── state.rs     # CpuStateTrait + state structs
+│   │   │   ├── m6800/      # M6800 implementation (in progress)
 │   │   │   ├── m6809/      # M6809 implementation (285 opcodes, cycle-accurate)
 │   │   │   ├── m6502/       # M6502 implementation
 │   │   │   └── z80/         # Z80 implementation
@@ -38,6 +40,7 @@ phosphor-core/
 │   ├── src/
 │   │   ├── lib.rs         # Exports JoustSystem, Simple*System types
 │   │   ├── joust.rs        # Joust arcade board (Williams 2nd-gen)
+│   │   ├── simple6800.rs   # M6800 system implementation
 │   │   ├── simple6809.rs   # M6809 system implementation
 │   │   ├── simple6502.rs   # M6502 system implementation
 │   │   └── simplez80.rs    # Z80 system implementation
@@ -59,11 +62,12 @@ These are **non-negotiable** development guidelines from CLAUDE.md:
 
 #### Architecture Rules
 
-- **CPU instructions** → `core/src/cpu/m6809/alu.rs` (ALU ops) or `load_store.rs` (load/store)
-- **Opcode dispatch** → `core/src/cpu/m6809/mod.rs` `execute_instruction()`
+- **CPU instructions** → `core/src/cpu/<cpu>/alu.rs` (ALU ops) or `load_store.rs` (load/store)
+- **Opcode dispatch** → `core/src/cpu/<cpu>/mod.rs` `execute_instruction()`
 - **Inherent-mode** → `if cycle == 0 { ... }` pattern
 - **Immediate-mode** → use `alu_imm()` helper
 - **Always** → transition to `ExecState::Fetch` when instruction completes
+- **M6800** follows identical patterns to M6809 (same flag helpers, addressing mode helpers, state machine)
 
 #### Flag Handling Rules
 
@@ -110,7 +114,7 @@ cargo test m6809_alu_shift_test
 #### Testing Requirements
 
 - **Every new instruction** → MUST have integration tests
-- **Tests go in** → `core/tests/m6809_*_test.rs` (grouped by category)
+- **Tests go in** → `core/tests/m6809_*_test.rs` or `m6800_*_test.rs` (grouped by category)
 - **Must test** → both A and B register variants
 - **Must include** → edge cases: zero, overflow, sign boundary (0x7F/0x80), carry propagation
 - **Assertions** → use `CcFlag::X as u8`, not raw hex
@@ -262,6 +266,17 @@ assert_eq!(cpu.cc & 0x02, 0x02);
 #### CPU Module Structure
 
 ```text
+src/cpu/m6800/                  # M6800 (same ISA as 6802/6808)
+├── mod.rs              # Main CPU struct, state machine, opcode dispatch
+├── alu.rs             # ALU helpers and module exports
+├── alu/
+│   ├── binary.rs       # ADD, SUB, CMP operations
+│   ├── shift.rs       # ASL, ASR, LSR, ROL, ROR
+│   └── unary.rs       # NEG, COM, CLR, INC, DEC, TST
+├── branch.rs          # BRA, BEQ, BNE, BSR, JSR, RTS
+├── load_store.rs      # LDA, STA, LDB, STB, LDX, STX, LDS, STS, PSH, PUL
+└── stack.rs          # SWI, RTI, WAI, interrupt response
+
 src/cpu/m6809/
 ├── mod.rs              # Main CPU struct, state machine, opcode dispatch
 ├── alu.rs             # ALU helpers and module exports
@@ -283,6 +298,7 @@ src/cpu/m6809/
 - `tests/m6809_alu_unary_test.rs` - Unary ops (NEG, COM, etc.)
 - `tests/m6809_branch_test.rs` - Branch and subroutine ops
 - `tests/m6809_direct_test.rs` - Direct addressing mode tests
+- `tests/m6800_inherent_test.rs` - M6800 inherent mode tests
 - `tests/m6502_basic_test.rs` - 6502 basic tests
 - `tests/z80_basic_test.rs` - Z80 basic tests
 
@@ -359,6 +375,7 @@ assert_eq!(sys.read_ram(0x10), 0x42);
 
 #### Medium Priority
 
+- **6800 implementation** - Complete instruction set (~197 opcodes, skeleton in place)
 - **6502 implementation** - Complete instruction set and addressing modes
 - **Z80 implementation** - CB/DD/ED/FD prefixes and alternate registers
 

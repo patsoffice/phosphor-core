@@ -35,11 +35,13 @@ cargo run --package phosphor-frontend -- joust /path/to/roms --scale 3
 
 ### Architecture Rules
 
-- CPU instructions go in `core/src/cpu/m6809/alu.rs` (ALU ops) or `load_store.rs` (load/store)
-- Opcode dispatch entries go in `core/src/cpu/m6809/mod.rs` `execute_instruction()`
+- CPU instructions go in `core/src/cpu/<cpu>/alu.rs` (ALU ops) or `load_store.rs` (load/store)
+- Opcode dispatch entries go in `core/src/cpu/<cpu>/mod.rs` `execute_instruction()`
 - Inherent-mode instructions use `if cycle == 0 { ... }` pattern
 - Immediate-mode instructions use `alu_imm()` helper
 - Always transition to `ExecState::Fetch` when instruction completes
+- M6800 follows identical patterns to M6809 (same flag helpers, addressing mode helpers, state machine)
+- M6800 has no DP register (direct mode always page 0), no Y/U registers, no multi-byte opcode prefixes
 
 ### Flag Conventions
 
@@ -51,7 +53,7 @@ cargo run --package phosphor-frontend -- joust /path/to/roms --scale 3
 ### Testing Requirements
 
 - Every new instruction must have integration tests
-- Tests go in `tests/m6809_*_test.rs` files, grouped by category
+- Tests go in `tests/m6809_*_test.rs` or `m6800_*_test.rs` files, grouped by category
 - Test both A and B register variants
 - Include edge cases: zero, overflow, sign boundary (0x7F/0x80), carry propagation
 - Use `CcFlag::X as u8` in assertions, not raw hex
@@ -81,5 +83,5 @@ cd cross-validation && make && ./validate ../cpu-validation/test_data/m6809/*.js
 
 ### README
 
-- Update opcode/test counts in README.md, AGENTS.md, and CLAUDE.md when adding instructions
+- Update opcode/test counts in README.md, AGENTS.md, and CLAUDE.md when adding instructions (M6800 or M6809)
 - Keep roadmap checkboxes current
