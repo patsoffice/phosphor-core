@@ -71,6 +71,9 @@ pub struct Z80 {
     // Prefix handling
     pub(crate) index_mode: IndexMode,
     pub(crate) prefix_pending: bool,
+
+    // Interrupt state
+    pub(crate) nmi_previous: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -97,6 +100,9 @@ pub(crate) enum ExecState {
     #[allow(non_camel_case_types)]
     PrefixIndexCB_FetchOp(u8),
     ExecuteIndexCB(u8, u8),
+
+    // Interrupt response (int_type, cycle). int_type: 0=NMI, 1=IRQ IM0/1, 2=IRQ IM2.
+    Interrupt(u8, u8),
 }
 
 impl Default for Z80 {
@@ -142,6 +148,7 @@ impl Z80 {
             temp_data: 0,
             index_mode: IndexMode::HL,
             prefix_pending: false,
+            nmi_previous: false,
         }
     }
 
@@ -284,6 +291,40 @@ impl Z80 {
     ) {
         match self.state {
             ExecState::Fetch => {
+                // Check for interrupts at instruction boundary (not during prefix chains)
+                if !self.prefix_pending {
+                    if self.ei_delay {
+                        // EI delay: skip interrupt check for one instruction after EI
+                        self.ei_delay = false;
+                    } else {
+                        let ints = bus.check_interrupts(master);
+
+                        // NMI: edge-triggered (higher priority than IRQ)
+                        let nmi_edge = ints.nmi && !self.nmi_previous;
+                        self.nmi_previous = ints.nmi;
+
+                        if nmi_edge {
+                            if self.halted {
+                                self.halted = false;
+                                self.pc = self.pc.wrapping_add(1); // Skip past HALT
+                            }
+                            self.state = ExecState::Interrupt(0, 0); // NMI
+                            return;
+                        }
+
+                        // IRQ: level-triggered, masked by IFF1
+                        if ints.irq && self.iff1 {
+                            if self.halted {
+                                self.halted = false;
+                                self.pc = self.pc.wrapping_add(1);
+                            }
+                            let int_type = if self.im == 2 { 2 } else { 1 };
+                            self.state = ExecState::Interrupt(int_type, 0);
+                            return;
+                        }
+                    }
+                }
+
                 // M1 T1: address on bus, reset prefix state
                 if !self.prefix_pending {
                     self.index_mode = IndexMode::HL;
@@ -373,6 +414,129 @@ impl Z80 {
             ExecState::ExecuteIndexCB(op, cyc) => {
                 self.execute_instruction_index_cb(op, cyc, bus, master);
             }
+            ExecState::Interrupt(int_type, cyc) => {
+                self.execute_interrupt(int_type, cyc, bus, master);
+            }
+        }
+    }
+
+    /// Interrupt response handler. int_type: 0=NMI, 1=IRQ IM0/1, 2=IRQ IM2.
+    /// The Fetch cycle that detected the interrupt counts as T1, so handler cycles
+    /// are T2..Tn: NMI 10 cycles (11T), IRQ IM1 12 cycles (13T), IRQ IM2 18 cycles (19T).
+    fn execute_interrupt<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        int_type: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match int_type {
+            // NMI — 11T total (1 Fetch + 10 handler cycles 0-9)
+            0 => match cycle {
+                0 => {
+                    // Acknowledge + disable IFF1 (IFF2 preserved for RETN)
+                    self.iff1 = false;
+                    self.r = (self.r & 0x80) | (self.r.wrapping_add(1) & 0x7F);
+                    self.state = ExecState::Interrupt(0, 1);
+                }
+                1 | 2 | 4 | 5 | 7 | 8 => {
+                    self.state = ExecState::Interrupt(0, cycle + 1);
+                }
+                3 => {
+                    // Push PC high
+                    self.sp = self.sp.wrapping_sub(1);
+                    bus.write(master, self.sp, (self.pc >> 8) as u8);
+                    self.state = ExecState::Interrupt(0, 4);
+                }
+                6 => {
+                    // Push PC low
+                    self.sp = self.sp.wrapping_sub(1);
+                    bus.write(master, self.sp, self.pc as u8);
+                    self.state = ExecState::Interrupt(0, 7);
+                }
+                9 => {
+                    // Jump to NMI vector
+                    self.pc = 0x0066;
+                    self.memptr = self.pc;
+                    self.state = ExecState::Fetch;
+                }
+                _ => unreachable!(),
+            },
+            // IRQ IM0/IM1 — 13T total (1 Fetch + 12 handler cycles 0-11)
+            1 => match cycle {
+                0 => {
+                    // Acknowledge + disable interrupts
+                    self.iff1 = false;
+                    self.iff2 = false;
+                    self.r = (self.r & 0x80) | (self.r.wrapping_add(1) & 0x7F);
+                    self.state = ExecState::Interrupt(1, 1);
+                }
+                1 | 2 | 3 | 4 | 6 | 7 | 8 | 10 => {
+                    self.state = ExecState::Interrupt(1, cycle + 1);
+                }
+                5 => {
+                    // Push PC high
+                    self.sp = self.sp.wrapping_sub(1);
+                    bus.write(master, self.sp, (self.pc >> 8) as u8);
+                    self.state = ExecState::Interrupt(1, 6);
+                }
+                9 => {
+                    // Push PC low
+                    self.sp = self.sp.wrapping_sub(1);
+                    bus.write(master, self.sp, self.pc as u8);
+                    self.state = ExecState::Interrupt(1, 10);
+                }
+                11 => {
+                    // Jump to IM1 vector (0x0038)
+                    // IM0: data bus typically 0xFF (RST 38h), same effect
+                    self.pc = 0x0038;
+                    self.memptr = self.pc;
+                    self.state = ExecState::Fetch;
+                }
+                _ => unreachable!(),
+            },
+            // IRQ IM2 — 19T total (1 Fetch + 18 handler cycles 0-17)
+            2 => match cycle {
+                0 => {
+                    self.iff1 = false;
+                    self.iff2 = false;
+                    self.r = (self.r & 0x80) | (self.r.wrapping_add(1) & 0x7F);
+                    self.state = ExecState::Interrupt(2, 1);
+                }
+                1 | 2 | 3 | 4 | 6 | 7 | 8 | 10 | 11 | 13 | 14 | 16 => {
+                    self.state = ExecState::Interrupt(2, cycle + 1);
+                }
+                5 => {
+                    // Push PC high
+                    self.sp = self.sp.wrapping_sub(1);
+                    bus.write(master, self.sp, (self.pc >> 8) as u8);
+                    self.state = ExecState::Interrupt(2, 6);
+                }
+                9 => {
+                    // Push PC low
+                    self.sp = self.sp.wrapping_sub(1);
+                    bus.write(master, self.sp, self.pc as u8);
+                    self.state = ExecState::Interrupt(2, 10);
+                }
+                12 => {
+                    // Read vector low byte from (I*256 + 0xFF)
+                    self.temp_addr = ((self.i as u16) << 8) | 0xFF;
+                    self.temp_data = bus.read(master, self.temp_addr);
+                    self.state = ExecState::Interrupt(2, 13);
+                }
+                15 => {
+                    // Read vector high byte
+                    let high = bus.read(master, self.temp_addr.wrapping_add(1));
+                    self.pc = ((high as u16) << 8) | self.temp_data as u16;
+                    self.memptr = self.pc;
+                    self.state = ExecState::Interrupt(2, 16);
+                }
+                17 => {
+                    self.state = ExecState::Fetch;
+                }
+                _ => unreachable!(),
+            },
+            _ => unreachable!(),
         }
     }
 
@@ -620,7 +784,7 @@ impl Cpu for Z80 {
     fn signal_interrupt(&mut self, _int: InterruptState) {}
 
     fn is_sleeping(&self) -> bool {
-        false
+        self.halted
     }
 }
 
