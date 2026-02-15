@@ -415,4 +415,180 @@ impl Z80 {
         self.f = f;
         self.state = ExecState::Fetch;
     }
+
+    // --- ED ALU Operations ---
+
+    /// NEG — 8T (ED prefix): A = 0 - A.
+    /// Flags: S, Z, H (borrow from bit 3), PV (A was 0x80), N=1, C (A was not 0).
+    pub fn op_neg(&mut self) {
+        let a = self.a;
+        let result = 0u8.wrapping_sub(a);
+        let mut f = Flag::N as u8;
+        if result == 0 { f |= Flag::Z as u8; }
+        if (result & 0x80) != 0 { f |= Flag::S as u8; }
+        if (a & 0x0F) != 0 { f |= Flag::H as u8; }
+        if a == 0x80 { f |= Flag::PV as u8; }
+        if a != 0 { f |= Flag::C as u8; }
+        f |= result & (Flag::X as u8 | Flag::Y as u8);
+        self.a = result;
+        self.f = f;
+        self.state = ExecState::Fetch;
+    }
+
+    /// ADC HL,rr — 15T (ED prefix): HL = HL + rr + C.
+    /// 8 handler cycles: 0=compute, 1-6=internal, 7=done.
+    /// Flags: S, Z, H (carry from bit 11), PV (overflow), N=0, C. X/Y from high byte.
+    pub fn op_adc_hl_rr(&mut self, opcode: u8, cycle: u8) {
+        let rp = (opcode >> 4) & 0x03;
+        match cycle {
+            0 => {
+                let hl = self.get_hl();
+                let rr = self.get_rp(rp);
+                let c_val = if (self.f & Flag::C as u8) != 0 { 1u32 } else { 0 };
+                let result = (hl as u32) + (rr as u32) + c_val;
+                let result16 = result as u16;
+                self.memptr = hl.wrapping_add(1);
+
+                let mut f = 0u8;
+                if result16 == 0 { f |= Flag::Z as u8; }
+                if (result16 & 0x8000) != 0 { f |= Flag::S as u8; }
+                if ((hl & 0x0FFF) + (rr & 0x0FFF) + (c_val as u16)) > 0x0FFF {
+                    f |= Flag::H as u8;
+                }
+                // Overflow via signed arithmetic
+                let signed = (hl as i16 as i32) + (rr as i16 as i32) + (c_val as i32);
+                if signed > 0x7FFF || signed < -0x8000 { f |= Flag::PV as u8; }
+                if result > 0xFFFF { f |= Flag::C as u8; }
+                f |= ((result16 >> 8) as u8) & (Flag::X as u8 | Flag::Y as u8);
+                self.f = f;
+                self.set_hl(result16);
+
+                self.state = ExecState::ExecuteED(opcode, 1);
+            }
+            1..=6 => self.state = ExecState::ExecuteED(opcode, cycle + 1),
+            7 => self.state = ExecState::Fetch,
+            _ => unreachable!(),
+        }
+    }
+
+    /// SBC HL,rr — 15T (ED prefix): HL = HL - rr - C.
+    /// 8 handler cycles: 0=compute, 1-6=internal, 7=done.
+    /// Flags: S, Z, H, PV (overflow), N=1, C. X/Y from high byte.
+    pub fn op_sbc_hl_rr(&mut self, opcode: u8, cycle: u8) {
+        let rp = (opcode >> 4) & 0x03;
+        match cycle {
+            0 => {
+                let hl = self.get_hl();
+                let rr = self.get_rp(rp);
+                let c_val = if (self.f & Flag::C as u8) != 0 { 1u32 } else { 0 };
+                let result = (hl as u32).wrapping_sub(rr as u32).wrapping_sub(c_val);
+                let result16 = result as u16;
+                self.memptr = hl.wrapping_add(1);
+
+                let mut f = Flag::N as u8;
+                if result16 == 0 { f |= Flag::Z as u8; }
+                if (result16 & 0x8000) != 0 { f |= Flag::S as u8; }
+                if (hl & 0x0FFF) < ((rr & 0x0FFF) + (c_val as u16)) {
+                    f |= Flag::H as u8;
+                }
+                let signed = (hl as i16 as i32) - (rr as i16 as i32) - (c_val as i32);
+                if signed > 0x7FFF || signed < -0x8000 { f |= Flag::PV as u8; }
+                if result > 0xFFFF { f |= Flag::C as u8; }
+                f |= ((result16 >> 8) as u8) & (Flag::X as u8 | Flag::Y as u8);
+                self.f = f;
+                self.set_hl(result16);
+
+                self.state = ExecState::ExecuteED(opcode, 1);
+            }
+            1..=6 => self.state = ExecState::ExecuteED(opcode, cycle + 1),
+            7 => self.state = ExecState::Fetch,
+            _ => unreachable!(),
+        }
+    }
+
+    /// RRD — 18T (ED prefix): rotate right nibbles between A and (HL).
+    /// (HL)_low → A_low, A_low → (HL)_high, (HL)_high → (HL)_low.
+    /// 11 handler cycles: 0=pad, 1=read(HL), 2=pad, 3-6=internal, 7=write(HL), 8-9=pad, 10=done.
+    pub fn op_rrd<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 | 2 | 4 | 5 | 6 | 8 | 9 => self.state = ExecState::ExecuteED(opcode, cycle + 1),
+            1 => {
+                let addr = self.get_hl();
+                self.temp_data = bus.read(master, addr);
+                self.temp_addr = addr;
+                self.state = ExecState::ExecuteED(opcode, 2);
+            }
+            3 => {
+                // Compute: (HL) = (A_low << 4) | (tmp >> 4), A = (A & 0xF0) | (tmp & 0x0F)
+                let tmp = self.temp_data;
+                let new_mem = ((self.a & 0x0F) << 4) | (tmp >> 4);
+                self.a = (self.a & 0xF0) | (tmp & 0x0F);
+                self.temp_data = new_mem;
+                self.memptr = self.temp_addr.wrapping_add(1);
+
+                // Flags from A: S, Z, PV(parity), H=0, N=0, C preserved, X/Y from A
+                let mut f = self.f & Flag::C as u8;
+                if self.a == 0 { f |= Flag::Z as u8; }
+                if (self.a & 0x80) != 0 { f |= Flag::S as u8; }
+                if Self::get_parity(self.a) { f |= Flag::PV as u8; }
+                f |= self.a & (Flag::X as u8 | Flag::Y as u8);
+                self.f = f;
+                self.state = ExecState::ExecuteED(opcode, 4);
+            }
+            7 => {
+                bus.write(master, self.temp_addr, self.temp_data);
+                self.state = ExecState::ExecuteED(opcode, 8);
+            }
+            10 => self.state = ExecState::Fetch,
+            _ => unreachable!(),
+        }
+    }
+
+    /// RLD — 18T (ED prefix): rotate left nibbles between A and (HL).
+    /// (HL)_high → A_low, A_low → (HL)_low, (HL)_low → (HL)_high.
+    /// Same cycle structure as RRD.
+    pub fn op_rld<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 | 2 | 4 | 5 | 6 | 8 | 9 => self.state = ExecState::ExecuteED(opcode, cycle + 1),
+            1 => {
+                let addr = self.get_hl();
+                self.temp_data = bus.read(master, addr);
+                self.temp_addr = addr;
+                self.state = ExecState::ExecuteED(opcode, 2);
+            }
+            3 => {
+                let tmp = self.temp_data;
+                let new_mem = ((tmp & 0x0F) << 4) | (self.a & 0x0F);
+                self.a = (self.a & 0xF0) | (tmp >> 4);
+                self.temp_data = new_mem;
+                self.memptr = self.temp_addr.wrapping_add(1);
+
+                let mut f = self.f & Flag::C as u8;
+                if self.a == 0 { f |= Flag::Z as u8; }
+                if (self.a & 0x80) != 0 { f |= Flag::S as u8; }
+                if Self::get_parity(self.a) { f |= Flag::PV as u8; }
+                f |= self.a & (Flag::X as u8 | Flag::Y as u8);
+                self.f = f;
+                self.state = ExecState::ExecuteED(opcode, 4);
+            }
+            7 => {
+                bus.write(master, self.temp_addr, self.temp_data);
+                self.state = ExecState::ExecuteED(opcode, 8);
+            }
+            10 => self.state = ExecState::Fetch,
+            _ => unreachable!(),
+        }
+    }
 }

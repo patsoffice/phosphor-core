@@ -399,4 +399,50 @@ impl Z80 {
         self.ei_delay = true;
         self.state = ExecState::Fetch;
     }
+
+    // --- ED Control Flow ---
+
+    /// RETN/RETI — 14T (ED prefix): pop PC, copy IFF2 → IFF1.
+    /// 7 handler cycles: 0=IFF2→IFF1+pad, 1=read low, 2=pad, 3=pad, 4=read high, 5=pad, 6=done.
+    pub fn op_retn<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            0 => {
+                self.iff1 = self.iff2;
+                self.state = ExecState::ExecuteED(opcode, 1);
+            }
+            2 | 3 | 5 => self.state = ExecState::ExecuteED(opcode, cycle + 1),
+            1 => {
+                self.temp_data = bus.read(master, self.sp);
+                self.sp = self.sp.wrapping_add(1);
+                self.state = ExecState::ExecuteED(opcode, 2);
+            }
+            4 => {
+                let high = bus.read(master, self.sp);
+                self.sp = self.sp.wrapping_add(1);
+                self.pc = ((high as u16) << 8) | self.temp_data as u16;
+                self.memptr = self.pc;
+                self.state = ExecState::ExecuteED(opcode, 5);
+            }
+            6 => self.state = ExecState::Fetch,
+            _ => unreachable!(),
+        }
+    }
+
+    /// IM 0/1/2 — 8T (ED prefix): set interrupt mode.
+    /// Bits 4-3: 00/01→IM 0, 10→IM 1, 11→IM 2.
+    pub fn op_im(&mut self, opcode: u8) {
+        self.im = match (opcode >> 3) & 0x03 {
+            0 | 1 => 0,
+            2 => 1,
+            3 => 2,
+            _ => unreachable!(),
+        };
+        self.state = ExecState::Fetch;
+    }
 }

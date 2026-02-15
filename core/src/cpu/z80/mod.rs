@@ -1,5 +1,6 @@
 mod alu;
 mod bit;
+mod block;
 mod branch;
 mod load_store;
 mod stack;
@@ -340,9 +341,8 @@ impl Z80 {
                     _ => unreachable!(),
                 }
             }
-            ExecState::ExecuteED(_op, _cyc) => {
-                // TODO: Implement ED instructions (Phase 6)
-                self.state = ExecState::Fetch;
+            ExecState::ExecuteED(op, cyc) => {
+                self.execute_instruction_ed(op, cyc, bus, master);
             }
             _ => {
                 // TODO: Implement other states
@@ -509,6 +509,51 @@ impl Z80 {
             // RST p — 11 T
             op if (op & 0xC7) == 0xC7 => self.op_rst(op, cycle, bus, master),
 
+            _ => self.state = ExecState::Fetch,
+        }
+    }
+
+    /// ED prefix dispatch. Handler cycle 0 = 4th T of ED opcode M1.
+    /// Total T = 7 (base) + handler cycles.
+    /// 8T: 1 cycle. 9T: 2. 12T: 5. 14T: 7. 15T: 8. 16T: 9. 18T: 11. 20T: 13.
+    fn execute_instruction_ed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match opcode {
+            // --- Specific ED opcodes (low 3 bits = 111) ---
+            0x47 => self.op_ld_i_a(opcode, cycle),      // LD I,A — 9T
+            0x4F => self.op_ld_r_a(opcode, cycle),      // LD R,A — 9T
+            0x57 => self.op_ld_a_i(opcode, cycle),      // LD A,I — 9T
+            0x5F => self.op_ld_a_r(opcode, cycle),      // LD A,R — 9T
+            0x67 => self.op_rrd(opcode, cycle, bus, master), // RRD — 18T
+            0x6F => self.op_rld(opcode, cycle, bus, master), // RLD — 18T
+
+            // --- Block transfer/compare ---
+            0xA0 | 0xA8 => self.op_ldi_ldd(opcode, cycle, bus, master),   // LDI/LDD — 16T
+            0xA1 | 0xA9 => self.op_cpi_cpd(opcode, cycle, bus, master),   // CPI/CPD — 16T
+            0xA2 | 0xAA => self.op_ini_ind(opcode, cycle, bus, master),   // INI/IND — 16T
+            0xA3 | 0xAB => self.op_outi_outd(opcode, cycle, bus, master), // OUTI/OUTD — 16T
+            0xB0 | 0xB8 => self.op_ldir_lddr(opcode, cycle, bus, master), // LDIR/LDDR — 21/16T
+            0xB1 | 0xB9 => self.op_cpir_cpdr(opcode, cycle, bus, master), // CPIR/CPDR — 21/16T
+            0xB2 | 0xBA => self.op_inir_indr(opcode, cycle, bus, master), // INIR/INDR — 21/16T
+            0xB3 | 0xBB => self.op_otir_otdr(opcode, cycle, bus, master), // OTIR/OTDR — 21/16T
+
+            // --- Pattern-based (40-7F range, low 3 bits 0-6) ---
+            op if (op & 0xC7) == 0x40 => self.op_in_r_c(op, cycle),  // IN r,(C) — 12T
+            op if (op & 0xC7) == 0x41 => self.op_out_c_r(op, cycle), // OUT (C),r — 12T
+            op if (op & 0xCF) == 0x42 => self.op_sbc_hl_rr(op, cycle), // SBC HL,rr — 15T
+            op if (op & 0xCF) == 0x43 => self.op_ld_nn_rr_ed(op, cycle, bus, master), // LD (nn),rr — 20T
+            op if (op & 0xC7) == 0x44 => self.op_neg(),              // NEG — 8T
+            op if (op & 0xC7) == 0x45 => self.op_retn(op, cycle, bus, master), // RETN/RETI — 14T
+            op if (op & 0xC7) == 0x46 => self.op_im(op),             // IM 0/1/2 — 8T
+            op if (op & 0xCF) == 0x4A => self.op_adc_hl_rr(op, cycle), // ADC HL,rr — 15T
+            op if (op & 0xCF) == 0x4B => self.op_ld_rr_nn_ed(op, cycle, bus, master), // LD rr,(nn) — 20T
+
+            // ED NOP — 8T: undefined opcodes act as NOP
             _ => self.state = ExecState::Fetch,
         }
     }

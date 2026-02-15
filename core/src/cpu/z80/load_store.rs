@@ -1,5 +1,5 @@
 use crate::core::{Bus, BusMaster};
-use crate::cpu::z80::{ExecState, IndexMode, Z80};
+use crate::cpu::z80::{ExecState, Flag, IndexMode, Z80};
 
 impl Z80 {
     /// LD r, n — 7 T: M1(4) + MR(3)
@@ -407,6 +407,195 @@ impl Z80 {
         std::mem::swap(&mut self.d, &mut self.h);
         std::mem::swap(&mut self.e, &mut self.l);
         self.state = ExecState::Fetch;
+    }
+
+    // --- ED Load/Store Operations ---
+
+    /// LD I,A — 9T (ED prefix): 2 handler cycles.
+    pub fn op_ld_i_a(&mut self, opcode: u8, cycle: u8) {
+        match cycle {
+            0 => {
+                self.i = self.a;
+                self.state = ExecState::ExecuteED(opcode, 1);
+            }
+            1 => self.state = ExecState::Fetch,
+            _ => unreachable!(),
+        }
+    }
+
+    /// LD R,A — 9T (ED prefix): 2 handler cycles.
+    pub fn op_ld_r_a(&mut self, opcode: u8, cycle: u8) {
+        match cycle {
+            0 => {
+                self.r = self.a;
+                self.state = ExecState::ExecuteED(opcode, 1);
+            }
+            1 => self.state = ExecState::Fetch,
+            _ => unreachable!(),
+        }
+    }
+
+    /// LD A,I — 9T (ED prefix): 2 handler cycles.
+    /// Flags: S, Z from I, H=0, N=0, PV=IFF2, C preserved, X/Y from I.
+    pub fn op_ld_a_i(&mut self, opcode: u8, cycle: u8) {
+        match cycle {
+            0 => {
+                self.a = self.i;
+                let mut f = self.f & Flag::C as u8;
+                if self.a == 0 { f |= Flag::Z as u8; }
+                if (self.a & 0x80) != 0 { f |= Flag::S as u8; }
+                if self.iff2 { f |= Flag::PV as u8; }
+                f |= self.a & (Flag::X as u8 | Flag::Y as u8);
+                self.f = f;
+                self.state = ExecState::ExecuteED(opcode, 1);
+            }
+            1 => self.state = ExecState::Fetch,
+            _ => unreachable!(),
+        }
+    }
+
+    /// LD A,R — 9T (ED prefix): 2 handler cycles.
+    /// Flags: S, Z from R, H=0, N=0, PV=IFF2, C preserved, X/Y from R.
+    pub fn op_ld_a_r(&mut self, opcode: u8, cycle: u8) {
+        match cycle {
+            0 => {
+                self.a = self.r;
+                let mut f = self.f & Flag::C as u8;
+                if self.a == 0 { f |= Flag::Z as u8; }
+                if (self.a & 0x80) != 0 { f |= Flag::S as u8; }
+                if self.iff2 { f |= Flag::PV as u8; }
+                f |= self.a & (Flag::X as u8 | Flag::Y as u8);
+                self.f = f;
+                self.state = ExecState::ExecuteED(opcode, 1);
+            }
+            1 => self.state = ExecState::Fetch,
+            _ => unreachable!(),
+        }
+    }
+
+    /// LD (nn),rr — 20T (ED prefix): M1(4)+M1(4)+MR(3)+MR(3)+MW(3)+MW(3)
+    /// 13 handler cycles: 0=pad, 1=read addr_lo, 2=pad, 3=pad, 4=read addr_hi,
+    /// 5=pad, 6=write data_lo, 7-8=pad, 9=write data_hi, 10-11=pad, 12=done.
+    pub fn op_ld_nn_rr_ed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let rp = (opcode >> 4) & 0x03;
+        match cycle {
+            0 | 2 | 3 | 5 | 7 | 8 | 10 | 11 => {
+                self.state = ExecState::ExecuteED(opcode, cycle + 1);
+            }
+            1 => {
+                self.temp_data = bus.read(master, self.pc);
+                self.pc = self.pc.wrapping_add(1);
+                self.state = ExecState::ExecuteED(opcode, 2);
+            }
+            4 => {
+                let high = bus.read(master, self.pc);
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = ((high as u16) << 8) | self.temp_data as u16;
+                self.state = ExecState::ExecuteED(opcode, 5);
+            }
+            6 => {
+                let val = self.get_rp(rp);
+                bus.write(master, self.temp_addr, val as u8);
+                self.state = ExecState::ExecuteED(opcode, 7);
+            }
+            9 => {
+                let val = self.get_rp(rp);
+                bus.write(master, self.temp_addr.wrapping_add(1), (val >> 8) as u8);
+                self.memptr = self.temp_addr.wrapping_add(1);
+                self.state = ExecState::ExecuteED(opcode, 10);
+            }
+            12 => self.state = ExecState::Fetch,
+            _ => unreachable!(),
+        }
+    }
+
+    /// LD rr,(nn) — 20T (ED prefix): M1(4)+M1(4)+MR(3)+MR(3)+MR(3)+MR(3)
+    /// 13 handler cycles (same structure as LD (nn),rr but reads instead of writes).
+    pub fn op_ld_rr_nn_ed<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let rp = (opcode >> 4) & 0x03;
+        match cycle {
+            0 | 2 | 3 | 5 | 7 | 8 | 10 | 11 => {
+                self.state = ExecState::ExecuteED(opcode, cycle + 1);
+            }
+            1 => {
+                self.temp_data = bus.read(master, self.pc);
+                self.pc = self.pc.wrapping_add(1);
+                self.state = ExecState::ExecuteED(opcode, 2);
+            }
+            4 => {
+                let high = bus.read(master, self.pc);
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = ((high as u16) << 8) | self.temp_data as u16;
+                self.state = ExecState::ExecuteED(opcode, 5);
+            }
+            6 => {
+                self.temp_data = bus.read(master, self.temp_addr);
+                self.state = ExecState::ExecuteED(opcode, 7);
+            }
+            9 => {
+                let high = bus.read(master, self.temp_addr.wrapping_add(1));
+                let val = ((high as u16) << 8) | self.temp_data as u16;
+                self.set_rp(rp, val);
+                self.memptr = self.temp_addr.wrapping_add(1);
+                self.state = ExecState::ExecuteED(opcode, 10);
+            }
+            12 => self.state = ExecState::Fetch,
+            _ => unreachable!(),
+        }
+    }
+
+    /// IN r,(C) — 12T (ED prefix): stubbed, reads 0xFF.
+    /// 5 handler cycles: 0-3=IO cycle, 4=done.
+    /// Flags: S, Z, PV(parity) from input, H=0, N=0, C preserved. X/Y from input.
+    /// For r=6 (IN F,(C)): flags affected but value not stored.
+    pub fn op_in_r_c(&mut self, opcode: u8, cycle: u8) {
+        match cycle {
+            0 | 1 | 2 | 3 => self.state = ExecState::ExecuteED(opcode, cycle + 1),
+            4 => {
+                let val = 0xFFu8; // Stubbed I/O read
+                let r = (opcode >> 3) & 0x07;
+                if r != 6 {
+                    self.set_reg8(r, val);
+                }
+                // Set flags from input value
+                let mut f = self.f & Flag::C as u8;
+                if val == 0 { f |= Flag::Z as u8; }
+                if (val & 0x80) != 0 { f |= Flag::S as u8; }
+                if Self::get_parity(val) { f |= Flag::PV as u8; }
+                f |= val & (Flag::X as u8 | Flag::Y as u8);
+                self.f = f;
+                self.memptr = self.get_bc().wrapping_add(1);
+                self.state = ExecState::Fetch;
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// OUT (C),r — 12T (ED prefix): stubbed, discards output.
+    /// 5 handler cycles: 0-3=IO cycle, 4=done. No flag changes.
+    /// For r=6: outputs 0 (undocumented).
+    pub fn op_out_c_r(&mut self, opcode: u8, cycle: u8) {
+        match cycle {
+            0 | 1 | 2 | 3 => self.state = ExecState::ExecuteED(opcode, cycle + 1),
+            4 => {
+                // I/O write discarded
+                self.memptr = self.get_bc().wrapping_add(1);
+                self.state = ExecState::Fetch;
+            }
+            _ => unreachable!(),
+        }
     }
 
     /// EX (SP), HL — 19 T: M1(4) + MR(3) + MR(4) + MW(3) + MW(5)
