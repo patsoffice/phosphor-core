@@ -52,6 +52,11 @@ pub fn default_key_map(buttons: &[InputButton]) -> KeyMap {
             "P2 Fire" => Some(Scancode::E),
             "P2 Start" => Some(Scancode::Num2),
 
+            // Missile Command fire buttons
+            "Fire Left" => Some(Scancode::Z),
+            "Fire Center" => Some(Scancode::X),
+            "Fire Right" => Some(Scancode::C),
+
             // System
             "Coin" => Some(Scancode::Num5),
 

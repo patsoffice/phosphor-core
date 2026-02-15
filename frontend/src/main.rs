@@ -1,5 +1,6 @@
 use phosphor_core::core::machine::Machine;
 use phosphor_machines::JoustSystem;
+use phosphor_machines::MissileCommandSystem;
 use phosphor_machines::joust::JOUST_DECODER_PROM;
 
 mod emulator;
@@ -31,9 +32,17 @@ fn main() {
                 .expect("Failed to map program ROMs");
             Box::new(sys)
         }
+        "missile" => {
+            let rom_set = rom_path::load_rom_set("missile", rom_path).expect("Failed to load ROMs");
+
+            let mut sys = MissileCommandSystem::new();
+            sys.load_rom_set(&rom_set)
+                .expect("Failed to map program ROMs");
+            Box::new(sys)
+        }
         _ => {
             eprintln!("Unknown machine: {}", machine_name);
-            eprintln!("Available: joust");
+            eprintln!("Available: joust, missile");
             std::process::exit(1);
         }
     };
