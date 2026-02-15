@@ -233,4 +233,186 @@ impl Z80 {
         self.f = f;
         result
     }
+
+    // --- 16-bit ALU ---
+
+    /// ADD HL,rr — 11 T: M1(4) + internal(7)
+    /// Opcode mask: 00 rr1 001 (rr: 0=BC, 1=DE, 2=HL/IX/IY, 3=SP)
+    /// Flags: H = carry from bit 11, C = carry from bit 15, N = 0.
+    /// S, Z, PV preserved. X/Y from high byte of result.
+    pub fn op_add_hl_rr(&mut self, opcode: u8, cycle: u8) {
+        let rp = (opcode >> 4) & 0x03;
+        // cycles 1-7 = internal, 8 = done
+        match cycle {
+            1 => {
+                let hl = self.get_rp(2);
+                let rr = self.get_rp(rp);
+                let result = (hl as u32) + (rr as u32);
+                self.memptr = hl.wrapping_add(1);
+
+                let mut f = self.f & (Flag::S as u8 | Flag::Z as u8 | Flag::PV as u8);
+                if ((hl & 0x0FFF) + (rr & 0x0FFF)) > 0x0FFF { f |= Flag::H as u8; }
+                if result > 0xFFFF { f |= Flag::C as u8; }
+                f |= ((result >> 8) as u8) & (Flag::X as u8 | Flag::Y as u8);
+                self.f = f;
+                self.set_rp(2, result as u16);
+
+                self.state = ExecState::Execute(opcode, 2);
+            }
+            2..=7 => self.state = ExecState::Execute(opcode, cycle + 1),
+            8 => self.state = ExecState::Fetch,
+            _ => unreachable!(),
+        }
+    }
+
+    /// INC rr / DEC rr — 6 T: M1(4) + internal(2)
+    /// INC: 00 rr0 011, DEC: 00 rr1 011. No flags affected.
+    pub fn op_inc_dec_rr(&mut self, opcode: u8, cycle: u8) {
+        let rp = (opcode >> 4) & 0x03;
+        let is_dec = (opcode & 0x08) != 0;
+        // cycles 1-2 = internal, 3 = done
+        match cycle {
+            1 => {
+                let val = self.get_rp(rp);
+                let result = if is_dec { val.wrapping_sub(1) } else { val.wrapping_add(1) };
+                self.set_rp(rp, result);
+                self.state = ExecState::Execute(opcode, 2);
+            }
+            2 => self.state = ExecState::Execute(opcode, 3),
+            3 => self.state = ExecState::Fetch,
+            _ => unreachable!(),
+        }
+    }
+
+    // --- Accumulator Rotates ---
+
+    /// RLCA — 4 T: M1 only.
+    /// Rotate A left circular. Old bit 7 to carry and bit 0.
+    /// H = 0, N = 0, C = old bit 7. X/Y from A. S, Z, PV preserved.
+    pub fn op_rlca(&mut self) {
+        let bit7 = (self.a >> 7) & 1;
+        self.a = (self.a << 1) | bit7;
+        let mut f = self.f & (Flag::S as u8 | Flag::Z as u8 | Flag::PV as u8);
+        if bit7 != 0 { f |= Flag::C as u8; }
+        f |= self.a & (Flag::X as u8 | Flag::Y as u8);
+        self.f = f;
+        self.state = ExecState::Fetch;
+    }
+
+    /// RRCA — 4 T: M1 only.
+    /// Rotate A right circular. Old bit 0 to carry and bit 7.
+    pub fn op_rrca(&mut self) {
+        let bit0 = self.a & 1;
+        self.a = (self.a >> 1) | (bit0 << 7);
+        let mut f = self.f & (Flag::S as u8 | Flag::Z as u8 | Flag::PV as u8);
+        if bit0 != 0 { f |= Flag::C as u8; }
+        f |= self.a & (Flag::X as u8 | Flag::Y as u8);
+        self.f = f;
+        self.state = ExecState::Fetch;
+    }
+
+    /// RLA — 4 T: M1 only.
+    /// Rotate A left through carry. Old bit 7 to C, old C to bit 0.
+    pub fn op_rla(&mut self) {
+        let old_carry = if (self.f & Flag::C as u8) != 0 { 1u8 } else { 0 };
+        let bit7 = (self.a >> 7) & 1;
+        self.a = (self.a << 1) | old_carry;
+        let mut f = self.f & (Flag::S as u8 | Flag::Z as u8 | Flag::PV as u8);
+        if bit7 != 0 { f |= Flag::C as u8; }
+        f |= self.a & (Flag::X as u8 | Flag::Y as u8);
+        self.f = f;
+        self.state = ExecState::Fetch;
+    }
+
+    /// RRA — 4 T: M1 only.
+    /// Rotate A right through carry. Old bit 0 to C, old C to bit 7.
+    pub fn op_rra(&mut self) {
+        let old_carry = if (self.f & Flag::C as u8) != 0 { 0x80u8 } else { 0 };
+        let bit0 = self.a & 1;
+        self.a = (self.a >> 1) | old_carry;
+        let mut f = self.f & (Flag::S as u8 | Flag::Z as u8 | Flag::PV as u8);
+        if bit0 != 0 { f |= Flag::C as u8; }
+        f |= self.a & (Flag::X as u8 | Flag::Y as u8);
+        self.f = f;
+        self.state = ExecState::Fetch;
+    }
+
+    // --- Misc ALU ---
+
+    /// DAA — 4 T: M1 only.
+    /// Decimal adjust accumulator after BCD add/sub.
+    pub fn op_daa(&mut self) {
+        let a = self.a;
+        let n = (self.f & Flag::N as u8) != 0;
+        let old_h = (self.f & Flag::H as u8) != 0;
+        let old_c = (self.f & Flag::C as u8) != 0;
+
+        let mut correction = 0u8;
+        let mut new_c = old_c;
+
+        if old_h || (a & 0x0F) > 9 {
+            correction |= 0x06;
+        }
+        if old_c || a > 0x99 {
+            correction |= 0x60;
+            new_c = true;
+        }
+
+        let result = if n {
+            a.wrapping_sub(correction)
+        } else {
+            a.wrapping_add(correction)
+        };
+
+        let new_h = if n {
+            old_h && (a & 0x0F) < 6
+        } else {
+            (a & 0x0F) > 9
+        };
+
+        self.a = result;
+        let mut f = 0;
+        if new_c { f |= Flag::C as u8; }
+        if n { f |= Flag::N as u8; }
+        if new_h { f |= Flag::H as u8; }
+        if result == 0 { f |= Flag::Z as u8; }
+        if (result & 0x80) != 0 { f |= Flag::S as u8; }
+        if Self::get_parity(result) { f |= Flag::PV as u8; }
+        f |= result & (Flag::X as u8 | Flag::Y as u8);
+        self.f = f;
+        self.state = ExecState::Fetch;
+    }
+
+    /// CPL — 4 T: M1 only.
+    /// Complement A. Sets H and N. X/Y from A. S, Z, PV, C preserved.
+    pub fn op_cpl(&mut self) {
+        self.a = !self.a;
+        let mut f = self.f & (Flag::S as u8 | Flag::Z as u8 | Flag::PV as u8 | Flag::C as u8);
+        f |= Flag::H as u8 | Flag::N as u8;
+        f |= self.a & (Flag::X as u8 | Flag::Y as u8);
+        self.f = f;
+        self.state = ExecState::Fetch;
+    }
+
+    /// SCF — 4 T: M1 only.
+    /// Set carry flag. C = 1, H = 0, N = 0. X/Y from A. S, Z, PV preserved.
+    pub fn op_scf(&mut self) {
+        let mut f = self.f & (Flag::S as u8 | Flag::Z as u8 | Flag::PV as u8);
+        f |= Flag::C as u8;
+        f |= self.a & (Flag::X as u8 | Flag::Y as u8);
+        self.f = f;
+        self.state = ExecState::Fetch;
+    }
+
+    /// CCF — 4 T: M1 only.
+    /// Complement carry flag. H = old C, C = ~C, N = 0. X/Y from A. S, Z, PV preserved.
+    pub fn op_ccf(&mut self) {
+        let old_c = self.f & Flag::C as u8;
+        let mut f = self.f & (Flag::S as u8 | Flag::Z as u8 | Flag::PV as u8);
+        if old_c != 0 { f |= Flag::H as u8; }
+        if old_c == 0 { f |= Flag::C as u8; }
+        f |= self.a & (Flag::X as u8 | Flag::Y as u8);
+        self.f = f;
+        self.state = ExecState::Fetch;
+    }
 }

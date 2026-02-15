@@ -459,6 +459,25 @@ impl Z80 {
             // DEC r (0x05, 0x0D...) — 4 T (reg) or 11 T ((HL))
             op if (op & 0xC7) == 0x05 => self.op_inc_dec_r(op, cycle, bus, master),
 
+            // ADD HL,rr (0x09/0x19/0x29/0x39) — 11 T
+            op if (op & 0xCF) == 0x09 => self.op_add_hl_rr(op, cycle),
+            // INC rr (0x03/0x13/0x23/0x33) — 6 T
+            op if (op & 0xCF) == 0x03 => self.op_inc_dec_rr(op, cycle),
+            // DEC rr (0x0B/0x1B/0x2B/0x3B) — 6 T
+            op if (op & 0xCF) == 0x0B => self.op_inc_dec_rr(op, cycle),
+
+            // Accumulator rotates — 4 T
+            0x07 => self.op_rlca(),
+            0x0F => self.op_rrca(),
+            0x17 => self.op_rla(),
+            0x1F => self.op_rra(),
+
+            // Misc ALU — 4 T
+            0x27 => self.op_daa(),
+            0x2F => self.op_cpl(),
+            0x37 => self.op_scf(),
+            0x3F => self.op_ccf(),
+
             _ => self.state = ExecState::Fetch,
         }
     }
