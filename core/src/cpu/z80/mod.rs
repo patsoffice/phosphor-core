@@ -1,4 +1,5 @@
 mod alu;
+mod branch;
 mod load_store;
 mod stack;
 
@@ -58,6 +59,7 @@ pub struct Z80 {
     pub im: u8,
     pub memptr: u16, // Hidden WZ register
     pub halted: bool,
+    pub(crate) ei_delay: bool,
 
     pub(crate) state: ExecState,
     pub(crate) opcode: u8,
@@ -131,6 +133,7 @@ impl Z80 {
             im: 0,
             memptr: 0,
             halted: false,
+            ei_delay: false,
             state: ExecState::Fetch,
             opcode: 0,
             temp_addr: 0,
@@ -477,6 +480,36 @@ impl Z80 {
             0x2F => self.op_cpl(),
             0x37 => self.op_scf(),
             0x3F => self.op_ccf(),
+
+            // --- Branch/Control Flow ---
+
+            // JP nn — 10 T
+            0xC3 => self.op_jp_nn(opcode, cycle, bus, master),
+            // JP (HL) — 4 T
+            0xE9 => self.op_jp_hl(),
+            // JR e — 12 T
+            0x18 => self.op_jr_e(opcode, cycle, bus, master),
+            // DJNZ e — 13/8 T
+            0x10 => self.op_djnz(opcode, cycle, bus, master),
+            // CALL nn — 17 T
+            0xCD => self.op_call_nn(opcode, cycle, bus, master),
+            // RET — 10 T
+            0xC9 => self.op_ret(opcode, cycle, bus, master),
+            // DI — 4 T
+            0xF3 => self.op_di(),
+            // EI — 4 T
+            0xFB => self.op_ei(),
+
+            // JP cc,nn — 10 T
+            op if (op & 0xC7) == 0xC2 => self.op_jp_cc_nn(op, cycle, bus, master),
+            // JR cc,e — 12/7 T (NZ/Z/NC/C only)
+            op if (op & 0xE7) == 0x20 => self.op_jr_cc_e(op, cycle, bus, master),
+            // CALL cc,nn — 17/10 T
+            op if (op & 0xC7) == 0xC4 => self.op_call_cc_nn(op, cycle, bus, master),
+            // RET cc — 11/5 T
+            op if (op & 0xC7) == 0xC0 => self.op_ret_cc(op, cycle, bus, master),
+            // RST p — 11 T
+            op if (op & 0xC7) == 0xC7 => self.op_rst(op, cycle, bus, master),
 
             _ => self.state = ExecState::Fetch,
         }
