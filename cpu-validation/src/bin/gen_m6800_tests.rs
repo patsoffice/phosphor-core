@@ -113,7 +113,8 @@ fn all_instructions() -> Vec<InstrDef> {
         &[
             0x20, // BRA
             0x22, 0x23, 0x24, 0x25, 0x26, 0x27, // BHI, BLS, BCC, BCS, BNE, BEQ
-            0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, // BVC, BVS, BPL, BMI, BGE, BLT, BGT, BLE
+            0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E,
+            0x2F, // BVC, BVS, BPL, BMI, BGE, BLT, BGT, BLE
         ],
         Fixed(1),
     );
@@ -439,13 +440,10 @@ fn main() {
             std::process::exit(1);
         });
 
-        let instr = all
-            .iter()
-            .find(|i| i.opcode == opcode)
-            .unwrap_or_else(|| {
-                eprintln!("Opcode 0x{:02X} not found in instruction table", opcode);
-                std::process::exit(1);
-            });
+        let instr = all.iter().find(|i| i.opcode == opcode).unwrap_or_else(|| {
+            eprintln!("Opcode 0x{:02X} not found in instruction table", opcode);
+            std::process::exit(1);
+        });
 
         generate_and_write(&mut rng, instr, out_dir);
     }

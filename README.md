@@ -1,14 +1,14 @@
 # Phosphor Emulator
 
-> Core emulation library for the Phosphor retro CPU emulator framework
+> Phosphor retro CPU emulator framework
 
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-561%20passing-brightgreen.svg)](core/tests/)
+[![Tests](https://img.shields.io/badge/tests-916%20passing-brightgreen.svg)](core/tests/)
 
 A modular emulator framework for retro CPUs, designed for extensibility and educational purposes. Features a trait-based architecture that allows easy addition of new CPUs, peripherals, and complete systems.
 
-**Current Focus:** Joust (1982) arcade board emulation — M6809 CPU (285 opcodes), M6800 CPU (66 opcodes), MC6821 PIA, Williams SC1 blitter, CMOS RAM, Machine trait for frontend abstraction. 561 tests passing, 266,000 cross-validated test vectors across 266 M6809 opcodes
+**Current Focus:** Joust (1982) arcade board emulation — M6809 CPU (285 opcodes), M6800 CPU (192 opcodes), M6502 CPU (151 opcodes), MC6821 PIA, Williams SC1 blitter, CMOS RAM, Machine trait for frontend abstraction. 916 tests passing, 1.97M cross-validated test vectors across 3 CPUs
 
 ## Quick Start
 
@@ -30,7 +30,7 @@ cargo build
 cargo test
 
 # Expected output:
-#   test result: ok. 561 passed; 0 failed
+#   test result: ok. 916 passed; 0 failed
 ```
 
 ### Running the Emulator
@@ -68,9 +68,9 @@ ROMs are matched by CRC32 checksum, so any MAME ROM naming convention works. All
 | Component | Status | Notes |
 |-----------|--------|-------|
 | **Core Framework** | Complete | Bus trait, Machine trait, component system, arbitration |
-| **M6809 CPU** | Complete | 285 opcodes, cycle-accurate, all addressing modes |
-| **M6800 CPU** | In Progress | 66 opcodes: inherent, immediate ALU, shifts/rotates, addressing mode helpers |
-| **M6502 CPU** | Partial | Initial structure, LDA immediate only |
+| **M6809 CPU** | Complete | 285 opcodes, cycle-accurate, all addressing modes. [Details](core/src/cpu/m6809/README.md) |
+| **M6800 CPU** | Complete | 192 opcodes, cycle-accurate, all addressing modes. [Details](core/src/cpu/m6800/README.md) |
+| **M6502 CPU** | Complete | 151 opcodes, cycle-accurate with bus-level traces. [Details](core/src/cpu/m6502/README.md) |
 | **Z80 CPU** | Partial | Initial structure, LD A, n only |
 | **MC6821 PIA** | Complete | Full register set, interrupts, edge detection, control lines |
 | **Williams SC1 Blitter** | Complete | DMA block copy/fill, mask, shift, foreground-only modes |
@@ -78,32 +78,8 @@ ROMs are matched by CRC32 checksum, so any MAME ROM naming convention works. All
 | **ROM Loader** | Complete | MAME ZIP support, CRC32-based ROM matching, multi-variant support |
 | **Joust System** | Complete | Williams board: CPU + video RAM + PIAs + blitter + CMOS + ROM |
 | **Machine Trait** | Complete | Frontend-agnostic interface: display, input, render, reset |
-| **CPU Validation** | Complete | M6809: 266K vectors vs elmerucr/MC6809 (100%), M6800: 192K vectors vs mame4all (99.998%) |
-| **Test Suite** | Complete | 561 tests across core, devices, and machine integration |
-
-### 6809 Instructions
-
-285 opcodes across 3 pages (238 page 0, 38 page 1/0x10, 9 page 2/0x11):
-
-| Category | Count | Details |
-| --- | --- | --- |
-| ALU (A register) | 9 | ADDA, SUBA, CMPA, SBCA, ADCA, ANDA, BITA, EORA, ORA — imm/direct/indexed/extended |
-| ALU (B register) | 9 | ADDB, SUBB, CMPB, SBCB, ADCB, ANDB, BITB, EORB, ORB — imm/direct/indexed/extended |
-| ALU (16-bit) | 3 | ADDD, SUBD, CMPX — imm/direct/indexed/extended |
-| Unary (inherent) | 13 | NEG, COM, CLR, INC, DEC, TST (A & B), MUL |
-| Unary (memory) | 6 | NEG, COM, CLR, INC, DEC, TST — direct/indexed/extended |
-| Shift/Rotate (inherent) | 10 | ASL, ASR, LSR, ROL, ROR (A & B) |
-| Shift/Rotate (memory) | 5 | ASL, ASR, LSR, ROL, ROR — direct/indexed/extended |
-| Load/Store | 5 imm + 10 per mode | LDA, LDB, LDD, LDX, LDU, STA, STB, STD, STX, STU |
-| LEA | 4 | LEAX, LEAY, LEAS, LEAU |
-| Branch | 16 | BRA, BRN, BHI, BLS, BCC, BCS, BNE, BEQ, BVC, BVS, BPL, BMI, BGE, BLT, BGT, BLE |
-| Jump/Subroutine | 10 | BSR, LBRA, LBSR, JSR, JMP, RTS |
-| Transfer/Stack | 6 | TFR, EXG, PSHS, PULS, PSHU, PULU |
-| Interrupt | 4 | SWI, RTI, CWAI, SYNC |
-| Misc inherent | 6 | NOP, SEX, ABX, DAA, ORCC, ANDCC |
-| Page 2 (0x10) | 38 | Long branches, CMPD, CMPY, LDY, STY, LDS, STS, SWI2 |
-| Page 3 (0x11) | 9 | CMPU, CMPS, SWI3 |
-| Undocumented | 15 | Aliases for compatibility |
+| **CPU Validation** | Complete | M6809: 266K vectors (100%), M6800: 192K vectors (99.998%), M6502: 1.51M vectors (100%) |
+| **Test Suite** | Complete | 916 tests across core, devices, and machine integration |
 
 ## Workspace Architecture
 
@@ -144,6 +120,7 @@ SDL2-based windowed frontend — external dependencies: SDL2, zip:
 
 - **M6809** — 266 opcodes, 266,000 test vectors, cross-validated against [elmerucr/MC6809](https://github.com/elmerucr/MC6809). See [cpu-validation/README_6809.md](cpu-validation/README_6809.md).
 - **M6800** — 192 opcodes, 192,000 test vectors, cross-validated against [mame4all](https://github.com/mamedev/mame) M6800. See [cpu-validation/README_6800.md](cpu-validation/README_6800.md).
+- **M6502** — 151 opcodes, 1,510,000 test vectors, validated against [SingleStepTests/65x02](https://github.com/SingleStepTests/65x02) with cycle-by-cycle bus traces. See [cpu-validation/README_6502.md](cpu-validation/README_6502.md).
 
 ### Cross-Validation (`cross-validation/`)
 
@@ -151,6 +128,7 @@ C++ harnesses that validate phosphor-core's test vectors against independent ref
 
 - **M6809** — 266,000/266,000 tests pass (100%)
 - **M6800** — 191,996/192,000 tests pass (99.998%)
+- **M6502** — 1,510,000/1,510,000 tests pass (100%) — via SingleStepTests/65x02 reference vectors
 
 ## Project Structure
 
@@ -170,45 +148,22 @@ phosphor-core/
 │   │   ├── cpu/                    # CPU implementations
 │   │   │   ├── mod.rs              # Generic Cpu trait + CpuStateTrait
 │   │   │   ├── state.rs            # CpuStateTrait + state structs
-│   │   │   ├── m6800/              # M6800 CPU (66 opcodes, in progress)
-│   │   │   │   ├── mod.rs          # Struct, state machine, dispatch
-│   │   │   │   ├── alu.rs          # ALU helpers and module exports
-│   │   │   │   ├── alu/
-│   │   │   │   │   ├── binary.rs   # ADD, SUB, CMP, AND, OR, EOR, BIT, ADC, SBC
-│   │   │   │   │   ├── shift.rs    # ASL, ASR, LSR, ROL, ROR
-│   │   │   │   │   └── unary.rs    # NEG, COM, CLR, INC, DEC, TST
-│   │   │   │   ├── branch.rs       # Branch/subroutine ops
-│   │   │   │   ├── load_store.rs   # Load/store ops
-│   │   │   │   └── stack.rs        # Stack ops + interrupts
-│   │   │   ├── m6809/              # Working M6809 (285 opcodes)
-│   │   │   │   ├── mod.rs          # Struct, state machine, dispatch
-│   │   │   │   ├── alu.rs          # ALU helpers and module exports
-│   │   │   │   ├── binary.rs       # Binary ops (ADD, SUB, MUL, etc.)
-│   │   │   │   ├── shift.rs        # Shift/Rotate ops
-│   │   │   │   ├── unary.rs        # Unary ops (NEG, COM, etc.)
-│   │   │   │   └── word.rs         # 16-bit ops (ADDD, CMPX, LDD, etc.)
-│   │   │   ├── branch.rs           # Branch/subroutine ops
-│   │   │   ├── load_store.rs       # LDA, LDB, STA
-│   │   │   ├── stack.rs            # Stack ops + interrupts (SWI/RTI/CWAI/SYNC)
-│   │   │   └── transfer.rs         # Transfer/exchange (TFR, EXG)
-│   │   ├── m6502/                  # Initial implementation
-│   │   │   ├── mod.rs              # Struct, state machine
-│   │   │   └── load_store.rs       # LDA immediate
-│   │   └── z80/                    # Initial implementation
-│   │       ├── mod.rs              # Struct, state machine
-│   │       └── load_store.rs       # LD A, n
+│   │   │   ├── m6800/              # M6800 CPU (192 opcodes) — see [README](core/src/cpu/m6800/README.md)
+│   │   │   ├── m6809/              # M6809 CPU (285 opcodes) — see [README](core/src/cpu/m6809/README.md)
+│   │   │   ├── m6502/              # M6502 CPU (151 opcodes) — see [README](core/src/cpu/m6502/README.md)
+│   │   │   └── z80/                # Z80 CPU (initial implementation)
 │   │   └── device/                 # Peripheral devices
 │   │       ├── pia6820.rs          # MC6821 PIA (full: registers, interrupts, edge detection)
 │   │       ├── williams_blitter.rs # Williams SC1 DMA blitter (copy/fill/shift/mask)
 │   │       ├── cmos_ram.rs         # 1KB battery-backed CMOS RAM
 │   │       └── mod.rs              # Module exports
-│   └── tests/                      # Integration tests (561 tests)
+│   └── tests/                      # Integration tests
 │       ├── common/mod.rs           # TestBus harness
-│       ├── m6800_*_test.rs         # M6800 tests (3 files, 164 tests)
-│       ├── m6809_*_test.rs         # M6809 tests (16 files)
-│       ├── pia6820_test.rs         # MC6821 PIA tests (28 tests)
-│       ├── williams_blitter_test.rs # Blitter tests (39 tests)
-│       ├── m6502_basic_test.rs     # Basic 6502 tests
+│       ├── m6809_*_test.rs         # M6809 tests
+│       ├── m6800_*_test.rs         # M6800 tests
+│       ├── m6502_*_test.rs         # M6502 tests
+│       ├── pia6820_test.rs         # MC6821 PIA tests
+│       ├── williams_blitter_test.rs # Blitter tests
 │       └── z80_basic_test.rs       # Basic Z80 tests
 ├── machines/                       # phosphor-machines crate
 │   ├── Cargo.toml
@@ -226,6 +181,7 @@ phosphor-core/
 │   ├── Cargo.toml                  # Deps: phosphor-core, serde, rand
 │   ├── README_6809.md              # M6809 cross-validation details
 │   ├── README_6800.md              # M6800 cross-validation details & MAME differences
+│   ├── README_6502.md              # M6502 cross-validation details & bus quirks
 │   ├── src/
 │   │   ├── lib.rs                  # TracingBus + JSON types
 │   │   └── bin/
@@ -233,10 +189,12 @@ phosphor-core/
 │   │       └── gen_m6800_tests.rs  # M6800 test vector generator
 │   ├── tests/
 │   │   ├── m6809_single_step_test.rs  # Validates M6809 against JSON
-│   │   └── m6800_single_step_test.rs  # Validates M6800 against JSON
+│   │   ├── m6800_single_step_test.rs  # Validates M6800 against JSON
+│   │   └── m6502_single_step_test.rs  # Validates M6502 against SingleStepTests/65x02
 │   └── test_data/
-│       ├── m6809/                  # Generated M6809 test vectors (266 files)
-│       └── m6800/                  # Generated M6800 test vectors (192 files)
+│       ├── m6809/                  # Generated M6809 test vectors
+│       ├── m6800/                  # Generated M6800 test vectors
+│       └── 65x02/                  # Git submodule: SingleStepTests/65x02
 ├── frontend/                       # phosphor-frontend crate (SDL2 frontend)
 │   ├── Cargo.toml                  # Deps: phosphor-core, phosphor-machines, sdl2, zip
 │   └── src/
@@ -388,8 +346,8 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 
 ### Phase 3: Additional CPUs
 
-- [ ] Motorola 6800 CPU (in progress — 66/~197 opcodes: inherent, immediate ALU, shifts)
-- [ ] MOS 6502 CPU (addressing modes, instruction set, BCD arithmetic)
+- [x] Motorola 6800 CPU (192 opcodes, cross-validated against mame4all)
+- [x] MOS 6502 CPU (151 opcodes, cross-validated against SingleStepTests/65x02)
 - [ ] Zilog Z80 CPU (instruction prefixes, alternate register set)
 - [ ] Motorola 68000 CPU (32-bit address space, 16-bit data bus)
 
@@ -423,23 +381,5 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 This project is licensed under the [MIT License](LICENSE).
 
 This is a learning/reference implementation. Not affiliated with any hardware manufacturer.
-
-## Resources
-
-### Motorola 6800
-
-- [MC6800 Programming Manual](http://www.bitsavers.org/components/motorola/6800/Motorola_M6800_Programming_Reference_Manual_M68PRM_D_Nov76.pdf) - Official Motorola programming reference
-- [MC6800 Datasheet](http://www.bitsavers.org/components/motorola/6800/MC6800_8-Bit_Microprocessing_Unit.pdf) - Instruction timing and pinout
-- [Motorola 6800 Wikipedia](https://en.wikipedia.org/wiki/Motorola_6800) - Architecture overview
-- [MAME 6800 Core](https://github.com/mamedev/mame/tree/master/src/devices/cpu/m6800) - Reference implementation
-
-### Motorola 6809
-
-- [6809 Programmer's Reference](http://www.6809.org.uk/dragon/pdf/6809.pdf) - Official Motorola datasheet
-- [6809 Instruction Set](http://www.8bit-museum.de/6809_isa.html) - Complete opcode reference
-- [Motorola 6809 Wikipedia](https://en.wikipedia.org/wiki/Motorola_6809) - Architecture overview
-- [elmerucr/MC6809](https://github.com/elmerucr/MC6809) - Independent 6809 reference emulator (used for cross-validation)
-- [XRoar](http://www.6809.org.uk/xroar/) - Dragon/CoCo emulator (C)
-- [MAME 6809 Core](https://github.com/mamedev/mame/tree/master/src/devices/cpu/m6809) - Reference implementation
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for design decisions, troubleshooting, and contribution guidelines.
