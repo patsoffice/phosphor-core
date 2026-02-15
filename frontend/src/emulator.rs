@@ -26,6 +26,7 @@ pub fn run(machine: &mut dyn Machine, key_map: &KeyMap, scale: u32) {
     let frame_duration = Duration::from_secs_f64(1.0 / machine.frame_rate_hz());
     let mut next_frame_time = Instant::now() + frame_duration;
     let mut throttle = true;
+    let mut last_render_time = Instant::now();
 
     // FPS overlay state (F10 to toggle)
     let mut show_fps = false;
@@ -91,7 +92,7 @@ pub fn run(machine: &mut dyn Machine, key_map: &KeyMap, scale: u32) {
         machine.run_frame();
 
         // Drain audio samples from machine into SDL ring buffer
-        if let Some((ref device, ref ring)) = audio_state {
+        if let Some((ref device, ref ring, _)) = audio_state {
             let n = machine.fill_audio(&mut audio_scratch);
             if n > 0 {
                 let mut buf = ring.lock().unwrap();
@@ -110,23 +111,33 @@ pub fn run(machine: &mut dyn Machine, key_map: &KeyMap, scale: u32) {
             }
         }
 
-        // Render the framebuffer and present
-        machine.render_frame(&mut framebuffer);
+        // When unthrottled, only render once per frame_duration to avoid being
+        // gated by the display compositor (which syncs present() to refresh rate).
+        let should_render = throttle || last_render_time.elapsed() >= frame_duration;
 
-        // FPS overlay: update counter and draw text onto framebuffer
+        if should_render {
+            machine.render_frame(&mut framebuffer);
+
+            // FPS overlay: update counter and draw text onto framebuffer
+            if show_fps {
+                crate::overlay::draw_fps(&mut framebuffer, width as usize, &fps_text);
+            }
+
+            video.present(&framebuffer);
+            last_render_time = Instant::now();
+        }
+
+        // FPS counting runs every frame regardless of rendering
         if show_fps {
             fps_frame_count += 1;
             let elapsed = fps_last_update.elapsed();
             if elapsed >= Duration::from_millis(500) {
                 let fps = fps_frame_count as f64 / elapsed.as_secs_f64();
-                fps_text = format!("{fps:.1}");
+                fps_text = format!("{fps:.4}");
                 fps_frame_count = 0;
                 fps_last_update = Instant::now();
             }
-            crate::overlay::draw_fps(&mut framebuffer, width as usize, &fps_text);
         }
-
-        video.present(&framebuffer);
 
         // Frame throttling (F9 to toggle): sleep until the target presentation time.
         // Advancing next_frame_time by a fixed duration each frame
@@ -146,8 +157,10 @@ pub fn run(machine: &mut dyn Machine, key_map: &KeyMap, scale: u32) {
         }
     }
 
-    // Stop audio callback before the device is dropped, avoiding an exit pop.
-    if let Some((ref device, _)) = audio_state {
+    // Signal fade-out, wait for the ramp to complete, then stop the callback.
+    if let Some((ref device, _, ref fade_out)) = audio_state {
+        fade_out.store(true, std::sync::atomic::Ordering::Relaxed);
+        std::thread::sleep(crate::audio::fade_out_duration());
         device.pause();
     }
 }
