@@ -84,8 +84,9 @@ fn test_irq_pushes_all_registers_and_vectors() {
     // Assert IRQ before ticking
     bus.irq = true;
 
-    // IRQ response: 1 cycle (Fetch detects IRQ) + 14 cycles (push + vector)
-    tick(&mut cpu, &mut bus, 15);
+    // IRQ response: 1 cycle (Fetch detects IRQ) + 18 cycles (2 internal + 12 push
+    // + 1 internal + 2 vector + 1 internal) = 19 cycles, matching SWI.
+    tick(&mut cpu, &mut bus, 19);
 
     // PC should be at IRQ handler
     assert_eq!(cpu.pc, 0x3000, "PC should be at IRQ vector");
@@ -183,8 +184,8 @@ fn test_irq_then_rti_roundtrip() {
 
     bus.irq = true;
 
-    // IRQ response: 15 cycles
-    tick(&mut cpu, &mut bus, 15);
+    // IRQ response: 19 cycles (matching SWI)
+    tick(&mut cpu, &mut bus, 19);
     assert_eq!(cpu.pc, 0x4000, "Should be at IRQ handler");
 
     // Deassert IRQ before RTI
@@ -225,8 +226,9 @@ fn test_firq_pushes_cc_and_pc_only() {
 
     bus.firq = true;
 
-    // FIRQ response: 1 cycle (Fetch detects) + 5 cycles (3 push + 2 vector) = 6
-    tick(&mut cpu, &mut bus, 6);
+    // FIRQ response: 1 cycle (Fetch detects) + 9 cycles (2 internal + 3 push
+    // + 1 internal + 2 vector + 1 internal) = 10 cycles.
+    tick(&mut cpu, &mut bus, 10);
 
     assert_eq!(cpu.pc, 0x5000, "PC should be at FIRQ vector");
 
@@ -302,7 +304,7 @@ fn test_firq_then_rti_fast_return() {
     bus.load(0x0000, &[0x12]); // NOP
 
     bus.firq = true;
-    tick(&mut cpu, &mut bus, 6); // FIRQ response
+    tick(&mut cpu, &mut bus, 10); // FIRQ response
 
     bus.firq = false;
 
@@ -341,8 +343,8 @@ fn test_nmi_pushes_all_and_masks_both() {
 
     bus.nmi = true;
 
-    // NMI response: 15 cycles (same as IRQ)
-    tick(&mut cpu, &mut bus, 15);
+    // NMI response: 19 cycles (same as IRQ)
+    tick(&mut cpu, &mut bus, 19);
 
     assert_eq!(cpu.pc, 0x6000, "PC should be at NMI vector");
     assert_eq!(cpu.s, 0x0100 - 12, "S decremented by 12");
@@ -372,7 +374,7 @@ fn test_nmi_cannot_be_masked() {
 
     bus.nmi = true;
 
-    tick(&mut cpu, &mut bus, 15);
+    tick(&mut cpu, &mut bus, 19);
 
     // NMI should fire despite masks
     assert_eq!(cpu.pc, 0x6000, "NMI should fire even with I+F masked");
@@ -399,7 +401,7 @@ fn test_nmi_edge_triggered() {
     bus.nmi = true;
 
     // First NMI fires
-    tick(&mut cpu, &mut bus, 15);
+    tick(&mut cpu, &mut bus, 19);
     assert_eq!(cpu.pc, 0x4000, "First NMI should fire");
 
     // NMI stays high - should NOT re-trigger (edge-triggered)
@@ -415,7 +417,7 @@ fn test_nmi_edge_triggered() {
     // Actually NMI is non-maskable - it always fires on edge regardless of I/F
     bus.nmi = true;
     // New rising edge should trigger another NMI
-    tick(&mut cpu, &mut bus, 15);
+    tick(&mut cpu, &mut bus, 19);
     assert_eq!(cpu.pc, 0x4000, "Second NMI should fire on re-assertion");
 }
 
@@ -444,7 +446,7 @@ fn test_interrupt_priority_nmi_over_firq_over_irq() {
     bus.firq = true;
     bus.irq = true;
 
-    tick(&mut cpu, &mut bus, 15);
+    tick(&mut cpu, &mut bus, 19);
 
     // NMI should win (highest priority)
     assert_eq!(cpu.pc, 0x6000, "NMI should have highest priority");
@@ -676,8 +678,8 @@ fn test_sync_wakes_on_unmasked_irq() {
 
     bus.irq = true;
 
-    // SYNC wakes + starts full IRQ response: 1 cycle (detect) + 14 cycles (push + vector)
-    tick(&mut cpu, &mut bus, 15);
+    // SYNC wakes + starts full IRQ response: 19 cycles
+    tick(&mut cpu, &mut bus, 19);
 
     assert_eq!(cpu.pc, 0x4000, "Should be at IRQ handler");
     assert_eq!(cpu.s, 0x0100 - 12, "Full register push for IRQ");
@@ -728,8 +730,8 @@ fn test_sync_wakes_on_nmi() {
 
     bus.nmi = true;
 
-    // NMI from SYNC: full response
-    tick(&mut cpu, &mut bus, 15);
+    // NMI from SYNC: full response (19 cycles)
+    tick(&mut cpu, &mut bus, 19);
     assert_eq!(cpu.pc, 0x6000, "NMI should fire from SYNC");
 }
 
@@ -752,8 +754,8 @@ fn test_sync_wakes_on_firq() {
 
     bus.firq = true;
 
-    // FIRQ from SYNC: fast response (3 push + 2 vector = 5 + 1 detect = 6)
-    tick(&mut cpu, &mut bus, 6);
+    // FIRQ from SYNC: fast response (10 cycles)
+    tick(&mut cpu, &mut bus, 10);
     assert_eq!(cpu.pc, 0x5000, "FIRQ should fire from SYNC");
     assert_eq!(cpu.s, 0x0100 - 3, "FIRQ pushes CC+PC only");
 }

@@ -504,9 +504,15 @@ impl M6809 {
     }
 
     /// NMI/IRQ full interrupt response: set E, push all 12 registers, mask, vector.
-    /// Cycle 0-11: push registers (identical to SWI).
-    /// Cycle 12: set mask flags + read vector high.
-    /// Cycle 13: read vector low, jump to handler.
+    /// Matches SWI cycle structure exactly (18 execute cycles after detect):
+    /// Cycle 0: internal (set E flag).
+    /// Cycle 1: internal.
+    /// Cycles 2-13: push 12 register bytes.
+    /// Cycle 14: internal (set mask flags).
+    /// Cycle 15: read vector high.
+    /// Cycle 16: read vector low.
+    /// Cycle 17: internal (done).
+    /// Total: 1 detect + 18 execute = 19 cycles (same as SWI).
     fn interrupt_full<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
@@ -515,33 +521,51 @@ impl M6809 {
     ) {
         match cycle {
             0 => {
+                // Internal: set E flag (matches SWI cycle 0)
                 self.cc |= CcFlag::E as u8;
-                self.s = self.s.wrapping_sub(1);
-                bus.write(master, self.s, self.swi_push_byte(0));
                 self.state = ExecState::Interrupt(1);
             }
-            c @ 1..=11 => {
+            1 => {
+                // Internal cycle (matches SWI cycle 1)
+                self.state = ExecState::Interrupt(2);
+            }
+            c @ 2..=13 => {
+                // Push 12 register bytes (matches SWI cycles 2-13)
                 self.s = self.s.wrapping_sub(1);
-                bus.write(master, self.s, self.swi_push_byte(c));
+                bus.write(master, self.s, self.swi_push_byte(c - 2));
                 self.state = ExecState::Interrupt(c + 1);
             }
-            12 => {
-                let (vector, mask) = match self.interrupt_type {
-                    1 => (0xFFFC_u16, CcFlag::I as u8 | CcFlag::F as u8), // NMI
-                    _ => (0xFFF8_u16, CcFlag::I as u8),                   // IRQ
+            14 => {
+                // Internal: set mask flags (matches SWI cycle 14)
+                let mask = match self.interrupt_type {
+                    1 => CcFlag::I as u8 | CcFlag::F as u8, // NMI
+                    _ => CcFlag::I as u8,                    // IRQ
                 };
                 self.cc |= mask;
+                self.state = ExecState::Interrupt(15);
+            }
+            15 => {
+                // Read vector high byte (matches SWI cycle 15)
+                let vector = match self.interrupt_type {
+                    1 => 0xFFFC_u16, // NMI
+                    _ => 0xFFF8_u16, // IRQ
+                };
                 let hi = bus.read(master, vector);
                 self.temp_addr = (hi as u16) << 8;
-                self.state = ExecState::Interrupt(13);
+                self.state = ExecState::Interrupt(16);
             }
-            13 => {
+            16 => {
+                // Read vector low byte (matches SWI cycle 16)
                 let vector_lo = match self.interrupt_type {
                     1 => 0xFFFD_u16, // NMI
                     _ => 0xFFF9_u16, // IRQ
                 };
                 let lo = bus.read(master, vector_lo);
                 self.pc = self.temp_addr | (lo as u16);
+                self.state = ExecState::Interrupt(17);
+            }
+            17 => {
+                // Internal cycle (matches SWI cycle 17)
                 self.state = ExecState::Fetch;
             }
             _ => {}
@@ -549,11 +573,16 @@ impl M6809 {
     }
 
     /// FIRQ fast interrupt response: clear E, push CC+PC only (3 bytes), mask I+F, vector.
-    /// Cycle 0: clear E, push PC low.
-    /// Cycle 1: push PC high.
-    /// Cycle 2: push CC.
-    /// Cycle 3: set I+F, read vector high.
-    /// Cycle 4: read vector low, jump to handler.
+    /// 10 cycles total (1 detect + 9 execute):
+    /// Cycle 0: internal (clear E flag).
+    /// Cycle 1: internal.
+    /// Cycle 2: push PC low.
+    /// Cycle 3: push PC high.
+    /// Cycle 4: push CC.
+    /// Cycle 5: internal (set I+F).
+    /// Cycle 6: read vector high.
+    /// Cycle 7: read vector low.
+    /// Cycle 8: internal (done).
     fn interrupt_firq<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
@@ -562,30 +591,46 @@ impl M6809 {
     ) {
         match cycle {
             0 => {
-                self.cc &= !(CcFlag::E as u8); // Clear E for fast return
-                self.s = self.s.wrapping_sub(1);
-                bus.write(master, self.s, self.pc as u8); // PC low
+                // Internal: clear E for fast return
+                self.cc &= !(CcFlag::E as u8);
                 self.state = ExecState::Interrupt(1);
             }
             1 => {
-                self.s = self.s.wrapping_sub(1);
-                bus.write(master, self.s, (self.pc >> 8) as u8); // PC high
+                // Internal cycle
                 self.state = ExecState::Interrupt(2);
             }
             2 => {
                 self.s = self.s.wrapping_sub(1);
-                bus.write(master, self.s, self.cc); // CC
+                bus.write(master, self.s, self.pc as u8); // PC low
                 self.state = ExecState::Interrupt(3);
             }
             3 => {
-                self.cc |= CcFlag::I as u8 | CcFlag::F as u8;
-                let hi = bus.read(master, 0xFFF6);
-                self.temp_addr = (hi as u16) << 8;
+                self.s = self.s.wrapping_sub(1);
+                bus.write(master, self.s, (self.pc >> 8) as u8); // PC high
                 self.state = ExecState::Interrupt(4);
             }
             4 => {
+                self.s = self.s.wrapping_sub(1);
+                bus.write(master, self.s, self.cc); // CC
+                self.state = ExecState::Interrupt(5);
+            }
+            5 => {
+                // Internal: set mask flags
+                self.cc |= CcFlag::I as u8 | CcFlag::F as u8;
+                self.state = ExecState::Interrupt(6);
+            }
+            6 => {
+                let hi = bus.read(master, 0xFFF6);
+                self.temp_addr = (hi as u16) << 8;
+                self.state = ExecState::Interrupt(7);
+            }
+            7 => {
                 let lo = bus.read(master, 0xFFF7);
                 self.pc = self.temp_addr | (lo as u16);
+                self.state = ExecState::Interrupt(8);
+            }
+            8 => {
+                // Internal cycle (done)
                 self.state = ExecState::Fetch;
             }
             _ => {}
