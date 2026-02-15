@@ -525,6 +525,8 @@ impl Z80 {
                 if self.iff2 { f |= Flag::PV as u8; }
                 f |= self.a & (Flag::X as u8 | Flag::Y as u8);
                 self.f = f;
+                self.q = self.f;
+                self.p = true;
                 self.state = ExecState::ExecuteED(opcode, 1);
             }
             1 => self.state = ExecState::Fetch,
@@ -544,6 +546,8 @@ impl Z80 {
                 if self.iff2 { f |= Flag::PV as u8; }
                 f |= self.a & (Flag::X as u8 | Flag::Y as u8);
                 self.f = f;
+                self.q = self.f;
+                self.p = true;
                 self.state = ExecState::ExecuteED(opcode, 1);
             }
             1 => self.state = ExecState::Fetch,
@@ -654,6 +658,7 @@ impl Z80 {
                 if Self::get_parity(val) { f |= Flag::PV as u8; }
                 f |= val & (Flag::X as u8 | Flag::Y as u8);
                 self.f = f;
+                self.q = self.f;
                 self.memptr = self.get_bc().wrapping_add(1);
                 self.state = ExecState::Fetch;
             }
@@ -670,6 +675,64 @@ impl Z80 {
             4 => {
                 // I/O write discarded
                 self.memptr = self.get_bc().wrapping_add(1);
+                self.state = ExecState::Fetch;
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// IN A,(n) — 11T: M1(4) + MR(3) + IO(4)
+    /// Reads port address n from immediate byte. I/O stubbed (returns 0xFF).
+    /// MEMPTR = ((A << 8) | n) + 1
+    pub fn op_in_a_n<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        // Handler cycles 1-8 (8 total after overhead cycle 0):
+        // 1=pad, 2=read n, 3-4=pad, 5-7=IO pad, 8=IO complete
+        match cycle {
+            1 | 3 | 4 | 5 | 6 | 7 => self.state = ExecState::Execute(opcode, cycle + 1),
+            2 => {
+                self.temp_data = bus.read(master, self.pc);
+                self.pc = self.pc.wrapping_add(1);
+                self.state = ExecState::Execute(opcode, 3);
+            }
+            8 => {
+                let n = self.temp_data;
+                let port_addr = ((self.a as u16) << 8) | n as u16;
+                self.a = 0xFF; // Stubbed I/O read
+                self.memptr = port_addr.wrapping_add(1);
+                self.state = ExecState::Fetch;
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// OUT (n),A — 11T: M1(4) + MR(3) + IO(4)
+    /// Reads port address n from immediate byte. I/O stubbed (write discarded).
+    /// MEMPTR low = (n+1) & 0xFF, MEMPTR high = A
+    pub fn op_out_n_a<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        // Same timing as IN A,(n): handler cycles 1-8
+        match cycle {
+            1 | 3 | 4 | 5 | 6 | 7 => self.state = ExecState::Execute(opcode, cycle + 1),
+            2 => {
+                self.temp_data = bus.read(master, self.pc);
+                self.pc = self.pc.wrapping_add(1);
+                self.state = ExecState::Execute(opcode, 3);
+            }
+            8 => {
+                let n = self.temp_data;
+                // I/O write discarded
+                self.memptr = ((self.a as u16) << 8) | ((n.wrapping_add(1)) as u16);
                 self.state = ExecState::Fetch;
             }
             _ => unreachable!(),

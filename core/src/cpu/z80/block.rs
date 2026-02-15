@@ -40,6 +40,7 @@ impl Z80 {
                 if (n & 0x08) != 0 { f |= Flag::X as u8; }
                 if (n & 0x02) != 0 { f |= Flag::Y as u8; }
                 self.f = f;
+                self.q = self.f;
                 self.state = ExecState::ExecuteED(opcode, 7);
             }
             8 => self.state = ExecState::Fetch,
@@ -80,6 +81,7 @@ impl Z80 {
                 if (n & 0x08) != 0 { f |= Flag::X as u8; }
                 if (n & 0x02) != 0 { f |= Flag::Y as u8; }
                 self.f = f;
+                self.q = self.f;
                 self.state = ExecState::ExecuteED(opcode, 7);
             }
             8 => {
@@ -88,6 +90,11 @@ impl Z80 {
                 } else {
                     self.pc = self.pc.wrapping_sub(2);
                     self.memptr = self.pc.wrapping_add(1);
+                    // When repeating, X/Y flags come from high byte of rewound PC
+                    let pc_h = (self.pc >> 8) as u8;
+                    self.f = (self.f & !(Flag::X as u8 | Flag::Y as u8))
+                        | (pc_h & (Flag::X as u8 | Flag::Y as u8));
+                    self.q = self.f;
                     self.state = ExecState::ExecuteED(opcode, 9);
                 }
             }
@@ -143,6 +150,7 @@ impl Z80 {
                 if (n & 0x08) != 0 { f |= Flag::X as u8; }
                 if (n & 0x02) != 0 { f |= Flag::Y as u8; }
                 self.f = f;
+                self.q = self.f;
                 self.state = ExecState::ExecuteED(opcode, 4);
             }
             8 => self.state = ExecState::Fetch,
@@ -190,6 +198,7 @@ impl Z80 {
                 if (n & 0x08) != 0 { f |= Flag::X as u8; }
                 if (n & 0x02) != 0 { f |= Flag::Y as u8; }
                 self.f = f;
+                self.q = self.f;
                 self.state = ExecState::ExecuteED(opcode, 4);
             }
             8 => {
@@ -199,6 +208,11 @@ impl Z80 {
                 } else {
                     self.pc = self.pc.wrapping_sub(2);
                     self.memptr = self.pc.wrapping_add(1);
+                    // When repeating, X/Y flags come from high byte of rewound PC
+                    let pc_h = (self.pc >> 8) as u8;
+                    self.f = (self.f & !(Flag::X as u8 | Flag::Y as u8))
+                        | (pc_h & (Flag::X as u8 | Flag::Y as u8));
+                    self.q = self.f;
                     self.state = ExecState::ExecuteED(opcode, 9);
                 }
             }
@@ -243,6 +257,7 @@ impl Z80 {
                 f |= self.b & (Flag::X as u8 | Flag::Y as u8);
                 if (self.b & 0x80) != 0 { f |= Flag::S as u8; }
                 self.f = f;
+                self.q = self.f;
                 self.state = ExecState::ExecuteED(opcode, 6);
             }
             6 | 7 => self.state = ExecState::ExecuteED(opcode, cycle + 1),
@@ -314,6 +329,7 @@ impl Z80 {
                 f |= self.b & (Flag::X as u8 | Flag::Y as u8);
                 if (self.b & 0x80) != 0 { f |= Flag::S as u8; }
                 self.f = f;
+                self.q = self.f;
                 self.state = ExecState::ExecuteED(opcode, 5);
             }
             8 => self.state = ExecState::Fetch,

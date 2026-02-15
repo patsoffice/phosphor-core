@@ -61,7 +61,10 @@ pub struct Z80 {
     pub im: u8,
     pub memptr: u16, // Hidden WZ register
     pub halted: bool,
-    pub(crate) ei_delay: bool,
+    pub ei_delay: bool,
+    pub p: bool, // Set after LD A,I / LD A,R for interrupt PV behavior
+    pub q: u8,        // Copy of F when instruction modifies flags, 0 otherwise (for SCF/CCF X/Y)
+    pub(crate) prev_q: u8, // Previous instruction's q value (saved at Fetch for SCF/CCF)
 
     pub(crate) state: ExecState,
     pub(crate) opcode: u8,
@@ -142,6 +145,9 @@ impl Z80 {
             memptr: 0,
             halted: false,
             ei_delay: false,
+            p: false,
+            q: 0,
+            prev_q: 0,
             state: ExecState::Fetch,
             opcode: 0,
             temp_addr: 0,
@@ -306,7 +312,6 @@ impl Z80 {
                         if nmi_edge {
                             if self.halted {
                                 self.halted = false;
-                                self.pc = self.pc.wrapping_add(1); // Skip past HALT
                             }
                             self.state = ExecState::Interrupt(0, 0); // NMI
                             return;
@@ -316,7 +321,6 @@ impl Z80 {
                         if ints.irq && self.iff1 {
                             if self.halted {
                                 self.halted = false;
-                                self.pc = self.pc.wrapping_add(1);
                             }
                             let int_type = if self.im == 2 { 2 } else { 1 };
                             self.state = ExecState::Interrupt(int_type, 0);
@@ -328,6 +332,9 @@ impl Z80 {
                 // M1 T1: address on bus, reset prefix state
                 if !self.prefix_pending {
                     self.index_mode = IndexMode::HL;
+                    self.p = false;
+                    self.prev_q = self.q;
+                    self.q = 0;
                 }
                 self.prefix_pending = false;
                 self.state = ExecState::FetchRead;
@@ -400,9 +407,9 @@ impl Z80 {
                 match cyc {
                     0 | 2 | 3 => self.state = ExecState::PrefixIndexCB_FetchOp(cyc + 1),
                     1 => {
+                        // Read CB sub-opcode as data (NOT an M1 cycle — no R increment)
                         self.opcode = bus.read(master, self.pc);
                         self.pc = self.pc.wrapping_add(1);
-                        self.r = (self.r & 0x80) | (self.r.wrapping_add(1) & 0x7F);
                         // Compute indexed address and store in temp_addr
                         self.temp_addr = self.get_index_addr();
                         self.state = ExecState::PrefixIndexCB_FetchOp(2);
@@ -562,10 +569,9 @@ impl Z80 {
             // NOP — 4 T: M1 only
             0x00 => self.state = ExecState::Fetch,
 
-            // HALT — 4 T: M1 only
+            // HALT — 4 T: M1 only. PC stays past HALT (already incremented by FetchRead).
             0x76 => {
                 self.halted = true;
-                self.pc = self.pc.wrapping_sub(1);
                 self.state = ExecState::Fetch;
             }
 
@@ -687,6 +693,11 @@ impl Z80 {
             0xCD => self.op_call_nn(opcode, cycle, bus, master),
             // RET — 10 T
             0xC9 => self.op_ret(opcode, cycle, bus, master),
+            // IN A,(n) — 11 T
+            0xDB => self.op_in_a_n(opcode, cycle, bus, master),
+            // OUT (n),A — 11 T
+            0xD3 => self.op_out_n_a(opcode, cycle, bus, master),
+
             // DI — 4 T
             0xF3 => self.op_di(),
             // EI — 4 T
@@ -819,6 +830,8 @@ impl CpuStateTrait for Z80 {
             iff2: self.iff2,
             im: self.im,
             memptr: self.memptr,
+            p: self.p,
+            q: self.q,
         }
     }
 }

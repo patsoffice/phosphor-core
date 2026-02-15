@@ -292,8 +292,8 @@ fn test_halt_basic() {
     run_instruction(&mut cpu, &mut bus);
     assert!(cpu.halted, "CPU should be halted");
     assert!(cpu.is_sleeping(), "is_sleeping should return true");
-    // PC points at HALT instruction (decremented back)
-    assert_eq!(cpu.pc, 0x0100);
+    // PC points past HALT instruction (standard Z80 behavior)
+    assert_eq!(cpu.pc, 0x0101);
 }
 
 #[test]

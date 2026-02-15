@@ -126,6 +126,53 @@ pub struct M6502CpuState {
     pub ram: Vec<(u16, u8)>,
 }
 
+// --- Z80 JSON test vector types (SingleStepTests/z80 format) ---
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Z80TestCase {
+    pub name: String,
+    pub initial: Z80CpuState,
+    #[serde(rename = "final")]
+    pub final_state: Z80CpuState,
+    pub cycles: Vec<(Option<u16>, Option<u8>, String)>,
+    #[serde(default)]
+    pub ports: Vec<(u16, u8, String)>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Z80CpuState {
+    pub pc: u16,
+    pub sp: u16,
+    pub a: u8,
+    pub b: u8,
+    pub c: u8,
+    pub d: u8,
+    pub e: u8,
+    pub f: u8,
+    pub h: u8,
+    pub l: u8,
+    pub i: u8,
+    pub r: u8,
+    pub ei: u8,
+    pub wz: u16,
+    pub ix: u16,
+    pub iy: u16,
+    #[serde(rename = "af_")]
+    pub af_prime: u16,
+    #[serde(rename = "bc_")]
+    pub bc_prime: u16,
+    #[serde(rename = "de_")]
+    pub de_prime: u16,
+    #[serde(rename = "hl_")]
+    pub hl_prime: u16,
+    pub im: u8,
+    pub p: u8,
+    pub q: u8,
+    pub iff1: u8,
+    pub iff2: u8,
+    pub ram: Vec<(u16, u8)>,
+}
+
 // --- M6800 JSON test vector types ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

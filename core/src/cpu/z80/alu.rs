@@ -19,6 +19,7 @@ impl Z80 {
         // Undocumented X/Y
         f |= result & (Flag::X as u8 | Flag::Y as u8);
         self.f = f;
+        self.q = self.f;
     }
 
     fn do_add(&mut self, val: u8, carry_in: bool) {
@@ -37,6 +38,7 @@ impl Z80 {
         f |= result & (Flag::X as u8 | Flag::Y as u8);
         self.a = result;
         self.f = f;
+        self.q = self.f;
     }
 
     fn do_sub(&mut self, val: u8, carry_in: bool) {
@@ -55,6 +57,7 @@ impl Z80 {
         f |= result & (Flag::X as u8 | Flag::Y as u8);
         self.a = result;
         self.f = f;
+        self.q = self.f;
     }
 
     fn do_cp(&mut self, val: u8) {
@@ -72,6 +75,7 @@ impl Z80 {
         // X/Y come from the operand for CP, not the result
         f |= val & (Flag::X as u8 | Flag::Y as u8);
         self.f = f;
+        self.q = self.f;
     }
 
     fn perform_alu_op(&mut self, op: u8, val: u8) {
@@ -271,6 +275,7 @@ impl Z80 {
         // N is 0
         f |= result & (Flag::X as u8 | Flag::Y as u8);
         self.f = f;
+        self.q = self.f;
         result
     }
 
@@ -283,6 +288,7 @@ impl Z80 {
         if val == 0x80 { f |= Flag::PV as u8; } // Overflow 80 -> 7F
         f |= result & (Flag::X as u8 | Flag::Y as u8);
         self.f = f;
+        self.q = self.f;
         result
     }
 
@@ -307,6 +313,7 @@ impl Z80 {
                 if result > 0xFFFF { f |= Flag::C as u8; }
                 f |= ((result >> 8) as u8) & (Flag::X as u8 | Flag::Y as u8);
                 self.f = f;
+                self.q = self.f;
                 self.set_rp(2, result as u16);
 
                 self.state = ExecState::Execute(opcode, 2);
@@ -348,6 +355,7 @@ impl Z80 {
         if bit7 != 0 { f |= Flag::C as u8; }
         f |= self.a & (Flag::X as u8 | Flag::Y as u8);
         self.f = f;
+        self.q = self.f;
         self.state = ExecState::Fetch;
     }
 
@@ -360,6 +368,7 @@ impl Z80 {
         if bit0 != 0 { f |= Flag::C as u8; }
         f |= self.a & (Flag::X as u8 | Flag::Y as u8);
         self.f = f;
+        self.q = self.f;
         self.state = ExecState::Fetch;
     }
 
@@ -373,6 +382,7 @@ impl Z80 {
         if bit7 != 0 { f |= Flag::C as u8; }
         f |= self.a & (Flag::X as u8 | Flag::Y as u8);
         self.f = f;
+        self.q = self.f;
         self.state = ExecState::Fetch;
     }
 
@@ -386,6 +396,7 @@ impl Z80 {
         if bit0 != 0 { f |= Flag::C as u8; }
         f |= self.a & (Flag::X as u8 | Flag::Y as u8);
         self.f = f;
+        self.q = self.f;
         self.state = ExecState::Fetch;
     }
 
@@ -432,6 +443,7 @@ impl Z80 {
         if Self::get_parity(result) { f |= Flag::PV as u8; }
         f |= result & (Flag::X as u8 | Flag::Y as u8);
         self.f = f;
+        self.q = self.f;
         self.state = ExecState::Fetch;
     }
 
@@ -443,28 +455,35 @@ impl Z80 {
         f |= Flag::H as u8 | Flag::N as u8;
         f |= self.a & (Flag::X as u8 | Flag::Y as u8);
         self.f = f;
+        self.q = self.f;
         self.state = ExecState::Fetch;
     }
 
     /// SCF — 4 T: M1 only.
-    /// Set carry flag. C = 1, H = 0, N = 0. X/Y from A. S, Z, PV preserved.
+    /// Set carry flag. C = 1, H = 0, N = 0. S, Z, PV preserved.
+    /// Undocumented: X/Y from A if q=1, from (A | F) if q=0.
     pub fn op_scf(&mut self) {
+        let xy_source = if self.prev_q != 0 { self.a } else { self.a | self.f };
         let mut f = self.f & (Flag::S as u8 | Flag::Z as u8 | Flag::PV as u8);
         f |= Flag::C as u8;
-        f |= self.a & (Flag::X as u8 | Flag::Y as u8);
+        f |= xy_source & (Flag::X as u8 | Flag::Y as u8);
         self.f = f;
+        self.q = self.f;
         self.state = ExecState::Fetch;
     }
 
     /// CCF — 4 T: M1 only.
-    /// Complement carry flag. H = old C, C = ~C, N = 0. X/Y from A. S, Z, PV preserved.
+    /// Complement carry flag. H = old C, C = ~C, N = 0. S, Z, PV preserved.
+    /// Undocumented: X/Y from A if q=1, from (A | F) if q=0.
     pub fn op_ccf(&mut self) {
+        let xy_source = if self.prev_q != 0 { self.a } else { self.a | self.f };
         let old_c = self.f & Flag::C as u8;
         let mut f = self.f & (Flag::S as u8 | Flag::Z as u8 | Flag::PV as u8);
         if old_c != 0 { f |= Flag::H as u8; }
         if old_c == 0 { f |= Flag::C as u8; }
-        f |= self.a & (Flag::X as u8 | Flag::Y as u8);
+        f |= xy_source & (Flag::X as u8 | Flag::Y as u8);
         self.f = f;
+        self.q = self.f;
         self.state = ExecState::Fetch;
     }
 
@@ -484,6 +503,7 @@ impl Z80 {
         f |= result & (Flag::X as u8 | Flag::Y as u8);
         self.a = result;
         self.f = f;
+        self.q = self.f;
         self.state = ExecState::Fetch;
     }
 
@@ -513,6 +533,7 @@ impl Z80 {
                 if result > 0xFFFF { f |= Flag::C as u8; }
                 f |= ((result16 >> 8) as u8) & (Flag::X as u8 | Flag::Y as u8);
                 self.f = f;
+                self.q = self.f;
                 self.set_hl(result16);
 
                 self.state = ExecState::ExecuteED(opcode, 1);
@@ -548,6 +569,7 @@ impl Z80 {
                 if result > 0xFFFF { f |= Flag::C as u8; }
                 f |= ((result16 >> 8) as u8) & (Flag::X as u8 | Flag::Y as u8);
                 self.f = f;
+                self.q = self.f;
                 self.set_hl(result16);
 
                 self.state = ExecState::ExecuteED(opcode, 1);
@@ -591,6 +613,7 @@ impl Z80 {
                 if Self::get_parity(self.a) { f |= Flag::PV as u8; }
                 f |= self.a & (Flag::X as u8 | Flag::Y as u8);
                 self.f = f;
+                self.q = self.f;
                 self.state = ExecState::ExecuteED(opcode, 4);
             }
             7 => {
@@ -633,6 +656,7 @@ impl Z80 {
                 if Self::get_parity(self.a) { f |= Flag::PV as u8; }
                 f |= self.a & (Flag::X as u8 | Flag::Y as u8);
                 self.f = f;
+                self.q = self.f;
                 self.state = ExecState::ExecuteED(opcode, 4);
             }
             7 => {

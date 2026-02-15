@@ -4,3 +4,6 @@
 [submodule "cpu-validation/test_data/65x02"]
 	path = cpu-validation/test_data/65x02
 	url = https://github.com/SingleStepTests/65x02.git
+[submodule "cpu-validation/test_data/z80"]
+	path = cpu-validation/test_data/z80
+	url = https://github.com/SingleStepTests/z80.git

@@ -71,4 +71,6 @@ pub struct Z80State {
     pub iff2: bool,   // Interrupt flip-flop 2
     pub im: u8,       // Interrupt mode (0, 1, 2)
     pub memptr: u16,  // Hidden WZ register
+    pub p: bool,      // LD A,I/R tracker
+    pub q: u8,        // Copy of F when flags modified, 0 otherwise
 }

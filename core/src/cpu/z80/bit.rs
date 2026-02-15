@@ -85,6 +85,7 @@ impl Z80 {
                     // Rotate/shift r
                     let (result, f) = self.do_cb_rotate_shift(yyy, val);
                     self.f = f;
+                    self.q = self.f;
                     self.set_reg8(zzz, result);
                 }
                 1 => {
@@ -100,6 +101,7 @@ impl Z80 {
                     // X/Y from the operand register value
                     f |= val & (Flag::X as u8 | Flag::Y as u8);
                     self.f = f;
+                    self.q = self.f;
                 }
                 2 => {
                     // RES b,r — no flag changes
@@ -141,6 +143,7 @@ impl Z80 {
                 // X/Y from high byte of MEMPTR for BIT (HL)
                 f |= ((self.memptr >> 8) as u8) & (Flag::X as u8 | Flag::Y as u8);
                 self.f = f;
+                self.q = self.f;
                 self.state = ExecState::ExecuteCB(op, 2);
             }
             4 => self.state = ExecState::Fetch,
@@ -172,6 +175,7 @@ impl Z80 {
                     0 => {
                         let (r, f) = self.do_cb_rotate_shift(yyy, self.temp_data);
                         self.f = f;
+                        self.q = self.f;
                         r
                     }
                     2 => self.temp_data & !(1 << yyy), // RES — no flag changes
@@ -205,6 +209,11 @@ impl Z80 {
         let yyy = (op >> 3) & 0x07; // bit number or shift operation
         let zzz = op & 0x07;        // register (6 = no copy, otherwise undocumented copy)
 
+        // MEMPTR = IX+d / IY+d (the computed address)
+        if cycle == 0 {
+            self.memptr = self.temp_addr;
+        }
+
         if xx == 1 {
             // BIT b,(IX+d) — 20T: 4 handler cycles
             // 0=pad, 1=read (IX+d), 2=pad, 3=done
@@ -223,6 +232,7 @@ impl Z80 {
                     // X/Y from high byte of address for indexed BIT
                     f |= ((self.temp_addr >> 8) as u8) & (Flag::X as u8 | Flag::Y as u8);
                     self.f = f;
+                    self.q = self.f;
                     self.state = ExecState::ExecuteIndexCB(op, 2);
                 }
                 3 => self.state = ExecState::Fetch,
@@ -242,6 +252,7 @@ impl Z80 {
                         0 => {
                             let (r, f) = self.do_cb_rotate_shift(yyy, self.temp_data);
                             self.f = f;
+                            self.q = self.f;
                             r
                         }
                         2 => self.temp_data & !(1 << yyy),
