@@ -82,6 +82,13 @@ impl M6502 {
         }
     }
 
+    /// Returns true when the CPU is in the Fetch state (SYNC cycle).
+    /// Used by hardware like Missile Command's MADSEL circuit to detect opcode fetches.
+    #[inline]
+    pub fn is_sync(&self) -> bool {
+        matches!(self.state, ExecState::Fetch)
+    }
+
     #[inline]
     pub(crate) fn set_flag(&mut self, flag: StatusFlag, set: bool) {
         if set {
