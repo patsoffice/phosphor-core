@@ -748,8 +748,8 @@ impl Z80 {
             0xB3 | 0xBB => self.op_otir_otdr(opcode, cycle, bus, master), // OTIR/OTDR — 21/16T
 
             // --- Pattern-based (40-7F range, low 3 bits 0-6) ---
-            op if (op & 0xC7) == 0x40 => self.op_in_r_c(op, cycle),  // IN r,(C) — 12T
-            op if (op & 0xC7) == 0x41 => self.op_out_c_r(op, cycle), // OUT (C),r — 12T
+            op if (op & 0xC7) == 0x40 => self.op_in_r_c(op, cycle, bus, master),  // IN r,(C) — 12T
+            op if (op & 0xC7) == 0x41 => self.op_out_c_r(op, cycle, bus, master), // OUT (C),r — 12T
             op if (op & 0xCF) == 0x42 => self.op_sbc_hl_rr(op, cycle), // SBC HL,rr — 15T
             op if (op & 0xCF) == 0x43 => self.op_ld_nn_rr_ed(op, cycle, bus, master), // LD (nn),rr — 20T
             op if (op & 0xC7) == 0x44 => self.op_neg(),              // NEG — 8T

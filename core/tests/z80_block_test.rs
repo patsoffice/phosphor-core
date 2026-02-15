@@ -269,7 +269,7 @@ fn test_ini() {
     let cycles = run_instruction(&mut cpu, &mut bus);
     assert_eq!(cycles, 16, "INI should be 16 T-states");
     assert_eq!(cpu.b, 0x02, "B should be decremented");
-    assert_eq!(bus.memory[0x2000], 0xFF, "Stubbed I/O read to memory");
+    assert_eq!(bus.memory[0x2000], 0x00, "I/O read mapped to memory (port 0x0210)");
     assert_eq!(cpu.get_hl(), 0x2001, "HL should be incremented");
     assert_eq!(cpu.f & 0x40, 0, "Z should be clear (B != 0)");
 }

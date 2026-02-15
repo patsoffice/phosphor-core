@@ -16,6 +16,18 @@ pub trait Bus {
     fn read(&mut self, master: BusMaster, addr: Self::Address) -> Self::Data;
     fn write(&mut self, master: BusMaster, addr: Self::Address, data: Self::Data);
 
+    /// Read from I/O port address space (separate from memory on Z80).
+    /// Default maps to memory read; override for CPUs with separate I/O.
+    fn io_read(&mut self, master: BusMaster, addr: Self::Address) -> Self::Data {
+        self.read(master, addr)
+    }
+
+    /// Write to I/O port address space (separate from memory on Z80).
+    /// Default maps to memory write; override for CPUs with separate I/O.
+    fn io_write(&mut self, master: BusMaster, addr: Self::Address, data: Self::Data) {
+        self.write(master, addr, data)
+    }
+
     /// Check if the bus is halted for this master (TSC/RDY/BUSREQ).
     /// Returns true if the master must pause before the next bus cycle.
     fn is_halted_for(&self, master: BusMaster) -> bool;

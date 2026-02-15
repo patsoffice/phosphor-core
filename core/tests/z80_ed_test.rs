@@ -424,7 +424,7 @@ fn test_in_a_c() {
 
     let cycles = run_instruction(&mut cpu, &mut bus);
     assert_eq!(cycles, 12, "IN r,(C) should be 12 T-states");
-    assert_eq!(cpu.a, 0xFF, "Stubbed I/O returns 0xFF");
+    assert_eq!(cpu.a, 0x00, "I/O read maps to memory (port 0x1020)");
     assert_ne!(cpu.f & 0x01, 0, "C should be preserved");
     assert_eq!(cpu.f & 0x02, 0, "N should be clear");
     assert_eq!(cpu.f & 0x10, 0, "H should be clear");

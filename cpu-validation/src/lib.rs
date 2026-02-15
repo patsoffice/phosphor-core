@@ -21,6 +21,10 @@ pub struct BusCycle {
 pub struct TracingBus {
     pub memory: [u8; 0x10000],
     pub cycles: Vec<BusCycle>,
+    /// Queue of (port_addr, data, direction) for I/O port reads/writes.
+    /// Populated from test case `ports` field; io_read pops 'r' entries.
+    pub port_queue: Vec<(u16, u8, char)>,
+    pub port_index: usize,
 }
 
 impl TracingBus {
@@ -28,6 +32,8 @@ impl TracingBus {
         Self {
             memory: [0; 0x10000],
             cycles: Vec::new(),
+            port_queue: Vec::new(),
+            port_index: 0,
         }
     }
 
@@ -68,6 +74,29 @@ impl Bus for TracingBus {
             data,
             op: BusOp::Write,
         });
+    }
+
+    fn io_read(&mut self, _master: BusMaster, _addr: u16) -> u8 {
+        // Return next port read value from the queue
+        while self.port_index < self.port_queue.len() {
+            let (_, data, dir) = self.port_queue[self.port_index];
+            self.port_index += 1;
+            if dir == 'r' {
+                return data;
+            }
+        }
+        0xFF // fallback
+    }
+
+    fn io_write(&mut self, _master: BusMaster, _addr: u16, _data: u8) {
+        // Advance past the next 'w' entry in the port queue
+        while self.port_index < self.port_queue.len() {
+            let (_, _, dir) = self.port_queue[self.port_index];
+            self.port_index += 1;
+            if dir == 'w' {
+                return;
+            }
+        }
     }
 
     fn is_halted_for(&self, _master: BusMaster) -> bool {

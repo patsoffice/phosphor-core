@@ -638,15 +638,22 @@ impl Z80 {
         }
     }
 
-    /// IN r,(C) — 12T (ED prefix): stubbed, reads 0xFF.
+    /// IN r,(C) — 12T (ED prefix): reads port BC via bus.io_read().
     /// 5 handler cycles: 0-3=IO cycle, 4=done.
     /// Flags: S, Z, PV(parity) from input, H=0, N=0, C preserved. X/Y from input.
     /// For r=6 (IN F,(C)): flags affected but value not stored.
-    pub fn op_in_r_c(&mut self, opcode: u8, cycle: u8) {
+    pub fn op_in_r_c<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
         match cycle {
             0..=3 => self.state = ExecState::ExecuteED(opcode, cycle + 1),
             4 => {
-                let val = 0xFFu8; // Stubbed I/O read
+                let port = self.get_bc();
+                let val = bus.io_read(master, port);
                 let r = (opcode >> 3) & 0x07;
                 if r != 6 {
                     self.set_reg8(r, val);
@@ -659,22 +666,31 @@ impl Z80 {
                 f |= val & (Flag::X as u8 | Flag::Y as u8);
                 self.f = f;
                 self.q = self.f;
-                self.memptr = self.get_bc().wrapping_add(1);
+                self.memptr = port.wrapping_add(1);
                 self.state = ExecState::Fetch;
             }
             _ => unreachable!(),
         }
     }
 
-    /// OUT (C),r — 12T (ED prefix): stubbed, discards output.
+    /// OUT (C),r — 12T (ED prefix): writes to port BC via bus.io_write().
     /// 5 handler cycles: 0-3=IO cycle, 4=done. No flag changes.
     /// For r=6: outputs 0 (undocumented).
-    pub fn op_out_c_r(&mut self, opcode: u8, cycle: u8) {
+    pub fn op_out_c_r<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
         match cycle {
             0..=3 => self.state = ExecState::ExecuteED(opcode, cycle + 1),
             4 => {
-                // I/O write discarded
-                self.memptr = self.get_bc().wrapping_add(1);
+                let port = self.get_bc();
+                let r = (opcode >> 3) & 0x07;
+                let val = if r == 6 { 0 } else { self.get_reg8(r) };
+                bus.io_write(master, port, val);
+                self.memptr = port.wrapping_add(1);
                 self.state = ExecState::Fetch;
             }
             _ => unreachable!(),
@@ -682,7 +698,7 @@ impl Z80 {
     }
 
     /// IN A,(n) — 11T: M1(4) + MR(3) + IO(4)
-    /// Reads port address n from immediate byte. I/O stubbed (returns 0xFF).
+    /// Reads port address n from immediate byte via bus.io_read().
     /// MEMPTR = ((A << 8) | n) + 1
     pub fn op_in_a_n<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -703,7 +719,7 @@ impl Z80 {
             8 => {
                 let n = self.temp_data;
                 let port_addr = ((self.a as u16) << 8) | n as u16;
-                self.a = 0xFF; // Stubbed I/O read
+                self.a = bus.io_read(master, port_addr);
                 self.memptr = port_addr.wrapping_add(1);
                 self.state = ExecState::Fetch;
             }
@@ -712,7 +728,7 @@ impl Z80 {
     }
 
     /// OUT (n),A — 11T: M1(4) + MR(3) + IO(4)
-    /// Reads port address n from immediate byte. I/O stubbed (write discarded).
+    /// Reads port address n from immediate byte, writes A via bus.io_write().
     /// MEMPTR low = (n+1) & 0xFF, MEMPTR high = A
     pub fn op_out_n_a<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -731,7 +747,8 @@ impl Z80 {
             }
             8 => {
                 let n = self.temp_data;
-                // I/O write discarded
+                let port_addr = ((self.a as u16) << 8) | n as u16;
+                bus.io_write(master, port_addr, self.a);
                 self.memptr = ((self.a as u16) << 8) | ((n.wrapping_add(1)) as u16);
                 self.state = ExecState::Fetch;
             }

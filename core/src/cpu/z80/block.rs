@@ -222,11 +222,11 @@ impl Z80 {
         }
     }
 
-    // --- Block I/O (stubbed: IN reads 0xFF, OUT discards) ---
+    // --- Block I/O ---
 
     /// INI/IND — 16T: Main M1(4) + ED M1(5) + IO(4) + MW(3)
-    /// B--, IN port C → (HL), HL±±
-    /// 9 handler cycles: 0=B--, 1-4=IO(stub), 5=write(HL), 6-7=pad, 8=done
+    /// B--, IN port BC_original → (HL), HL±±
+    /// 9 handler cycles: 0=save BC then B--, 1-4=IO, 5=write(HL), 6-7=pad, 8=done
     pub fn op_ini_ind<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -237,25 +237,41 @@ impl Z80 {
         let dec = (opcode & 0x08) != 0;
         match cycle {
             0 => {
+                // Save original BC as port address before decrementing B
+                self.temp_addr = self.get_bc();
                 self.b = self.b.wrapping_sub(1);
                 self.state = ExecState::ExecuteED(opcode, 1);
             }
             1..=3 => self.state = ExecState::ExecuteED(opcode, cycle + 1),
             4 => {
-                // IO read (stubbed as 0xFF)
-                self.temp_data = 0xFF;
+                self.temp_data = bus.io_read(master, self.temp_addr);
                 self.state = ExecState::ExecuteED(opcode, 5);
             }
             5 => {
-                bus.write(master, self.get_hl(), self.temp_data);
+                let val = self.temp_data;
+                bus.write(master, self.get_hl(), val);
                 let delta: u16 = if dec { 0xFFFF } else { 1 };
                 self.set_hl(self.get_hl().wrapping_add(delta));
 
-                let mut f = self.f & Flag::C as u8;
-                f |= Flag::N as u8;
+                // MEMPTR: original BC ± 1
+                if dec {
+                    self.memptr = self.temp_addr.wrapping_sub(1);
+                } else {
+                    self.memptr = self.temp_addr.wrapping_add(1);
+                }
+
+                // Undocumented flag behavior for INI/IND:
+                // k = val + ((C ± 1) & 0xFF), N = bit 7 of val
+                // H = C = (k > 255), PV = parity of ((k & 7) ^ B)
+                let c_adj = if dec { self.c.wrapping_sub(1) } else { self.c.wrapping_add(1) };
+                let k = val as u16 + c_adj as u16;
+                let mut f = 0u8;
+                if (self.b & 0x80) != 0 { f |= Flag::S as u8; }
                 if self.b == 0 { f |= Flag::Z as u8; }
                 f |= self.b & (Flag::X as u8 | Flag::Y as u8);
-                if (self.b & 0x80) != 0 { f |= Flag::S as u8; }
+                if k > 255 { f |= Flag::H as u8 | Flag::C as u8; }
+                if Self::get_parity(((k & 7) as u8) ^ self.b) { f |= Flag::PV as u8; }
+                if (val & 0x80) != 0 { f |= Flag::N as u8; }
                 self.f = f;
                 self.q = self.f;
                 self.state = ExecState::ExecuteED(opcode, 6);
@@ -289,6 +305,46 @@ impl Z80 {
                     self.state = ExecState::Fetch;
                 } else {
                     self.pc = self.pc.wrapping_sub(2);
+
+                    // Repeat: override X/Y, H, PV flags (block_io_interrupted_flags)
+                    let pc_h = (self.pc >> 8) as u8;
+                    self.f = (self.f & !(Flag::X as u8 | Flag::Y as u8))
+                        | (pc_h & (Flag::X as u8 | Flag::Y as u8));
+
+                    let c_set = (self.f & Flag::C as u8) != 0;
+                    let n_set = (self.f & Flag::N as u8) != 0;
+
+                    // H flag: re-derive from B low nibble when C is set
+                    if c_set {
+                        self.f &= !(Flag::H as u8);
+                        if (n_set && (self.b & 0x0F) == 0x00)
+                            || (!n_set && (self.b & 0x0F) == 0x0F)
+                        {
+                            self.f |= Flag::H as u8;
+                        }
+                    }
+
+                    // PV flag: XNOR of base PV with parity of adjusted B
+                    // (MAME double-parity: base_PV == adj_PV means SET)
+                    let base_pv = (self.f & Flag::PV as u8) != 0;
+                    let adj_b = if c_set {
+                        if n_set {
+                            self.b.wrapping_sub(1) & 7
+                        } else {
+                            self.b.wrapping_add(1) & 7
+                        }
+                    } else {
+                        self.b & 7
+                    };
+                    let adj_pv = Self::get_parity(adj_b);
+                    if base_pv == adj_pv {
+                        self.f |= Flag::PV as u8;
+                    } else {
+                        self.f &= !(Flag::PV as u8);
+                    }
+
+                    self.memptr = self.pc.wrapping_add(1);
+                    self.q = self.f;
                     self.state = ExecState::ExecuteED(opcode, 9);
                 }
             }
@@ -300,7 +356,7 @@ impl Z80 {
 
     /// OUTI/OUTD — 16T: Main M1(4) + ED M1(5) + MR(3) + IO(4)
     /// B--, (HL) → OUT port C, HL±±
-    /// 9 handler cycles: 0=B--, 1=pad, 2=read(HL), 3=pad, 4-7=IO(discard), 8=done
+    /// 9 handler cycles: 0=B--, 1=pad, 2=read(HL), 3=pad, 4-7=IO, 8=done
     pub fn op_outi_outd<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -322,12 +378,29 @@ impl Z80 {
                 self.state = ExecState::ExecuteED(opcode, 3);
             }
             4 => {
-                // IO write (discarded)
-                let mut f = self.f & Flag::C as u8;
-                f |= Flag::N as u8;
+                let port = ((self.b as u16) << 8) | self.c as u16;
+                let val = self.temp_data;
+                bus.io_write(master, port, val);
+
+                // MEMPTR: BC_after ± 1
+                if dec {
+                    self.memptr = port.wrapping_sub(1);
+                } else {
+                    self.memptr = port.wrapping_add(1);
+                }
+
+                // Undocumented flag behavior for OUTI/OUTD:
+                // k = val + L (after HL increment/decrement), N = bit 7 of val
+                // H = C = (k > 255), PV = parity of ((k & 7) ^ B)
+                let l_after = self.l; // HL already updated in cycle 2
+                let k = val as u16 + l_after as u16;
+                let mut f = 0u8;
+                if (self.b & 0x80) != 0 { f |= Flag::S as u8; }
                 if self.b == 0 { f |= Flag::Z as u8; }
                 f |= self.b & (Flag::X as u8 | Flag::Y as u8);
-                if (self.b & 0x80) != 0 { f |= Flag::S as u8; }
+                if k > 255 { f |= Flag::H as u8 | Flag::C as u8; }
+                if Self::get_parity(((k & 7) as u8) ^ self.b) { f |= Flag::PV as u8; }
+                if (val & 0x80) != 0 { f |= Flag::N as u8; }
                 self.f = f;
                 self.q = self.f;
                 self.state = ExecState::ExecuteED(opcode, 5);
@@ -358,6 +431,45 @@ impl Z80 {
                     self.state = ExecState::Fetch;
                 } else {
                     self.pc = self.pc.wrapping_sub(2);
+
+                    // Repeat: override X/Y, H, PV flags (block_io_interrupted_flags)
+                    let pc_h = (self.pc >> 8) as u8;
+                    self.f = (self.f & !(Flag::X as u8 | Flag::Y as u8))
+                        | (pc_h & (Flag::X as u8 | Flag::Y as u8));
+
+                    let c_set = (self.f & Flag::C as u8) != 0;
+                    let n_set = (self.f & Flag::N as u8) != 0;
+
+                    // H flag: re-derive from B low nibble when C is set
+                    if c_set {
+                        self.f &= !(Flag::H as u8);
+                        if (n_set && (self.b & 0x0F) == 0x00)
+                            || (!n_set && (self.b & 0x0F) == 0x0F)
+                        {
+                            self.f |= Flag::H as u8;
+                        }
+                    }
+
+                    // PV flag: XNOR of base PV with parity of adjusted B
+                    let base_pv = (self.f & Flag::PV as u8) != 0;
+                    let adj_b = if c_set {
+                        if n_set {
+                            self.b.wrapping_sub(1) & 7
+                        } else {
+                            self.b.wrapping_add(1) & 7
+                        }
+                    } else {
+                        self.b & 7
+                    };
+                    let adj_pv = Self::get_parity(adj_b);
+                    if base_pv == adj_pv {
+                        self.f |= Flag::PV as u8;
+                    } else {
+                        self.f &= !(Flag::PV as u8);
+                    }
+
+                    self.memptr = self.pc.wrapping_add(1);
+                    self.q = self.f;
                     self.state = ExecState::ExecuteED(opcode, 9);
                 }
             }

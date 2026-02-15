@@ -4,26 +4,6 @@ use phosphor_core::core::{BusMaster, BusMasterComponent};
 use phosphor_core::cpu::z80::Z80;
 use phosphor_cpu_validation::{Z80CpuState, Z80TestCase, TracingBus};
 
-/// I/O opcode files to skip (stubbed I/O can't match bus traces).
-/// Main-page: IN A,(n) = 0xDB, OUT (n),A = 0xD3
-/// ED IN r,(C): 0x40,0x48,0x50,0x58,0x60,0x68,0x70,0x78
-/// ED OUT (C),r: 0x41,0x49,0x51,0x59,0x61,0x69,0x71,0x79
-/// ED block I/O: 0xA2,0xA3,0xAA,0xAB,0xB2,0xB3,0xBA,0xBB
-const IO_SKIP_MAIN: &[&str] = &[
-    "d3.json", "db.json",
-    "dd d3.json", "dd db.json",
-    "fd d3.json", "fd db.json",
-];
-
-const IO_SKIP_ED: &[&str] = &[
-    "ed 40.json", "ed 41.json", "ed 48.json", "ed 49.json",
-    "ed 50.json", "ed 51.json", "ed 58.json", "ed 59.json",
-    "ed 60.json", "ed 61.json", "ed 68.json", "ed 69.json",
-    "ed 70.json", "ed 71.json", "ed 78.json", "ed 79.json",
-    "ed a2.json", "ed a3.json", "ed aa.json", "ed ab.json",
-    "ed b2.json", "ed b3.json", "ed ba.json", "ed bb.json",
-];
-
 fn load_initial_state(cpu: &mut Z80, s: &Z80CpuState) {
     cpu.a = s.a;
     cpu.f = s.f;
@@ -68,6 +48,12 @@ fn run_test_case(tc: &Z80TestCase) -> Option<String> {
     // Load initial RAM
     for &(addr, val) in &tc.initial.ram {
         bus.memory[addr as usize] = val;
+    }
+
+    // Load port data for I/O instructions
+    for &(addr, data, ref dir) in &tc.ports {
+        let d = dir.chars().next().unwrap_or('r');
+        bus.port_queue.push((addr, data, d));
     }
 
     // Execute one instruction, counting total ticks
@@ -148,10 +134,6 @@ fn run_test_case(tc: &Z80TestCase) -> Option<String> {
     None
 }
 
-fn should_skip(filename: &str) -> bool {
-    IO_SKIP_MAIN.contains(&filename) || IO_SKIP_ED.contains(&filename)
-}
-
 #[test]
 fn test_all_z80_opcodes() {
     let test_dir = Path::new("test_data/z80/v1");
@@ -172,7 +154,6 @@ fn test_all_z80_opcodes() {
 
     let mut total_tests = 0;
     let mut total_files = 0;
-    let mut skipped_files = 0;
     let mut failed_tests = 0;
     let mut failed_files = std::collections::BTreeSet::new();
     let mut first_failures: Vec<String> = Vec::new();
@@ -180,11 +161,6 @@ fn test_all_z80_opcodes() {
     for entry in &entries {
         let filename = entry.file_name();
         let filename_str = filename.to_string_lossy();
-
-        if should_skip(&filename_str) {
-            skipped_files += 1;
-            continue;
-        }
 
         let json_path = entry.path();
         let json = std::fs::read_to_string(&json_path)
@@ -211,8 +187,8 @@ fn test_all_z80_opcodes() {
     }
 
     eprintln!(
-        "\nZ80 SingleStepTests: {} passed, {} failed across {} files ({} I/O skipped)",
-        total_tests - failed_tests, failed_tests, total_files, skipped_files
+        "\nZ80 SingleStepTests: {} passed, {} failed across {} files",
+        total_tests - failed_tests, failed_tests, total_files
     );
 
     if !first_failures.is_empty() {
