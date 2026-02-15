@@ -200,7 +200,7 @@ impl MissileCommandSystem {
 
     pub fn tick(&mut self) {
         // Trackball movement simulation: increment counters while direction keys are held
-        if self.clock % 1000 == 0 {
+        if self.clock.is_multiple_of(1000) {
             if self.trackball_l_pressed { self.trackball_x = self.trackball_x.wrapping_sub(1) & 0x0F; }
             if self.trackball_r_pressed { self.trackball_x = self.trackball_x.wrapping_add(1) & 0x0F; }
             if self.trackball_u_pressed { self.trackball_y = self.trackball_y.wrapping_sub(1) & 0x0F; }
@@ -214,10 +214,10 @@ impl MissileCommandSystem {
         // The IRQ is latched on each SYNC (instruction fetch).
         // For simplicity, we assert IRQ at 16V boundaries based on 32V.
         let frame_cycle = self.clock % CYCLES_PER_FRAME;
-        if frame_cycle % CYCLES_PER_SCANLINE == 0 {
+        if frame_cycle.is_multiple_of(CYCLES_PER_SCANLINE) {
             let scanline = (frame_cycle / CYCLES_PER_SCANLINE) as u16;
             // Clock at 16V boundaries (every 16 scanlines)
-            if scanline % 16 == 0 {
+            if scanline.is_multiple_of(16) {
                 // /32V = inverted bit 5 of V counter
                 let bit_32v = (scanline >> 5) & 1;
                 if bit_32v == 0 {
@@ -241,7 +241,7 @@ impl MissileCommandSystem {
         // CPU clock halving: at scanline 224+, CPU runs at MASTER_CLOCK/16 (0.625 MHz)
         // instead of MASTER_CLOCK/8 (1.25 MHz). We skip every other CPU cycle.
         let run_cpu = if scanline >= 224 {
-            self.clock % 2 == 0
+            self.clock.is_multiple_of(2)
         } else {
             true
         };

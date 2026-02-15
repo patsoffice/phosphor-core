@@ -53,7 +53,7 @@ pub trait Machine {
 
     /// Fill the buffer with mono i16 PCM samples at the machine's native
     /// sample rate. Returns the number of samples written.
-    fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
+    fn fill_audio(&mut self, _buffer: &mut [i16]) -> usize {
         0 // default: silence
     }
 

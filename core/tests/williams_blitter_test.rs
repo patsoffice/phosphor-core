@@ -970,6 +970,7 @@ fn test_fg_only_no_even_nonzero_suppressed() {
 ///
 /// This is a standalone, synchronous implementation that operates on a
 /// flat memory array — the same approach MAME uses internally.
+#[allow(clippy::too_many_arguments)]
 fn mame_reference_blit(
     mem: &mut [u8],
     control: u8,
@@ -1277,12 +1278,12 @@ fn test_cross_validate_full_blit_against_mame() {
                 run_to_completion(&mut blitter, &mut bus);
 
                 // Compare all memory
-                for addr in 0..0x10000usize {
+                for (addr, &ref_val) in ref_mem.iter().enumerate().take(0x10000usize) {
                     assert_eq!(
-                        bus.mem[addr], ref_mem[addr],
+                        bus.mem[addr], ref_val,
                         "MAME mismatch at 0x{:04X}: ours=0x{:02X}, mame=0x{:02X} \
                          [{}] ctrl=0x{:02X} src=0x{:02X} dst=0x{:02X} {}x{}",
-                        addr, bus.mem[addr], ref_mem[addr], desc, control, src_pat, dst_fill, w, h
+                        addr, bus.mem[addr], ref_val, desc, control, src_pat, dst_fill, w, h
                     );
                 }
             }

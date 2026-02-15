@@ -132,7 +132,7 @@ impl Z80 {
                     self.state = ExecState::Execute(opcode, 5);
                 }
             }
-            5 | 6 | 7 | 8 => self.state = ExecState::Execute(opcode, cycle + 1),
+            5..=8 => self.state = ExecState::Execute(opcode, cycle + 1),
             9 => self.state = ExecState::Fetch, // Taken: 12T
             _ => unreachable!(),
         }
@@ -180,7 +180,7 @@ impl Z80 {
                     self.state = ExecState::Execute(opcode, 6);
                 }
             }
-            6 | 7 | 8 | 9 => self.state = ExecState::Execute(opcode, cycle + 1),
+            6..=9 => self.state = ExecState::Execute(opcode, cycle + 1),
             10 => self.state = ExecState::Fetch, // Taken: 13T
             _ => unreachable!(),
         }

@@ -99,7 +99,7 @@ fn test_clc_preserves_other_flags() {
     cpu.p = 0xFF; // All flags set
     bus.load(0, &[0x18]); // CLC
     tick(&mut cpu, &mut bus, 2);
-    assert_eq!(cpu.p, 0xFF & !(StatusFlag::C as u8)); // Only C cleared
+    assert_eq!(cpu.p, !(StatusFlag::C as u8)); // Only C cleared
 }
 
 #[test]

@@ -91,7 +91,7 @@ impl Z80 {
                     self.state = ExecState::ExecuteED(opcode, 9);
                 }
             }
-            9 | 10 | 11 | 12 => self.state = ExecState::ExecuteED(opcode, cycle + 1),
+            9..=12 => self.state = ExecState::ExecuteED(opcode, cycle + 1),
             13 => self.state = ExecState::Fetch, // Repeating: 21T
             _ => unreachable!(),
         }
@@ -202,7 +202,7 @@ impl Z80 {
                     self.state = ExecState::ExecuteED(opcode, 9);
                 }
             }
-            9 | 10 | 11 | 12 => self.state = ExecState::ExecuteED(opcode, cycle + 1),
+            9..=12 => self.state = ExecState::ExecuteED(opcode, cycle + 1),
             13 => self.state = ExecState::Fetch, // Repeating: 21T
             _ => unreachable!(),
         }
@@ -226,7 +226,7 @@ impl Z80 {
                 self.b = self.b.wrapping_sub(1);
                 self.state = ExecState::ExecuteED(opcode, 1);
             }
-            1 | 2 | 3 => self.state = ExecState::ExecuteED(opcode, cycle + 1),
+            1..=3 => self.state = ExecState::ExecuteED(opcode, cycle + 1),
             4 => {
                 // IO read (stubbed as 0xFF)
                 self.temp_data = 0xFF;
@@ -277,7 +277,7 @@ impl Z80 {
                     self.state = ExecState::ExecuteED(opcode, 9);
                 }
             }
-            9 | 10 | 11 | 12 => self.state = ExecState::ExecuteED(opcode, cycle + 1),
+            9..=12 => self.state = ExecState::ExecuteED(opcode, cycle + 1),
             13 => self.state = ExecState::Fetch,
             _ => unreachable!(),
         }
@@ -345,7 +345,7 @@ impl Z80 {
                     self.state = ExecState::ExecuteED(opcode, 9);
                 }
             }
-            9 | 10 | 11 | 12 => self.state = ExecState::ExecuteED(opcode, cycle + 1),
+            9..=12 => self.state = ExecState::ExecuteED(opcode, cycle + 1),
             13 => self.state = ExecState::Fetch,
             _ => unreachable!(),
         }

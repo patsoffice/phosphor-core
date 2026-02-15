@@ -101,19 +101,19 @@ fn test_irq_lifecycle() {
     pokey.write(0x09, 0);
 
     assert_eq!(pokey.read(0x0E) & 0x01, 0x01); // Not pending
-    assert_eq!(pokey.irq(), false);
+    assert!(!pokey.irq());
 
     for _ in 0..10 {
         pokey.tick();
     }
 
     assert_eq!(pokey.read(0x0E) & 0x01, 0x00); // Pending
-    assert_eq!(pokey.irq(), true);
+    assert!(pokey.irq());
 
     pokey.write(0x0E, 0x00); // Disable
 
     assert_eq!(pokey.read(0x0E) & 0x01, 0x01); // Cleared
-    assert_eq!(pokey.irq(), false);
+    assert!(!pokey.irq());
 }
 
 #[test]

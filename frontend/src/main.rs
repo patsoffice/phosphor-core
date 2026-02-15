@@ -59,11 +59,10 @@ fn main() {
     emulator::run(machine.as_mut(), &key_map, scale);
 
     // Save battery-backed NVRAM to disk on exit
-    if let Some(data) = machine.save_nvram() {
-        if let Err(e) = std::fs::write(&nvram_path, data) {
+    if let Some(data) = machine.save_nvram()
+        && let Err(e) = std::fs::write(&nvram_path, data) {
             eprintln!("Warning: failed to save NVRAM: {e}");
         }
-    }
 }
 
 fn nvram_path_for(machine_name: &str, rom_path: &str) -> std::path::PathBuf {

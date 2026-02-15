@@ -354,7 +354,7 @@ fn test_blitter_halts_cpu() {
     // After blit completes, CPU should resume and PC should be back in the loop
     let pc_after = sys.get_cpu_state().pc;
     assert!(
-        pc_after >= 0xD000 && pc_after <= 0xD002,
+        (0xD000..=0xD002).contains(&pc_after),
         "CPU should resume executing after blit completes, PC=0x{:04X}",
         pc_after
     );

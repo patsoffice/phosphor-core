@@ -640,7 +640,7 @@ impl Z80 {
     /// For r=6 (IN F,(C)): flags affected but value not stored.
     pub fn op_in_r_c(&mut self, opcode: u8, cycle: u8) {
         match cycle {
-            0 | 1 | 2 | 3 => self.state = ExecState::ExecuteED(opcode, cycle + 1),
+            0..=3 => self.state = ExecState::ExecuteED(opcode, cycle + 1),
             4 => {
                 let val = 0xFFu8; // Stubbed I/O read
                 let r = (opcode >> 3) & 0x07;
@@ -666,7 +666,7 @@ impl Z80 {
     /// For r=6: outputs 0 (undocumented).
     pub fn op_out_c_r(&mut self, opcode: u8, cycle: u8) {
         match cycle {
-            0 | 1 | 2 | 3 => self.state = ExecState::ExecuteED(opcode, cycle + 1),
+            0..=3 => self.state = ExecState::ExecuteED(opcode, cycle + 1),
             4 => {
                 // I/O write discarded
                 self.memptr = self.get_bc().wrapping_add(1);

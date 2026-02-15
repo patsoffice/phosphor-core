@@ -158,11 +158,6 @@ impl Z80 {
     pub fn get_af(&self) -> u16 { ((self.a as u16) << 8) | self.f as u16 }
     pub fn set_af(&mut self, val: u16) { self.a = (val >> 8) as u8; self.f = val as u8; }
 
-    #[inline]
-    pub(crate) fn set_flag(&mut self, flag: Flag, set: bool) {
-        if set { self.f |= flag as u8 } else { self.f &= !(flag as u8) }
-    }
-
     /// Get 8-bit register by index, respecting IX/IY prefix for H/L (undocumented IXH/IXL/IYH/IYL).
     /// Index 6 is NOT handled here — callers must handle (HL)/(IX+d)/(IY+d) separately.
     pub fn get_reg8_ix(&self, index: u8) -> u8 {

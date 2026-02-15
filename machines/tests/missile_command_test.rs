@@ -782,7 +782,7 @@ fn test_render_3rd_color_bit() {
     sys.render_frame(&mut buffer);
 
     // Check what color we actually got at screen pixel (0, 199)
-    let pixel_offset = (199 * w as usize + 0) * 3;
+    let pixel_offset = (199 * w as usize) * 3;
     let actual_r = buffer[pixel_offset];
     let actual_g = buffer[pixel_offset + 1];
     let actual_b = buffer[pixel_offset + 2];
@@ -826,7 +826,7 @@ fn test_render_no_3rd_color_bit_above_224() {
     sys.render_frame(&mut buffer);
 
     // Screen pixel (0, 175) should be color index 0 (black), no 3rd bit influence
-    let pixel_offset = (175 * w as usize + 0) * 3;
+    let pixel_offset = (175 * w as usize) * 3;
     assert_eq!(buffer[pixel_offset], 0, "R should be 0 (black, no 3rd bit)");
     assert_eq!(buffer[pixel_offset + 1], 0, "G should be 0");
     assert_eq!(buffer[pixel_offset + 2], 0, "B should be 0");

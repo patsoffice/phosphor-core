@@ -5,7 +5,7 @@ impl Z80 {
     // --- Flag Helpers ---
 
     pub(super) fn get_parity(val: u8) -> bool {
-        val.count_ones() % 2 == 0
+        val.count_ones().is_multiple_of(2)
     }
 
     fn update_flags_logic(&mut self, result: u8, is_and: bool) {
@@ -509,7 +509,7 @@ impl Z80 {
                 }
                 // Overflow via signed arithmetic
                 let signed = (hl as i16 as i32) + (rr as i16 as i32) + (c_val as i32);
-                if signed > 0x7FFF || signed < -0x8000 { f |= Flag::PV as u8; }
+                if !(-0x8000..=0x7FFF).contains(&signed) { f |= Flag::PV as u8; }
                 if result > 0xFFFF { f |= Flag::C as u8; }
                 f |= ((result16 >> 8) as u8) & (Flag::X as u8 | Flag::Y as u8);
                 self.f = f;
@@ -544,7 +544,7 @@ impl Z80 {
                     f |= Flag::H as u8;
                 }
                 let signed = (hl as i16 as i32) - (rr as i16 as i32) - (c_val as i32);
-                if signed > 0x7FFF || signed < -0x8000 { f |= Flag::PV as u8; }
+                if !(-0x8000..=0x7FFF).contains(&signed) { f |= Flag::PV as u8; }
                 if result > 0xFFFF { f |= Flag::C as u8; }
                 f |= ((result16 >> 8) as u8) & (Flag::X as u8 | Flag::Y as u8);
                 self.f = f;

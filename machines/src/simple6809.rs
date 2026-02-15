@@ -1,14 +1,12 @@
 use phosphor_core::core::{Bus, BusMaster, bus::InterruptState};
 use phosphor_core::cpu::state::M6809State;
 use phosphor_core::cpu::{CpuStateTrait, m6809::M6809};
-use phosphor_core::device::pia6820::Pia6820;
 
 pub struct Simple6809System {
     #[allow(dead_code)]
     cpu: M6809,
     ram: [u8; 0x8000],
     rom: [u8; 0x8000],
-    pia: Pia6820,
     clock: u64,
 }
 
@@ -24,7 +22,6 @@ impl Simple6809System {
             cpu: M6809::new(),
             ram: [0; 0x8000],
             rom: [0; 0x8000],
-            pia: Pia6820::new(),
             clock: 0,
         }
     }
