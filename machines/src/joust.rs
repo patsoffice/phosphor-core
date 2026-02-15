@@ -1,11 +1,13 @@
 use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::machine::{InputButton, Machine};
 use phosphor_core::core::{Bus, BusMaster};
+use phosphor_core::cpu::m6800::M6800;
 use phosphor_core::cpu::m6809::M6809;
-use phosphor_core::cpu::state::M6809State;
+use phosphor_core::cpu::state::{M6800State, M6809State};
 use phosphor_core::cpu::{Cpu, CpuStateTrait};
 use phosphor_core::device::cmos_ram::CmosRam;
 use phosphor_core::device::pia6820::Pia6820;
+use phosphor_core::device::dac::Mc1408Dac;
 use phosphor_core::device::williams_blitter::WilliamsBlitter;
 
 use crate::rom_loader::{RomEntry, RomRegion};
@@ -190,9 +192,9 @@ const JOUST_INPUT_MAP: &[InputButton] = &[
 ];
 
 // Video timing constants (Williams gen-1 hardware)
-// 6 MHz pixel clock, 384 pixels/line, 264 lines/frame → ~59.19 fps
+// 8 MHz pixel clock, 512 pixels/line, 260 lines/frame → ~60.10 fps
 const CYCLES_PER_SCANLINE: u64 = 64; // 1 MHz CPU / (6 MHz / 384 pixels)
-const CYCLES_PER_FRAME: u64 = 264 * CYCLES_PER_SCANLINE; // 16896 cycles
+const CYCLES_PER_FRAME: u64 = 260 * CYCLES_PER_SCANLINE; // 16640 cycles
 
 /// Williams 2nd-generation arcade board configured for Joust (1982)
 ///
@@ -217,15 +219,22 @@ pub struct JoustSystem {
     // I/O registers
     rom_bank: u8, // 0xC900: ROM bank select
 
-    // Sound board (M6809 stand-in for M6802; audio output not implemented)
-    sound_cpu: M6809,
+    // Sound board (M6808 stand-in for M6802)
+    sound_cpu: M6800,
     sound_ram: [u8; 256],    // 0x0000-0x00FF: 256 bytes RAM
     sound_pia: Pia6820,      // 0x0400-0x0403: Sound PIA
     sound_rom: [u8; 0x1000], // 0xF000-0xFFFF: 4KB sound ROM
 
+    // Audio output
+    dac: Mc1408Dac,
+    audio_buffer: Vec<i16>,
+    sample_accum: i64,
+    sample_count: u32,
+    sample_phase: u64,
+
     // System state
-    watchdog_counter: u32, // Reset by write to 0xCBFF
-    clock: u64,            // Master clock cycle counter
+    pub watchdog_counter: u32, // Reset by write to 0xCBFF
+    clock: u64,                // Master clock cycle counter
 
     // Input state (active-high: 1 = pressed, 0 = released)
     p1_controls: u8,   // bits 0-2: left, right, flap (LS157 mux B input)
@@ -247,10 +256,15 @@ impl JoustSystem {
             rom_pia: Pia6820::new(),
             blitter: WilliamsBlitter::new(),
             rom_bank: 0,
-            sound_cpu: M6809::new(),
+            sound_cpu: M6800::new(),
             sound_ram: [0; 256],
             sound_pia: Pia6820::new(),
             sound_rom: [0; 0x1000],
+            dac: Mc1408Dac::new(),
+            audio_buffer: Vec::with_capacity(1024),
+            sample_accum: 0,
+            sample_count: 0,
+            sample_phase: 0,
             watchdog_counter: 0,
             clock: 0,
             p1_controls: 0,
@@ -300,13 +314,13 @@ impl JoustSystem {
         }
 
         // Propagate sound commands from main board ROM PIA to sound board PIA.
-        // On real hardware, writing ROM PIA Port B pulses CB2 (write strobe),
-        // which is wired to Sound PIA CB1 to generate an IRQ.
+        // High two bits are externally pulled high on real hardware (MAME: data | 0xC0).
+        // CB1 is held low for 0xFF (silence sentinel), asserted high otherwise to
+        // generate an IRQ on the sound CPU.
         if self.rom_pia.take_port_b_written() {
-            let command = self.rom_pia.read_output_b();
+            let command = self.rom_pia.read_output_b() | 0xC0;
             self.sound_pia.set_port_b_input(command);
-            self.sound_pia.set_cb1(false);
-            self.sound_pia.set_cb1(true);
+            self.sound_pia.set_cb1(command != 0xFF);
         }
 
         let bus_ptr: *mut Self = self;
@@ -319,6 +333,26 @@ impl JoustSystem {
             }
             // Sound CPU runs every cycle (separate bus, not halted by blitter)
             self.sound_cpu.execute_cycle(bus, BusMaster::Cpu(1));
+        }
+
+        // DAC is continuously connected to sound PIA Port A output pins
+        let dac_byte = self.sound_pia.read_output_a();
+        self.dac.write(dac_byte);
+
+        // Bresenham downsample: 1 MHz CPU clock -> 44.1 kHz output
+        const CPU_CLOCK_HZ: u64 = 1_000_000;
+        const OUTPUT_SAMPLE_RATE: u64 = 44_100;
+
+        self.sample_accum += self.dac.sample_i16() as i64;
+        self.sample_count += 1;
+        self.sample_phase += OUTPUT_SAMPLE_RATE;
+
+        if self.sample_phase >= CPU_CLOCK_HZ {
+            self.sample_phase -= CPU_CLOCK_HZ;
+            let sample = (self.sample_accum / self.sample_count as i64) as i16;
+            self.audio_buffer.push(sample);
+            self.sample_accum = 0;
+            self.sample_count = 0;
         }
 
         self.clock += 1;
@@ -365,7 +399,7 @@ impl JoustSystem {
         self.cpu.snapshot()
     }
 
-    pub fn get_sound_cpu_state(&self) -> M6809State {
+    pub fn get_sound_cpu_state(&self) -> M6800State {
         self.sound_cpu.snapshot()
     }
 
@@ -432,7 +466,8 @@ impl Bus for JoustSystem {
             return match addr {
                 0x0000..=0x00FF => self.sound_ram[addr as usize],
                 0x0400..=0x0403 => self.sound_pia.read((addr - 0x0400) as u8),
-                0xF000..=0xFFFF => self.sound_rom[(addr - 0xF000) as usize],
+                // 4KB ROM mirrored via incomplete address decoding (MAME: 0xB000-0xFFFF)
+                0xB000..=0xFFFF => self.sound_rom[(addr & 0x0FFF) as usize],
                 _ => 0xFF,
             };
         }
@@ -483,8 +518,14 @@ impl Bus for JoustSystem {
             0xC80C..=0xC80F => self.rom_pia.write((addr - 0xC80C) as u8, data),
             0xC900 => self.rom_bank = data,
             0xCA00..=0xCA07 => self.blitter.write_register((addr - 0xCA00) as u8, data),
-            0xCBFF => self.watchdog_counter = 0, // Watchdog reset (write-only, single address)
-            0xCC00..=0xCFFF => self.cmos_ram.write(addr - 0xCC00, data),
+            // MAME: only data == 0x39 resets watchdog (williams_m.cpp:251)
+            0xCBFF => {
+                if data == 0x39 {
+                    self.watchdog_counter = 0;
+                }
+            }
+            // Only lower 4 bits valid on Williams 5114/6514 SRAM (MAME: data | 0xF0)
+            0xCC00..=0xCFFF => self.cmos_ram.write(addr - 0xCC00, data | 0xF0),
             0xD000..=0xFFFF => { /* ROM: ignored */ }
             _ => { /* Unmapped: ignored */ }
         }
@@ -632,20 +673,19 @@ impl Machine for JoustSystem {
 
     fn reset(&mut self) {
         self.cpu.reset();
-        let vec_hi = self.program_rom[0x2FFE];
-        let vec_lo = self.program_rom[0x2FFF];
-        self.cpu.pc = u16::from_be_bytes([vec_hi, vec_lo]);
-
         self.sound_cpu.reset();
-        let sound_vec_hi = self.sound_rom[0x0FFE]; // 0xFFFE - 0xF000
-        let sound_vec_lo = self.sound_rom[0x0FFF]; // 0xFFFF - 0xF000
-        self.sound_cpu.pc = u16::from_be_bytes([sound_vec_hi, sound_vec_lo]);
 
+        // Reset peripherals first so bus is in a known state
         self.widget_pia = Pia6820::new();
         self.rom_pia = Pia6820::new();
         self.sound_pia = Pia6820::new();
         self.blitter = WilliamsBlitter::new();
         self.rom_bank = 0;
+        self.dac = Mc1408Dac::new();
+        self.audio_buffer.clear();
+        self.sample_accum = 0;
+        self.sample_count = 0;
+        self.sample_phase = 0;
         self.watchdog_counter = 0;
         self.clock = 0;
         self.p1_controls = 0;
@@ -653,6 +693,19 @@ impl Machine for JoustSystem {
         self.start_bits = 0;
         self.rom_pia_input = 0;
         // CMOS RAM and video RAM NOT cleared (battery-backed / not cleared by hardware)
+
+        // Fetch reset vectors through the bus (matches hardware behavior)
+        let bus_ptr: *mut Self = self;
+        unsafe {
+            let bus = &mut *bus_ptr as &mut dyn Bus<Address = u16, Data = u8>;
+            let main_hi = bus.read(BusMaster::Cpu(0), 0xFFFE);
+            let main_lo = bus.read(BusMaster::Cpu(0), 0xFFFF);
+            self.cpu.pc = u16::from_be_bytes([main_hi, main_lo]);
+
+            let snd_hi = bus.read(BusMaster::Cpu(1), 0xFFFE);
+            let snd_lo = bus.read(BusMaster::Cpu(1), 0xFFFF);
+            self.sound_cpu.pc = u16::from_be_bytes([snd_hi, snd_lo]);
+        }
     }
 
     fn save_nvram(&self) -> Option<&[u8]> {
@@ -661,5 +714,16 @@ impl Machine for JoustSystem {
 
     fn load_nvram(&mut self, data: &[u8]) {
         self.cmos_ram.load_from(data);
+    }
+
+    fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
+        let n = buffer.len().min(self.audio_buffer.len());
+        buffer[..n].copy_from_slice(&self.audio_buffer[..n]);
+        self.audio_buffer.drain(..n);
+        n
+    }
+
+    fn audio_sample_rate(&self) -> u32 {
+        44100
     }
 }

@@ -50,4 +50,15 @@ pub trait Machine {
 
     /// Load battery-backed RAM contents from a previous save.
     fn load_nvram(&mut self, _data: &[u8]) {}
+
+    /// Fill the buffer with mono i16 PCM samples at the machine's native
+    /// sample rate. Returns the number of samples written.
+    fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
+        0 // default: silence
+    }
+
+    /// Native audio sample rate in Hz (e.g., 894886 / some divisor).
+    fn audio_sample_rate(&self) -> u32 {
+        0
+    }
 }

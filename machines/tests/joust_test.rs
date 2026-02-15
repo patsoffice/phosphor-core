@@ -234,8 +234,8 @@ fn test_cmos_ram_read_write() {
     let mut sys = JoustSystem::new();
     sys.write(BusMaster::Cpu(0), 0xCC00, 0x42);
     sys.write(BusMaster::Cpu(0), 0xCFFF, 0x99);
-    assert_eq!(sys.read(BusMaster::Cpu(0), 0xCC00), 0x42);
-    assert_eq!(sys.read(BusMaster::Cpu(0), 0xCFFF), 0x99);
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0xCC00), 0xF2);
+    assert_eq!(sys.read(BusMaster::Cpu(0), 0xCFFF), 0xF9);
 }
 
 #[test]
@@ -833,8 +833,27 @@ fn test_video_counter_read() {
 #[test]
 fn test_watchdog_reset_on_write() {
     let mut sys = JoustSystem::new();
-    // Writing to 0xCBFF resets watchdog
+    // Advance watchdog counter
+    for _ in 0..100 {
+        sys.tick();
+    }
+    // Writing 0x39 to 0xCBFF resets watchdog (MAME: williams_m.cpp:251)
+    sys.write(BusMaster::Cpu(0), 0xCBFF, 0x39);
+    assert_eq!(sys.watchdog_counter, 0);
+}
+
+#[test]
+fn test_watchdog_ignores_non_0x39() {
+    let mut sys = JoustSystem::new();
+    for _ in 0..100 {
+        sys.tick();
+    }
+    let before = sys.watchdog_counter;
+    // Writing any value other than 0x39 does NOT reset watchdog
     sys.write(BusMaster::Cpu(0), 0xCBFF, 0x00);
+    assert_eq!(sys.watchdog_counter, before);
+    sys.write(BusMaster::Cpu(0), 0xCBFF, 0xFF);
+    assert_eq!(sys.watchdog_counter, before);
 }
 
 // =================================================================
@@ -909,7 +928,7 @@ fn test_execute_cmos_write_program() {
         sys.tick();
     }
 
-    assert_eq!(sys.save_cmos()[0], 0x99);
+    assert_eq!(sys.save_cmos()[0], 0xF9);
 }
 
 #[test]
@@ -1029,6 +1048,18 @@ fn test_sound_rom_readable() {
 }
 
 #[test]
+fn test_sound_rom_mirrored_at_0xb000() {
+    let mut sys = JoustSystem::new();
+    sys.load_sound_rom(0, &[0xDE, 0xAD]);
+    // 4KB ROM mirrored via incomplete address decoding at 0xB000, 0xC000, 0xD000, 0xE000
+    assert_eq!(sys.read(BusMaster::Cpu(1), 0xB000), 0xDE);
+    assert_eq!(sys.read(BusMaster::Cpu(1), 0xB001), 0xAD);
+    assert_eq!(sys.read(BusMaster::Cpu(1), 0xC000), 0xDE);
+    assert_eq!(sys.read(BusMaster::Cpu(1), 0xD000), 0xDE);
+    assert_eq!(sys.read(BusMaster::Cpu(1), 0xE000), 0xDE);
+}
+
+#[test]
 fn test_sound_rom_write_protection() {
     let mut sys = JoustSystem::new();
     sys.load_sound_rom(0, &[0x42]);
@@ -1042,7 +1073,7 @@ fn test_sound_unmapped_returns_ff() {
     assert_eq!(sys.read(BusMaster::Cpu(1), 0x0100), 0xFF);
     assert_eq!(sys.read(BusMaster::Cpu(1), 0x0500), 0xFF);
     assert_eq!(sys.read(BusMaster::Cpu(1), 0x1000), 0xFF);
-    assert_eq!(sys.read(BusMaster::Cpu(1), 0xEFFF), 0xFF);
+    assert_eq!(sys.read(BusMaster::Cpu(1), 0xAFFF), 0xFF);
 }
 
 #[test]
@@ -1070,9 +1101,9 @@ fn test_sound_command_propagation() {
     // Tick once to propagate
     sys.tick();
 
-    // Sound PIA Port B should have the command
+    // Sound PIA Port B should have the command with high bits pulled up (| 0xC0)
     let command = sys.read(BusMaster::Cpu(1), 0x0402);
-    assert_eq!(command, 0x42);
+    assert_eq!(command, 0xC2);
 }
 
 #[test]

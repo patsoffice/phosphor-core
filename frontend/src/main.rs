@@ -3,6 +3,7 @@ use phosphor_machines::JoustSystem;
 use phosphor_machines::MissileCommandSystem;
 use phosphor_machines::joust::JOUST_DECODER_PROM;
 
+mod audio;
 mod emulator;
 mod input;
 mod rom_path;

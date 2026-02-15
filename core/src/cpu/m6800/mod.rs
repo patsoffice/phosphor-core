@@ -700,7 +700,7 @@ impl BusMasterComponent for M6800 {
 impl Cpu for M6800 {
     fn reset(&mut self) {
         self.pc = 0;
-        self.cc = CcFlag::I as u8; // IRQ masked
+        self.cc = CcFlag::I as u8 | 0xC0; // IRQ masked; bits 6-7 unused, set to 1
     }
 
     fn signal_interrupt(&mut self, _int: InterruptState) {
