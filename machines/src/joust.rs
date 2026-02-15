@@ -726,4 +726,9 @@ impl Machine for JoustSystem {
     fn audio_sample_rate(&self) -> u32 {
         44100
     }
+
+    fn frame_rate_hz(&self) -> f64 {
+        // 1 MHz CPU clock / (260 scanlines * 64 cycles/scanline) = 60.096 Hz
+        1_000_000.0 / CYCLES_PER_FRAME as f64
+    }
 }

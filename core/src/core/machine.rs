@@ -61,4 +61,10 @@ pub trait Machine {
     fn audio_sample_rate(&self) -> u32 {
         0
     }
+
+    /// Native frame rate in Hz (e.g., 60.10 for Joust, 61.04 for Missile Command).
+    /// Used by the frontend for real-time frame throttling.
+    fn frame_rate_hz(&self) -> f64 {
+        60.0
+    }
 }

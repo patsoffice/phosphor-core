@@ -49,7 +49,7 @@ pub fn init(
         })
         .expect("Failed to open SDL audio device");
 
-    device.resume();
-
+    // Device starts paused; the emulator loop resumes it after the first
+    // frame of audio has been buffered, avoiding a startup pop.
     Some((device, ring))
 }

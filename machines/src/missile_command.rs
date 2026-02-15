@@ -622,6 +622,11 @@ impl Machine for MissileCommandSystem {
 
     fn save_nvram(&self) -> Option<&[u8]> { None }
     fn load_nvram(&mut self, _data: &[u8]) {}
+
+    fn frame_rate_hz(&self) -> f64 {
+        // 1.25 MHz CPU clock / (256 scanlines * 80 cycles/scanline) = 61.035 Hz
+        1_250_000.0 / CYCLES_PER_FRAME as f64
+    }
 }
 
 /// Active-low bit manipulation: clear bit on press, set bit on release.

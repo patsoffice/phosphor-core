@@ -27,7 +27,6 @@ impl Video {
         let canvas = window
             .into_canvas()
             .accelerated()
-            .present_vsync()
             .build()
             .expect("Failed to create canvas");
 

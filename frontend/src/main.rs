@@ -6,6 +6,7 @@ use phosphor_machines::joust::JOUST_DECODER_PROM;
 mod audio;
 mod emulator;
 mod input;
+mod overlay;
 mod rom_path;
 mod video;
 
