@@ -144,6 +144,32 @@ impl Z80 {
     pub fn get_hl(&self) -> u16 { ((self.h as u16) << 8) | self.l as u8 as u16 }
     pub fn set_hl(&mut self, val: u16) { self.h = (val >> 8) as u8; self.l = val as u8; }
 
+    pub fn get_reg8(&self, index: u8) -> u8 {
+        match index {
+            0 => self.b,
+            1 => self.c,
+            2 => self.d,
+            3 => self.e,
+            4 => self.h,
+            5 => self.l,
+            7 => self.a,
+            _ => unreachable!("get_reg8 called with index {}", index),
+        }
+    }
+
+    pub fn set_reg8(&mut self, index: u8, val: u8) {
+        match index {
+            0 => self.b = val,
+            1 => self.c = val,
+            2 => self.d = val,
+            3 => self.e = val,
+            4 => self.h = val,
+            5 => self.l = val,
+            7 => self.a = val,
+            _ => unreachable!("set_reg8 called with index {}", index),
+        }
+    }
+
     pub fn execute_cycle<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         bus: &mut B,
@@ -207,6 +233,12 @@ impl Z80 {
         master: BusMaster,
     ) {
         match opcode {
+            0x00 => self.state = ExecState::Fetch, // NOP
+            0x76 => { // HALT
+                self.halted = true;
+                self.pc = self.pc.wrapping_sub(1);
+                self.state = ExecState::Fetch;
+            }
             // Prefixes
             0xCB => {
                 // TODO: Handle DD/FD CB (Index+Bit)
@@ -227,8 +259,10 @@ impl Z80 {
                 self.state = ExecState::Fetch;
             }
 
-            // LD A, n (0x3E)
-            0x3E => self.op_ld_a_n(cycle, bus, master),
+            // LD r, r' (0x40-0x7F excluding 0x76)
+            op if (op & 0xC0) == 0x40 => self.op_ld_r_r(op, cycle, bus, master),
+            // LD r, n (0x06, 0x0E, ... 0x3E)
+            op if (op & 0xC7) == 0x06 => self.op_ld_r_n(op, cycle, bus, master),
             _ => self.state = ExecState::Fetch,
         }
     }
