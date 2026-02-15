@@ -1,3 +1,4 @@
+mod alu;
 mod load_store;
 
 use crate::core::{
@@ -59,8 +60,8 @@ pub struct Z80 {
 
     pub(crate) state: ExecState,
     pub(crate) opcode: u8,
-    #[allow(dead_code)]
     pub(crate) temp_addr: u16,
+    pub(crate) temp_data: u8,
 
     // Prefix handling
     pub(crate) index_mode: IndexMode,
@@ -129,6 +130,7 @@ impl Z80 {
             state: ExecState::Fetch,
             opcode: 0,
             temp_addr: 0,
+            temp_data: 0,
             index_mode: IndexMode::HL,
             prefix_pending: false,
         }
@@ -138,11 +140,51 @@ impl Z80 {
     pub fn get_bc(&self) -> u16 { ((self.b as u16) << 8) | self.c as u16 }
     pub fn set_bc(&mut self, val: u16) { self.b = (val >> 8) as u8; self.c = val as u8; }
 
-    pub fn get_de(&self) -> u16 { ((self.d as u16) << 8) | self.e as u8 as u16 }
+    pub fn get_de(&self) -> u16 { ((self.d as u16) << 8) | self.e as u16 }
     pub fn set_de(&mut self, val: u16) { self.d = (val >> 8) as u8; self.e = val as u8; }
 
-    pub fn get_hl(&self) -> u16 { ((self.h as u16) << 8) | self.l as u8 as u16 }
+    pub fn get_hl(&self) -> u16 { ((self.h as u16) << 8) | self.l as u16 }
     pub fn set_hl(&mut self, val: u16) { self.h = (val >> 8) as u8; self.l = val as u8; }
+
+    pub fn get_af(&self) -> u16 { ((self.a as u16) << 8) | self.f as u16 }
+    pub fn set_af(&mut self, val: u16) { self.a = (val >> 8) as u8; self.f = val as u8; }
+
+    #[inline]
+    pub(crate) fn set_flag(&mut self, flag: Flag, set: bool) {
+        if set { self.f |= flag as u8 } else { self.f &= !(flag as u8) }
+    }
+
+    /// Get 8-bit register by index, respecting IX/IY prefix for H/L (undocumented IXH/IXL/IYH/IYL).
+    /// Index 6 is NOT handled here — callers must handle (HL)/(IX+d)/(IY+d) separately.
+    pub fn get_reg8_ix(&self, index: u8) -> u8 {
+        match (index, self.index_mode) {
+            (4, IndexMode::IX) => (self.ix >> 8) as u8,
+            (5, IndexMode::IX) => self.ix as u8,
+            (4, IndexMode::IY) => (self.iy >> 8) as u8,
+            (5, IndexMode::IY) => self.iy as u8,
+            _ => self.get_reg8(index),
+        }
+    }
+
+    pub fn set_reg8_ix(&mut self, index: u8, val: u8) {
+        match (index, self.index_mode) {
+            (4, IndexMode::IX) => self.ix = (self.ix & 0x00FF) | ((val as u16) << 8),
+            (5, IndexMode::IX) => self.ix = (self.ix & 0xFF00) | val as u16,
+            (4, IndexMode::IY) => self.iy = (self.iy & 0x00FF) | ((val as u16) << 8),
+            (5, IndexMode::IY) => self.iy = (self.iy & 0xFF00) | val as u16,
+            _ => self.set_reg8(index, val),
+        }
+    }
+
+    /// Get the effective address for (HL)/(IX+d)/(IY+d).
+    /// For IX/IY modes, the displacement must already be stored in temp_data (as signed byte).
+    pub(crate) fn get_index_addr(&self) -> u16 {
+        match self.index_mode {
+            IndexMode::HL => self.get_hl(),
+            IndexMode::IX => self.ix.wrapping_add(self.temp_data as i8 as i16 as u16),
+            IndexMode::IY => self.iy.wrapping_add(self.temp_data as i8 as i16 as u16),
+        }
+    }
 
     pub fn get_reg8(&self, index: u8) -> u8 {
         match index {
@@ -263,6 +305,17 @@ impl Z80 {
             op if (op & 0xC0) == 0x40 => self.op_ld_r_r(op, cycle, bus, master),
             // LD r, n (0x06, 0x0E, ... 0x3E)
             op if (op & 0xC7) == 0x06 => self.op_ld_r_n(op, cycle, bus, master),
+
+            // ALU A, r (0x80 - 0xBF)
+            op if (op & 0xC0) == 0x80 => self.op_alu_r(op, cycle, bus, master),
+            // ALU A, n (0xC6, 0xCE, ... 0xFE)
+            op if (op & 0xC7) == 0xC6 => self.op_alu_n(op, cycle, bus, master),
+
+            // INC r (0x04, 0x0C...)
+            op if (op & 0xC7) == 0x04 => self.op_inc_dec_r(op, cycle, bus, master),
+            // DEC r (0x05, 0x0D...)
+            op if (op & 0xC7) == 0x05 => self.op_inc_dec_r(op, cycle, bus, master),
+
             _ => self.state = ExecState::Fetch,
         }
     }
@@ -315,8 +368,24 @@ impl CpuStateTrait for Z80 {
             e: self.e,
             h: self.h,
             l: self.l,
+            a_prime: self.a_prime,
+            f_prime: self.f_prime,
+            b_prime: self.b_prime,
+            c_prime: self.c_prime,
+            d_prime: self.d_prime,
+            e_prime: self.e_prime,
+            h_prime: self.h_prime,
+            l_prime: self.l_prime,
+            ix: self.ix,
+            iy: self.iy,
             sp: self.sp,
             pc: self.pc,
+            i: self.i,
+            r: self.r,
+            iff1: self.iff1,
+            iff2: self.iff2,
+            im: self.im,
+            memptr: self.memptr,
         }
     }
 }
