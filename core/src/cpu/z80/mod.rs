@@ -77,7 +77,8 @@ pub enum IndexMode {
 
 #[derive(Clone, Debug)]
 pub(crate) enum ExecState {
-    Fetch,
+    Fetch,     // M1 T1: address on bus, reset prefix state
+    FetchRead, // M1 T2: read opcode, increment PC, refresh R
     Execute(u8, u8), // (opcode, cycle)
 
     // Prefix States
@@ -86,7 +87,9 @@ pub(crate) enum ExecState {
     PrefixED(u8),
     ExecuteED(u8, u8),
     // Indexed CB (DD CB d o / FD CB d o)
+    #[allow(non_camel_case_types)]
     PrefixIndexCB_ReadOffset(u8),
+    #[allow(non_camel_case_types)]
     PrefixIndexCB_FetchOp(u8),
     ExecuteIndexCB(u8, u8),
 }
@@ -219,44 +222,62 @@ impl Z80 {
     ) {
         match self.state {
             ExecState::Fetch => {
-                // If the previous instruction was NOT a prefix, reset index mode to HL
+                // M1 T1: address on bus, reset prefix state
                 if !self.prefix_pending {
                     self.index_mode = IndexMode::HL;
                 }
                 self.prefix_pending = false;
-
+                self.state = ExecState::FetchRead;
+            }
+            ExecState::FetchRead => {
+                // M1 T2: read opcode, increment PC, refresh R
                 self.opcode = bus.read(master, self.pc);
                 self.pc = self.pc.wrapping_add(1);
-                // Refresh R register (7 bits incremented, bit 7 preserved)
                 self.r = (self.r & 0x80) | (self.r.wrapping_add(1) & 0x7F);
-
                 self.state = ExecState::Execute(self.opcode, 0);
             }
             ExecState::Execute(op, cyc) => {
                 self.execute_instruction(op, cyc, bus, master);
             }
             ExecState::PrefixCB(cyc) => {
-                // Fetch opcode for CB prefix
-                if cyc == 0 {
-                    self.opcode = bus.read(master, self.pc);
-                    self.pc = self.pc.wrapping_add(1);
-                    self.r = (self.r & 0x80) | (self.r.wrapping_add(1) & 0x7F);
-                    self.state = ExecState::ExecuteCB(self.opcode, 0);
+                // CB prefix M1 fetch: 4 T-states
+                // cyc 0 = T1 (address on bus)
+                // cyc 1 = T2 (read CB opcode, R refresh)
+                // cyc 2 = T3 (internal)
+                // cyc 3 → dispatch to ExecuteCB
+                match cyc {
+                    0 => self.state = ExecState::PrefixCB(1),
+                    1 => {
+                        self.opcode = bus.read(master, self.pc);
+                        self.pc = self.pc.wrapping_add(1);
+                        self.r = (self.r & 0x80) | (self.r.wrapping_add(1) & 0x7F);
+                        self.state = ExecState::PrefixCB(2);
+                    }
+                    2 => self.state = ExecState::PrefixCB(3),
+                    3 => self.state = ExecState::ExecuteCB(self.opcode, 0),
+                    _ => unreachable!(),
                 }
             }
-            ExecState::ExecuteCB(op, cyc) => {
+            ExecState::ExecuteCB(_op, _cyc) => {
                 // TODO: Implement CB instructions
                 self.state = ExecState::Fetch;
             }
             ExecState::PrefixED(cyc) => {
-                if cyc == 0 {
-                    self.opcode = bus.read(master, self.pc);
-                    self.pc = self.pc.wrapping_add(1);
-                    self.r = (self.r & 0x80) | (self.r.wrapping_add(1) & 0x7F);
-                    self.state = ExecState::ExecuteED(self.opcode, 0);
+                // ED prefix M1 fetch: 4 T-states
+                match cyc {
+                    0 => self.state = ExecState::PrefixED(1),
+                    1 => {
+                        self.opcode = bus.read(master, self.pc);
+                        self.pc = self.pc.wrapping_add(1);
+                        self.r = (self.r & 0x80) | (self.r.wrapping_add(1) & 0x7F);
+                        self.state = ExecState::PrefixED(2);
+                    }
+                    2 => self.state = ExecState::PrefixED(3),
+                    3 => self.state = ExecState::ExecuteED(self.opcode, 0),
+                    _ => unreachable!(),
                 }
             }
-            ExecState::ExecuteED(op, cyc) => {
+            ExecState::ExecuteED(_op, _cyc) => {
                 // TODO: Implement ED instructions
                 self.state = ExecState::Fetch;
             }
@@ -267,6 +288,11 @@ impl Z80 {
         }
     }
 
+    /// M1 T3 overhead (1 cycle), then dispatch to handlers.
+    /// Handlers receive raw cycle numbers starting at 1 (T4 of M1).
+    /// Total T-states: Fetch(T1) + FetchRead(T2) + overhead(T3) + handler cycles.
+    /// 4T instruction: handler cycle 1 → Fetch (1 handler cycle, total 4).
+    /// 7T instruction: handler cycles 1-4 (4 handler cycles, total 7).
     fn execute_instruction<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -274,16 +300,25 @@ impl Z80 {
         bus: &mut B,
         master: BusMaster,
     ) {
+        // M1 T3: shared overhead (refresh)
+        if cycle == 0 {
+            self.state = ExecState::Execute(opcode, 1);
+            return;
+        }
+
         match opcode {
-            0x00 => self.state = ExecState::Fetch, // NOP
-            0x76 => { // HALT
+            // NOP — 4 T: M1 only
+            0x00 => self.state = ExecState::Fetch,
+
+            // HALT — 4 T: M1 only
+            0x76 => {
                 self.halted = true;
                 self.pc = self.pc.wrapping_sub(1);
                 self.state = ExecState::Fetch;
             }
-            // Prefixes
+
+            // Prefixes — 4 T each (M1 only)
             0xCB => {
-                // TODO: Handle DD/FD CB (Index+Bit)
                 self.state = ExecState::PrefixCB(0);
             }
             0xED => {
@@ -301,19 +336,19 @@ impl Z80 {
                 self.state = ExecState::Fetch;
             }
 
-            // LD r, r' (0x40-0x7F excluding 0x76)
+            // LD r, r' (0x40-0x7F excluding 0x76) — 4 T: M1 only
             op if (op & 0xC0) == 0x40 => self.op_ld_r_r(op, cycle, bus, master),
-            // LD r, n (0x06, 0x0E, ... 0x3E)
+            // LD r, n (0x06, 0x0E, ... 0x3E) — 7 T: M1 + MR
             op if (op & 0xC7) == 0x06 => self.op_ld_r_n(op, cycle, bus, master),
 
-            // ALU A, r (0x80 - 0xBF)
+            // ALU A, r (0x80 - 0xBF) — 4 T (reg) or 7 T ((HL))
             op if (op & 0xC0) == 0x80 => self.op_alu_r(op, cycle, bus, master),
-            // ALU A, n (0xC6, 0xCE, ... 0xFE)
+            // ALU A, n (0xC6, 0xCE, ... 0xFE) — 7 T: M1 + MR
             op if (op & 0xC7) == 0xC6 => self.op_alu_n(op, cycle, bus, master),
 
-            // INC r (0x04, 0x0C...)
+            // INC r (0x04, 0x0C...) — 4 T (reg) or 11 T ((HL))
             op if (op & 0xC7) == 0x04 => self.op_inc_dec_r(op, cycle, bus, master),
-            // DEC r (0x05, 0x0D...)
+            // DEC r (0x05, 0x0D...) — 4 T (reg) or 11 T ((HL))
             op if (op & 0xC7) == 0x05 => self.op_inc_dec_r(op, cycle, bus, master),
 
             _ => self.state = ExecState::Fetch,
@@ -332,7 +367,8 @@ impl BusMasterComponent for Z80 {
 
     fn tick_with_bus(&mut self, bus: &mut Self::Bus, master: BusMaster) -> bool {
         self.execute_cycle(bus, master);
-        matches!(self.state, ExecState::Fetch)
+        // Instruction boundary: at Fetch AND not mid-prefix (DD/FD set prefix_pending)
+        matches!(self.state, ExecState::Fetch) && !self.prefix_pending
     }
 }
 

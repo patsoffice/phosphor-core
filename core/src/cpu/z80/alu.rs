@@ -30,12 +30,8 @@ impl Z80 {
         let mut f = 0;
         if result == 0 { f |= Flag::Z as u8; }
         if (result & 0x80) != 0 { f |= Flag::S as u8; }
-        // H: ((A & 0xF) + (val & 0xF) + c) > 0xF
         if ((a & 0xF) + (val & 0xF) + (c_val as u8)) > 0xF { f |= Flag::H as u8; }
-        // P/V: Overflow = (op1 ^ res) & (op2 ^ res) & 0x80
         if ((a ^ result) & (val ^ result) & 0x80) != 0 { f |= Flag::PV as u8; }
-        // N: 0
-        // C: result > 0xFF
         if result_u16 > 0xFF { f |= Flag::C as u8; }
 
         f |= result & (Flag::X as u8 | Flag::Y as u8);
@@ -52,11 +48,8 @@ impl Z80 {
         let mut f = Flag::N as u8;
         if result == 0 { f |= Flag::Z as u8; }
         if (result & 0x80) != 0 { f |= Flag::S as u8; }
-        // H: (A & 0xF) < ((val & 0xF) + c)
         if (a & 0xF) < ((val & 0xF) + (c_val as u8)) { f |= Flag::H as u8; }
-        // P/V: Overflow = (op1 ^ op2) & (op1 ^ res) & 0x80
         if ((a ^ val) & (a ^ result) & 0x80) != 0 { f |= Flag::PV as u8; }
-        // C: Borrow
         if result_u16 > 0xFF { f |= Flag::C as u8; }
 
         f |= result & (Flag::X as u8 | Flag::Y as u8);
@@ -76,9 +69,7 @@ impl Z80 {
         if ((a ^ val) & (a ^ result) & 0x80) != 0 { f |= Flag::PV as u8; }
         if result_u16 > 0xFF { f |= Flag::C as u8; }
 
-        // X/Y come from the operand for CP, not result (usually)
-        // But standard behavior often copies from operand.
-        // For now, let's use operand bits 3 and 5.
+        // X/Y come from the operand for CP, not the result
         f |= val & (Flag::X as u8 | Flag::Y as u8);
         self.f = f;
     }
@@ -99,7 +90,7 @@ impl Z80 {
 
     // --- Instructions ---
 
-    /// ALU A, r
+    /// ALU A, r — 4 T (reg) or 7 T ((HL))
     /// ADD, ADC, SUB, SBC, AND, XOR, OR, CP
     /// Opcode mask: 10 xxx zzz
     pub fn op_alu_r<B: Bus<Address = u16, Data = u8> + ?Sized>(
@@ -113,25 +104,31 @@ impl Z80 {
         let r = opcode & 0x07;
 
         if r == 6 {
-            // ALU A, (HL)
-            if cycle == 0 {
-                if self.index_mode != IndexMode::HL {
-                    todo!("ALU A, (IX/IY+d)");
+            // ALU A, (HL) — 7 T: M1(4) + MR(3)
+            // cycles 1=T4, 2=MR read, 3=MR pad, 4=done
+            match cycle {
+                1 | 3 => self.state = ExecState::Execute(opcode, cycle + 1),
+                2 => {
+                    if self.index_mode != IndexMode::HL {
+                        todo!("ALU A, (IX/IY+d)");
+                    }
+                    let addr = self.get_hl();
+                    let val = bus.read(master, addr);
+                    self.perform_alu_op(alu_op, val);
+                    self.state = ExecState::Execute(opcode, 3);
                 }
-                let addr = self.get_hl();
-                let val = bus.read(master, addr);
-                self.perform_alu_op(alu_op, val);
-                self.state = ExecState::Fetch;
+                4 => self.state = ExecState::Fetch,
+                _ => unreachable!(),
             }
         } else {
-            // ALU A, r
-            let val = self.get_reg8(r);
+            // ALU A, r — 4 T: M1 only
+            let val = self.get_reg8_ix(r);
             self.perform_alu_op(alu_op, val);
             self.state = ExecState::Fetch;
         }
     }
 
-    /// ALU A, n
+    /// ALU A, n — 7 T: M1(4) + MR(3)
     /// Opcode mask: 11 xxx 110
     pub fn op_alu_n<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -142,15 +139,21 @@ impl Z80 {
     ) {
         let alu_op = (opcode >> 3) & 0x07;
 
-        if cycle == 0 {
-            let val = bus.read(master, self.pc);
-            self.pc = self.pc.wrapping_add(1);
-            self.perform_alu_op(alu_op, val);
-            self.state = ExecState::Fetch;
+        // cycles 1=T4, 2=MR read imm, 3=MR pad, 4=done
+        match cycle {
+            1 | 3 => self.state = ExecState::Execute(opcode, cycle + 1),
+            2 => {
+                let val = bus.read(master, self.pc);
+                self.pc = self.pc.wrapping_add(1);
+                self.perform_alu_op(alu_op, val);
+                self.state = ExecState::Execute(opcode, 3);
+            }
+            4 => self.state = ExecState::Fetch,
+            _ => unreachable!(),
         }
     }
 
-    /// INC/DEC r
+    /// INC/DEC r — 4 T (reg) or 11 T ((HL))
     /// Opcode mask: 00 rrr 10x
     pub fn op_inc_dec_r<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -163,37 +166,45 @@ impl Z80 {
         let is_dec = (opcode & 0x01) != 0;
 
         if r == 6 {
-            // INC/DEC (HL) — Read-Modify-Write: 2 execute cycles
+            // INC/DEC (HL) — 11 T: M1(4) + MR(3) + internal(1) + MW(3)
+            // cycles 1=T4, 2=MR read, 3-4=MR pad, 5=internal compute,
+            //         6=MW write, 7-8=MW pad
             match cycle {
-                0 => {
+                1 | 3 | 4 | 7 => self.state = ExecState::Execute(opcode, cycle + 1),
+                2 => {
                     if self.index_mode != IndexMode::HL {
                         todo!("INC/DEC (IX/IY+d)");
                     }
                     let addr = self.get_hl();
                     self.temp_data = bus.read(master, addr);
                     self.temp_addr = addr;
-                    self.state = ExecState::Execute(opcode, 1);
+                    self.state = ExecState::Execute(opcode, 3);
                 }
-                1 => {
-                    let result = if is_dec {
+                5 => {
+                    // Internal cycle: compute result
+                    self.temp_data = if is_dec {
                         self.calc_dec_flags(self.temp_data)
                     } else {
                         self.calc_inc_flags(self.temp_data)
                     };
-                    bus.write(master, self.temp_addr, result);
-                    self.state = ExecState::Fetch;
+                    self.state = ExecState::Execute(opcode, 6);
                 }
+                6 => {
+                    bus.write(master, self.temp_addr, self.temp_data);
+                    self.state = ExecState::Execute(opcode, 7);
+                }
+                8 => self.state = ExecState::Fetch,
                 _ => unreachable!(),
             }
         } else {
-            // INC/DEC r
-            let val = self.get_reg8(r);
+            // INC/DEC r — 4 T: M1 only
+            let val = self.get_reg8_ix(r);
             let result = if is_dec {
                 self.calc_dec_flags(val)
             } else {
                 self.calc_inc_flags(val)
             };
-            self.set_reg8(r, result);
+            self.set_reg8_ix(r, result);
             self.state = ExecState::Fetch;
         }
     }
