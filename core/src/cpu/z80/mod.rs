@@ -1,4 +1,5 @@
 mod alu;
+mod bit;
 mod branch;
 mod load_store;
 mod stack;
@@ -305,11 +306,10 @@ impl Z80 {
                 self.execute_instruction(op, cyc, bus, master);
             }
             ExecState::PrefixCB(cyc) => {
-                // CB prefix M1 fetch: 4 T-states
+                // CB prefix M1 fetch: 3 states (T5-T7)
                 // cyc 0 = T1 (address on bus)
                 // cyc 1 = T2 (read CB opcode, R refresh)
-                // cyc 2 = T3 (internal)
-                // cyc 3 → dispatch to ExecuteCB
+                // cyc 2 → dispatch to ExecuteCB (T4 of CB M1 = first handler cycle)
                 match cyc {
                     0 => self.state = ExecState::PrefixCB(1),
                     1 => {
@@ -318,17 +318,16 @@ impl Z80 {
                         self.r = (self.r & 0x80) | (self.r.wrapping_add(1) & 0x7F);
                         self.state = ExecState::PrefixCB(2);
                     }
-                    2 => self.state = ExecState::PrefixCB(3),
-                    3 => self.state = ExecState::ExecuteCB(self.opcode, 0),
+                    2 => self.state = ExecState::ExecuteCB(self.opcode, 0),
                     _ => unreachable!(),
                 }
             }
-            ExecState::ExecuteCB(_op, _cyc) => {
-                // TODO: Implement CB instructions
-                self.state = ExecState::Fetch;
+            ExecState::ExecuteCB(op, cyc) => {
+                self.execute_instruction_cb(op, cyc, bus, master);
             }
             ExecState::PrefixED(cyc) => {
-                // ED prefix M1 fetch: 4 T-states
+                // ED prefix M1 fetch: 3 states
+                // cyc 0 = T1, cyc 1 = T2 (read), cyc 2 → dispatch to ExecuteED
                 match cyc {
                     0 => self.state = ExecState::PrefixED(1),
                     1 => {
@@ -337,13 +336,12 @@ impl Z80 {
                         self.r = (self.r & 0x80) | (self.r.wrapping_add(1) & 0x7F);
                         self.state = ExecState::PrefixED(2);
                     }
-                    2 => self.state = ExecState::PrefixED(3),
-                    3 => self.state = ExecState::ExecuteED(self.opcode, 0),
+                    2 => self.state = ExecState::ExecuteED(self.opcode, 0),
                     _ => unreachable!(),
                 }
             }
             ExecState::ExecuteED(_op, _cyc) => {
-                // TODO: Implement ED instructions
+                // TODO: Implement ED instructions (Phase 6)
                 self.state = ExecState::Fetch;
             }
             _ => {

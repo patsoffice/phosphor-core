@@ -4,7 +4,7 @@ use crate::cpu::z80::{ExecState, Flag, IndexMode, Z80};
 impl Z80 {
     // --- Flag Helpers ---
 
-    fn get_parity(val: u8) -> bool {
+    pub(super) fn get_parity(val: u8) -> bool {
         val.count_ones() % 2 == 0
     }
 
