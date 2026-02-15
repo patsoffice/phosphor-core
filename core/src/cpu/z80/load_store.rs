@@ -3,9 +3,8 @@ use crate::cpu::z80::{ExecState, IndexMode, Z80};
 
 impl Z80 {
     /// LD r, n — 7 T: M1(4) + MR(3)
-    /// Loads an immediate 8-bit value into a register or memory location (HL).
+    /// LD (HL), n — 10 T: M1(4) + MR(3) + MW(3)
     /// Opcode mask: 00 rrr 110
-    /// Handler cycles: 1=T4, 2-4=MR (bus read on cycle 2)
     pub fn op_ld_r_n<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -17,7 +16,6 @@ impl Z80 {
 
         if r == 6 {
             // LD (HL), n — 10 T: M1(4) + MR(3) + MW(3)
-            // cycles 1=T4, 2=MR read imm, 3-4=MR pad, 5=MW write, 6-7=MW pad
             match cycle {
                 1 | 3 | 4 | 6 => self.state = ExecState::Execute(opcode, cycle + 1),
                 2 => {
@@ -39,7 +37,6 @@ impl Z80 {
             }
         } else {
             // LD r, n — 7 T: M1(4) + MR(3)
-            // cycles 1=T4, 2=MR read imm, 3=MR pad, 4=done
             match cycle {
                 1 | 3 => self.state = ExecState::Execute(opcode, cycle + 1),
                 2 => {
@@ -70,7 +67,6 @@ impl Z80 {
 
         if src == 6 {
             // LD r, (HL) — 7 T: M1(4) + MR(3)
-            // cycles 1=T4, 2=MR read, 3=MR pad, 4=done
             match cycle {
                 1 | 3 => self.state = ExecState::Execute(opcode, cycle + 1),
                 2 => {
@@ -87,7 +83,6 @@ impl Z80 {
             }
         } else if dst == 6 {
             // LD (HL), r — 7 T: M1(4) + MW(3)
-            // cycles 1=T4, 2=MW write, 3=MW pad, 4=done
             match cycle {
                 1 | 3 => self.state = ExecState::Execute(opcode, cycle + 1),
                 2 => {
@@ -107,6 +102,359 @@ impl Z80 {
             let val = self.get_reg8_ix(src);
             self.set_reg8_ix(dst, val);
             self.state = ExecState::Fetch;
+        }
+    }
+
+    /// LD rr, nn — 10 T: M1(4) + MR(3) + MR(3)
+    /// Opcode mask: 00 rr0 001 (rr: 0=BC, 1=DE, 2=HL/IX/IY, 3=SP)
+    pub fn op_ld_rr_nn<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let rp = (opcode >> 4) & 0x03;
+        // cycles 1=T4, 2=MR1 read low, 3-4=MR1 pad, 5=MR2 read high, 6-7=MR2 pad
+        match cycle {
+            1 | 3 | 4 | 6 => self.state = ExecState::Execute(opcode, cycle + 1),
+            2 => {
+                self.temp_data = bus.read(master, self.pc);
+                self.pc = self.pc.wrapping_add(1);
+                self.state = ExecState::Execute(opcode, 3);
+            }
+            5 => {
+                let high = bus.read(master, self.pc);
+                self.pc = self.pc.wrapping_add(1);
+                let val = ((high as u16) << 8) | self.temp_data as u16;
+                self.set_rp(rp, val);
+                self.state = ExecState::Execute(opcode, 6);
+            }
+            7 => self.state = ExecState::Fetch,
+            _ => unreachable!(),
+        }
+    }
+
+    /// LD A, (BC) — 7 T: M1(4) + MR(3)
+    pub fn op_ld_a_bc<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            1 | 3 => self.state = ExecState::Execute(opcode, cycle + 1),
+            2 => {
+                let addr = self.get_bc();
+                self.a = bus.read(master, addr);
+                self.memptr = addr.wrapping_add(1);
+                self.state = ExecState::Execute(opcode, 3);
+            }
+            4 => self.state = ExecState::Fetch,
+            _ => unreachable!(),
+        }
+    }
+
+    /// LD A, (DE) — 7 T: M1(4) + MR(3)
+    pub fn op_ld_a_de<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            1 | 3 => self.state = ExecState::Execute(opcode, cycle + 1),
+            2 => {
+                let addr = self.get_de();
+                self.a = bus.read(master, addr);
+                self.memptr = addr.wrapping_add(1);
+                self.state = ExecState::Execute(opcode, 3);
+            }
+            4 => self.state = ExecState::Fetch,
+            _ => unreachable!(),
+        }
+    }
+
+    /// LD (BC), A — 7 T: M1(4) + MW(3)
+    pub fn op_ld_bc_a<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            1 | 3 => self.state = ExecState::Execute(opcode, cycle + 1),
+            2 => {
+                let addr = self.get_bc();
+                bus.write(master, addr, self.a);
+                self.memptr = ((self.a as u16) << 8) | ((addr.wrapping_add(1)) & 0xFF);
+                self.state = ExecState::Execute(opcode, 3);
+            }
+            4 => self.state = ExecState::Fetch,
+            _ => unreachable!(),
+        }
+    }
+
+    /// LD (DE), A — 7 T: M1(4) + MW(3)
+    pub fn op_ld_de_a<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            1 | 3 => self.state = ExecState::Execute(opcode, cycle + 1),
+            2 => {
+                let addr = self.get_de();
+                bus.write(master, addr, self.a);
+                self.memptr = ((self.a as u16) << 8) | ((addr.wrapping_add(1)) & 0xFF);
+                self.state = ExecState::Execute(opcode, 3);
+            }
+            4 => self.state = ExecState::Fetch,
+            _ => unreachable!(),
+        }
+    }
+
+    /// LD A, (nn) — 13 T: M1(4) + MR(3) + MR(3) + MR(3)
+    pub fn op_ld_a_nn<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        // 1=T4, 2=MR1 read addr low, 3-4=pad, 5=MR2 read addr high, 6-7=pad,
+        // 8=MR3 read data, 9-10=pad
+        match cycle {
+            1 | 3 | 4 | 6 | 7 | 9 => self.state = ExecState::Execute(opcode, cycle + 1),
+            2 => {
+                self.temp_data = bus.read(master, self.pc);
+                self.pc = self.pc.wrapping_add(1);
+                self.state = ExecState::Execute(opcode, 3);
+            }
+            5 => {
+                let high = bus.read(master, self.pc);
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = ((high as u16) << 8) | self.temp_data as u16;
+                self.state = ExecState::Execute(opcode, 6);
+            }
+            8 => {
+                self.a = bus.read(master, self.temp_addr);
+                self.memptr = self.temp_addr.wrapping_add(1);
+                self.state = ExecState::Execute(opcode, 9);
+            }
+            10 => self.state = ExecState::Fetch,
+            _ => unreachable!(),
+        }
+    }
+
+    /// LD (nn), A — 13 T: M1(4) + MR(3) + MR(3) + MW(3)
+    pub fn op_ld_nn_a<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match cycle {
+            1 | 3 | 4 | 6 | 7 | 9 => self.state = ExecState::Execute(opcode, cycle + 1),
+            2 => {
+                self.temp_data = bus.read(master, self.pc);
+                self.pc = self.pc.wrapping_add(1);
+                self.state = ExecState::Execute(opcode, 3);
+            }
+            5 => {
+                let high = bus.read(master, self.pc);
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = ((high as u16) << 8) | self.temp_data as u16;
+                self.state = ExecState::Execute(opcode, 6);
+            }
+            8 => {
+                bus.write(master, self.temp_addr, self.a);
+                self.memptr = ((self.a as u16) << 8) | ((self.temp_addr.wrapping_add(1)) & 0xFF);
+                self.state = ExecState::Execute(opcode, 9);
+            }
+            10 => self.state = ExecState::Fetch,
+            _ => unreachable!(),
+        }
+    }
+
+    /// LD SP, HL — 6 T: M1(4) + 2 internal
+    pub fn op_ld_sp_hl<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        _bus: &mut B,
+        _master: BusMaster,
+    ) {
+        // cycles 1=T4, 2=internal, 3=done
+        match cycle {
+            1 | 2 => self.state = ExecState::Execute(opcode, cycle + 1),
+            3 => {
+                self.sp = self.get_rp(2); // HL/IX/IY depending on prefix
+                self.state = ExecState::Fetch;
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// LD (nn), HL — 16 T: M1(4) + MR(3) + MR(3) + MW(3) + MW(3)
+    pub fn op_ld_nn_hl<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        // 1=T4, 2=MR1 addr low, 3-4=pad, 5=MR2 addr high, 6-7=pad,
+        // 8=MW1 write low, 9-10=pad, 11=MW2 write high, 12-13=pad
+        match cycle {
+            1 | 3 | 4 | 6 | 7 | 9 | 10 | 12 => {
+                self.state = ExecState::Execute(opcode, cycle + 1);
+            }
+            2 => {
+                self.temp_data = bus.read(master, self.pc);
+                self.pc = self.pc.wrapping_add(1);
+                self.state = ExecState::Execute(opcode, 3);
+            }
+            5 => {
+                let high = bus.read(master, self.pc);
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = ((high as u16) << 8) | self.temp_data as u16;
+                self.state = ExecState::Execute(opcode, 6);
+            }
+            8 => {
+                let val = self.get_rp(2);
+                bus.write(master, self.temp_addr, val as u8);
+                self.state = ExecState::Execute(opcode, 9);
+            }
+            11 => {
+                let val = self.get_rp(2);
+                bus.write(master, self.temp_addr.wrapping_add(1), (val >> 8) as u8);
+                self.memptr = self.temp_addr.wrapping_add(1);
+                self.state = ExecState::Execute(opcode, 12);
+            }
+            13 => self.state = ExecState::Fetch,
+            _ => unreachable!(),
+        }
+    }
+
+    /// LD HL, (nn) — 16 T: M1(4) + MR(3) + MR(3) + MR(3) + MR(3)
+    pub fn op_ld_hl_nn_ind<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        // 1=T4, 2=MR1 addr low, 3-4=pad, 5=MR2 addr high, 6-7=pad,
+        // 8=MR3 data low, 9-10=pad, 11=MR4 data high, 12-13=pad
+        match cycle {
+            1 | 3 | 4 | 6 | 7 | 9 | 10 | 12 => {
+                self.state = ExecState::Execute(opcode, cycle + 1);
+            }
+            2 => {
+                self.temp_data = bus.read(master, self.pc);
+                self.pc = self.pc.wrapping_add(1);
+                self.state = ExecState::Execute(opcode, 3);
+            }
+            5 => {
+                let high = bus.read(master, self.pc);
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = ((high as u16) << 8) | self.temp_data as u16;
+                self.state = ExecState::Execute(opcode, 6);
+            }
+            8 => {
+                self.temp_data = bus.read(master, self.temp_addr);
+                self.state = ExecState::Execute(opcode, 9);
+            }
+            11 => {
+                let high = bus.read(master, self.temp_addr.wrapping_add(1));
+                let val = ((high as u16) << 8) | self.temp_data as u16;
+                self.set_rp(2, val);
+                self.memptr = self.temp_addr.wrapping_add(1);
+                self.state = ExecState::Execute(opcode, 12);
+            }
+            13 => self.state = ExecState::Fetch,
+            _ => unreachable!(),
+        }
+    }
+
+    /// EX AF, AF' — 4 T: M1 only
+    pub fn op_ex_af_af(&mut self) {
+        std::mem::swap(&mut self.a, &mut self.a_prime);
+        std::mem::swap(&mut self.f, &mut self.f_prime);
+        self.state = ExecState::Fetch;
+    }
+
+    /// EXX — 4 T: M1 only
+    pub fn op_exx(&mut self) {
+        std::mem::swap(&mut self.b, &mut self.b_prime);
+        std::mem::swap(&mut self.c, &mut self.c_prime);
+        std::mem::swap(&mut self.d, &mut self.d_prime);
+        std::mem::swap(&mut self.e, &mut self.e_prime);
+        std::mem::swap(&mut self.h, &mut self.h_prime);
+        std::mem::swap(&mut self.l, &mut self.l_prime);
+        self.state = ExecState::Fetch;
+    }
+
+    /// EX DE, HL — 4 T: M1 only (NOT affected by DD/FD prefix)
+    pub fn op_ex_de_hl(&mut self) {
+        std::mem::swap(&mut self.d, &mut self.h);
+        std::mem::swap(&mut self.e, &mut self.l);
+        self.state = ExecState::Fetch;
+    }
+
+    /// EX (SP), HL — 19 T: M1(4) + MR(3) + MR(4) + MW(3) + MW(5)
+    pub fn op_ex_sp_hl<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        // 1=T4, 2=MR1 read low from (SP), 3-4=pad,
+        // 5=MR2 read high from (SP+1), 6-7=pad, 8=extra internal,
+        // 9=MW1 write high to (SP+1), 10-11=pad,
+        // 12=MW2 write low to (SP), 13-14=pad, 15-16=extra internal
+        match cycle {
+            1 | 3 | 4 | 6 | 7 | 8 | 10 | 11 | 13 | 14 | 15 => {
+                self.state = ExecState::Execute(opcode, cycle + 1);
+            }
+            2 => {
+                // Read low byte from (SP)
+                self.temp_data = bus.read(master, self.sp);
+                self.state = ExecState::Execute(opcode, 3);
+            }
+            5 => {
+                // Read high byte from (SP+1)
+                let high = bus.read(master, self.sp.wrapping_add(1));
+                self.temp_addr = ((high as u16) << 8) | self.temp_data as u16;
+                self.state = ExecState::Execute(opcode, 6);
+            }
+            9 => {
+                // Write HL high to (SP+1)
+                let hl = self.get_rp(2);
+                bus.write(master, self.sp.wrapping_add(1), (hl >> 8) as u8);
+                self.state = ExecState::Execute(opcode, 10);
+            }
+            12 => {
+                // Write HL low to (SP)
+                let hl = self.get_rp(2);
+                bus.write(master, self.sp, hl as u8);
+                self.state = ExecState::Execute(opcode, 13);
+            }
+            16 => {
+                // Set HL to the value read from stack
+                self.set_rp(2, self.temp_addr);
+                self.memptr = self.temp_addr;
+                self.state = ExecState::Fetch;
+            }
+            _ => unreachable!(),
         }
     }
 }

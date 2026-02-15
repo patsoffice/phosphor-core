@@ -1,5 +1,6 @@
 mod alu;
 mod load_store;
+mod stack;
 
 use crate::core::{
     Bus, BusMaster,
@@ -189,6 +190,67 @@ impl Z80 {
         }
     }
 
+    /// Get 16-bit register pair by index (0=BC, 1=DE, 2=HL/IX/IY, 3=SP).
+    /// Index 2 respects current index_mode for DD/FD prefixed instructions.
+    pub(crate) fn get_rp(&self, index: u8) -> u16 {
+        match index {
+            0 => self.get_bc(),
+            1 => self.get_de(),
+            2 => match self.index_mode {
+                IndexMode::HL => self.get_hl(),
+                IndexMode::IX => self.ix,
+                IndexMode::IY => self.iy,
+            },
+            3 => self.sp,
+            _ => unreachable!("get_rp called with index {}", index),
+        }
+    }
+
+    /// Set 16-bit register pair by index (0=BC, 1=DE, 2=HL/IX/IY, 3=SP).
+    pub(crate) fn set_rp(&mut self, index: u8, val: u16) {
+        match index {
+            0 => self.set_bc(val),
+            1 => self.set_de(val),
+            2 => match self.index_mode {
+                IndexMode::HL => self.set_hl(val),
+                IndexMode::IX => self.ix = val,
+                IndexMode::IY => self.iy = val,
+            },
+            3 => self.sp = val,
+            _ => unreachable!("set_rp called with index {}", index),
+        }
+    }
+
+    /// Get 16-bit register pair by index for PUSH/POP (0=BC, 1=DE, 2=HL/IX/IY, 3=AF).
+    pub(crate) fn get_rp_af(&self, index: u8) -> u16 {
+        match index {
+            0 => self.get_bc(),
+            1 => self.get_de(),
+            2 => match self.index_mode {
+                IndexMode::HL => self.get_hl(),
+                IndexMode::IX => self.ix,
+                IndexMode::IY => self.iy,
+            },
+            3 => self.get_af(),
+            _ => unreachable!("get_rp_af called with index {}", index),
+        }
+    }
+
+    /// Set 16-bit register pair by index for PUSH/POP (0=BC, 1=DE, 2=HL/IX/IY, 3=AF).
+    pub(crate) fn set_rp_af(&mut self, index: u8, val: u16) {
+        match index {
+            0 => self.set_bc(val),
+            1 => self.set_de(val),
+            2 => match self.index_mode {
+                IndexMode::HL => self.set_hl(val),
+                IndexMode::IX => self.ix = val,
+                IndexMode::IY => self.iy = val,
+            },
+            3 => self.set_af(val),
+            _ => unreachable!("set_rp_af called with index {}", index),
+        }
+    }
+
     pub fn get_reg8(&self, index: u8) -> u8 {
         match index {
             0 => self.b,
@@ -336,10 +398,56 @@ impl Z80 {
                 self.state = ExecState::Fetch;
             }
 
-            // LD r, r' (0x40-0x7F excluding 0x76) — 4 T: M1 only
-            op if (op & 0xC0) == 0x40 => self.op_ld_r_r(op, cycle, bus, master),
+            // --- Load/Store ---
+
+            // LD (BC), A — 7 T
+            0x02 => self.op_ld_bc_a(opcode, cycle, bus, master),
+            // LD (DE), A — 7 T
+            0x12 => self.op_ld_de_a(opcode, cycle, bus, master),
+            // LD (nn), HL — 16 T
+            0x22 => self.op_ld_nn_hl(opcode, cycle, bus, master),
+            // LD (nn), A — 13 T
+            0x32 => self.op_ld_nn_a(opcode, cycle, bus, master),
+
+            // EX AF, AF' — 4 T
+            0x08 => self.op_ex_af_af(),
+
+            // LD A, (BC) — 7 T
+            0x0A => self.op_ld_a_bc(opcode, cycle, bus, master),
+            // LD A, (DE) — 7 T
+            0x1A => self.op_ld_a_de(opcode, cycle, bus, master),
+            // LD HL, (nn) — 16 T
+            0x2A => self.op_ld_hl_nn_ind(opcode, cycle, bus, master),
+            // LD A, (nn) — 13 T
+            0x3A => self.op_ld_a_nn(opcode, cycle, bus, master),
+
+            // LD rr, nn (0x01/0x11/0x21/0x31) — 10 T
+            op if (op & 0xCF) == 0x01 => self.op_ld_rr_nn(op, cycle, bus, master),
+
             // LD r, n (0x06, 0x0E, ... 0x3E) — 7 T: M1 + MR
             op if (op & 0xC7) == 0x06 => self.op_ld_r_n(op, cycle, bus, master),
+
+            // LD r, r' (0x40-0x7F excluding 0x76) — 4/7 T
+            op if (op & 0xC0) == 0x40 => self.op_ld_r_r(op, cycle, bus, master),
+
+            // LD SP, HL — 6 T
+            0xF9 => self.op_ld_sp_hl(opcode, cycle, bus, master),
+
+            // EX DE, HL — 4 T
+            0xEB => self.op_ex_de_hl(),
+            // EXX — 4 T
+            0xD9 => self.op_exx(),
+            // EX (SP), HL — 19 T
+            0xE3 => self.op_ex_sp_hl(opcode, cycle, bus, master),
+
+            // --- Stack ---
+
+            // PUSH rr (0xC5/D5/E5/F5) — 11 T
+            op if (op & 0xCF) == 0xC5 => self.op_push(op, cycle, bus, master),
+            // POP rr (0xC1/D1/E1/F1) — 10 T
+            op if (op & 0xCF) == 0xC1 => self.op_pop(op, cycle, bus, master),
+
+            // --- ALU ---
 
             // ALU A, r (0x80 - 0xBF) — 4 T (reg) or 7 T ((HL))
             op if (op & 0xC0) == 0x80 => self.op_alu_r(op, cycle, bus, master),
