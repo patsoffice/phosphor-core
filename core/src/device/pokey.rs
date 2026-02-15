@@ -207,6 +207,14 @@ impl Pokey {
         }
     }
 
+    /// Create a POKEY with a custom master clock rate.
+    /// Missile Command uses 1.25 MHz vs the standard 1.79 MHz NTSC clock.
+    pub fn with_clock(master_clock_hz: u32, output_sample_rate: u32) -> Self {
+        let mut pokey = Self::new(output_sample_rate);
+        pokey.master_clock_hz = master_clock_hz;
+        pokey
+    }
+
     /// Read from a POKEY register. `offset` is masked to 4 bits (0x00-0x0F).
     ///
     /// | Offset | Register | Returns                                     |
