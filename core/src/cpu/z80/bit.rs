@@ -188,4 +188,79 @@ impl Z80 {
             _ => unreachable!(),
         }
     }
+
+    /// Execute DD CB d op / FD CB d op (indexed bit operations).
+    /// Address is pre-computed in temp_addr, displacement in temp_data.
+    /// BIT b,(IX+d): 4 handler cycles (20T total).
+    /// Other (IX+d): 7 handler cycles (23T total).
+    /// For non-BIT ops with zzz != 6, result is also copied to register zzz (undocumented).
+    pub fn execute_instruction_index_cb<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        op: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let xx = (op >> 6) & 0x03;  // 0=rot/shift, 1=BIT, 2=RES, 3=SET
+        let yyy = (op >> 3) & 0x07; // bit number or shift operation
+        let zzz = op & 0x07;        // register (6 = no copy, otherwise undocumented copy)
+
+        if xx == 1 {
+            // BIT b,(IX+d) — 20T: 4 handler cycles
+            // 0=pad, 1=read (IX+d), 2=pad, 3=done
+            match cycle {
+                0 | 2 => self.state = ExecState::ExecuteIndexCB(op, cycle + 1),
+                1 => {
+                    let val = bus.read(master, self.temp_addr);
+                    let tested = val & (1 << yyy);
+                    let mut f = self.f & Flag::C as u8;
+                    f |= Flag::H as u8;
+                    if tested == 0 {
+                        f |= Flag::Z as u8;
+                        f |= Flag::PV as u8;
+                    }
+                    if yyy == 7 && tested != 0 { f |= Flag::S as u8; }
+                    // X/Y from high byte of address for indexed BIT
+                    f |= ((self.temp_addr >> 8) as u8) & (Flag::X as u8 | Flag::Y as u8);
+                    self.f = f;
+                    self.state = ExecState::ExecuteIndexCB(op, 2);
+                }
+                3 => self.state = ExecState::Fetch,
+                _ => unreachable!(),
+            }
+        } else {
+            // Rotate/shift/SET/RES (IX+d) — 23T: 7 handler cycles
+            // 0=pad, 1=read, 2=pad, 3=compute, 4=write, 5=pad, 6=done
+            match cycle {
+                0 | 2 | 5 => self.state = ExecState::ExecuteIndexCB(op, cycle + 1),
+                1 => {
+                    self.temp_data = bus.read(master, self.temp_addr);
+                    self.state = ExecState::ExecuteIndexCB(op, 2);
+                }
+                3 => {
+                    self.temp_data = match xx {
+                        0 => {
+                            let (r, f) = self.do_cb_rotate_shift(yyy, self.temp_data);
+                            self.f = f;
+                            r
+                        }
+                        2 => self.temp_data & !(1 << yyy),
+                        3 => self.temp_data | (1 << yyy),
+                        _ => unreachable!(),
+                    };
+                    // Undocumented: if zzz != 6, copy result to register
+                    if zzz != 6 {
+                        self.set_reg8(zzz, self.temp_data);
+                    }
+                    self.state = ExecState::ExecuteIndexCB(op, 4);
+                }
+                4 => {
+                    bus.write(master, self.temp_addr, self.temp_data);
+                    self.state = ExecState::ExecuteIndexCB(op, 5);
+                }
+                6 => self.state = ExecState::Fetch,
+                _ => unreachable!(),
+            }
+        }
+    }
 }

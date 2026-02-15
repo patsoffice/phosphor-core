@@ -344,9 +344,39 @@ impl Z80 {
             ExecState::ExecuteED(op, cyc) => {
                 self.execute_instruction_ed(op, cyc, bus, master);
             }
-            _ => {
-                // TODO: Implement other states
-                self.state = ExecState::Fetch;
+            ExecState::PrefixIndexCB_ReadOffset(cyc) => {
+                // Read displacement byte for DD CB d op / FD CB d op
+                // 3 states: 0=pad, 1=read d from PC, 2=pad → FetchOp
+                match cyc {
+                    0 => self.state = ExecState::PrefixIndexCB_ReadOffset(1),
+                    1 => {
+                        self.temp_data = bus.read(master, self.pc);
+                        self.pc = self.pc.wrapping_add(1);
+                        self.state = ExecState::PrefixIndexCB_ReadOffset(2);
+                    }
+                    2 => self.state = ExecState::PrefixIndexCB_FetchOp(0),
+                    _ => unreachable!(),
+                }
+            }
+            ExecState::PrefixIndexCB_FetchOp(cyc) => {
+                // Fetch CB sub-opcode + 2 internal cycles for address computation
+                // 5 states: 0=pad, 1=read opcode, 2=internal, 3=internal, 4=dispatch
+                match cyc {
+                    0 | 2 | 3 => self.state = ExecState::PrefixIndexCB_FetchOp(cyc + 1),
+                    1 => {
+                        self.opcode = bus.read(master, self.pc);
+                        self.pc = self.pc.wrapping_add(1);
+                        self.r = (self.r & 0x80) | (self.r.wrapping_add(1) & 0x7F);
+                        // Compute indexed address and store in temp_addr
+                        self.temp_addr = self.get_index_addr();
+                        self.state = ExecState::PrefixIndexCB_FetchOp(2);
+                    }
+                    4 => self.state = ExecState::ExecuteIndexCB(self.opcode, 0),
+                    _ => unreachable!(),
+                }
+            }
+            ExecState::ExecuteIndexCB(op, cyc) => {
+                self.execute_instruction_index_cb(op, cyc, bus, master);
             }
         }
     }
@@ -382,7 +412,12 @@ impl Z80 {
 
             // Prefixes — 4 T each (M1 only)
             0xCB => {
-                self.state = ExecState::PrefixCB(0);
+                if self.index_mode != IndexMode::HL {
+                    // DD CB d op / FD CB d op: indexed bit operations
+                    self.state = ExecState::PrefixIndexCB_ReadOffset(0);
+                } else {
+                    self.state = ExecState::PrefixCB(0);
+                }
             }
             0xED => {
                 self.index_mode = IndexMode::HL;

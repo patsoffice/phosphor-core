@@ -90,7 +90,7 @@ impl Z80 {
 
     // --- Instructions ---
 
-    /// ALU A, r — 4 T (reg) or 7 T ((HL))
+    /// ALU A, r — 4 T (reg) or 7 T ((HL)) or 19 T ((IX+d))
     /// ADD, ADC, SUB, SBC, AND, XOR, OR, CP
     /// Opcode mask: 10 xxx zzz
     pub fn op_alu_r<B: Bus<Address = u16, Data = u8> + ?Sized>(
@@ -104,21 +104,41 @@ impl Z80 {
         let r = opcode & 0x07;
 
         if r == 6 {
-            // ALU A, (HL) — 7 T: M1(4) + MR(3)
-            // cycles 1=T4, 2=MR read, 3=MR pad, 4=done
-            match cycle {
-                1 | 3 => self.state = ExecState::Execute(opcode, cycle + 1),
-                2 => {
-                    if self.index_mode != IndexMode::HL {
-                        todo!("ALU A, (IX/IY+d)");
+            if self.index_mode == IndexMode::HL {
+                // ALU A, (HL) — 7 T: cycles 1-4
+                match cycle {
+                    1 | 3 => self.state = ExecState::Execute(opcode, cycle + 1),
+                    2 => {
+                        let addr = self.get_hl();
+                        let val = bus.read(master, addr);
+                        self.perform_alu_op(alu_op, val);
+                        self.state = ExecState::Execute(opcode, 3);
                     }
-                    let addr = self.get_hl();
-                    let val = bus.read(master, addr);
-                    self.perform_alu_op(alu_op, val);
-                    self.state = ExecState::Execute(opcode, 3);
+                    4 => self.state = ExecState::Fetch,
+                    _ => unreachable!(),
                 }
-                4 => self.state = ExecState::Fetch,
-                _ => unreachable!(),
+            } else {
+                // ALU A, (IX+d) — 19 T: cycles 1-12
+                // 1=pad, 2=read d, 3=pad, 4-8=internal, 9=pad, 10=read (IX+d), 11=pad, 12=done
+                match cycle {
+                    1 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 11 => {
+                        self.state = ExecState::Execute(opcode, cycle + 1);
+                    }
+                    2 => {
+                        self.temp_data = bus.read(master, self.pc);
+                        self.pc = self.pc.wrapping_add(1);
+                        self.state = ExecState::Execute(opcode, 3);
+                    }
+                    10 => {
+                        let addr = self.get_index_addr();
+                        let val = bus.read(master, addr);
+                        self.memptr = addr;
+                        self.perform_alu_op(alu_op, val);
+                        self.state = ExecState::Execute(opcode, 11);
+                    }
+                    12 => self.state = ExecState::Fetch,
+                    _ => unreachable!(),
+                }
             }
         } else {
             // ALU A, r — 4 T: M1 only
@@ -153,7 +173,7 @@ impl Z80 {
         }
     }
 
-    /// INC/DEC r — 4 T (reg) or 11 T ((HL))
+    /// INC/DEC r — 4 T (reg) or 11 T ((HL)) or 23 T ((IX+d))
     /// Opcode mask: 00 rrr 10x
     pub fn op_inc_dec_r<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -166,35 +186,67 @@ impl Z80 {
         let is_dec = (opcode & 0x01) != 0;
 
         if r == 6 {
-            // INC/DEC (HL) — 11 T: M1(4) + MR(3) + internal(1) + MW(3)
-            // cycles 1=T4, 2=MR read, 3-4=MR pad, 5=internal compute,
-            //         6=MW write, 7-8=MW pad
-            match cycle {
-                1 | 3 | 4 | 7 => self.state = ExecState::Execute(opcode, cycle + 1),
-                2 => {
-                    if self.index_mode != IndexMode::HL {
-                        todo!("INC/DEC (IX/IY+d)");
+            if self.index_mode == IndexMode::HL {
+                // INC/DEC (HL) — 11 T: M1(4) + MR(3) + internal(1) + MW(3)
+                // cycles 1=T4, 2=MR read, 3-4=pad, 5=compute, 6=MW write, 7=pad, 8=done
+                match cycle {
+                    1 | 3 | 4 | 7 => self.state = ExecState::Execute(opcode, cycle + 1),
+                    2 => {
+                        let addr = self.get_hl();
+                        self.temp_data = bus.read(master, addr);
+                        self.temp_addr = addr;
+                        self.state = ExecState::Execute(opcode, 3);
                     }
-                    let addr = self.get_hl();
-                    self.temp_data = bus.read(master, addr);
-                    self.temp_addr = addr;
-                    self.state = ExecState::Execute(opcode, 3);
+                    5 => {
+                        self.temp_data = if is_dec {
+                            self.calc_dec_flags(self.temp_data)
+                        } else {
+                            self.calc_inc_flags(self.temp_data)
+                        };
+                        self.state = ExecState::Execute(opcode, 6);
+                    }
+                    6 => {
+                        bus.write(master, self.temp_addr, self.temp_data);
+                        self.state = ExecState::Execute(opcode, 7);
+                    }
+                    8 => self.state = ExecState::Fetch,
+                    _ => unreachable!(),
                 }
-                5 => {
-                    // Internal cycle: compute result
-                    self.temp_data = if is_dec {
-                        self.calc_dec_flags(self.temp_data)
-                    } else {
-                        self.calc_inc_flags(self.temp_data)
-                    };
-                    self.state = ExecState::Execute(opcode, 6);
+            } else {
+                // INC/DEC (IX+d) — 23 T: DD M1(4) + M1(4) + MR(3) + internal(5) + MR(3) + internal(1) + MW(3)
+                // cycles 1-16: 1=pad, 2=read d, 3=pad, 4-8=internal, 9=pad, 10=read (IX+d),
+                //               11=pad, 12=compute, 13=pad, 14=write (IX+d), 15=pad, 16=done
+                match cycle {
+                    1 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 11 | 13 | 15 => {
+                        self.state = ExecState::Execute(opcode, cycle + 1);
+                    }
+                    2 => {
+                        self.temp_data = bus.read(master, self.pc);
+                        self.pc = self.pc.wrapping_add(1);
+                        self.state = ExecState::Execute(opcode, 3);
+                    }
+                    10 => {
+                        let addr = self.get_index_addr();
+                        self.temp_addr = addr;
+                        self.temp_data = bus.read(master, addr);
+                        self.memptr = addr;
+                        self.state = ExecState::Execute(opcode, 11);
+                    }
+                    12 => {
+                        self.temp_data = if is_dec {
+                            self.calc_dec_flags(self.temp_data)
+                        } else {
+                            self.calc_inc_flags(self.temp_data)
+                        };
+                        self.state = ExecState::Execute(opcode, 13);
+                    }
+                    14 => {
+                        bus.write(master, self.temp_addr, self.temp_data);
+                        self.state = ExecState::Execute(opcode, 15);
+                    }
+                    16 => self.state = ExecState::Fetch,
+                    _ => unreachable!(),
                 }
-                6 => {
-                    bus.write(master, self.temp_addr, self.temp_data);
-                    self.state = ExecState::Execute(opcode, 7);
-                }
-                8 => self.state = ExecState::Fetch,
-                _ => unreachable!(),
             }
         } else {
             // INC/DEC r — 4 T: M1 only

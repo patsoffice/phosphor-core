@@ -4,6 +4,7 @@ use crate::cpu::z80::{ExecState, Flag, IndexMode, Z80};
 impl Z80 {
     /// LD r, n — 7 T: M1(4) + MR(3)
     /// LD (HL), n — 10 T: M1(4) + MR(3) + MW(3)
+    /// LD (IX+d), n — 19 T: DD M1(4) + M1(4) + MR(3) + MR(3) + internal(2) + MW(3)
     /// Opcode mask: 00 rrr 110
     pub fn op_ld_r_n<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -15,25 +16,58 @@ impl Z80 {
         let r = (opcode >> 3) & 0x07;
 
         if r == 6 {
-            // LD (HL), n — 10 T: M1(4) + MR(3) + MW(3)
-            match cycle {
-                1 | 3 | 4 | 6 => self.state = ExecState::Execute(opcode, cycle + 1),
-                2 => {
-                    let n = bus.read(master, self.pc);
-                    self.pc = self.pc.wrapping_add(1);
-                    self.temp_data = n;
-                    self.state = ExecState::Execute(opcode, 3);
-                }
-                5 => {
-                    if self.index_mode != IndexMode::HL {
-                        todo!("LD (IX/IY+d), n");
+            if self.index_mode == IndexMode::HL {
+                // LD (HL), n — 10 T: M1(4) + MR(3) + MW(3)
+                match cycle {
+                    1 | 3 | 4 | 6 => self.state = ExecState::Execute(opcode, cycle + 1),
+                    2 => {
+                        self.temp_data = bus.read(master, self.pc);
+                        self.pc = self.pc.wrapping_add(1);
+                        self.state = ExecState::Execute(opcode, 3);
                     }
-                    let addr = self.get_hl();
-                    bus.write(master, addr, self.temp_data);
-                    self.state = ExecState::Execute(opcode, 6);
+                    5 => {
+                        let addr = self.get_hl();
+                        bus.write(master, addr, self.temp_data);
+                        self.state = ExecState::Execute(opcode, 6);
+                    }
+                    7 => self.state = ExecState::Fetch,
+                    _ => unreachable!(),
                 }
-                7 => self.state = ExecState::Fetch,
-                _ => unreachable!(),
+            } else {
+                // LD (IX+d), n — 19 T: cycles 1-12
+                // 1=pad, 2=read d, 3=pad, 4=pad, 5=read n, 6=pad, 7-8=internal,
+                // 9=pad, 10=write (IX+d), 11=pad, 12=done
+                match cycle {
+                    1 | 3 | 4 | 6 | 7 | 8 | 9 | 11 => {
+                        self.state = ExecState::Execute(opcode, cycle + 1);
+                    }
+                    2 => {
+                        // Read displacement
+                        self.temp_addr = bus.read(master, self.pc) as u16;
+                        self.pc = self.pc.wrapping_add(1);
+                        self.state = ExecState::Execute(opcode, 3);
+                    }
+                    5 => {
+                        // Read immediate value
+                        self.temp_data = bus.read(master, self.pc);
+                        self.pc = self.pc.wrapping_add(1);
+                        self.state = ExecState::Execute(opcode, 6);
+                    }
+                    10 => {
+                        // Write to (IX/IY+d): compute address from stored displacement
+                        let base = match self.index_mode {
+                            IndexMode::IX => self.ix,
+                            IndexMode::IY => self.iy,
+                            _ => unreachable!(),
+                        };
+                        let addr = base.wrapping_add(self.temp_addr as i8 as i16 as u16);
+                        bus.write(master, addr, self.temp_data);
+                        self.memptr = addr;
+                        self.state = ExecState::Execute(opcode, 11);
+                    }
+                    12 => self.state = ExecState::Fetch,
+                    _ => unreachable!(),
+                }
             }
         } else {
             // LD r, n — 7 T: M1(4) + MR(3)
@@ -53,7 +87,9 @@ impl Z80 {
 
     /// LD r, r' — 4 T: M1 only (register-register)
     /// LD r, (HL) — 7 T: M1(4) + MR(3)
+    /// LD r, (IX+d) — 19 T: DD M1(4) + M1(4) + MR(3) + internal(5) + MR(3)
     /// LD (HL), r — 7 T: M1(4) + MW(3)
+    /// LD (IX+d), r — 19 T: DD M1(4) + M1(4) + MR(3) + internal(5) + MW(3)
     /// Opcode mask: 01 dst src
     pub fn op_ld_r_r<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -66,36 +102,78 @@ impl Z80 {
         let dst = (opcode >> 3) & 0x07;
 
         if src == 6 {
-            // LD r, (HL) — 7 T: M1(4) + MR(3)
-            match cycle {
-                1 | 3 => self.state = ExecState::Execute(opcode, cycle + 1),
-                2 => {
-                    if self.index_mode != IndexMode::HL {
-                        todo!("LD r, (IX/IY+d)");
+            if self.index_mode == IndexMode::HL {
+                // LD r, (HL) — 7 T: cycles 1-4
+                match cycle {
+                    1 | 3 => self.state = ExecState::Execute(opcode, cycle + 1),
+                    2 => {
+                        let addr = self.get_hl();
+                        let val = bus.read(master, addr);
+                        self.set_reg8(dst, val);
+                        self.state = ExecState::Execute(opcode, 3);
                     }
-                    let addr = self.get_hl();
-                    let val = bus.read(master, addr);
-                    self.set_reg8(dst, val);
-                    self.state = ExecState::Execute(opcode, 3);
+                    4 => self.state = ExecState::Fetch,
+                    _ => unreachable!(),
                 }
-                4 => self.state = ExecState::Fetch,
-                _ => unreachable!(),
+            } else {
+                // LD r, (IX+d) — 19 T: cycles 1-12
+                // 1=pad, 2=read d, 3=pad, 4-8=internal, 9=pad, 10=read (IX+d), 11=pad, 12=done
+                match cycle {
+                    1 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 11 => {
+                        self.state = ExecState::Execute(opcode, cycle + 1);
+                    }
+                    2 => {
+                        self.temp_data = bus.read(master, self.pc) ;
+                        self.pc = self.pc.wrapping_add(1);
+                        self.state = ExecState::Execute(opcode, 3);
+                    }
+                    10 => {
+                        let addr = self.get_index_addr();
+                        let val = bus.read(master, addr);
+                        self.memptr = addr;
+                        self.set_reg8(dst, val);
+                        self.state = ExecState::Execute(opcode, 11);
+                    }
+                    12 => self.state = ExecState::Fetch,
+                    _ => unreachable!(),
+                }
             }
         } else if dst == 6 {
-            // LD (HL), r — 7 T: M1(4) + MW(3)
-            match cycle {
-                1 | 3 => self.state = ExecState::Execute(opcode, cycle + 1),
-                2 => {
-                    if self.index_mode != IndexMode::HL {
-                        todo!("LD (IX/IY+d), r");
+            if self.index_mode == IndexMode::HL {
+                // LD (HL), r — 7 T: cycles 1-4
+                match cycle {
+                    1 | 3 => self.state = ExecState::Execute(opcode, cycle + 1),
+                    2 => {
+                        let val = self.get_reg8(src);
+                        let addr = self.get_hl();
+                        bus.write(master, addr, val);
+                        self.state = ExecState::Execute(opcode, 3);
                     }
-                    let val = self.get_reg8(src);
-                    let addr = self.get_hl();
-                    bus.write(master, addr, val);
-                    self.state = ExecState::Execute(opcode, 3);
+                    4 => self.state = ExecState::Fetch,
+                    _ => unreachable!(),
                 }
-                4 => self.state = ExecState::Fetch,
-                _ => unreachable!(),
+            } else {
+                // LD (IX+d), r — 19 T: cycles 1-12
+                // 1=pad, 2=read d, 3=pad, 4-8=internal, 9=pad, 10=write (IX+d), 11=pad, 12=done
+                match cycle {
+                    1 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 11 => {
+                        self.state = ExecState::Execute(opcode, cycle + 1);
+                    }
+                    2 => {
+                        self.temp_data = bus.read(master, self.pc);
+                        self.pc = self.pc.wrapping_add(1);
+                        self.state = ExecState::Execute(opcode, 3);
+                    }
+                    10 => {
+                        let addr = self.get_index_addr();
+                        let val = self.get_reg8(src);
+                        bus.write(master, addr, val);
+                        self.memptr = addr;
+                        self.state = ExecState::Execute(opcode, 11);
+                    }
+                    12 => self.state = ExecState::Fetch,
+                    _ => unreachable!(),
+                }
             }
         } else {
             // LD r, r' — 4 T: M1 only
