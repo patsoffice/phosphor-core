@@ -353,6 +353,7 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 - [x] Motorola 6800 CPU (192 opcodes, cross-validated against mame4all)
 - [x] MOS 6502 CPU (151 opcodes, cross-validated against SingleStepTests/65x02)
 - [x] Zilog Z80 CPU (1604 opcodes, cross-validated against SingleStepTests/z80)
+- [ ] Intel I8035 CPU (MCS-48 family, Donkey Kong sound CPU)
 - [ ] Motorola 68000 CPU (32-bit address space, 16-bit data bus)
 
 ### Phase 4: Peripherals & Systems
@@ -363,22 +364,32 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 - [x] ROM loader (MAME ZIP support, CRC32-based matching, multi-variant ROM sets)
 - [x] Machine trait (frontend-agnostic display/input/render interface)
 - [x] Joust arcade board (Williams 2nd-gen: M6809 + video RAM + PIAs + blitter + CMOS + ROM)
-- [ ] 6850 ACIA (serial communication)
-- [ ] 6840 PTM (timer)
-- [ ] Memory mappers and bank switching
+- [ ] Namco 06xx custom I/O arbiter (Dig Dug, Galaga)
+- [ ] Namco 51xx input multiplexer (Dig Dug, Galaga)
+- [ ] Namco 54xx noise generator (Galaga)
+- [ ] Starfield generator (Galaga)
+- [ ] Atari AVG vector generator (Tempest, Star Wars)
+- [ ] Math box (Tempest, Star Wars)
+- [ ] TMS5220 speech synthesizer (Star Wars)
 
 ### Phase 5: Frontend & Developer Tools
 
 - [x] SDL2 frontend (renders any Machine impl, keyboard input, VSync timing)
+- [ ] Joypad, mouse and trackball input
 - [ ] Debugger with breakpoints and step execution
 - [ ] Memory viewer/editor
 - [ ] Disassembly viewer
 - [ ] Performance profiler
 
-### Phase 6: Multimedia
+### Phase 6: More Games
 
-- [ ] Sound chip emulation (AY-3-8910, SN76489)
-- [ ] Additional arcade boards (Robotron, Defender)
+- [ ] Additional Williams boards (Robotron, Defender)
+- [ ] Donkey Kong (Nintendo: Z80 + I8035 + tile/sprite video)
+- [ ] Dig Dug (Namco: 3×Z80 + WSG + 06xx/51xx)
+- [ ] Galaga (Namco: 3×Z80 + WSG + 06xx/51xx/54xx + starfield)
+- [ ] Crystal Castles (Atari: M6502 + POKEY + bitmap video + trackball)
+- [ ] Tempest (Atari: M6502 + 2×POKEY + AVG + math box)
+- [ ] Star Wars (Atari: 2×M6809 + 4×POKEY + TMS5220 + AVG + math box)
 
 ## License
 
