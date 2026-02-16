@@ -40,8 +40,8 @@ pub trait Bus {
 pub struct InterruptState {
     pub nmi: bool,
     pub irq: bool,
-    pub firq: bool,      // 6809-specific; ignored by other CPUs
-    pub irq_vector: u8,  // Byte placed on data bus during Z80 IRQ ACK (IM2 vectoring)
+    pub firq: bool,     // 6809-specific; ignored by other CPUs
+    pub irq_vector: u8, // Byte placed on data bus during Z80 IRQ ACK (IM2 vectoring)
 }
 
 impl Default for InterruptState {

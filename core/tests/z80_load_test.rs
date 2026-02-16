@@ -256,36 +256,52 @@ fn test_ex_af_af() {
 fn test_exx() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
-    cpu.b = 0x01; cpu.c = 0x02;
-    cpu.d = 0x03; cpu.e = 0x04;
-    cpu.h = 0x05; cpu.l = 0x06;
-    cpu.b_prime = 0x11; cpu.c_prime = 0x12;
-    cpu.d_prime = 0x13; cpu.e_prime = 0x14;
-    cpu.h_prime = 0x15; cpu.l_prime = 0x16;
+    cpu.b = 0x01;
+    cpu.c = 0x02;
+    cpu.d = 0x03;
+    cpu.e = 0x04;
+    cpu.h = 0x05;
+    cpu.l = 0x06;
+    cpu.b_prime = 0x11;
+    cpu.c_prime = 0x12;
+    cpu.d_prime = 0x13;
+    cpu.e_prime = 0x14;
+    cpu.h_prime = 0x15;
+    cpu.l_prime = 0x16;
     bus.load(0, &[0xD9]); // EXX
 
     let cycles = run_instruction(&mut cpu, &mut bus);
     assert_eq!(cycles, 4);
-    assert_eq!(cpu.b, 0x11); assert_eq!(cpu.c, 0x12);
-    assert_eq!(cpu.d, 0x13); assert_eq!(cpu.e, 0x14);
-    assert_eq!(cpu.h, 0x15); assert_eq!(cpu.l, 0x16);
-    assert_eq!(cpu.b_prime, 0x01); assert_eq!(cpu.c_prime, 0x02);
-    assert_eq!(cpu.d_prime, 0x03); assert_eq!(cpu.e_prime, 0x04);
-    assert_eq!(cpu.h_prime, 0x05); assert_eq!(cpu.l_prime, 0x06);
+    assert_eq!(cpu.b, 0x11);
+    assert_eq!(cpu.c, 0x12);
+    assert_eq!(cpu.d, 0x13);
+    assert_eq!(cpu.e, 0x14);
+    assert_eq!(cpu.h, 0x15);
+    assert_eq!(cpu.l, 0x16);
+    assert_eq!(cpu.b_prime, 0x01);
+    assert_eq!(cpu.c_prime, 0x02);
+    assert_eq!(cpu.d_prime, 0x03);
+    assert_eq!(cpu.e_prime, 0x04);
+    assert_eq!(cpu.h_prime, 0x05);
+    assert_eq!(cpu.l_prime, 0x06);
 }
 
 #[test]
 fn test_ex_de_hl() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
-    cpu.d = 0x11; cpu.e = 0x22;
-    cpu.h = 0x33; cpu.l = 0x44;
+    cpu.d = 0x11;
+    cpu.e = 0x22;
+    cpu.h = 0x33;
+    cpu.l = 0x44;
     bus.load(0, &[0xEB]); // EX DE, HL
 
     let cycles = run_instruction(&mut cpu, &mut bus);
     assert_eq!(cycles, 4);
-    assert_eq!(cpu.d, 0x33); assert_eq!(cpu.e, 0x44);
-    assert_eq!(cpu.h, 0x11); assert_eq!(cpu.l, 0x22);
+    assert_eq!(cpu.d, 0x33);
+    assert_eq!(cpu.e, 0x44);
+    assert_eq!(cpu.h, 0x11);
+    assert_eq!(cpu.l, 0x22);
 }
 
 #[test]

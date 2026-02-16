@@ -7,37 +7,49 @@ impl Z80 {
     /// Returns (result, new_flags). Flags: S, Z, PV(parity), C from shifted bit. H=0, N=0.
     fn do_cb_rotate_shift(&self, op: u8, val: u8) -> (u8, u8) {
         let (result, carry) = match op {
-            0 => { // RLC: rotate left circular
+            0 => {
+                // RLC: rotate left circular
                 let c = (val >> 7) & 1;
                 ((val << 1) | c, c)
             }
-            1 => { // RRC: rotate right circular
+            1 => {
+                // RRC: rotate right circular
                 let c = val & 1;
                 ((val >> 1) | (c << 7), c)
             }
-            2 => { // RL: rotate left through carry
+            2 => {
+                // RL: rotate left through carry
                 let old_c = if (self.f & Flag::C as u8) != 0 { 1 } else { 0 };
                 let c = (val >> 7) & 1;
                 ((val << 1) | old_c, c)
             }
-            3 => { // RR: rotate right through carry
-                let old_c = if (self.f & Flag::C as u8) != 0 { 0x80 } else { 0 };
+            3 => {
+                // RR: rotate right through carry
+                let old_c = if (self.f & Flag::C as u8) != 0 {
+                    0x80
+                } else {
+                    0
+                };
                 let c = val & 1;
                 ((val >> 1) | old_c, c)
             }
-            4 => { // SLA: shift left arithmetic
+            4 => {
+                // SLA: shift left arithmetic
                 let c = (val >> 7) & 1;
                 (val << 1, c)
             }
-            5 => { // SRA: shift right arithmetic (preserves sign)
+            5 => {
+                // SRA: shift right arithmetic (preserves sign)
                 let c = val & 1;
                 (((val as i8) >> 1) as u8, c)
             }
-            6 => { // SLL: shift left logical, set bit 0 (undocumented)
+            6 => {
+                // SLL: shift left logical, set bit 0 (undocumented)
                 let c = (val >> 7) & 1;
                 ((val << 1) | 1, c)
             }
-            7 => { // SRL: shift right logical
+            7 => {
+                // SRL: shift right logical
                 let c = val & 1;
                 (val >> 1, c)
             }
@@ -45,10 +57,18 @@ impl Z80 {
         };
 
         let mut f = 0;
-        if result == 0 { f |= Flag::Z as u8; }
-        if (result & 0x80) != 0 { f |= Flag::S as u8; }
-        if Self::get_parity(result) { f |= Flag::PV as u8; }
-        if carry != 0 { f |= Flag::C as u8; }
+        if result == 0 {
+            f |= Flag::Z as u8;
+        }
+        if (result & 0x80) != 0 {
+            f |= Flag::S as u8;
+        }
+        if Self::get_parity(result) {
+            f |= Flag::PV as u8;
+        }
+        if carry != 0 {
+            f |= Flag::C as u8;
+        }
         // H = 0, N = 0
         f |= result & (Flag::X as u8 | Flag::Y as u8);
 
@@ -67,9 +87,9 @@ impl Z80 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        let xx = (op >> 6) & 0x03;  // 0=rot/shift, 1=BIT, 2=RES, 3=SET
+        let xx = (op >> 6) & 0x03; // 0=rot/shift, 1=BIT, 2=RES, 3=SET
         let yyy = (op >> 3) & 0x07; // bit number or shift operation
-        let zzz = op & 0x07;        // register index
+        let zzz = op & 0x07; // register index
 
         if zzz == 6 {
             // (HL) operations — multi-cycle
@@ -97,7 +117,9 @@ impl Z80 {
                         f |= Flag::Z as u8;
                         f |= Flag::PV as u8; // PV = Z for BIT
                     }
-                    if yyy == 7 && tested != 0 { f |= Flag::S as u8; }
+                    if yyy == 7 && tested != 0 {
+                        f |= Flag::S as u8;
+                    }
                     // X/Y from the operand register value
                     f |= val & (Flag::X as u8 | Flag::Y as u8);
                     self.f = f;
@@ -139,7 +161,9 @@ impl Z80 {
                     f |= Flag::Z as u8;
                     f |= Flag::PV as u8;
                 }
-                if bit == 7 && tested != 0 { f |= Flag::S as u8; }
+                if bit == 7 && tested != 0 {
+                    f |= Flag::S as u8;
+                }
                 // X/Y from high byte of MEMPTR for BIT (HL)
                 f |= ((self.memptr >> 8) as u8) & (Flag::X as u8 | Flag::Y as u8);
                 self.f = f;
@@ -179,7 +203,7 @@ impl Z80 {
                         r
                     }
                     2 => self.temp_data & !(1 << yyy), // RES — no flag changes
-                    3 => self.temp_data | (1 << yyy),   // SET — no flag changes
+                    3 => self.temp_data | (1 << yyy),  // SET — no flag changes
                     _ => unreachable!(),
                 };
                 self.state = ExecState::ExecuteCB(op, 4);
@@ -205,9 +229,9 @@ impl Z80 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        let xx = (op >> 6) & 0x03;  // 0=rot/shift, 1=BIT, 2=RES, 3=SET
+        let xx = (op >> 6) & 0x03; // 0=rot/shift, 1=BIT, 2=RES, 3=SET
         let yyy = (op >> 3) & 0x07; // bit number or shift operation
-        let zzz = op & 0x07;        // register (6 = no copy, otherwise undocumented copy)
+        let zzz = op & 0x07; // register (6 = no copy, otherwise undocumented copy)
 
         // MEMPTR = IX+d / IY+d (the computed address)
         if cycle == 0 {
@@ -228,7 +252,9 @@ impl Z80 {
                         f |= Flag::Z as u8;
                         f |= Flag::PV as u8;
                     }
-                    if yyy == 7 && tested != 0 { f |= Flag::S as u8; }
+                    if yyy == 7 && tested != 0 {
+                        f |= Flag::S as u8;
+                    }
                     // X/Y from high byte of address for indexed BIT
                     f |= ((self.temp_addr >> 8) as u8) & (Flag::X as u8 | Flag::Y as u8);
                     self.f = f;

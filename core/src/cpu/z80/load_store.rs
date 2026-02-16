@@ -123,7 +123,7 @@ impl Z80 {
                         self.state = ExecState::Execute(opcode, cycle + 1);
                     }
                     2 => {
-                        self.temp_data = bus.read(master, self.pc) ;
+                        self.temp_data = bus.read(master, self.pc);
                         self.pc = self.pc.wrapping_add(1);
                         self.state = ExecState::Execute(opcode, 3);
                     }
@@ -520,9 +520,15 @@ impl Z80 {
             0 => {
                 self.a = self.i;
                 let mut f = self.f & Flag::C as u8;
-                if self.a == 0 { f |= Flag::Z as u8; }
-                if (self.a & 0x80) != 0 { f |= Flag::S as u8; }
-                if self.iff2 { f |= Flag::PV as u8; }
+                if self.a == 0 {
+                    f |= Flag::Z as u8;
+                }
+                if (self.a & 0x80) != 0 {
+                    f |= Flag::S as u8;
+                }
+                if self.iff2 {
+                    f |= Flag::PV as u8;
+                }
                 f |= self.a & (Flag::X as u8 | Flag::Y as u8);
                 self.f = f;
                 self.q = self.f;
@@ -541,9 +547,15 @@ impl Z80 {
             0 => {
                 self.a = self.r;
                 let mut f = self.f & Flag::C as u8;
-                if self.a == 0 { f |= Flag::Z as u8; }
-                if (self.a & 0x80) != 0 { f |= Flag::S as u8; }
-                if self.iff2 { f |= Flag::PV as u8; }
+                if self.a == 0 {
+                    f |= Flag::Z as u8;
+                }
+                if (self.a & 0x80) != 0 {
+                    f |= Flag::S as u8;
+                }
+                if self.iff2 {
+                    f |= Flag::PV as u8;
+                }
                 f |= self.a & (Flag::X as u8 | Flag::Y as u8);
                 self.f = f;
                 self.q = self.f;
@@ -660,9 +672,15 @@ impl Z80 {
                 }
                 // Set flags from input value
                 let mut f = self.f & Flag::C as u8;
-                if val == 0 { f |= Flag::Z as u8; }
-                if (val & 0x80) != 0 { f |= Flag::S as u8; }
-                if Self::get_parity(val) { f |= Flag::PV as u8; }
+                if val == 0 {
+                    f |= Flag::Z as u8;
+                }
+                if (val & 0x80) != 0 {
+                    f |= Flag::S as u8;
+                }
+                if Self::get_parity(val) {
+                    f |= Flag::PV as u8;
+                }
                 f |= val & (Flag::X as u8 | Flag::Y as u8);
                 self.f = f;
                 self.q = self.f;

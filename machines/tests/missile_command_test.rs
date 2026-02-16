@@ -1,8 +1,8 @@
 use phosphor_core::core::machine::Machine;
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_machines::missile_command::{
-    MissileCommandSystem, INPUT_COIN, INPUT_FIRE_CENTER, INPUT_FIRE_LEFT, INPUT_FIRE_RIGHT,
-    INPUT_START1, INPUT_START2, INPUT_TRACK_D, INPUT_TRACK_R,
+    INPUT_COIN, INPUT_FIRE_CENTER, INPUT_FIRE_LEFT, INPUT_FIRE_RIGHT, INPUT_START1, INPUT_START2,
+    INPUT_TRACK_D, INPUT_TRACK_R, MissileCommandSystem,
 };
 
 // =================================================================
@@ -73,8 +73,14 @@ fn test_rom_mirror_vectors() {
     // ROM[0x2800] maps to bus 0x7800 (0x5000 + 0x2800) and also to 0xF800
     // ROM[0x2FFF] maps to bus 0x7FFF and also to 0xFFFF
     // Since ROM is all zeros, both should read 0
-    assert_eq!(sys.read(BusMaster::Cpu(0), 0x7800), sys.read(BusMaster::Cpu(0), 0xF800));
-    assert_eq!(sys.read(BusMaster::Cpu(0), 0x7FFF), sys.read(BusMaster::Cpu(0), 0xFFFF));
+    assert_eq!(
+        sys.read(BusMaster::Cpu(0), 0x7800),
+        sys.read(BusMaster::Cpu(0), 0xF800)
+    );
+    assert_eq!(
+        sys.read(BusMaster::Cpu(0), 0x7FFF),
+        sys.read(BusMaster::Cpu(0), 0xFFFF)
+    );
 }
 
 #[test]
@@ -120,7 +126,10 @@ fn test_in0_default_all_released() {
     let mut sys = MissileCommandSystem::new();
     // IN0 is active-low: all 1s when nothing pressed
     let val = sys.read(BusMaster::Cpu(0), 0x4800);
-    assert_eq!(val, 0xFF, "All buttons released should read 0xFF (active-low)");
+    assert_eq!(
+        val, 0xFF,
+        "All buttons released should read 0xFF (active-low)"
+    );
 }
 
 #[test]
@@ -156,7 +165,11 @@ fn test_in0_start2_separate_bit() {
     sys.set_input(INPUT_START2, true);
     let val = sys.read(BusMaster::Cpu(0), 0x4800);
     assert_eq!(val & 0x08, 0x00, "Start 2 pressed should clear bit 3");
-    assert_eq!(val & 0x10, 0x10, "Start 1 should remain unaffected (bit 4 still set)");
+    assert_eq!(
+        val & 0x10,
+        0x10,
+        "Start 1 should remain unaffected (bit 4 still set)"
+    );
 
     sys.set_input(INPUT_START2, false);
     let val = sys.read(BusMaster::Cpu(0), 0x4800);
@@ -239,7 +252,11 @@ fn test_in1_fire_on_separate_register_from_in0() {
     // Coin should NOT affect IN1 fire bits
     sys.set_input(INPUT_COIN, true);
     let in1 = sys.read(BusMaster::Cpu(0), 0x4900);
-    assert_eq!(in1 & 0x07, 0x03, "Coin should not affect IN1 fire bits (only Fire Left pressed)");
+    assert_eq!(
+        in1 & 0x07,
+        0x03,
+        "Coin should not affect IN1 fire bits (only Fire Left pressed)"
+    );
 }
 
 // =================================================================
@@ -301,7 +318,11 @@ fn test_ctrld_toggle_back_to_switches() {
     // Should read switches again
     sys.set_input(INPUT_COIN, true);
     let val = sys.read(BusMaster::Cpu(0), 0x4800);
-    assert_eq!(val & 0x20, 0x00, "CTRLD=0 should read switches, coin pressed");
+    assert_eq!(
+        val & 0x20,
+        0x00,
+        "CTRLD=0 should read switches, coin pressed"
+    );
 }
 
 // =================================================================
@@ -386,7 +407,11 @@ fn test_vblank_active_at_start() {
     // At clock=0, scanline=0, which is in VBLANK (V < 25)
     sys.tick();
     let in1 = sys.read(BusMaster::Cpu(0), 0x4900);
-    assert_eq!(in1 & 0x80, 0x80, "VBLANK should be active (bit 7 high) at scanline 0");
+    assert_eq!(
+        in1 & 0x80,
+        0x80,
+        "VBLANK should be active (bit 7 high) at scanline 0"
+    );
 }
 
 #[test]
@@ -398,7 +423,11 @@ fn test_vblank_inactive_during_active_display() {
         sys.tick();
     }
     let in1 = sys.read(BusMaster::Cpu(0), 0x4900);
-    assert_eq!(in1 & 0x80, 0x00, "VBLANK should be inactive (bit 7 low) during active display");
+    assert_eq!(
+        in1 & 0x80,
+        0x00,
+        "VBLANK should be inactive (bit 7 low) during active display"
+    );
 }
 
 // =================================================================
@@ -415,7 +444,10 @@ fn test_render_default_palette_all_white() {
     sys.render_frame(&mut buffer);
 
     // Palette entry 0 with data=0: bits 3/2/1 = 0 → inverted → R=255, G=255, B=255
-    assert_eq!(buffer[0], 255, "R should be 255 (palette 0, all bits inverted)");
+    assert_eq!(
+        buffer[0], 255,
+        "R should be 255 (palette 0, all bits inverted)"
+    );
     assert_eq!(buffer[1], 255, "G should be 255");
     assert_eq!(buffer[2], 255, "B should be 255");
 }
@@ -494,13 +526,29 @@ fn test_render_all_four_pixels_in_byte() {
     sys.render_frame(&mut buffer);
 
     // Pixel 0: color 6 = magenta (R=255, G=0, B=255)
-    assert_eq!((buffer[0], buffer[1], buffer[2]), (255, 0, 255), "Pixel 0: magenta");
+    assert_eq!(
+        (buffer[0], buffer[1], buffer[2]),
+        (255, 0, 255),
+        "Pixel 0: magenta"
+    );
     // Pixel 1: color 4 = red (R=255, G=0, B=0)
-    assert_eq!((buffer[3], buffer[4], buffer[5]), (255, 0, 0), "Pixel 1: red");
+    assert_eq!(
+        (buffer[3], buffer[4], buffer[5]),
+        (255, 0, 0),
+        "Pixel 1: red"
+    );
     // Pixel 2: color 2 = blue (R=0, G=0, B=255)
-    assert_eq!((buffer[6], buffer[7], buffer[8]), (0, 0, 255), "Pixel 2: blue");
+    assert_eq!(
+        (buffer[6], buffer[7], buffer[8]),
+        (0, 0, 255),
+        "Pixel 2: blue"
+    );
     // Pixel 3: color 0 = black (R=0, G=0, B=0)
-    assert_eq!((buffer[9], buffer[10], buffer[11]), (0, 0, 0), "Pixel 3: black");
+    assert_eq!(
+        (buffer[9], buffer[10], buffer[11]),
+        (0, 0, 0),
+        "Pixel 3: black"
+    );
 }
 
 // =================================================================
@@ -514,7 +562,10 @@ fn test_in0_address_mirror() {
     sys.set_input(INPUT_COIN, true);
     let val_base = sys.read(BusMaster::Cpu(0), 0x4800);
     let val_mirror = sys.read(BusMaster::Cpu(0), 0x48FF);
-    assert_eq!(val_base, val_mirror, "IN0 should be mirrored across 0x4800-0x48FF");
+    assert_eq!(
+        val_base, val_mirror,
+        "IN0 should be mirrored across 0x4800-0x48FF"
+    );
 }
 
 #[test]
@@ -523,7 +574,10 @@ fn test_in1_address_mirror() {
     sys.set_input(INPUT_FIRE_LEFT, true);
     let val_base = sys.read(BusMaster::Cpu(0), 0x4900);
     let val_mirror = sys.read(BusMaster::Cpu(0), 0x4955);
-    assert_eq!(val_base, val_mirror, "IN1 should be mirrored across 0x4900-0x49FF");
+    assert_eq!(
+        val_base, val_mirror,
+        "IN1 should be mirrored across 0x4900-0x49FF"
+    );
 }
 
 #[test]
@@ -557,7 +611,11 @@ fn test_scanline_counter() {
     for _ in 0..80 {
         sys.tick();
     }
-    assert_eq!(sys.current_scanline(), 1, "Should be at scanline 1 after 80 cycles");
+    assert_eq!(
+        sys.current_scanline(),
+        1,
+        "Should be at scanline 1 after 80 cycles"
+    );
 }
 
 // =================================================================
@@ -570,11 +628,23 @@ fn test_input_names_match_key_map_patterns() {
     let map = sys.input_map();
 
     // These names should match entries in frontend/src/input.rs default_key_map
-    let expected_matchable = ["Coin", "P1 Start", "P2 Start", "P1 Left", "P1 Right", "P1 Up", "P1 Down", "Fire Left", "Fire Center", "Fire Right"];
+    let expected_matchable = [
+        "Coin",
+        "P1 Start",
+        "P2 Start",
+        "P1 Left",
+        "P1 Right",
+        "P1 Up",
+        "P1 Down",
+        "Fire Left",
+        "Fire Center",
+        "Fire Right",
+    ];
     for name in &expected_matchable {
         assert!(
             map.iter().any(|b| b.name == *name),
-            "Input map should contain button named '{}'", name
+            "Input map should contain button named '{}'",
+            name
         );
     }
 }
@@ -603,7 +673,10 @@ fn test_15bit_masking_rom_vectors() {
     // Both should read the same value
     let via_direct = sys.read(BusMaster::Cpu(0), 0x7FFC);
     let via_mask = sys.read(BusMaster::Cpu(0), 0xFFFC);
-    assert_eq!(via_direct, via_mask, "0xFFFC should alias to 0x7FFC via 15-bit masking");
+    assert_eq!(
+        via_direct, via_mask,
+        "0xFFFC should alias to 0x7FFC via 15-bit masking"
+    );
 }
 
 #[test]
@@ -771,7 +844,11 @@ fn test_render_3rd_color_bit() {
     sys.write_ram(bit3_base, 0x01);
 
     // Verify the write persisted
-    assert_eq!(sys.read_ram(bit3_base), 0x01, "RAM write at bit3_base should persist");
+    assert_eq!(
+        sys.read_ram(bit3_base),
+        0x01,
+        "RAM write at bit3_base should persist"
+    );
 
     // Also verify palette was set
     assert_eq!(sys.read_palette(0), 0x0E, "Palette 0 should be 0x0E");
@@ -792,7 +869,10 @@ fn test_render_3rd_color_bit() {
         (actual_r, actual_g, actual_b),
         (0, 0, 255),
         "Pixel (0,199) should be blue (color idx 1). Got ({},{},{}). bit3_base=0x{:04X}",
-        actual_r, actual_g, actual_b, bit3_base
+        actual_r,
+        actual_g,
+        actual_b,
+        bit3_base
     );
 
     // Screen pixel (8, 199) without 3rd bit should be color index 0 (black)
@@ -846,5 +926,8 @@ fn test_reset_loads_vector() {
     // with default ROM (all zeros) and check PC = 0x0000
     sys.reset();
     let state = sys.get_cpu_state();
-    assert_eq!(state.pc, 0x0000, "Reset vector from all-zero ROM should set PC=0x0000");
+    assert_eq!(
+        state.pc, 0x0000,
+        "Reset vector from all-zero ROM should set PC=0x0000"
+    );
 }

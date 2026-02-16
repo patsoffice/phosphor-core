@@ -62,8 +62,8 @@ pub struct Z80 {
     pub memptr: u16, // Hidden WZ register
     pub halted: bool,
     pub ei_delay: bool,
-    pub p: bool, // Set after LD A,I / LD A,R for interrupt PV behavior
-    pub q: u8,        // Copy of F when instruction modifies flags, 0 otherwise (for SCF/CCF X/Y)
+    pub p: bool,           // Set after LD A,I / LD A,R for interrupt PV behavior
+    pub q: u8, // Copy of F when instruction modifies flags, 0 otherwise (for SCF/CCF X/Y)
     pub(crate) prev_q: u8, // Previous instruction's q value (saved at Fetch for SCF/CCF)
 
     pub(crate) state: ExecState,
@@ -88,8 +88,8 @@ pub enum IndexMode {
 
 #[derive(Clone, Debug)]
 pub(crate) enum ExecState {
-    Fetch,     // M1 T1: address on bus, reset prefix state
-    FetchRead, // M1 T2: read opcode, increment PC, refresh R
+    Fetch,           // M1 T1: address on bus, reset prefix state
+    FetchRead,       // M1 T2: read opcode, increment PC, refresh R
     Execute(u8, u8), // (opcode, cycle)
 
     // Prefix States
@@ -159,17 +159,37 @@ impl Z80 {
     }
 
     // Helpers for 16-bit register access
-    pub fn get_bc(&self) -> u16 { ((self.b as u16) << 8) | self.c as u16 }
-    pub fn set_bc(&mut self, val: u16) { self.b = (val >> 8) as u8; self.c = val as u8; }
+    pub fn get_bc(&self) -> u16 {
+        ((self.b as u16) << 8) | self.c as u16
+    }
+    pub fn set_bc(&mut self, val: u16) {
+        self.b = (val >> 8) as u8;
+        self.c = val as u8;
+    }
 
-    pub fn get_de(&self) -> u16 { ((self.d as u16) << 8) | self.e as u16 }
-    pub fn set_de(&mut self, val: u16) { self.d = (val >> 8) as u8; self.e = val as u8; }
+    pub fn get_de(&self) -> u16 {
+        ((self.d as u16) << 8) | self.e as u16
+    }
+    pub fn set_de(&mut self, val: u16) {
+        self.d = (val >> 8) as u8;
+        self.e = val as u8;
+    }
 
-    pub fn get_hl(&self) -> u16 { ((self.h as u16) << 8) | self.l as u16 }
-    pub fn set_hl(&mut self, val: u16) { self.h = (val >> 8) as u8; self.l = val as u8; }
+    pub fn get_hl(&self) -> u16 {
+        ((self.h as u16) << 8) | self.l as u16
+    }
+    pub fn set_hl(&mut self, val: u16) {
+        self.h = (val >> 8) as u8;
+        self.l = val as u8;
+    }
 
-    pub fn get_af(&self) -> u16 { ((self.a as u16) << 8) | self.f as u16 }
-    pub fn set_af(&mut self, val: u16) { self.a = (val >> 8) as u8; self.f = val as u8; }
+    pub fn get_af(&self) -> u16 {
+        ((self.a as u16) << 8) | self.f as u16
+    }
+    pub fn set_af(&mut self, val: u16) {
+        self.a = (val >> 8) as u8;
+        self.f = val as u8;
+    }
 
     /// Get 8-bit register by index, respecting IX/IY prefix for H/L (undocumented IXH/IXL/IYH/IYL).
     /// Index 6 is NOT handled here — callers must handle (HL)/(IX+d)/(IY+d) separately.
@@ -732,17 +752,17 @@ impl Z80 {
     ) {
         match opcode {
             // --- Specific ED opcodes (low 3 bits = 111) ---
-            0x47 => self.op_ld_i_a(opcode, cycle),      // LD I,A — 9T
-            0x4F => self.op_ld_r_a(opcode, cycle),      // LD R,A — 9T
-            0x57 => self.op_ld_a_i(opcode, cycle),      // LD A,I — 9T
-            0x5F => self.op_ld_a_r(opcode, cycle),      // LD A,R — 9T
+            0x47 => self.op_ld_i_a(opcode, cycle), // LD I,A — 9T
+            0x4F => self.op_ld_r_a(opcode, cycle), // LD R,A — 9T
+            0x57 => self.op_ld_a_i(opcode, cycle), // LD A,I — 9T
+            0x5F => self.op_ld_a_r(opcode, cycle), // LD A,R — 9T
             0x67 => self.op_rrd(opcode, cycle, bus, master), // RRD — 18T
             0x6F => self.op_rld(opcode, cycle, bus, master), // RLD — 18T
 
             // --- Block transfer/compare ---
-            0xA0 | 0xA8 => self.op_ldi_ldd(opcode, cycle, bus, master),   // LDI/LDD — 16T
-            0xA1 | 0xA9 => self.op_cpi_cpd(opcode, cycle, bus, master),   // CPI/CPD — 16T
-            0xA2 | 0xAA => self.op_ini_ind(opcode, cycle, bus, master),   // INI/IND — 16T
+            0xA0 | 0xA8 => self.op_ldi_ldd(opcode, cycle, bus, master), // LDI/LDD — 16T
+            0xA1 | 0xA9 => self.op_cpi_cpd(opcode, cycle, bus, master), // CPI/CPD — 16T
+            0xA2 | 0xAA => self.op_ini_ind(opcode, cycle, bus, master), // INI/IND — 16T
             0xA3 | 0xAB => self.op_outi_outd(opcode, cycle, bus, master), // OUTI/OUTD — 16T
             0xB0 | 0xB8 => self.op_ldir_lddr(opcode, cycle, bus, master), // LDIR/LDDR — 21/16T
             0xB1 | 0xB9 => self.op_cpir_cpdr(opcode, cycle, bus, master), // CPIR/CPDR — 21/16T
@@ -750,14 +770,14 @@ impl Z80 {
             0xB3 | 0xBB => self.op_otir_otdr(opcode, cycle, bus, master), // OTIR/OTDR — 21/16T
 
             // --- Pattern-based (40-7F range, low 3 bits 0-6) ---
-            op if (op & 0xC7) == 0x40 => self.op_in_r_c(op, cycle, bus, master),  // IN r,(C) — 12T
+            op if (op & 0xC7) == 0x40 => self.op_in_r_c(op, cycle, bus, master), // IN r,(C) — 12T
             op if (op & 0xC7) == 0x41 => self.op_out_c_r(op, cycle, bus, master), // OUT (C),r — 12T
-            op if (op & 0xCF) == 0x42 => self.op_sbc_hl_rr(op, cycle), // SBC HL,rr — 15T
+            op if (op & 0xCF) == 0x42 => self.op_sbc_hl_rr(op, cycle),           // SBC HL,rr — 15T
             op if (op & 0xCF) == 0x43 => self.op_ld_nn_rr_ed(op, cycle, bus, master), // LD (nn),rr — 20T
-            op if (op & 0xC7) == 0x44 => self.op_neg(),              // NEG — 8T
+            op if (op & 0xC7) == 0x44 => self.op_neg(),                               // NEG — 8T
             op if (op & 0xC7) == 0x45 => self.op_retn(op, cycle, bus, master), // RETN/RETI — 14T
-            op if (op & 0xC7) == 0x46 => self.op_im(op),             // IM 0/1/2 — 8T
-            op if (op & 0xCF) == 0x4A => self.op_adc_hl_rr(op, cycle), // ADC HL,rr — 15T
+            op if (op & 0xC7) == 0x46 => self.op_im(op),                       // IM 0/1/2 — 8T
+            op if (op & 0xCF) == 0x4A => self.op_adc_hl_rr(op, cycle),         // ADC HL,rr — 15T
             op if (op & 0xCF) == 0x4B => self.op_ld_rr_nn_ed(op, cycle, bus, master), // LD rr,(nn) — 20T
 
             // ED NOP — 8T: undefined opcodes act as NOP

@@ -26,6 +26,9 @@ pub enum CcFlag {
     H = 0x20, // Half carry
 }
 
+/// Bits 6-7 of the CC register are unused on the M6800 and always read as 1.
+const CC_UNUSED_BITS: u8 = 0xC0;
+
 pub struct M6800 {
     // Registers
     pub a: u8,
@@ -407,7 +410,7 @@ impl M6800 {
     /// No flags affected. Bits 6-7 read as 1 on real hardware.
     fn op_tpa(&mut self, cycle: u8) {
         if cycle == 0 {
-            self.a = self.cc | 0xC0;
+            self.a = self.cc | CC_UNUSED_BITS;
             self.state = ExecState::Fetch;
         }
     }
@@ -700,7 +703,7 @@ impl BusMasterComponent for M6800 {
 impl Cpu for M6800 {
     fn reset(&mut self) {
         self.pc = 0;
-        self.cc = CcFlag::I as u8 | 0xC0; // IRQ masked; bits 6-7 unused, set to 1
+        self.cc = CcFlag::I as u8 | CC_UNUSED_BITS;
     }
 
     fn signal_interrupt(&mut self, _int: InterruptState) {

@@ -71,16 +71,46 @@ pub const INPUT_TRACK_U: u8 = 8;
 pub const INPUT_TRACK_D: u8 = 9;
 
 const MISSILE_INPUT_MAP: &[InputButton] = &[
-    InputButton { id: INPUT_COIN, name: "Coin" },
-    InputButton { id: INPUT_START1, name: "P1 Start" },
-    InputButton { id: INPUT_START2, name: "P2 Start" },
-    InputButton { id: INPUT_FIRE_LEFT, name: "Fire Left" },
-    InputButton { id: INPUT_FIRE_CENTER, name: "Fire Center" },
-    InputButton { id: INPUT_FIRE_RIGHT, name: "Fire Right" },
-    InputButton { id: INPUT_TRACK_L, name: "P1 Left" },
-    InputButton { id: INPUT_TRACK_R, name: "P1 Right" },
-    InputButton { id: INPUT_TRACK_U, name: "P1 Up" },
-    InputButton { id: INPUT_TRACK_D, name: "P1 Down" },
+    InputButton {
+        id: INPUT_COIN,
+        name: "Coin",
+    },
+    InputButton {
+        id: INPUT_START1,
+        name: "P1 Start",
+    },
+    InputButton {
+        id: INPUT_START2,
+        name: "P2 Start",
+    },
+    InputButton {
+        id: INPUT_FIRE_LEFT,
+        name: "Fire Left",
+    },
+    InputButton {
+        id: INPUT_FIRE_CENTER,
+        name: "Fire Center",
+    },
+    InputButton {
+        id: INPUT_FIRE_RIGHT,
+        name: "Fire Right",
+    },
+    InputButton {
+        id: INPUT_TRACK_L,
+        name: "P1 Left",
+    },
+    InputButton {
+        id: INPUT_TRACK_R,
+        name: "P1 Right",
+    },
+    InputButton {
+        id: INPUT_TRACK_U,
+        name: "P1 Up",
+    },
+    InputButton {
+        id: INPUT_TRACK_D,
+        name: "P1 Down",
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -169,8 +199,8 @@ pub struct MissileCommandSystem {
     cpu_cycles: u64,          // incremented only when CPU actually executes
     watchdog_frame_count: u8, // frames since last write to 0x4C00; resets machine at 8
 
-    scanline_buffer: Vec<u8>,       // 256 * 231 * 3 = 177,408 bytes (RGB24)
-    scanline_buffer_valid: bool,    // true after run_frame() completes
+    scanline_buffer: Vec<u8>,    // 256 * 231 * 3 = 177,408 bytes (RGB24)
+    scanline_buffer_valid: bool, // true after run_frame() completes
 
     audio_buffer: Vec<i16>,
 }
@@ -182,8 +212,8 @@ impl MissileCommandSystem {
             pokey: Pokey::with_clock(1_250_000, 44100),
             ram: [0; 0x4000],
             rom: [0; 0x3000],
-            in0: 0xFF,         // All buttons released (active-low: 1 = not pressed)
-            in1: 0x67,         // Fire buttons released (bits 0-2 = 1), test/tilt released (bits 5-6 = 1), VBLANK off
+            in0: 0xFF,          // All buttons released (active-low: 1 = not pressed)
+            in1: 0x67, // Fire buttons released (bits 0-2 = 1), test/tilt released (bits 5-6 = 1), VBLANK off
             dip_switches: 0x00, // Default DIP: 1 coin/1 play, English, standard options
             ctrld: false,
             palette: [0; 8],
@@ -214,10 +244,18 @@ impl MissileCommandSystem {
     pub fn tick(&mut self) {
         // Trackball movement simulation: increment counters while direction keys are held
         if self.clock.is_multiple_of(1000) {
-            if self.trackball_l_pressed { self.trackball_x = self.trackball_x.wrapping_sub(1) & 0x0F; }
-            if self.trackball_r_pressed { self.trackball_x = self.trackball_x.wrapping_add(1) & 0x0F; }
-            if self.trackball_u_pressed { self.trackball_y = self.trackball_y.wrapping_sub(1) & 0x0F; }
-            if self.trackball_d_pressed { self.trackball_y = self.trackball_y.wrapping_add(1) & 0x0F; }
+            if self.trackball_l_pressed {
+                self.trackball_x = self.trackball_x.wrapping_sub(1) & 0x0F;
+            }
+            if self.trackball_r_pressed {
+                self.trackball_x = self.trackball_x.wrapping_add(1) & 0x0F;
+            }
+            if self.trackball_u_pressed {
+                self.trackball_y = self.trackball_y.wrapping_sub(1) & 0x0F;
+            }
+            if self.trackball_d_pressed {
+                self.trackball_y = self.trackball_y.wrapping_add(1) & 0x0F;
+            }
         }
 
         // Per-scanline rendering: at each scanline boundary, render the current
@@ -290,11 +328,17 @@ impl MissileCommandSystem {
     }
 
     pub fn read_ram(&self, addr: usize) -> u8 {
-        if addr < self.ram.len() { self.ram[addr] } else { 0 }
+        if addr < self.ram.len() {
+            self.ram[addr]
+        } else {
+            0
+        }
     }
 
     pub fn write_ram(&mut self, addr: usize, data: u8) {
-        if addr < self.ram.len() { self.ram[addr] = data; }
+        if addr < self.ram.len() {
+            self.ram[addr] = data;
+        }
     }
 
     pub fn read_palette(&self, index: usize) -> u8 {
@@ -344,8 +388,7 @@ impl MissileCommandSystem {
             let bit3_mask = !(1u8 << (offset & 7));
 
             if bit3_addr < 0x4000 {
-                self.ram[bit3_addr] =
-                    (self.ram[bit3_addr] & bit3_mask) | (bit3_data & !bit3_mask);
+                self.ram[bit3_addr] = (self.ram[bit3_addr] & bit3_mask) | (bit3_data & !bit3_mask);
             }
             self.stall_cycles += 1;
         }
@@ -578,10 +621,7 @@ impl Bus for MissileCommandSystem {
         // MADSEL arming: during SYNC (opcode fetch), if the opcode has low 5 bits
         // == 0x01 (indirect X addressing mode) and IRQ is not asserted, arm the
         // MADSEL counter. It will fire 5 CPU cycles later.
-        if self.cpu.is_sync()
-            && (data & 0x1F) == 0x01
-            && !self.irq_state
-        {
+        if self.cpu.is_sync() && (data & 0x1F) == 0x01 && !self.irq_state {
             self.madsel_lastcycles = self.cpu_cycles;
         }
 
@@ -666,9 +706,8 @@ impl Machine for MissileCommandSystem {
         // Drain POKEY's resampled f32 buffer and convert to i16 PCM.
         // POKEY outputs unipolar [0.0, 1.0]; center around zero for signed PCM.
         let samples = self.pokey.drain_audio();
-        self.audio_buffer.extend(samples.iter().map(|&s| {
-            ((s * 2.0 - 1.0) * 32767.0) as i16
-        }));
+        self.audio_buffer
+            .extend(samples.iter().map(|&s| ((s * 2.0 - 1.0) * 32767.0) as i16));
     }
 
     fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
@@ -693,14 +732,14 @@ impl Machine for MissileCommandSystem {
     fn set_input(&mut self, button: u8, pressed: bool) {
         match button {
             // IN0 switches (active-low: clear bit when pressed, set when released)
-            INPUT_COIN => set_bit_active_low(&mut self.in0, 5, pressed),    // Left Coin
-            INPUT_START1 => set_bit_active_low(&mut self.in0, 4, pressed),  // 1P Start
-            INPUT_START2 => set_bit_active_low(&mut self.in0, 3, pressed),  // 2P Start
+            INPUT_COIN => set_bit_active_low(&mut self.in0, 5, pressed), // Left Coin
+            INPUT_START1 => set_bit_active_low(&mut self.in0, 4, pressed), // 1P Start
+            INPUT_START2 => set_bit_active_low(&mut self.in0, 3, pressed), // 2P Start
 
             // IN1 fire buttons (active-low: clear bit when pressed, set when released)
-            INPUT_FIRE_LEFT => set_bit_active_low(&mut self.in1, 2, pressed),   // Left fire
+            INPUT_FIRE_LEFT => set_bit_active_low(&mut self.in1, 2, pressed), // Left fire
             INPUT_FIRE_CENTER => set_bit_active_low(&mut self.in1, 1, pressed), // Center fire
-            INPUT_FIRE_RIGHT => set_bit_active_low(&mut self.in1, 0, pressed),  // Right fire
+            INPUT_FIRE_RIGHT => set_bit_active_low(&mut self.in1, 0, pressed), // Right fire
 
             // Trackball directions
             INPUT_TRACK_L => self.trackball_l_pressed = pressed,
@@ -732,7 +771,9 @@ impl Machine for MissileCommandSystem {
         self.audio_buffer.clear();
     }
 
-    fn save_nvram(&self) -> Option<&[u8]> { None }
+    fn save_nvram(&self) -> Option<&[u8]> {
+        None
+    }
     fn load_nvram(&mut self, _data: &[u8]) {}
 
     fn frame_rate_hz(&self) -> f64 {

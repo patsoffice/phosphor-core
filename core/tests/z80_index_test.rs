@@ -45,7 +45,8 @@ fn test_add_ix_bc() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
     cpu.ix = 0x1000;
-    cpu.b = 0x00; cpu.c = 0x50;
+    cpu.b = 0x00;
+    cpu.c = 0x50;
     // DD 09 → ADD IX, BC
     bus.load(0, &[0xDD, 0x09]);
     let cycles = run_instruction(&mut cpu, &mut bus);
@@ -581,8 +582,10 @@ fn test_dd_ed_resets_index() {
 fn test_dd_ex_de_hl_not_affected() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
-    cpu.d = 0x12; cpu.e = 0x34;
-    cpu.h = 0x56; cpu.l = 0x78;
+    cpu.d = 0x12;
+    cpu.e = 0x34;
+    cpu.h = 0x56;
+    cpu.l = 0x78;
     cpu.ix = 0xAAAA;
     // DD EB → EX DE,HL (IX not involved)
     bus.load(0, &[0xDD, 0xEB]);

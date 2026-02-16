@@ -6,8 +6,8 @@ use phosphor_core::cpu::m6809::M6809;
 use phosphor_core::cpu::state::{M6800State, M6809State};
 use phosphor_core::cpu::{Cpu, CpuStateTrait};
 use phosphor_core::device::cmos_ram::CmosRam;
-use phosphor_core::device::pia6820::Pia6820;
 use phosphor_core::device::dac::Mc1408Dac;
+use phosphor_core::device::pia6820::Pia6820;
 use phosphor_core::device::williams_blitter::WilliamsBlitter;
 
 use crate::rom_loader::{RomEntry, RomRegion};

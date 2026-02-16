@@ -2,85 +2,75 @@
 
 ## Project: Phosphor Emulator
 
+Cycle-accurate retro CPU emulator framework in Rust with arcade machine support.
+
 ### Build & Test
 
 ```bash
-# Build entire workspace
-cargo build
-
-# Build specific crate
-cargo build --package phosphor-core
-cargo build --package phosphor-machines
-cargo build --package phosphor-frontend
-
-# Run all tests
-cargo test
-
-# Run specific test category
-cargo test m6809_alu_shift_test
-
-# Run the emulator
+cargo build                                                    # Build entire workspace
+cargo test                                                     # Run all tests
+cargo test m6809_alu_shift_test                                # Run specific test category
+cargo cargo clippy --all-features --all-targets                # Check code quality
+cargo clippy --all-features --all-targets --allow-dirty --fix. # Run this if there are clippy warnings before you fix them yourself
+cargo fmt                                                      # Format code
 cargo run --package phosphor-frontend -- joust /path/to/roms --scale 3
 ```
 
-- `cargo fmt` to format code
-- `cargo clippy` to check code quality
 - All tests must pass before committing
+- `cargo clippy` must pass with no warnings
+- `cargo fmt` must pass with no warnings
+
+### Workspace Crates
+
+| Crate                      | Purpose                                 | Dependencies                           |
+|----------------------------|-----------------------------------------|----------------------------------------|
+| `phosphor-core`            | CPU implementations, Bus trait, devices | None (pure Rust)                       |
+| `phosphor-machines`        | Arcade/system board implementations     | phosphor-core                          |
+| `phosphor-frontend`        | SDL2 display, audio, input              | phosphor-core, phosphor-machines, sdl2 |
+| `phosphor-cpu-validation`  | Test vector generation & validation     | phosphor-core, serde, rand             |
+
+- Never create circular dependencies between crates
 
 ### SDL2 Dependency
 
-- The `phosphor-frontend` crate requires SDL2: `brew install sdl2`
+- `phosphor-frontend` requires SDL2: `brew install sdl2`
 - `.cargo/config.toml` sets the Homebrew library path for aarch64-apple-darwin automatically
 - Core and machines crates remain zero-dep pure Rust
-
-### Architecture Rules
-
-- CPU instructions go in `core/src/cpu/<cpu>/alu.rs` (ALU ops) or `load_store.rs` (load/store)
-- Opcode dispatch entries go in `core/src/cpu/<cpu>/mod.rs` `execute_instruction()`
-- Inherent-mode instructions use `if cycle == 0 { ... }` pattern
-- Immediate-mode instructions use `alu_imm()` helper
-- Always transition to `ExecState::Fetch` when instruction completes
-- M6800 follows identical patterns to M6809 (same flag helpers, addressing mode helpers, state machine)
-- M6800 has no DP register (direct mode always page 0), no Y/U registers, no multi-byte opcode prefixes
-
-### Flag Conventions
-
-- Use `CcFlag` enum, never raw hex values (0x01, 0x02, etc.)
-- All instruction doc comments must document flag behavior
-- Use `set_flags_arithmetic()` for add/sub, `set_flags_logical()` for AND/OR/EOR/TST, `set_flags_shift()` for shift/rotate
-- V flag for shift/rotate = N XOR C (post-operation)
 
 ### Testing Requirements
 
 - Every new instruction must have integration tests
-- Tests go in `tests/m6809_*_test.rs` or `m6800_*_test.rs` files, grouped by category
-- Test both A and B register variants
+- Test both A and B register variants where applicable
 - Include edge cases: zero, overflow, sign boundary (0x7F/0x80), carry propagation
-- Use `CcFlag::X as u8` in assertions, not raw hex
+- Use `CcFlag::X as u8` in assertions, never raw hex values
 
 ### CPU Validation
 
-Cross-validation infrastructure for M6809 (266 opcodes, 266,000 test vectors):
-
 ```bash
-# Generate test vectors for all opcodes
-cd cpu-validation && cargo run --bin gen_m6809_tests -- all
-
-# Self-validation (phosphor-core against its own test vectors)
+# Self-validation
 cargo test -p phosphor-cpu-validation
 
-# Cross-validation (against elmerucr/MC6809 reference emulator)
+# Cross-validation (against reference emulators)
 cd cross-validation && make && ./validate ../cpu-validation/test_data/m6809/*.json
 ```
 
-- Test generator filters undefined indexed postbytes and undefined EXG/TFR register codes
-- SYNC (0x13) and CWAI (0x3C) are intentionally excluded (they halt waiting for interrupts)
 - If cross-validation differs from datasheet for timings, use the datasheet values
+- Any changes to the CPUs must run the cross-validation script
 
 ### Commit Style
 
-- Summarize what was added (opcodes, tests) and why
+- Prefix: `feat:`, `fix:`, `refactor:`, `test:`, `docs:`
+- Summary line under 80 chars with counts where relevant
+- Body: each logical change on its own `-` bullet
+- Summarize what was added/changed and why, not just file names
+
+### Design Priorities
+
+1. **Correctness** - Cycle-accurate hardware matching
+2. **Clarity** - Educational, maintainable code
+3. **Performance** - Fast enough for real-time
 
 ### README
 
 - Keep roadmap checkboxes current
+- Update CPU-specific READMEs when adding instructions or changing opcode counts

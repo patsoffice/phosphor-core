@@ -80,7 +80,7 @@ fn test_linked_mode() {
 #[test]
 fn test_volume_only() {
     let mut pokey = Pokey::new(44100);
-    pokey.write(0x01, 0x08); // Vol 8, force output
+    pokey.write(0x01, 0x18); // Vol 8, volume-only mode (force output)
 
     for _ in 0..50 {
         pokey.tick();

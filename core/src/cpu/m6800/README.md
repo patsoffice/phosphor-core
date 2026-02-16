@@ -1,12 +1,12 @@
 # Motorola 6800 CPU
 
-Cycle-accurate emulation of the Motorola 6800 microprocessor, implementing all 192 opcodes. Cross-validated against [mame4all](https://github.com/mamedev/mame)'s M6800 implementation with 192,000 test vectors (99.998% pass rate).
+Cycle-accurate emulation of the Motorola 6800 microprocessor, implementing all 197 opcodes. Cross-validated against [mame4all](https://github.com/mamedev/mame)'s M6800 implementation with 192,000 test vectors (99.998% pass rate; 5 opcodes excluded from validation -- see below).
 
 ## Status
 
 | Metric | Value |
 |--------|-------|
-| Opcodes | 192 |
+| Opcodes | 197 (192 cross-validated) |
 | Unit tests | 343 |
 | Cross-validation | 191,996/192,000 (99.998%) |
 | Timing | Cycle-accurate |
@@ -24,7 +24,7 @@ Cycle-accurate emulation of the Motorola 6800 microprocessor, implementing all 1
 
 ## Instruction Set
 
-192 opcodes across a single opcode page:
+197 opcodes across a single opcode page (192 cross-validated, 5 excluded):
 
 | Category | Count | Details |
 |----------|-------|---------|
@@ -42,6 +42,18 @@ Cycle-accurate emulation of the Motorola 6800 microprocessor, implementing all 1
 | Register ops | 4 | INX, DEX, INS, DES |
 | Misc | 5 | NOP, DAA, ABA, SBA, CBA, TSX, TXS |
 | Interrupt | 3 | SWI, WAI, RTI |
+
+### Cross-Validation Exclusions
+
+5 opcodes are implemented but excluded from cross-validation due to MAME reference emulator incompatibilities:
+
+| Opcode | Instruction | Reason                                                                                     |
+|--------|-------------|--------------------------------------------------------------------------------------------|
+| 0x06   | TAP         | MAME `ONE_MORE_INSN()` executes next instruction inline, preventing single-step validation |
+| 0x07   | TPA         | Phosphor correctly sets CC bits 6-7 to 1 (real hardware); MAME does not                    |
+| 0x0E   | CLI         | MAME `ONE_MORE_INSN()` executes next instruction inline                                    |
+| 0x0F   | SEI         | MAME `ONE_MORE_INSN()` executes next instruction inline                                    |
+| 0x3E   | WAI         | Halts until interrupt, not amenable to single-step testing                                 |
 
 ## Addressing Modes
 

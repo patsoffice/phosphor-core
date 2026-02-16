@@ -29,9 +29,9 @@
 /// | 0x06   | AUDF4  | Channel 4 frequency divider                      |
 /// | 0x07   | AUDC4  | Channel 4 control                                |
 /// | 0x08   | AUDCTL | Master audio control                             |
-/// | 0x09   | STIMER | Reset audio timers (write any value)              |
-/// | 0x0A   | SKREST | Reset serial port status bits                     |
-/// | 0x0B   | POTGO  | Start potentiometer scan                          |
+/// | 0x09   | STIMER | Reset audio timers (write any value)             |
+/// | 0x0A   | SKREST | Reset serial port status bits                    |
+/// | 0x0B   | POTGO  | Start potentiometer scan                         |
 /// | 0x0D   | SEROUT | Serial output data                               |
 /// | 0x0E   | IRQEN  | Interrupt enable mask                            |
 /// | 0x0F   | SKCTL  | Serial port control                              |
@@ -52,9 +52,9 @@
 ///
 /// | Bit | Constant          | Description                                   |
 /// |-----|-------------------|-----------------------------------------------|
-/// | 7   | `AUDCTL_POLY9`    | 0 = 17-bit polynomial, 1 = 9-bit polynomial  |
-/// | 6   | `AUDCTL_CH1_179MHZ` | 0 = base clock, 1 = 1.79 MHz for Ch1       |
-/// | 5   | `AUDCTL_CH3_179MHZ` | 0 = base clock, 1 = 1.79 MHz for Ch3       |
+/// | 7   | `AUDCTL_POLY9`    | 0 = 17-bit polynomial, 1 = 9-bit polynomial   |
+/// | 6   | `AUDCTL_CH1_179MHZ` | 0 = base clock, 1 = 1.79 MHz for Ch1        |
+/// | 5   | `AUDCTL_CH3_179MHZ` | 0 = base clock, 1 = 1.79 MHz for Ch3        |
 /// | 4   | `AUDCTL_CH12_LINKED` | 1 = Ch1+Ch2 form 16-bit counter            |
 /// | 3   | `AUDCTL_CH34_LINKED` | 1 = Ch3+Ch4 form 16-bit counter            |
 /// | 2   | `AUDCTL_HPF_CH1`  | 1 = High-pass filter Ch1 (clocked by Ch3)     |
@@ -255,17 +255,17 @@ impl Pokey {
 
     /// Write to a POKEY register. `offset` is masked to 4 bits (0x00-0x0F).
     ///
-    /// | Offset | Register | Effect                                       |
-    /// |--------|----------|----------------------------------------------|
+    /// | Offset | Register | Effect                                         |
+    /// |--------|----------|------------------------------------------------|
     /// | 0x00/02/04/06 | AUDFn | Set frequency divider reload for channel n |
     /// | 0x01/03/05/07 | AUDCn | Set volume, distortion, and tone gate      |
-    /// | 0x08   | AUDCTL   | Set master audio control flags               |
-    /// | 0x09   | STIMER   | Reset all channel dividers to reload values  |
-    /// | 0x0A   | SKREST   | Reset serial status error bits               |
-    /// | 0x0B   | POTGO    | Start potentiometer scan cycle               |
-    /// | 0x0D   | SEROUT   | Write serial output data byte                |
-    /// | 0x0E   | IRQEN    | Set interrupt enable mask                    |
-    /// | 0x0F   | SKCTL    | Set serial port control                      |
+    /// | 0x08   | AUDCTL   | Set master audio control flags                 |
+    /// | 0x09   | STIMER   | Reset all channel dividers to reload values    |
+    /// | 0x0A   | SKREST   | Reset serial status error bits                 |
+    /// | 0x0B   | POTGO    | Start potentiometer scan cycle                 |
+    /// | 0x0D   | SEROUT   | Write serial output data byte                  |
+    /// | 0x0E   | IRQEN    | Set interrupt enable mask                      |
+    /// | 0x0F   | SKCTL    | Set serial port control                        |
     ///
     /// Writing IRQEN also clears any pending interrupts for newly-disabled
     /// sources (sets the corresponding IRQST bits to 1).

@@ -45,32 +45,32 @@ pub struct M6800State {
 /// Z80 CPU state snapshot
 #[derive(Debug, Clone, PartialEq)]
 pub struct Z80State {
-    pub a: u8,        // Accumulator
-    pub f: u8,        // Flags register
-    pub b: u8,        // Register B
-    pub c: u8,        // Register C
-    pub d: u8,        // Register D
-    pub e: u8,        // Register E
-    pub h: u8,        // Register H
-    pub l: u8,        // Register L
-    pub a_prime: u8,  // Shadow accumulator
-    pub f_prime: u8,  // Shadow flags
-    pub b_prime: u8,  // Shadow B
-    pub c_prime: u8,  // Shadow C
-    pub d_prime: u8,  // Shadow D
-    pub e_prime: u8,  // Shadow E
-    pub h_prime: u8,  // Shadow H
-    pub l_prime: u8,  // Shadow L
-    pub ix: u16,      // Index register X
-    pub iy: u16,      // Index register Y
-    pub sp: u16,      // Stack pointer
-    pub pc: u16,      // Program counter
-    pub i: u8,        // Interrupt vector register
-    pub r: u8,        // Memory refresh register
-    pub iff1: bool,   // Interrupt flip-flop 1
-    pub iff2: bool,   // Interrupt flip-flop 2
-    pub im: u8,       // Interrupt mode (0, 1, 2)
-    pub memptr: u16,  // Hidden WZ register
-    pub p: bool,      // LD A,I/R tracker
-    pub q: u8,        // Copy of F when flags modified, 0 otherwise
+    pub a: u8,       // Accumulator
+    pub f: u8,       // Flags register
+    pub b: u8,       // Register B
+    pub c: u8,       // Register C
+    pub d: u8,       // Register D
+    pub e: u8,       // Register E
+    pub h: u8,       // Register H
+    pub l: u8,       // Register L
+    pub a_prime: u8, // Shadow accumulator
+    pub f_prime: u8, // Shadow flags
+    pub b_prime: u8, // Shadow B
+    pub c_prime: u8, // Shadow C
+    pub d_prime: u8, // Shadow D
+    pub e_prime: u8, // Shadow E
+    pub h_prime: u8, // Shadow H
+    pub l_prime: u8, // Shadow L
+    pub ix: u16,     // Index register X
+    pub iy: u16,     // Index register Y
+    pub sp: u16,     // Stack pointer
+    pub pc: u16,     // Program counter
+    pub i: u8,       // Interrupt vector register
+    pub r: u8,       // Memory refresh register
+    pub iff1: bool,  // Interrupt flip-flop 1
+    pub iff2: bool,  // Interrupt flip-flop 2
+    pub im: u8,      // Interrupt mode (0, 1, 2)
+    pub memptr: u16, // Hidden WZ register
+    pub p: bool,     // LD A,I/R tracker
+    pub q: u8,       // Copy of F when flags modified, 0 otherwise
 }

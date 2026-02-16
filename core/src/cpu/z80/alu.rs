@@ -10,10 +10,18 @@ impl Z80 {
 
     fn update_flags_logic(&mut self, result: u8, is_and: bool) {
         let mut f = 0;
-        if result == 0 { f |= Flag::Z as u8; }
-        if (result & 0x80) != 0 { f |= Flag::S as u8; }
-        if Self::get_parity(result) { f |= Flag::PV as u8; }
-        if is_and { f |= Flag::H as u8; } // AND sets H, others clear it
+        if result == 0 {
+            f |= Flag::Z as u8;
+        }
+        if (result & 0x80) != 0 {
+            f |= Flag::S as u8;
+        }
+        if Self::get_parity(result) {
+            f |= Flag::PV as u8;
+        }
+        if is_and {
+            f |= Flag::H as u8;
+        } // AND sets H, others clear it
         // N is 0, C is 0
 
         // Undocumented X/Y
@@ -24,16 +32,30 @@ impl Z80 {
 
     fn do_add(&mut self, val: u8, carry_in: bool) {
         let a = self.a;
-        let c_val = if carry_in && (self.f & Flag::C as u8) != 0 { 1 } else { 0 };
+        let c_val = if carry_in && (self.f & Flag::C as u8) != 0 {
+            1
+        } else {
+            0
+        };
         let result_u16 = (a as u16) + (val as u16) + (c_val as u16);
         let result = result_u16 as u8;
 
         let mut f = 0;
-        if result == 0 { f |= Flag::Z as u8; }
-        if (result & 0x80) != 0 { f |= Flag::S as u8; }
-        if ((a & 0xF) + (val & 0xF) + (c_val as u8)) > 0xF { f |= Flag::H as u8; }
-        if ((a ^ result) & (val ^ result) & 0x80) != 0 { f |= Flag::PV as u8; }
-        if result_u16 > 0xFF { f |= Flag::C as u8; }
+        if result == 0 {
+            f |= Flag::Z as u8;
+        }
+        if (result & 0x80) != 0 {
+            f |= Flag::S as u8;
+        }
+        if ((a & 0xF) + (val & 0xF) + (c_val as u8)) > 0xF {
+            f |= Flag::H as u8;
+        }
+        if ((a ^ result) & (val ^ result) & 0x80) != 0 {
+            f |= Flag::PV as u8;
+        }
+        if result_u16 > 0xFF {
+            f |= Flag::C as u8;
+        }
 
         f |= result & (Flag::X as u8 | Flag::Y as u8);
         self.a = result;
@@ -43,16 +65,32 @@ impl Z80 {
 
     fn do_sub(&mut self, val: u8, carry_in: bool) {
         let a = self.a;
-        let c_val = if carry_in && (self.f & Flag::C as u8) != 0 { 1 } else { 0 };
-        let result_u16 = (a as u16).wrapping_sub(val as u16).wrapping_sub(c_val as u16);
+        let c_val = if carry_in && (self.f & Flag::C as u8) != 0 {
+            1
+        } else {
+            0
+        };
+        let result_u16 = (a as u16)
+            .wrapping_sub(val as u16)
+            .wrapping_sub(c_val as u16);
         let result = result_u16 as u8;
 
         let mut f = Flag::N as u8;
-        if result == 0 { f |= Flag::Z as u8; }
-        if (result & 0x80) != 0 { f |= Flag::S as u8; }
-        if (a & 0xF) < ((val & 0xF) + (c_val as u8)) { f |= Flag::H as u8; }
-        if ((a ^ val) & (a ^ result) & 0x80) != 0 { f |= Flag::PV as u8; }
-        if result_u16 > 0xFF { f |= Flag::C as u8; }
+        if result == 0 {
+            f |= Flag::Z as u8;
+        }
+        if (result & 0x80) != 0 {
+            f |= Flag::S as u8;
+        }
+        if (a & 0xF) < ((val & 0xF) + (c_val as u8)) {
+            f |= Flag::H as u8;
+        }
+        if ((a ^ val) & (a ^ result) & 0x80) != 0 {
+            f |= Flag::PV as u8;
+        }
+        if result_u16 > 0xFF {
+            f |= Flag::C as u8;
+        }
 
         f |= result & (Flag::X as u8 | Flag::Y as u8);
         self.a = result;
@@ -66,11 +104,21 @@ impl Z80 {
         let result = result_u16 as u8;
 
         let mut f = Flag::N as u8;
-        if result == 0 { f |= Flag::Z as u8; }
-        if (result & 0x80) != 0 { f |= Flag::S as u8; }
-        if (a & 0xF) < (val & 0xF) { f |= Flag::H as u8; }
-        if ((a ^ val) & (a ^ result) & 0x80) != 0 { f |= Flag::PV as u8; }
-        if result_u16 > 0xFF { f |= Flag::C as u8; }
+        if result == 0 {
+            f |= Flag::Z as u8;
+        }
+        if (result & 0x80) != 0 {
+            f |= Flag::S as u8;
+        }
+        if (a & 0xF) < (val & 0xF) {
+            f |= Flag::H as u8;
+        }
+        if ((a ^ val) & (a ^ result) & 0x80) != 0 {
+            f |= Flag::PV as u8;
+        }
+        if result_u16 > 0xFF {
+            f |= Flag::C as u8;
+        }
 
         // X/Y come from the operand for CP, not the result
         f |= val & (Flag::X as u8 | Flag::Y as u8);
@@ -84,9 +132,18 @@ impl Z80 {
             1 => self.do_add(val, true),  // ADC
             2 => self.do_sub(val, false), // SUB
             3 => self.do_sub(val, true),  // SBC
-            4 => { self.a &= val; self.update_flags_logic(self.a, true); }, // AND
-            5 => { self.a ^= val; self.update_flags_logic(self.a, false); }, // XOR
-            6 => { self.a |= val; self.update_flags_logic(self.a, false); }, // OR
+            4 => {
+                self.a &= val;
+                self.update_flags_logic(self.a, true);
+            } // AND
+            5 => {
+                self.a ^= val;
+                self.update_flags_logic(self.a, false);
+            } // XOR
+            6 => {
+                self.a |= val;
+                self.update_flags_logic(self.a, false);
+            } // OR
             7 => self.do_cp(val),         // CP
             _ => unreachable!(),
         }
@@ -268,10 +325,18 @@ impl Z80 {
     fn calc_inc_flags(&mut self, val: u8) -> u8 {
         let result = val.wrapping_add(1);
         let mut f = self.f & Flag::C as u8; // Preserve C
-        if result == 0 { f |= Flag::Z as u8; }
-        if (result & 0x80) != 0 { f |= Flag::S as u8; }
-        if (val & 0xF) == 0xF { f |= Flag::H as u8; }
-        if val == 0x7F { f |= Flag::PV as u8; } // Overflow 7F -> 80
+        if result == 0 {
+            f |= Flag::Z as u8;
+        }
+        if (result & 0x80) != 0 {
+            f |= Flag::S as u8;
+        }
+        if (val & 0xF) == 0xF {
+            f |= Flag::H as u8;
+        }
+        if val == 0x7F {
+            f |= Flag::PV as u8;
+        } // Overflow 7F -> 80
         // N is 0
         f |= result & (Flag::X as u8 | Flag::Y as u8);
         self.f = f;
@@ -282,10 +347,18 @@ impl Z80 {
     fn calc_dec_flags(&mut self, val: u8) -> u8 {
         let result = val.wrapping_sub(1);
         let mut f = (self.f & Flag::C as u8) | Flag::N as u8; // Preserve C, Set N
-        if result == 0 { f |= Flag::Z as u8; }
-        if (result & 0x80) != 0 { f |= Flag::S as u8; }
-        if (val & 0xF) == 0x0 { f |= Flag::H as u8; } // Borrow from bit 4
-        if val == 0x80 { f |= Flag::PV as u8; } // Overflow 80 -> 7F
+        if result == 0 {
+            f |= Flag::Z as u8;
+        }
+        if (result & 0x80) != 0 {
+            f |= Flag::S as u8;
+        }
+        if (val & 0xF) == 0x0 {
+            f |= Flag::H as u8;
+        } // Borrow from bit 4
+        if val == 0x80 {
+            f |= Flag::PV as u8;
+        } // Overflow 80 -> 7F
         f |= result & (Flag::X as u8 | Flag::Y as u8);
         self.f = f;
         self.q = self.f;
@@ -309,8 +382,12 @@ impl Z80 {
                 self.memptr = hl.wrapping_add(1);
 
                 let mut f = self.f & (Flag::S as u8 | Flag::Z as u8 | Flag::PV as u8);
-                if ((hl & 0x0FFF) + (rr & 0x0FFF)) > 0x0FFF { f |= Flag::H as u8; }
-                if result > 0xFFFF { f |= Flag::C as u8; }
+                if ((hl & 0x0FFF) + (rr & 0x0FFF)) > 0x0FFF {
+                    f |= Flag::H as u8;
+                }
+                if result > 0xFFFF {
+                    f |= Flag::C as u8;
+                }
                 f |= ((result >> 8) as u8) & (Flag::X as u8 | Flag::Y as u8);
                 self.f = f;
                 self.q = self.f;
@@ -333,7 +410,11 @@ impl Z80 {
         match cycle {
             1 => {
                 let val = self.get_rp(rp);
-                let result = if is_dec { val.wrapping_sub(1) } else { val.wrapping_add(1) };
+                let result = if is_dec {
+                    val.wrapping_sub(1)
+                } else {
+                    val.wrapping_add(1)
+                };
                 self.set_rp(rp, result);
                 self.state = ExecState::Execute(opcode, 2);
             }
@@ -352,7 +433,9 @@ impl Z80 {
         let bit7 = (self.a >> 7) & 1;
         self.a = (self.a << 1) | bit7;
         let mut f = self.f & (Flag::S as u8 | Flag::Z as u8 | Flag::PV as u8);
-        if bit7 != 0 { f |= Flag::C as u8; }
+        if bit7 != 0 {
+            f |= Flag::C as u8;
+        }
         f |= self.a & (Flag::X as u8 | Flag::Y as u8);
         self.f = f;
         self.q = self.f;
@@ -365,7 +448,9 @@ impl Z80 {
         let bit0 = self.a & 1;
         self.a = (self.a >> 1) | (bit0 << 7);
         let mut f = self.f & (Flag::S as u8 | Flag::Z as u8 | Flag::PV as u8);
-        if bit0 != 0 { f |= Flag::C as u8; }
+        if bit0 != 0 {
+            f |= Flag::C as u8;
+        }
         f |= self.a & (Flag::X as u8 | Flag::Y as u8);
         self.f = f;
         self.q = self.f;
@@ -375,11 +460,17 @@ impl Z80 {
     /// RLA — 4 T: M1 only.
     /// Rotate A left through carry. Old bit 7 to C, old C to bit 0.
     pub fn op_rla(&mut self) {
-        let old_carry = if (self.f & Flag::C as u8) != 0 { 1u8 } else { 0 };
+        let old_carry = if (self.f & Flag::C as u8) != 0 {
+            1u8
+        } else {
+            0
+        };
         let bit7 = (self.a >> 7) & 1;
         self.a = (self.a << 1) | old_carry;
         let mut f = self.f & (Flag::S as u8 | Flag::Z as u8 | Flag::PV as u8);
-        if bit7 != 0 { f |= Flag::C as u8; }
+        if bit7 != 0 {
+            f |= Flag::C as u8;
+        }
         f |= self.a & (Flag::X as u8 | Flag::Y as u8);
         self.f = f;
         self.q = self.f;
@@ -389,11 +480,17 @@ impl Z80 {
     /// RRA — 4 T: M1 only.
     /// Rotate A right through carry. Old bit 0 to C, old C to bit 7.
     pub fn op_rra(&mut self) {
-        let old_carry = if (self.f & Flag::C as u8) != 0 { 0x80u8 } else { 0 };
+        let old_carry = if (self.f & Flag::C as u8) != 0 {
+            0x80u8
+        } else {
+            0
+        };
         let bit0 = self.a & 1;
         self.a = (self.a >> 1) | old_carry;
         let mut f = self.f & (Flag::S as u8 | Flag::Z as u8 | Flag::PV as u8);
-        if bit0 != 0 { f |= Flag::C as u8; }
+        if bit0 != 0 {
+            f |= Flag::C as u8;
+        }
         f |= self.a & (Flag::X as u8 | Flag::Y as u8);
         self.f = f;
         self.q = self.f;
@@ -435,12 +532,24 @@ impl Z80 {
 
         self.a = result;
         let mut f = 0;
-        if new_c { f |= Flag::C as u8; }
-        if n { f |= Flag::N as u8; }
-        if new_h { f |= Flag::H as u8; }
-        if result == 0 { f |= Flag::Z as u8; }
-        if (result & 0x80) != 0 { f |= Flag::S as u8; }
-        if Self::get_parity(result) { f |= Flag::PV as u8; }
+        if new_c {
+            f |= Flag::C as u8;
+        }
+        if n {
+            f |= Flag::N as u8;
+        }
+        if new_h {
+            f |= Flag::H as u8;
+        }
+        if result == 0 {
+            f |= Flag::Z as u8;
+        }
+        if (result & 0x80) != 0 {
+            f |= Flag::S as u8;
+        }
+        if Self::get_parity(result) {
+            f |= Flag::PV as u8;
+        }
         f |= result & (Flag::X as u8 | Flag::Y as u8);
         self.f = f;
         self.q = self.f;
@@ -463,7 +572,11 @@ impl Z80 {
     /// Set carry flag. C = 1, H = 0, N = 0. S, Z, PV preserved.
     /// Undocumented: X/Y from A if q=1, from (A | F) if q=0.
     pub fn op_scf(&mut self) {
-        let xy_source = if self.prev_q != 0 { self.a } else { self.a | self.f };
+        let xy_source = if self.prev_q != 0 {
+            self.a
+        } else {
+            self.a | self.f
+        };
         let mut f = self.f & (Flag::S as u8 | Flag::Z as u8 | Flag::PV as u8);
         f |= Flag::C as u8;
         f |= xy_source & (Flag::X as u8 | Flag::Y as u8);
@@ -476,11 +589,19 @@ impl Z80 {
     /// Complement carry flag. H = old C, C = ~C, N = 0. S, Z, PV preserved.
     /// Undocumented: X/Y from A if q=1, from (A | F) if q=0.
     pub fn op_ccf(&mut self) {
-        let xy_source = if self.prev_q != 0 { self.a } else { self.a | self.f };
+        let xy_source = if self.prev_q != 0 {
+            self.a
+        } else {
+            self.a | self.f
+        };
         let old_c = self.f & Flag::C as u8;
         let mut f = self.f & (Flag::S as u8 | Flag::Z as u8 | Flag::PV as u8);
-        if old_c != 0 { f |= Flag::H as u8; }
-        if old_c == 0 { f |= Flag::C as u8; }
+        if old_c != 0 {
+            f |= Flag::H as u8;
+        }
+        if old_c == 0 {
+            f |= Flag::C as u8;
+        }
         f |= xy_source & (Flag::X as u8 | Flag::Y as u8);
         self.f = f;
         self.q = self.f;
@@ -495,11 +616,21 @@ impl Z80 {
         let a = self.a;
         let result = 0u8.wrapping_sub(a);
         let mut f = Flag::N as u8;
-        if result == 0 { f |= Flag::Z as u8; }
-        if (result & 0x80) != 0 { f |= Flag::S as u8; }
-        if (a & 0x0F) != 0 { f |= Flag::H as u8; }
-        if a == 0x80 { f |= Flag::PV as u8; }
-        if a != 0 { f |= Flag::C as u8; }
+        if result == 0 {
+            f |= Flag::Z as u8;
+        }
+        if (result & 0x80) != 0 {
+            f |= Flag::S as u8;
+        }
+        if (a & 0x0F) != 0 {
+            f |= Flag::H as u8;
+        }
+        if a == 0x80 {
+            f |= Flag::PV as u8;
+        }
+        if a != 0 {
+            f |= Flag::C as u8;
+        }
         f |= result & (Flag::X as u8 | Flag::Y as u8);
         self.a = result;
         self.f = f;
@@ -516,21 +647,33 @@ impl Z80 {
             0 => {
                 let hl = self.get_hl();
                 let rr = self.get_rp(rp);
-                let c_val = if (self.f & Flag::C as u8) != 0 { 1u32 } else { 0 };
+                let c_val = if (self.f & Flag::C as u8) != 0 {
+                    1u32
+                } else {
+                    0
+                };
                 let result = (hl as u32) + (rr as u32) + c_val;
                 let result16 = result as u16;
                 self.memptr = hl.wrapping_add(1);
 
                 let mut f = 0u8;
-                if result16 == 0 { f |= Flag::Z as u8; }
-                if (result16 & 0x8000) != 0 { f |= Flag::S as u8; }
+                if result16 == 0 {
+                    f |= Flag::Z as u8;
+                }
+                if (result16 & 0x8000) != 0 {
+                    f |= Flag::S as u8;
+                }
                 if ((hl & 0x0FFF) + (rr & 0x0FFF) + (c_val as u16)) > 0x0FFF {
                     f |= Flag::H as u8;
                 }
                 // Overflow via signed arithmetic
                 let signed = (hl as i16 as i32) + (rr as i16 as i32) + (c_val as i32);
-                if !(-0x8000..=0x7FFF).contains(&signed) { f |= Flag::PV as u8; }
-                if result > 0xFFFF { f |= Flag::C as u8; }
+                if !(-0x8000..=0x7FFF).contains(&signed) {
+                    f |= Flag::PV as u8;
+                }
+                if result > 0xFFFF {
+                    f |= Flag::C as u8;
+                }
                 f |= ((result16 >> 8) as u8) & (Flag::X as u8 | Flag::Y as u8);
                 self.f = f;
                 self.q = self.f;
@@ -553,20 +696,32 @@ impl Z80 {
             0 => {
                 let hl = self.get_hl();
                 let rr = self.get_rp(rp);
-                let c_val = if (self.f & Flag::C as u8) != 0 { 1u32 } else { 0 };
+                let c_val = if (self.f & Flag::C as u8) != 0 {
+                    1u32
+                } else {
+                    0
+                };
                 let result = (hl as u32).wrapping_sub(rr as u32).wrapping_sub(c_val);
                 let result16 = result as u16;
                 self.memptr = hl.wrapping_add(1);
 
                 let mut f = Flag::N as u8;
-                if result16 == 0 { f |= Flag::Z as u8; }
-                if (result16 & 0x8000) != 0 { f |= Flag::S as u8; }
+                if result16 == 0 {
+                    f |= Flag::Z as u8;
+                }
+                if (result16 & 0x8000) != 0 {
+                    f |= Flag::S as u8;
+                }
                 if (hl & 0x0FFF) < ((rr & 0x0FFF) + (c_val as u16)) {
                     f |= Flag::H as u8;
                 }
                 let signed = (hl as i16 as i32) - (rr as i16 as i32) - (c_val as i32);
-                if !(-0x8000..=0x7FFF).contains(&signed) { f |= Flag::PV as u8; }
-                if result > 0xFFFF { f |= Flag::C as u8; }
+                if !(-0x8000..=0x7FFF).contains(&signed) {
+                    f |= Flag::PV as u8;
+                }
+                if result > 0xFFFF {
+                    f |= Flag::C as u8;
+                }
                 f |= ((result16 >> 8) as u8) & (Flag::X as u8 | Flag::Y as u8);
                 self.f = f;
                 self.q = self.f;
@@ -608,9 +763,15 @@ impl Z80 {
 
                 // Flags from A: S, Z, PV(parity), H=0, N=0, C preserved, X/Y from A
                 let mut f = self.f & Flag::C as u8;
-                if self.a == 0 { f |= Flag::Z as u8; }
-                if (self.a & 0x80) != 0 { f |= Flag::S as u8; }
-                if Self::get_parity(self.a) { f |= Flag::PV as u8; }
+                if self.a == 0 {
+                    f |= Flag::Z as u8;
+                }
+                if (self.a & 0x80) != 0 {
+                    f |= Flag::S as u8;
+                }
+                if Self::get_parity(self.a) {
+                    f |= Flag::PV as u8;
+                }
                 f |= self.a & (Flag::X as u8 | Flag::Y as u8);
                 self.f = f;
                 self.q = self.f;
@@ -651,9 +812,15 @@ impl Z80 {
                 self.memptr = self.temp_addr.wrapping_add(1);
 
                 let mut f = self.f & Flag::C as u8;
-                if self.a == 0 { f |= Flag::Z as u8; }
-                if (self.a & 0x80) != 0 { f |= Flag::S as u8; }
-                if Self::get_parity(self.a) { f |= Flag::PV as u8; }
+                if self.a == 0 {
+                    f |= Flag::Z as u8;
+                }
+                if (self.a & 0x80) != 0 {
+                    f |= Flag::S as u8;
+                }
+                if Self::get_parity(self.a) {
+                    f |= Flag::PV as u8;
+                }
                 f |= self.a & (Flag::X as u8 | Flag::Y as u8);
                 self.f = f;
                 self.q = self.f;

@@ -108,17 +108,50 @@ pub const INPUT_P2_RIGHT: u8 = 9;
 pub const INPUT_P2_DOWN: u8 = 10;
 
 const PACMAN_INPUT_MAP: &[InputButton] = &[
-    InputButton { id: INPUT_P1_UP, name: "P1 Up" },
-    InputButton { id: INPUT_P1_LEFT, name: "P1 Left" },
-    InputButton { id: INPUT_P1_RIGHT, name: "P1 Right" },
-    InputButton { id: INPUT_P1_DOWN, name: "P1 Down" },
-    InputButton { id: INPUT_COIN, name: "Coin" },
-    InputButton { id: INPUT_P1_START, name: "P1 Start" },
-    InputButton { id: INPUT_P2_START, name: "P2 Start" },
-    InputButton { id: INPUT_P2_UP, name: "P2 Up" },
-    InputButton { id: INPUT_P2_LEFT, name: "P2 Left" },
-    InputButton { id: INPUT_P2_RIGHT, name: "P2 Right" },
-    InputButton { id: INPUT_P2_DOWN, name: "P2 Down" },
+    InputButton {
+        id: INPUT_P1_UP,
+        name: "P1 Up",
+    },
+    InputButton {
+        id: INPUT_P1_LEFT,
+        name: "P1 Left",
+    },
+    InputButton {
+        id: INPUT_P1_RIGHT,
+        name: "P1 Right",
+    },
+    InputButton {
+        id: INPUT_P1_DOWN,
+        name: "P1 Down",
+    },
+    InputButton {
+        id: INPUT_COIN,
+        name: "Coin",
+    },
+    InputButton {
+        id: INPUT_P1_START,
+        name: "P1 Start",
+    },
+    InputButton {
+        id: INPUT_P2_START,
+        name: "P2 Start",
+    },
+    InputButton {
+        id: INPUT_P2_UP,
+        name: "P2 Up",
+    },
+    InputButton {
+        id: INPUT_P2_LEFT,
+        name: "P2 Left",
+    },
+    InputButton {
+        id: INPUT_P2_RIGHT,
+        name: "P2 Right",
+    },
+    InputButton {
+        id: INPUT_P2_DOWN,
+        name: "P2 Down",
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -243,19 +276,22 @@ impl PacmanSystem {
 
             // Red: bits 0-2
             let r = combine_weights_3(
-                &R_WEIGHTS, &r_scale,
-                entry & 1, (entry >> 1) & 1, (entry >> 2) & 1,
+                &R_WEIGHTS,
+                &r_scale,
+                entry & 1,
+                (entry >> 1) & 1,
+                (entry >> 2) & 1,
             );
             // Green: bits 3-5
             let g = combine_weights_3(
-                &G_WEIGHTS, &g_scale,
-                (entry >> 3) & 1, (entry >> 4) & 1, (entry >> 5) & 1,
+                &G_WEIGHTS,
+                &g_scale,
+                (entry >> 3) & 1,
+                (entry >> 4) & 1,
+                (entry >> 5) & 1,
             );
             // Blue: bits 6-7
-            let b = combine_weights_2(
-                &B_WEIGHTS, &b_scale,
-                (entry >> 6) & 1, (entry >> 7) & 1,
-            );
+            let b = combine_weights_2(&B_WEIGHTS, &b_scale, (entry >> 6) & 1, (entry >> 7) & 1);
 
             self.palette_rgb[i] = (r, g, b);
         }
@@ -337,7 +373,7 @@ impl PacmanSystem {
         let base = (tile_code as usize) * 16;
         // Pixel X mapping: pixels 0-3 come from byte offset 8, pixels 4-7 from byte 0
         let (byte_off, bit) = if px < 4 {
-            (8, px)    // First 4 pixels from second half
+            (8, px) // First 4 pixels from second half
         } else {
             (0, px - 4) // Last 4 pixels from first half
         };
@@ -367,15 +403,19 @@ impl PacmanSystem {
 
         // X mapping: 4 groups of 4 pixels, each from different byte offsets
         let (x_byte_off, bit) = match px {
-            0..=3   => (8, px),         // 8*8 + bit
-            4..=7   => (16, px - 4),    // 16*8 + bit
-            8..=11  => (24, px - 8),    // 24*8 + bit
-            12..=15 => (0, px - 12),    // 0 + bit
+            0..=3 => (8, px),        // 8*8 + bit
+            4..=7 => (16, px - 4),   // 16*8 + bit
+            8..=11 => (24, px - 8),  // 24*8 + bit
+            12..=15 => (0, px - 12), // 0 + bit
             _ => unreachable!(),
         };
 
         // Y mapping: rows 0-7 at offset 0, rows 8-15 at offset 32
-        let y_byte_off = if py < 8 { py as usize } else { 32 + (py as usize - 8) };
+        let y_byte_off = if py < 8 {
+            py as usize
+        } else {
+            32 + (py as usize - 8)
+        };
 
         let byte_addr = base + x_byte_off + y_byte_off;
         if byte_addr >= self.gfx_rom.len() {
@@ -481,11 +521,8 @@ impl PacmanSystem {
         let y = scanline as i32;
 
         for pass in 0..2 {
-            let (start, end, y_offset): (usize, usize, i32) = if pass == 0 {
-                (7, 3, 0)
-            } else {
-                (2, 0, 1)
-            };
+            let (start, end, y_offset): (usize, usize, i32) =
+                if pass == 0 { (7, 3, 0) } else { (2, 0, 1) };
 
             let mut offs = start;
             loop {
@@ -516,8 +553,7 @@ impl PacmanSystem {
                             continue;
                         }
                         let src_px = if x_flip { 15 - px } else { px };
-                        let pixel_value =
-                            self.decode_sprite_pixel(sprite_code, src_px, src_py);
+                        let pixel_value = self.decode_sprite_pixel(sprite_code, src_px, src_py);
                         if (trans_mask >> pixel_value) & 1 != 0 {
                             continue;
                         }
@@ -537,8 +573,7 @@ impl PacmanSystem {
                                 continue;
                             }
                             let src_px = if x_flip { 15 - px } else { px };
-                            let pixel_value =
-                                self.decode_sprite_pixel(sprite_code, src_px, src_py);
+                            let pixel_value = self.decode_sprite_pixel(sprite_code, src_px, src_py);
                             if (trans_mask >> pixel_value) & 1 != 0 {
                                 continue;
                             }
@@ -558,7 +593,6 @@ impl PacmanSystem {
             }
         }
     }
-
 }
 
 impl Default for PacmanSystem {
@@ -711,17 +745,17 @@ impl Machine for PacmanSystem {
     fn set_input(&mut self, button: u8, pressed: bool) {
         match button {
             // IN0 (active-low: clear bit when pressed, set when released)
-            INPUT_P1_UP    => set_bit_active_low(&mut self.in0, 0, pressed),
-            INPUT_P1_LEFT  => set_bit_active_low(&mut self.in0, 1, pressed),
+            INPUT_P1_UP => set_bit_active_low(&mut self.in0, 0, pressed),
+            INPUT_P1_LEFT => set_bit_active_low(&mut self.in0, 1, pressed),
             INPUT_P1_RIGHT => set_bit_active_low(&mut self.in0, 2, pressed),
-            INPUT_P1_DOWN  => set_bit_active_low(&mut self.in0, 3, pressed),
-            INPUT_COIN     => set_bit_active_low(&mut self.in0, 5, pressed),
+            INPUT_P1_DOWN => set_bit_active_low(&mut self.in0, 3, pressed),
+            INPUT_COIN => set_bit_active_low(&mut self.in0, 5, pressed),
 
             // IN1 (active-low)
-            INPUT_P2_UP    => set_bit_active_low(&mut self.in1, 0, pressed),
-            INPUT_P2_LEFT  => set_bit_active_low(&mut self.in1, 1, pressed),
+            INPUT_P2_UP => set_bit_active_low(&mut self.in1, 0, pressed),
+            INPUT_P2_LEFT => set_bit_active_low(&mut self.in1, 1, pressed),
             INPUT_P2_RIGHT => set_bit_active_low(&mut self.in1, 2, pressed),
-            INPUT_P2_DOWN  => set_bit_active_low(&mut self.in1, 3, pressed),
+            INPUT_P2_DOWN => set_bit_active_low(&mut self.in1, 3, pressed),
             INPUT_P1_START => set_bit_active_low(&mut self.in1, 5, pressed),
             INPUT_P2_START => set_bit_active_low(&mut self.in1, 6, pressed),
 
@@ -792,19 +826,13 @@ fn compute_resistor_scale(weights: &[f64]) -> Vec<f64> {
 }
 
 /// Combine 3 resistor-weighted bits into an 8-bit color value.
-fn combine_weights_3(
-    _weights: &[f64; 3], scale: &[f64],
-    bit0: u8, bit1: u8, bit2: u8,
-) -> u8 {
+fn combine_weights_3(_weights: &[f64; 3], scale: &[f64], bit0: u8, bit1: u8, bit2: u8) -> u8 {
     let val = bit0 as f64 * scale[0] + bit1 as f64 * scale[1] + bit2 as f64 * scale[2];
     (val * 255.0).round().min(255.0) as u8
 }
 
 /// Combine 2 resistor-weighted bits into an 8-bit color value.
-fn combine_weights_2(
-    _weights: &[f64; 2], scale: &[f64],
-    bit0: u8, bit1: u8,
-) -> u8 {
+fn combine_weights_2(_weights: &[f64; 2], scale: &[f64], bit0: u8, bit1: u8) -> u8 {
     let val = bit0 as f64 * scale[0] + bit1 as f64 * scale[1];
     (val * 255.0).round().min(255.0) as u8
 }

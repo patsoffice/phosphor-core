@@ -539,7 +539,7 @@ impl M6809 {
                 // Internal: set mask flags (matches SWI cycle 14)
                 let mask = match self.interrupt_type {
                     1 => CcFlag::I as u8 | CcFlag::F as u8, // NMI
-                    _ => CcFlag::I as u8,                    // IRQ
+                    _ => CcFlag::I as u8,                   // IRQ
                 };
                 self.cc |= mask;
                 self.state = ExecState::Interrupt(15);

@@ -35,10 +35,16 @@ impl Z80 {
 
                 let n = self.temp_data.wrapping_add(self.a);
                 let mut f = self.f & (Flag::S as u8 | Flag::Z as u8 | Flag::C as u8);
-                if self.get_bc() != 0 { f |= Flag::PV as u8; }
+                if self.get_bc() != 0 {
+                    f |= Flag::PV as u8;
+                }
                 // Undocumented: X = bit 3 of (val+A), Y = bit 1 of (val+A)
-                if (n & 0x08) != 0 { f |= Flag::X as u8; }
-                if (n & 0x02) != 0 { f |= Flag::Y as u8; }
+                if (n & 0x08) != 0 {
+                    f |= Flag::X as u8;
+                }
+                if (n & 0x02) != 0 {
+                    f |= Flag::Y as u8;
+                }
                 self.f = f;
                 self.q = self.f;
                 self.state = ExecState::ExecuteED(opcode, 7);
@@ -77,9 +83,15 @@ impl Z80 {
 
                 let n = self.temp_data.wrapping_add(self.a);
                 let mut f = self.f & (Flag::S as u8 | Flag::Z as u8 | Flag::C as u8);
-                if self.get_bc() != 0 { f |= Flag::PV as u8; }
-                if (n & 0x08) != 0 { f |= Flag::X as u8; }
-                if (n & 0x02) != 0 { f |= Flag::Y as u8; }
+                if self.get_bc() != 0 {
+                    f |= Flag::PV as u8;
+                }
+                if (n & 0x08) != 0 {
+                    f |= Flag::X as u8;
+                }
+                if (n & 0x02) != 0 {
+                    f |= Flag::Y as u8;
+                }
                 self.f = f;
                 self.q = self.f;
                 self.state = ExecState::ExecuteED(opcode, 7);
@@ -141,14 +153,26 @@ impl Z80 {
 
                 let mut f = self.f & Flag::C as u8; // preserve C
                 f |= Flag::N as u8;
-                if result == 0 { f |= Flag::Z as u8; }
-                if (result & 0x80) != 0 { f |= Flag::S as u8; }
-                if h { f |= Flag::H as u8; }
-                if self.get_bc() != 0 { f |= Flag::PV as u8; }
+                if result == 0 {
+                    f |= Flag::Z as u8;
+                }
+                if (result & 0x80) != 0 {
+                    f |= Flag::S as u8;
+                }
+                if h {
+                    f |= Flag::H as u8;
+                }
+                if self.get_bc() != 0 {
+                    f |= Flag::PV as u8;
+                }
                 // Undocumented X/Y: n = result - H_flag
                 let n = result.wrapping_sub(if h { 1 } else { 0 });
-                if (n & 0x08) != 0 { f |= Flag::X as u8; }
-                if (n & 0x02) != 0 { f |= Flag::Y as u8; }
+                if (n & 0x08) != 0 {
+                    f |= Flag::X as u8;
+                }
+                if (n & 0x02) != 0 {
+                    f |= Flag::Y as u8;
+                }
                 self.f = f;
                 self.q = self.f;
                 self.state = ExecState::ExecuteED(opcode, 4);
@@ -190,13 +214,25 @@ impl Z80 {
 
                 let mut f = self.f & Flag::C as u8;
                 f |= Flag::N as u8;
-                if result == 0 { f |= Flag::Z as u8; }
-                if (result & 0x80) != 0 { f |= Flag::S as u8; }
-                if h { f |= Flag::H as u8; }
-                if self.get_bc() != 0 { f |= Flag::PV as u8; }
+                if result == 0 {
+                    f |= Flag::Z as u8;
+                }
+                if (result & 0x80) != 0 {
+                    f |= Flag::S as u8;
+                }
+                if h {
+                    f |= Flag::H as u8;
+                }
+                if self.get_bc() != 0 {
+                    f |= Flag::PV as u8;
+                }
                 let n = result.wrapping_sub(if h { 1 } else { 0 });
-                if (n & 0x08) != 0 { f |= Flag::X as u8; }
-                if (n & 0x02) != 0 { f |= Flag::Y as u8; }
+                if (n & 0x08) != 0 {
+                    f |= Flag::X as u8;
+                }
+                if (n & 0x02) != 0 {
+                    f |= Flag::Y as u8;
+                }
                 self.f = f;
                 self.q = self.f;
                 self.state = ExecState::ExecuteED(opcode, 4);
@@ -263,15 +299,29 @@ impl Z80 {
                 // Undocumented flag behavior for INI/IND:
                 // k = val + ((C ± 1) & 0xFF), N = bit 7 of val
                 // H = C = (k > 255), PV = parity of ((k & 7) ^ B)
-                let c_adj = if dec { self.c.wrapping_sub(1) } else { self.c.wrapping_add(1) };
+                let c_adj = if dec {
+                    self.c.wrapping_sub(1)
+                } else {
+                    self.c.wrapping_add(1)
+                };
                 let k = val as u16 + c_adj as u16;
                 let mut f = 0u8;
-                if (self.b & 0x80) != 0 { f |= Flag::S as u8; }
-                if self.b == 0 { f |= Flag::Z as u8; }
+                if (self.b & 0x80) != 0 {
+                    f |= Flag::S as u8;
+                }
+                if self.b == 0 {
+                    f |= Flag::Z as u8;
+                }
                 f |= self.b & (Flag::X as u8 | Flag::Y as u8);
-                if k > 255 { f |= Flag::H as u8 | Flag::C as u8; }
-                if Self::get_parity(((k & 7) as u8) ^ self.b) { f |= Flag::PV as u8; }
-                if (val & 0x80) != 0 { f |= Flag::N as u8; }
+                if k > 255 {
+                    f |= Flag::H as u8 | Flag::C as u8;
+                }
+                if Self::get_parity(((k & 7) as u8) ^ self.b) {
+                    f |= Flag::PV as u8;
+                }
+                if (val & 0x80) != 0 {
+                    f |= Flag::N as u8;
+                }
                 self.f = f;
                 self.q = self.f;
                 self.state = ExecState::ExecuteED(opcode, 6);
@@ -317,8 +367,7 @@ impl Z80 {
                     // H flag: re-derive from B low nibble when C is set
                     if c_set {
                         self.f &= !(Flag::H as u8);
-                        if (n_set && (self.b & 0x0F) == 0x00)
-                            || (!n_set && (self.b & 0x0F) == 0x0F)
+                        if (n_set && (self.b & 0x0F) == 0x00) || (!n_set && (self.b & 0x0F) == 0x0F)
                         {
                             self.f |= Flag::H as u8;
                         }
@@ -395,12 +444,22 @@ impl Z80 {
                 let l_after = self.l; // HL already updated in cycle 2
                 let k = val as u16 + l_after as u16;
                 let mut f = 0u8;
-                if (self.b & 0x80) != 0 { f |= Flag::S as u8; }
-                if self.b == 0 { f |= Flag::Z as u8; }
+                if (self.b & 0x80) != 0 {
+                    f |= Flag::S as u8;
+                }
+                if self.b == 0 {
+                    f |= Flag::Z as u8;
+                }
                 f |= self.b & (Flag::X as u8 | Flag::Y as u8);
-                if k > 255 { f |= Flag::H as u8 | Flag::C as u8; }
-                if Self::get_parity(((k & 7) as u8) ^ self.b) { f |= Flag::PV as u8; }
-                if (val & 0x80) != 0 { f |= Flag::N as u8; }
+                if k > 255 {
+                    f |= Flag::H as u8 | Flag::C as u8;
+                }
+                if Self::get_parity(((k & 7) as u8) ^ self.b) {
+                    f |= Flag::PV as u8;
+                }
+                if (val & 0x80) != 0 {
+                    f |= Flag::N as u8;
+                }
                 self.f = f;
                 self.q = self.f;
                 self.state = ExecState::ExecuteED(opcode, 5);
@@ -443,8 +502,7 @@ impl Z80 {
                     // H flag: re-derive from B low nibble when C is set
                     if c_set {
                         self.f &= !(Flag::H as u8);
-                        if (n_set && (self.b & 0x0F) == 0x00)
-                            || (!n_set && (self.b & 0x0F) == 0x0F)
+                        if (n_set && (self.b & 0x0F) == 0x00) || (!n_set && (self.b & 0x0F) == 0x0F)
                         {
                             self.f |= Flag::H as u8;
                         }

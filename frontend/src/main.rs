@@ -47,8 +47,7 @@ fn main() {
             let rom_set = rom_path::load_rom_set("pacman", rom_path).expect("Failed to load ROMs");
 
             let mut sys = PacmanSystem::new();
-            sys.load_rom_set(&rom_set)
-                .expect("Failed to map ROMs");
+            sys.load_rom_set(&rom_set).expect("Failed to map ROMs");
             Box::new(sys)
         }
         _ => {
@@ -70,9 +69,10 @@ fn main() {
 
     // Save battery-backed NVRAM to disk on exit
     if let Some(data) = machine.save_nvram()
-        && let Err(e) = std::fs::write(&nvram_path, data) {
-            eprintln!("Warning: failed to save NVRAM: {e}");
-        }
+        && let Err(e) = std::fs::write(&nvram_path, data)
+    {
+        eprintln!("Warning: failed to save NVRAM: {e}");
+    }
 }
 
 fn nvram_path_for(machine_name: &str, rom_path: &str) -> std::path::PathBuf {

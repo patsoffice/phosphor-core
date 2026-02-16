@@ -37,7 +37,6 @@ struct WsgVoice {
     waveform_select: u8,
 }
 
-
 /// Fractional bits for the frequency counter.
 ///
 /// The WSG input clock is master / 6 / 32 = 96 kHz for 18.432 MHz.
@@ -57,7 +56,11 @@ impl NamcoWsg {
     /// Create a new WSG with the given CPU clock rate (e.g., 3_072_000).
     pub fn new(cpu_clock_hz: u64) -> Self {
         Self {
-            voices: [WsgVoice::default(), WsgVoice::default(), WsgVoice::default()],
+            voices: [
+                WsgVoice::default(),
+                WsgVoice::default(),
+                WsgVoice::default(),
+            ],
             sound_regs: [0; 32],
             waveform_rom: [0; 256],
             sound_enabled: false,

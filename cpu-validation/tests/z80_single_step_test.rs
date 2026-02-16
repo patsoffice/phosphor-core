@@ -2,7 +2,7 @@ use std::path::Path;
 
 use phosphor_core::core::{BusMaster, BusMasterComponent};
 use phosphor_core::cpu::z80::Z80;
-use phosphor_cpu_validation::{Z80CpuState, Z80TestCase, TracingBus};
+use phosphor_cpu_validation::{TracingBus, Z80CpuState, Z80TestCase};
 
 fn load_initial_state(cpu: &mut Z80, s: &Z80CpuState) {
     cpu.a = s.a;
@@ -64,7 +64,10 @@ fn run_test_case(tc: &Z80TestCase) -> Option<String> {
             break;
         }
         if total_ticks > 200 {
-            return Some(format!("{}: instruction did not complete in 200 cycles", tc.name));
+            return Some(format!(
+                "{}: instruction did not complete in 200 cycles",
+                tc.name
+            ));
         }
     }
 
@@ -75,7 +78,8 @@ fn run_test_case(tc: &Z80TestCase) -> Option<String> {
         ($got:expr, $exp:expr, $name:expr) => {
             if $got != $exp {
                 return Some(format!(
-                    "{}: {} (got 0x{:X} exp 0x{:X})", tc.name, $name, $got as u64, $exp as u64
+                    "{}: {} (got 0x{:X} exp 0x{:X})",
+                    tc.name, $name, $got as u64, $exp as u64
                 ));
             }
         };
@@ -127,7 +131,9 @@ fn run_test_case(tc: &Z80TestCase) -> Option<String> {
     if total_ticks != tc.cycles.len() {
         return Some(format!(
             "{}: cycles (got {} exp {})",
-            tc.name, total_ticks, tc.cycles.len()
+            tc.name,
+            total_ticks,
+            tc.cycles.len()
         ));
     }
 
@@ -146,9 +152,7 @@ fn test_all_z80_opcodes() {
     let mut entries: Vec<_> = std::fs::read_dir(test_dir)
         .expect("Failed to read test directory")
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path().extension().map_or(false, |ext| ext == "json")
-        })
+        .filter(|e| e.path().extension().map_or(false, |ext| ext == "json"))
         .collect();
     entries.sort_by_key(|e| e.file_name());
 
@@ -188,7 +192,9 @@ fn test_all_z80_opcodes() {
 
     eprintln!(
         "\nZ80 SingleStepTests: {} passed, {} failed across {} files",
-        total_tests - failed_tests, failed_tests, total_files
+        total_tests - failed_tests,
+        failed_tests,
+        total_files
     );
 
     if !first_failures.is_empty() {
@@ -201,7 +207,10 @@ fn test_all_z80_opcodes() {
     if failed_tests > 0 {
         panic!(
             "{} tests failed across {} files (out of {} tests in {} files)",
-            failed_tests, failed_files.len(), total_tests, total_files
+            failed_tests,
+            failed_files.len(),
+            total_tests,
+            total_files
         );
     }
 }

@@ -20,8 +20,10 @@ fn run_instruction(cpu: &mut Z80, bus: &mut TestBus) -> u32 {
 fn test_add_hl_bc() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
-    cpu.h = 0x10; cpu.l = 0x00;
-    cpu.b = 0x20; cpu.c = 0x00;
+    cpu.h = 0x10;
+    cpu.l = 0x00;
+    cpu.b = 0x20;
+    cpu.c = 0x00;
     cpu.f = 0x00;
     bus.load(0, &[0x09]); // ADD HL, BC
 
@@ -36,8 +38,10 @@ fn test_add_hl_bc() {
 fn test_add_hl_de_carry() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
-    cpu.h = 0x80; cpu.l = 0x00;
-    cpu.d = 0x80; cpu.e = 0x00;
+    cpu.h = 0x80;
+    cpu.l = 0x00;
+    cpu.d = 0x80;
+    cpu.e = 0x00;
     cpu.f = 0x00;
     bus.load(0, &[0x19]); // ADD HL, DE
 
@@ -51,7 +55,8 @@ fn test_add_hl_de_carry() {
 fn test_add_hl_hl() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
-    cpu.h = 0x40; cpu.l = 0x00;
+    cpu.h = 0x40;
+    cpu.l = 0x00;
     cpu.f = 0x00;
     bus.load(0, &[0x29]); // ADD HL, HL
 
@@ -64,7 +69,8 @@ fn test_add_hl_hl() {
 fn test_add_hl_sp() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
-    cpu.h = 0x00; cpu.l = 0x10;
+    cpu.h = 0x00;
+    cpu.l = 0x10;
     cpu.sp = 0x0020;
     cpu.f = 0x00;
     bus.load(0, &[0x39]); // ADD HL, SP
@@ -78,8 +84,10 @@ fn test_add_hl_sp() {
 fn test_add_hl_half_carry() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
-    cpu.h = 0x0F; cpu.l = 0xFF;
-    cpu.b = 0x00; cpu.c = 0x01;
+    cpu.h = 0x0F;
+    cpu.l = 0xFF;
+    cpu.b = 0x00;
+    cpu.c = 0x01;
     cpu.f = 0x00;
     bus.load(0, &[0x09]); // ADD HL, BC
 
@@ -92,8 +100,10 @@ fn test_add_hl_half_carry() {
 fn test_add_hl_preserves_szpv() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
-    cpu.h = 0x10; cpu.l = 0x00;
-    cpu.b = 0x00; cpu.c = 0x01;
+    cpu.h = 0x10;
+    cpu.l = 0x00;
+    cpu.b = 0x00;
+    cpu.c = 0x01;
     cpu.f = 0xC4; // S=1, Z=1, PV=1
     bus.load(0, &[0x09]); // ADD HL, BC
 
@@ -105,8 +115,10 @@ fn test_add_hl_preserves_szpv() {
 fn test_add_hl_memptr() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
-    cpu.h = 0x10; cpu.l = 0x00;
-    cpu.b = 0x00; cpu.c = 0x01;
+    cpu.h = 0x10;
+    cpu.l = 0x00;
+    cpu.b = 0x00;
+    cpu.c = 0x01;
     cpu.f = 0x00;
     bus.load(0, &[0x09]); // ADD HL, BC
 
@@ -121,7 +133,8 @@ fn test_add_ix_bc() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
     cpu.ix = 0x1000;
-    cpu.b = 0x20; cpu.c = 0x00;
+    cpu.b = 0x20;
+    cpu.c = 0x00;
     cpu.f = 0x00;
     bus.load(0, &[0xDD, 0x09]); // ADD IX, BC
 
@@ -136,7 +149,8 @@ fn test_add_ix_bc() {
 fn test_inc_bc() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
-    cpu.b = 0x12; cpu.c = 0x34;
+    cpu.b = 0x12;
+    cpu.c = 0x34;
     cpu.f = 0xFF;
     bus.load(0, &[0x03]); // INC BC
 
@@ -150,7 +164,8 @@ fn test_inc_bc() {
 fn test_inc_de_wrap() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
-    cpu.d = 0xFF; cpu.e = 0xFF;
+    cpu.d = 0xFF;
+    cpu.e = 0xFF;
     bus.load(0, &[0x13]); // INC DE
 
     run_instruction(&mut cpu, &mut bus);
@@ -161,7 +176,8 @@ fn test_inc_de_wrap() {
 fn test_inc_hl() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
-    cpu.h = 0x00; cpu.l = 0xFF;
+    cpu.h = 0x00;
+    cpu.l = 0xFF;
     bus.load(0, &[0x23]); // INC HL
 
     run_instruction(&mut cpu, &mut bus);
@@ -185,7 +201,8 @@ fn test_inc_sp() {
 fn test_dec_bc() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
-    cpu.b = 0x12; cpu.c = 0x34;
+    cpu.b = 0x12;
+    cpu.c = 0x34;
     cpu.f = 0xFF;
     bus.load(0, &[0x0B]); // DEC BC
 
@@ -199,7 +216,8 @@ fn test_dec_bc() {
 fn test_dec_de_wrap() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
-    cpu.d = 0x00; cpu.e = 0x00;
+    cpu.d = 0x00;
+    cpu.e = 0x00;
     bus.load(0, &[0x1B]); // DEC DE
 
     run_instruction(&mut cpu, &mut bus);
@@ -210,7 +228,8 @@ fn test_dec_de_wrap() {
 fn test_dec_hl() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
-    cpu.h = 0x01; cpu.l = 0x00;
+    cpu.h = 0x01;
+    cpu.l = 0x00;
     bus.load(0, &[0x2B]); // DEC HL
 
     run_instruction(&mut cpu, &mut bus);

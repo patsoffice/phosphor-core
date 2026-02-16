@@ -32,7 +32,11 @@ fn test_rlc_b() {
     assert_ne!(cpu.f & 0x01, 0, "C should be set (old bit 7)");
     assert_eq!(cpu.f & 0x02, 0, "N should be clear");
     assert_eq!(cpu.f & 0x10, 0, "H should be clear");
-    assert_eq!(cpu.f & 0x04, 0, "PV should be clear (odd parity: 0x0B has 3 bits set)");
+    assert_eq!(
+        cpu.f & 0x04,
+        0,
+        "PV should be clear (odd parity: 0x0B has 3 bits set)"
+    );
 }
 
 #[test]
@@ -327,7 +331,8 @@ fn test_bit_3_c() {
 fn test_bit_0_hl_set() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
-    cpu.h = 0x20; cpu.l = 0x00;
+    cpu.h = 0x20;
+    cpu.l = 0x00;
     cpu.f = 0x01; // C set
     bus.load(0, &[0xCB, 0x46]); // BIT 0, (HL)
     bus.memory[0x2000] = 0x01; // bit 0 is set
@@ -344,7 +349,8 @@ fn test_bit_0_hl_set() {
 fn test_bit_7_hl_clear() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
-    cpu.h = 0x20; cpu.l = 0x00;
+    cpu.h = 0x20;
+    cpu.l = 0x00;
     cpu.f = 0x00;
     bus.load(0, &[0xCB, 0x7E]); // BIT 7, (HL)
     bus.memory[0x2000] = 0x7F; // bit 7 is clear
@@ -448,7 +454,8 @@ fn test_res_already_clear() {
 fn test_set_0_hl() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
-    cpu.h = 0x20; cpu.l = 0x00;
+    cpu.h = 0x20;
+    cpu.l = 0x00;
     cpu.f = 0xFF;
     bus.load(0, &[0xCB, 0xC6]); // SET 0, (HL)
     bus.memory[0x2000] = 0x00;
@@ -463,7 +470,8 @@ fn test_set_0_hl() {
 fn test_res_7_hl() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
-    cpu.h = 0x20; cpu.l = 0x00;
+    cpu.h = 0x20;
+    cpu.l = 0x00;
     cpu.f = 0x00;
     bus.load(0, &[0xCB, 0xBE]); // RES 7, (HL)
     bus.memory[0x2000] = 0xFF;
@@ -481,7 +489,8 @@ fn test_res_7_hl() {
 fn test_rlc_hl() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
-    cpu.h = 0x20; cpu.l = 0x00;
+    cpu.h = 0x20;
+    cpu.l = 0x00;
     cpu.f = 0x00;
     bus.load(0, &[0xCB, 0x06]); // RLC (HL)
     bus.memory[0x2000] = 0x85;
@@ -496,7 +505,8 @@ fn test_rlc_hl() {
 fn test_srl_hl() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
-    cpu.h = 0x20; cpu.l = 0x00;
+    cpu.h = 0x20;
+    cpu.l = 0x00;
     cpu.f = 0x00;
     bus.load(0, &[0xCB, 0x3E]); // SRL (HL)
     bus.memory[0x2000] = 0x85;
@@ -515,7 +525,15 @@ fn test_srl_hl() {
 #[test]
 fn test_rlc_all_registers() {
     // RLC B=0x00, C=0x01, D=0x02, E=0x03, H=0x04, L=0x05, A=0x07
-    let regs = [(0u8, 0x00u8), (1, 0x01), (2, 0x02), (3, 0x03), (4, 0x04), (5, 0x05), (7, 0x07)];
+    let regs = [
+        (0u8, 0x00u8),
+        (1, 0x01),
+        (2, 0x02),
+        (3, 0x03),
+        (4, 0x04),
+        (5, 0x05),
+        (7, 0x07),
+    ];
 
     for &(reg_idx, opcode_low) in &regs {
         let mut cpu = Z80::new();
@@ -525,9 +543,12 @@ fn test_rlc_all_registers() {
         bus.load(0, &[0xCB, opcode_low]); // RLC reg
 
         run_instruction(&mut cpu, &mut bus);
-        assert_eq!(cpu.get_reg8(reg_idx), 0x01,
-            "RLC r{} should rotate 0x80 to 0x01", reg_idx);
-        assert_ne!(cpu.f & 0x01, 0,
-            "C should be set for r{}", reg_idx);
+        assert_eq!(
+            cpu.get_reg8(reg_idx),
+            0x01,
+            "RLC r{} should rotate 0x80 to 0x01",
+            reg_idx
+        );
+        assert_ne!(cpu.f & 0x01, 0, "C should be set for r{}", reg_idx);
     }
 }

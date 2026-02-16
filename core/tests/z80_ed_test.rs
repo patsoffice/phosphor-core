@@ -70,8 +70,10 @@ fn test_neg_overflow() {
 fn test_adc_hl_bc() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
-    cpu.h = 0x10; cpu.l = 0x00;
-    cpu.b = 0x20; cpu.c = 0x00;
+    cpu.h = 0x10;
+    cpu.l = 0x00;
+    cpu.b = 0x20;
+    cpu.c = 0x00;
     cpu.f = 0x00;
     bus.load(0, &[0xED, 0x4A]); // ADC HL, BC
 
@@ -86,8 +88,10 @@ fn test_adc_hl_bc() {
 fn test_adc_hl_with_carry() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
-    cpu.h = 0x10; cpu.l = 0x00;
-    cpu.b = 0x20; cpu.c = 0x00;
+    cpu.h = 0x10;
+    cpu.l = 0x00;
+    cpu.b = 0x20;
+    cpu.c = 0x00;
     cpu.f = 0x01; // C set
     bus.load(0, &[0xED, 0x4A]); // ADC HL, BC
 
@@ -99,8 +103,10 @@ fn test_adc_hl_with_carry() {
 fn test_adc_hl_overflow() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
-    cpu.h = 0x7F; cpu.l = 0xFF;
-    cpu.b = 0x00; cpu.c = 0x01;
+    cpu.h = 0x7F;
+    cpu.l = 0xFF;
+    cpu.b = 0x00;
+    cpu.c = 0x01;
     cpu.f = 0x00;
     bus.load(0, &[0xED, 0x4A]);
 
@@ -114,8 +120,10 @@ fn test_adc_hl_overflow() {
 fn test_adc_hl_zero() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
-    cpu.h = 0xFF; cpu.l = 0xFF;
-    cpu.b = 0x00; cpu.c = 0x01;
+    cpu.h = 0xFF;
+    cpu.l = 0xFF;
+    cpu.b = 0x00;
+    cpu.c = 0x01;
     cpu.f = 0x00;
     bus.load(0, &[0xED, 0x4A]);
 
@@ -133,8 +141,10 @@ fn test_adc_hl_zero() {
 fn test_sbc_hl_bc() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
-    cpu.h = 0x30; cpu.l = 0x00;
-    cpu.b = 0x10; cpu.c = 0x00;
+    cpu.h = 0x30;
+    cpu.l = 0x00;
+    cpu.b = 0x10;
+    cpu.c = 0x00;
     cpu.f = 0x00;
     bus.load(0, &[0xED, 0x42]); // SBC HL, BC
 
@@ -149,8 +159,10 @@ fn test_sbc_hl_bc() {
 fn test_sbc_hl_with_borrow() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
-    cpu.h = 0x30; cpu.l = 0x00;
-    cpu.b = 0x10; cpu.c = 0x00;
+    cpu.h = 0x30;
+    cpu.l = 0x00;
+    cpu.b = 0x10;
+    cpu.c = 0x00;
     cpu.f = 0x01; // C set
     bus.load(0, &[0xED, 0x42]);
 
@@ -162,8 +174,10 @@ fn test_sbc_hl_with_borrow() {
 fn test_sbc_hl_zero() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
-    cpu.h = 0x10; cpu.l = 0x00;
-    cpu.b = 0x10; cpu.c = 0x00;
+    cpu.h = 0x10;
+    cpu.l = 0x00;
+    cpu.b = 0x10;
+    cpu.c = 0x00;
     cpu.f = 0x00;
     bus.load(0, &[0xED, 0x42]);
 
@@ -176,8 +190,10 @@ fn test_sbc_hl_zero() {
 fn test_sbc_hl_underflow() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
-    cpu.h = 0x00; cpu.l = 0x00;
-    cpu.b = 0x00; cpu.c = 0x01;
+    cpu.h = 0x00;
+    cpu.l = 0x00;
+    cpu.b = 0x00;
+    cpu.c = 0x01;
     cpu.f = 0x00;
     bus.load(0, &[0xED, 0x42]);
 
@@ -276,7 +292,8 @@ fn test_ld_a_r() {
 fn test_ld_nn_bc_ed() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
-    cpu.b = 0x12; cpu.c = 0x34;
+    cpu.b = 0x12;
+    cpu.c = 0x34;
     bus.load(0, &[0xED, 0x43, 0x00, 0x20]); // LD (0x2000), BC
 
     let cycles = run_instruction(&mut cpu, &mut bus);
@@ -319,7 +336,8 @@ fn test_rrd() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
     cpu.a = 0x84; // A = 1000_0100
-    cpu.h = 0x20; cpu.l = 0x00;
+    cpu.h = 0x20;
+    cpu.l = 0x00;
     cpu.f = 0x01; // C set
     bus.load(0, &[0xED, 0x67]); // RRD
     bus.memory[0x2000] = 0x20; // (HL) = 0010_0000
@@ -327,7 +345,7 @@ fn test_rrd() {
     let cycles = run_instruction(&mut cpu, &mut bus);
     assert_eq!(cycles, 18, "RRD should be 18 T-states");
     // RRD: A_low(4) → (HL)_high, (HL)_high(2) → (HL)_low, (HL)_low(0) → A_low
-    assert_eq!(cpu.a, 0x80);         // A = 1000_0000 (A_high preserved, (HL)_low → A_low)
+    assert_eq!(cpu.a, 0x80); // A = 1000_0000 (A_high preserved, (HL)_low → A_low)
     assert_eq!(bus.memory[0x2000], 0x42); // (HL) = 0100_0010 (A_low → high, old_high → low)
     assert_ne!(cpu.f & 0x01, 0, "C should be preserved");
     assert_ne!(cpu.f & 0x80, 0, "S should be set");
@@ -338,7 +356,8 @@ fn test_rld() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
     cpu.a = 0x84; // A = 1000_0100
-    cpu.h = 0x20; cpu.l = 0x00;
+    cpu.h = 0x20;
+    cpu.l = 0x00;
     cpu.f = 0x01; // C set
     bus.load(0, &[0xED, 0x6F]); // RLD
     bus.memory[0x2000] = 0x20; // (HL) = 0010_0000
@@ -346,7 +365,7 @@ fn test_rld() {
     let cycles = run_instruction(&mut cpu, &mut bus);
     assert_eq!(cycles, 18, "RLD should be 18 T-states");
     // RLD: (HL)_high(2) → A_low, A_low(4) → (HL)_low, (HL)_low(0) → (HL)_high
-    assert_eq!(cpu.a, 0x82);         // A = 1000_0010
+    assert_eq!(cpu.a, 0x82); // A = 1000_0010
     assert_eq!(bus.memory[0x2000], 0x04); // (HL) = 0000_0100
     assert_ne!(cpu.f & 0x01, 0, "C should be preserved");
 }
@@ -418,7 +437,8 @@ fn test_in_a_c() {
     let mut cpu = Z80::new();
     let mut bus = TestBus::new();
     cpu.a = 0x00;
-    cpu.b = 0x10; cpu.c = 0x20;
+    cpu.b = 0x10;
+    cpu.c = 0x20;
     cpu.f = 0x01; // C set
     bus.load(0, &[0xED, 0x78]); // IN A, (C)
 
