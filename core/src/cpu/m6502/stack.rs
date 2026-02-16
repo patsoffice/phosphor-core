@@ -4,7 +4,7 @@ use crate::core::{Bus, BusMaster};
 impl M6502 {
     // ---- Stack instructions ----
 
-    /// PHA (0x48) - 3 cycles. Push A to stack.
+    /// PHA (0x48) - 3 cycles. No flags affected.
     pub(crate) fn op_pha<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
@@ -26,7 +26,7 @@ impl M6502 {
         }
     }
 
-    /// PLA (0x68) - 4 cycles. Pull A from stack. Sets N, Z.
+    /// PLA (0x68) - 4 cycles. N, Z affected.
     pub(crate) fn op_pla<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
@@ -55,7 +55,7 @@ impl M6502 {
         }
     }
 
-    /// PHP (0x08) - 3 cycles. Push P with B=1 and U=1 to stack.
+    /// PHP (0x08) - 3 cycles. No flags affected. Pushes P with B=1 and U=1.
     pub(crate) fn op_php<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
@@ -79,7 +79,7 @@ impl M6502 {
         }
     }
 
-    /// PLP (0x28) - 4 cycles. Pull P from stack. B is always clear, U is always set.
+    /// PLP (0x28) - 4 cycles. All flags restored from stack. B always clear, U always set.
     pub(crate) fn op_plp<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
@@ -110,9 +110,9 @@ impl M6502 {
 
     // ---- BRK ----
 
-    /// BRK (0x00) - 7 cycles. Software interrupt.
+    /// BRK (0x00) - 7 cycles. I set. Software interrupt.
     /// 2-byte instruction: pushes PC+2 (past opcode + padding byte).
-    /// Pushes P with B=1. Vectors through $FFFE/$FFFF. Sets I flag.
+    /// Pushes P with B=1. Vectors through $FFFE/$FFFF.
     pub(crate) fn op_brk<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,

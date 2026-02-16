@@ -249,7 +249,7 @@ impl M6502 {
 
             // --- ASL ---
             0x0A => {
-                // ASL Accumulator - 2 cycles
+                // ASL Accumulator - 2 cycles. N, Z, C affected. C = old bit 7.
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.a = self.perform_asl(self.a);
@@ -263,7 +263,7 @@ impl M6502 {
 
             // --- LSR ---
             0x4A => {
-                // LSR Accumulator - 2 cycles
+                // LSR Accumulator - 2 cycles. N cleared, Z, C affected. C = old bit 0.
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.a = self.perform_lsr(self.a);
@@ -277,7 +277,7 @@ impl M6502 {
 
             // --- ROL ---
             0x2A => {
-                // ROL Accumulator - 2 cycles
+                // ROL Accumulator - 2 cycles. N, Z, C affected. C = old bit 7.
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.a = self.perform_rol(self.a);
@@ -291,7 +291,7 @@ impl M6502 {
 
             // --- ROR ---
             0x6A => {
-                // ROR Accumulator - 2 cycles
+                // ROR Accumulator - 2 cycles. N, Z, C affected. C = old bit 0.
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.a = self.perform_ror(self.a);
@@ -315,50 +315,50 @@ impl M6502 {
             0xCE => self.op_dec_abs(cycle, bus, master),
             0xDE => self.op_dec_abs_x(cycle, bus, master),
 
-            // --- Flag instructions (all 2-cycle implied) ---
-            0x18 => {
+            // --- Flag instructions (all 2-cycle implied, no other flags affected) ---
+            0x18 => { // CLC - C cleared.
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.set_flag(StatusFlag::C, false);
                     self.state = ExecState::Fetch;
                 }
             }
-            0x38 => {
+            0x38 => { // SEC - C set.
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.set_flag(StatusFlag::C, true);
                     self.state = ExecState::Fetch;
                 }
             }
-            0x58 => {
+            0x58 => { // CLI - I cleared.
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.set_flag(StatusFlag::I, false);
                     self.state = ExecState::Fetch;
                 }
             }
-            0x78 => {
+            0x78 => { // SEI - I set.
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.set_flag(StatusFlag::I, true);
                     self.state = ExecState::Fetch;
                 }
             }
-            0xB8 => {
+            0xB8 => { // CLV - V cleared.
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.set_flag(StatusFlag::V, false);
                     self.state = ExecState::Fetch;
                 }
             }
-            0xD8 => {
+            0xD8 => { // CLD - D cleared.
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.set_flag(StatusFlag::D, false);
                     self.state = ExecState::Fetch;
                 }
             }
-            0xF8 => {
+            0xF8 => { // SED - D set.
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.set_flag(StatusFlag::D, true);
@@ -367,7 +367,7 @@ impl M6502 {
             }
 
             // --- Transfer instructions (all 2-cycle implied) ---
-            0xAA => {
+            0xAA => { // TAX - N, Z affected.
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.x = self.a;
@@ -375,7 +375,7 @@ impl M6502 {
                     self.state = ExecState::Fetch;
                 }
             }
-            0xA8 => {
+            0xA8 => { // TAY - N, Z affected.
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.y = self.a;
@@ -383,7 +383,7 @@ impl M6502 {
                     self.state = ExecState::Fetch;
                 }
             }
-            0x8A => {
+            0x8A => { // TXA - N, Z affected.
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.a = self.x;
@@ -391,7 +391,7 @@ impl M6502 {
                     self.state = ExecState::Fetch;
                 }
             }
-            0x98 => {
+            0x98 => { // TYA - N, Z affected.
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.a = self.y;
@@ -399,7 +399,7 @@ impl M6502 {
                     self.state = ExecState::Fetch;
                 }
             }
-            0xBA => {
+            0xBA => { // TSX - N, Z affected.
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.x = self.sp;
@@ -407,7 +407,7 @@ impl M6502 {
                     self.state = ExecState::Fetch;
                 }
             }
-            0x9A => {
+            0x9A => { // TXS - No flags affected.
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.sp = self.x;
@@ -415,8 +415,8 @@ impl M6502 {
                 }
             }
 
-            // --- Register increment/decrement (all 2-cycle implied) ---
-            0xE8 => {
+            // --- Register increment/decrement (all 2-cycle implied, N, Z affected) ---
+            0xE8 => { // INX
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.x = self.x.wrapping_add(1);
@@ -424,7 +424,7 @@ impl M6502 {
                     self.state = ExecState::Fetch;
                 }
             }
-            0xC8 => {
+            0xC8 => { // INY
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.y = self.y.wrapping_add(1);
@@ -432,7 +432,7 @@ impl M6502 {
                     self.state = ExecState::Fetch;
                 }
             }
-            0xCA => {
+            0xCA => { // DEX
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.x = self.x.wrapping_sub(1);
@@ -440,7 +440,7 @@ impl M6502 {
                     self.state = ExecState::Fetch;
                 }
             }
-            0x88 => {
+            0x88 => { // DEY
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.y = self.y.wrapping_sub(1);
@@ -449,7 +449,7 @@ impl M6502 {
                 }
             }
 
-            // --- NOP (2-cycle implied) ---
+            // --- NOP (2-cycle implied, no flags affected) ---
             0xEA => {
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
