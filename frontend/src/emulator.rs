@@ -31,8 +31,8 @@ pub fn run(machine: &mut dyn Machine, key_map: &KeyMap, scale: u32) {
     // FPS overlay state (F10 to toggle)
     let mut show_fps = false;
     let mut fps_text = String::new();
-    let mut fps_frame_count: u32 = 0;
-    let mut fps_last_update = Instant::now();
+    let mut fps_smoothed: f64 = machine.frame_rate_hz();
+    let mut fps_last_instant = Instant::now();
 
     'main: loop {
         // Poll all pending SDL events, translate to machine input
@@ -62,8 +62,8 @@ pub fn run(machine: &mut dyn Machine, key_map: &KeyMap, scale: u32) {
                     ..
                 } => {
                     show_fps = !show_fps;
-                    fps_frame_count = 0;
-                    fps_last_update = Instant::now();
+                    fps_smoothed = machine.frame_rate_hz();
+                    fps_last_instant = Instant::now();
                 }
 
                 Event::KeyDown {
@@ -127,15 +127,15 @@ pub fn run(machine: &mut dyn Machine, key_map: &KeyMap, scale: u32) {
             last_render_time = Instant::now();
         }
 
-        // FPS counting runs every frame regardless of rendering
+        // FPS: exponential moving average (α = 0.05) for a stable readout
         if show_fps {
-            fps_frame_count += 1;
-            let elapsed = fps_last_update.elapsed();
-            if elapsed >= Duration::from_millis(500) {
-                let fps = fps_frame_count as f64 / elapsed.as_secs_f64();
-                fps_text = format!("{fps:.4}");
-                fps_frame_count = 0;
-                fps_last_update = Instant::now();
+            let now = Instant::now();
+            let dt = now.duration_since(fps_last_instant).as_secs_f64();
+            fps_last_instant = now;
+            if dt > 0.0 {
+                let instant_fps = 1.0 / dt;
+                fps_smoothed += 0.05 * (instant_fps - fps_smoothed);
+                fps_text = format!("{fps_smoothed:.1}");
             }
         }
 
