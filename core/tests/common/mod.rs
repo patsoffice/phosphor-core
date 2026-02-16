@@ -42,6 +42,7 @@ impl Bus for TestBus {
             nmi: self.nmi,
             irq: self.irq,
             firq: false,
+            irq_vector: 0xFF,
         }
     }
 }

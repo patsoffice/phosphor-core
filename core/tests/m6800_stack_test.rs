@@ -63,6 +63,7 @@ impl Bus for InterruptBus {
             nmi: self.nmi,
             irq: self.irq,
             firq: false,
+            irq_vector: 0xFF,
         }
     }
 }
