@@ -178,6 +178,10 @@ pub struct PacmanSystem {
     // Pre-computed palette (32 RGB entries from PROM resistor weighting)
     palette_rgb: [(u8, u8, u8); 32],
 
+    // Scanline-rendered framebuffer (288 x 224 x RGB24 = 193,536 bytes).
+    // Native orientation, populated incrementally during run_frame().
+    scanline_buffer: Vec<u8>,
+
     // I/O state (active-low: 0xFF = all released)
     in0: u8,
     in1: u8,
@@ -211,6 +215,7 @@ impl PacmanSystem {
             palette_prom: [0; 32],
             color_lut_prom: [0; 256],
             palette_rgb: [(0, 0, 0); 32],
+            scanline_buffer: vec![0u8; 288 * 224 * 3],
             in0: 0xFF,
             in1: 0xFF,
             // Default DIP: 1 coin/1 credit, 3 lives, 10000 bonus, normal difficulty, normal ghosts
@@ -239,7 +244,7 @@ impl PacmanSystem {
             // Red: bits 0-2
             let r = combine_weights_3(
                 &R_WEIGHTS, &r_scale,
-                (entry >> 0) & 1, (entry >> 1) & 1, (entry >> 2) & 1,
+                entry & 1, (entry >> 1) & 1, (entry >> 2) & 1,
             );
             // Green: bits 3-5
             let g = combine_weights_3(
@@ -257,8 +262,19 @@ impl PacmanSystem {
     }
 
     pub fn tick(&mut self) {
-        // VBLANK interrupt: fire at the start of VBLANK (scanline 224)
         let frame_cycle = self.clock % CYCLES_PER_FRAME;
+
+        // Per-scanline rendering: at each scanline boundary, render the current
+        // scanline from VRAM + sprites before the CPU processes it, matching
+        // hardware CRT read timing.
+        if frame_cycle.is_multiple_of(CYCLES_PER_SCANLINE) {
+            let scanline = (frame_cycle / CYCLES_PER_SCANLINE) as u16;
+            if scanline < VISIBLE_LINES as u16 {
+                self.render_scanline(scanline as usize);
+            }
+        }
+
+        // VBLANK interrupt: fire at the start of VBLANK (scanline 224)
         let vblank_cycle = VISIBLE_LINES * CYCLES_PER_SCANLINE;
         if frame_cycle == vblank_cycle {
             self.vblank_irq_pending = true;
@@ -402,45 +418,6 @@ impl PacmanSystem {
         }
     }
 
-    /// Render the tilemap into a native-orientation (288×224) pixel buffer.
-    /// Each pixel is stored as (color_index, attribute) for transparency checks later.
-    fn render_tilemap(&self, framebuf: &mut [(u8, u8, u8)]) {
-        for tile_col in 0..36i32 {
-            for tile_row in 0..28i32 {
-                let offset = Self::tilemap_offset(tile_col, tile_row);
-                let tile_code = if offset < 0x400 {
-                    self.video_ram[offset] as u16
-                } else {
-                    0
-                };
-                let attribute = if offset < 0x400 {
-                    self.color_ram[offset]
-                } else {
-                    0
-                };
-
-                // Tile screen position in native orientation (288 wide × 224 tall)
-                let screen_x = tile_col * 8;
-                let screen_y = tile_row * 8;
-
-                for py in 0..8u8 {
-                    for px in 0..8u8 {
-                        let nx = screen_x + px as i32;
-                        let ny = screen_y + py as i32;
-                        if nx < 0 || nx >= 288 || ny < 0 || ny >= 224 {
-                            continue;
-                        }
-
-                        let pixel_value = self.decode_tile_pixel(tile_code, px, py);
-                        let rgb = self.resolve_color(attribute, pixel_value);
-                        let idx = ny as usize * 288 + nx as usize;
-                        framebuf[idx] = rgb;
-                    }
-                }
-            }
-        }
-    }
-
     /// Compute sprite transparency mask. Returns a 4-bit mask where bit N
     /// is set if pixel value N maps to palette index 0 (transparent)
     /// through the color LUT PROM.
@@ -456,34 +433,63 @@ impl PacmanSystem {
         mask
     }
 
-    /// Render sprites into a native-orientation (288×224) pixel buffer.
-    /// Transparency is palette-based: pixels whose color LUT entry resolves
-    /// to palette index 0 are not drawn.
-    fn render_sprites(&self, framebuf: &mut [(u8, u8, u8)]) {
-        // Sprite attribute RAM at 0x4FF0-0x4FFF (offset 0x3F0 into work RAM)
-        // Sprite coordinate RAM at 0x5060-0x506F (separate array)
-        //
-        // Sprites drawn from highest offset to lowest for correct priority.
-        // Sprites 7..3 drawn first (no Y offset).
-        // Sprites 2..0 drawn last (with +1 Y offset for correct placement).
+    /// Render a single scanline from current VRAM/sprite state into the scanline buffer.
+    /// Composites tiles then sprites for native scanline Y (0-223).
+    fn render_scanline(&mut self, scanline: usize) {
+        let row_offset = scanline * 288 * 3;
 
-        // Sprite clip rect in native coords: X=[16, 272), Y=[0, 224)
-        let clip_x_min = 16;
-        let clip_x_max = 272;
-        let clip_y_min = 0;
-        let clip_y_max = 224;
+        // Fill scanline with background color
+        let bg = self.resolve_color(0, 0);
+        for x in 0..288 {
+            let off = row_offset + x * 3;
+            self.scanline_buffer[off] = bg.0;
+            self.scanline_buffer[off + 1] = bg.1;
+            self.scanline_buffer[off + 2] = bg.2;
+        }
 
-        // Draw sprites 7 down to 3 (normal), then 2 down to 0 (with Y offset)
+        // Tiles: determine which tile row and pixel row within tile
+        let tile_row = (scanline / 8) as i32;
+        let py = (scanline % 8) as u8;
+        for tile_col in 0..36i32 {
+            let offset = Self::tilemap_offset(tile_col, tile_row);
+            let tile_code = if offset < 0x400 {
+                self.video_ram[offset] as u16
+            } else {
+                0
+            };
+            let attribute = if offset < 0x400 {
+                self.color_ram[offset]
+            } else {
+                0
+            };
+            let screen_x = (tile_col * 8) as usize;
+
+            for px in 0..8u8 {
+                let nx = screen_x + px as usize;
+                let pixel_value = self.decode_tile_pixel(tile_code, px, py);
+                let (r, g, b) = self.resolve_color(attribute, pixel_value);
+                let off = row_offset + nx * 3;
+                self.scanline_buffer[off] = r;
+                self.scanline_buffer[off + 1] = g;
+                self.scanline_buffer[off + 2] = b;
+            }
+        }
+
+        // Sprites: draw in priority order (7→3, then 2→0 with +1 Y offset)
+        let clip_x_min = 16i32;
+        let clip_x_max = 272i32;
+        let y = scanline as i32;
+
         for pass in 0..2 {
             let (start, end, y_offset): (usize, usize, i32) = if pass == 0 {
-                (7, 3, 0) // Sprites 7..3 inclusive, no offset
+                (7, 3, 0)
             } else {
-                (2, 0, 1) // Sprites 2..0 inclusive, +1 Y offset (xoffsethack)
+                (2, 0, 1)
             };
 
             let mut offs = start;
             loop {
-                let attr_base = 0x3F0 + offs * 2; // Relative to RAM start at 0x4C00
+                let attr_base = 0x3F0 + offs * 2;
                 let coord_base = offs * 2;
 
                 let sprite_byte0 = self.ram[attr_base];
@@ -493,62 +499,54 @@ impl PacmanSystem {
                 let x_flip = (sprite_byte0 & 1) != 0;
                 let y_flip = (sprite_byte0 & 2) != 0;
                 let attribute = sprite_byte1 & 0x1F;
-                let trans_mask = self.sprite_trans_mask(attribute);
 
-                // Sprite screen coordinates (non-inverted mode):
-                //   sx = 272 - coord_x
-                //   sy = coord_y - 31
                 let sx = 272i32 - self.sprite_coords[coord_base + 1] as i32;
                 let sy = self.sprite_coords[coord_base] as i32 - 31 + y_offset;
 
-                for py in 0..16u8 {
+                // Check if this scanline intersects the sprite's 16-pixel height
+                if y >= sy && y < sy + 16 {
+                    let trans_mask = self.sprite_trans_mask(attribute);
+                    let spy = (y - sy) as u8;
+                    let src_py = if y_flip { 15 - spy } else { spy };
+
+                    // Draw sprite row at primary position
                     for px in 0..16u8 {
                         let draw_x = sx + px as i32;
-                        let draw_y = sy + py as i32;
-
-                        // Clip
-                        if draw_x < clip_x_min || draw_x >= clip_x_max
-                            || draw_y < clip_y_min || draw_y >= clip_y_max
-                        {
+                        if draw_x < clip_x_min || draw_x >= clip_x_max {
                             continue;
                         }
-
-                        // Apply flips
                         let src_px = if x_flip { 15 - px } else { px };
-                        let src_py = if y_flip { 15 - py } else { py };
-
-                        let pixel_value = self.decode_sprite_pixel(sprite_code, src_px, src_py);
+                        let pixel_value =
+                            self.decode_sprite_pixel(sprite_code, src_px, src_py);
                         if (trans_mask >> pixel_value) & 1 != 0 {
-                            continue; // Transparent (palette index resolves to 0)
+                            continue;
                         }
-
-                        let rgb = self.resolve_color(attribute, pixel_value);
-                        let idx = draw_y as usize * 288 + draw_x as usize;
-                        framebuf[idx] = rgb;
+                        let (r, g, b) = self.resolve_color(attribute, pixel_value);
+                        let off = row_offset + draw_x as usize * 3;
+                        self.scanline_buffer[off] = r;
+                        self.scanline_buffer[off + 1] = g;
+                        self.scanline_buffer[off + 2] = b;
                     }
-                }
 
-                // Also draw with X-256 wraparound (tunnel effect)
-                let sx_wrap = sx - 256;
-                if sx_wrap + 16 > clip_x_min && sx_wrap < clip_x_max {
-                    for py in 0..16u8 {
+                    // Draw with X-256 wraparound (tunnel effect)
+                    let sx_wrap = sx - 256;
+                    if sx_wrap + 16 > clip_x_min && sx_wrap < clip_x_max {
                         for px in 0..16u8 {
                             let draw_x = sx_wrap + px as i32;
-                            let draw_y = sy + py as i32;
-                            if draw_x < clip_x_min || draw_x >= clip_x_max
-                                || draw_y < clip_y_min || draw_y >= clip_y_max
-                            {
+                            if draw_x < clip_x_min || draw_x >= clip_x_max {
                                 continue;
                             }
                             let src_px = if x_flip { 15 - px } else { px };
-                            let src_py = if y_flip { 15 - py } else { py };
-                            let pixel_value = self.decode_sprite_pixel(sprite_code, src_px, src_py);
+                            let pixel_value =
+                                self.decode_sprite_pixel(sprite_code, src_px, src_py);
                             if (trans_mask >> pixel_value) & 1 != 0 {
                                 continue;
                             }
-                            let rgb = self.resolve_color(attribute, pixel_value);
-                            let idx = draw_y as usize * 288 + draw_x as usize;
-                            framebuf[idx] = rgb;
+                            let (r, g, b) = self.resolve_color(attribute, pixel_value);
+                            let off = row_offset + draw_x as usize * 3;
+                            self.scanline_buffer[off] = r;
+                            self.scanline_buffer[off + 1] = g;
+                            self.scanline_buffer[off + 2] = b;
                         }
                     }
                 }
@@ -560,6 +558,7 @@ impl PacmanSystem {
             }
         }
     }
+
 }
 
 impl Default for PacmanSystem {
@@ -692,32 +691,19 @@ impl Machine for PacmanSystem {
     }
 
     fn render_frame(&self, buffer: &mut [u8]) {
-        // Render to a native-orientation (288×224) intermediate buffer
-        let mut native_buf = vec![(0u8, 0u8, 0u8); 288 * 224];
-
-        // Fill with background color (palette entry 0)
-        let bg_color = self.palette_rgb[0];
-        native_buf.fill(bg_color);
-
-        // Draw tilemap, then sprites on top
-        self.render_tilemap(&mut native_buf);
-        self.render_sprites(&mut native_buf);
-
-        // Rotate 90° CCW from native (288w × 224h) to output (224w × 288h).
+        // Rotate 90° CCW from native scanline_buffer (288w × 224h)
+        // to output buffer (224w × 288h).
         // Native pixel (nx, ny) → output pixel (223 - ny, nx)
-        let out_w = SCREEN_WIDTH as usize;  // 224
-        let out_h = SCREEN_HEIGHT as usize; // 288
-
-        for oy in 0..out_h {
+        let out_w = SCREEN_WIDTH as usize; // 224
+        for oy in 0..SCREEN_HEIGHT as usize {
             for ox in 0..out_w {
-                // Map output (ox, oy) to native (nx, ny)
-                let nx = oy;            // native X = output Y
-                let ny = 223 - ox;      // native Y = 223 - output X
-                let (r, g, b) = native_buf[ny * 288 + nx];
-                let pixel_offset = (oy * out_w + ox) * 3;
-                buffer[pixel_offset] = r;
-                buffer[pixel_offset + 1] = g;
-                buffer[pixel_offset + 2] = b;
+                let nx = oy;
+                let ny = 223 - ox;
+                let src = (ny * 288 + nx) * 3;
+                let dst = (oy * out_w + ox) * 3;
+                buffer[dst] = self.scanline_buffer[src];
+                buffer[dst + 1] = self.scanline_buffer[src + 1];
+                buffer[dst + 2] = self.scanline_buffer[src + 2];
             }
         }
     }
@@ -763,6 +749,7 @@ impl Machine for PacmanSystem {
         self.color_ram = [0; 0x400];
         self.ram = [0; 0x400];
         self.sprite_coords = [0; 0x10];
+        self.scanline_buffer.fill(0);
         // ROM, GFX, PROMs, and palette_rgb are NOT cleared (loaded from ROM set)
 
         // Z80 reset: PC starts at 0x0000, fetching the first ROM instruction

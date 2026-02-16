@@ -29,6 +29,7 @@ pub struct NamcoWsg {
     cpu_clock_hz: u64,
 }
 
+#[derive(Default)]
 struct WsgVoice {
     frequency: u32,
     counter: u32,
@@ -36,16 +37,6 @@ struct WsgVoice {
     waveform_select: u8,
 }
 
-impl Default for WsgVoice {
-    fn default() -> Self {
-        Self {
-            frequency: 0,
-            counter: 0,
-            volume: 0,
-            waveform_select: 0,
-        }
-    }
-}
 
 /// Fractional bits for the frequency counter.
 ///
@@ -131,7 +122,7 @@ impl NamcoWsg {
             0x05 => {
                 voice.waveform_select = data & 7;
             }
-            0x10 | 0x11 | 0x12 | 0x13 | 0x14 => {
+            0x10..=0x14 => {
                 // Channel 0 has 20-bit frequency, channels 1-2 have 16-bit
                 let regs = &self.sound_regs;
                 voice.frequency = if ch == 0 { regs[0x10] as u32 } else { 0 };
