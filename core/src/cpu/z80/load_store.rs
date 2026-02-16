@@ -2,7 +2,7 @@ use crate::core::{Bus, BusMaster};
 use crate::cpu::z80::{ExecState, Flag, IndexMode, Z80};
 
 impl Z80 {
-    /// LD r, n — 7 T: M1(4) + MR(3)
+    /// LD r, n — 7 T: M1(4) + MR(3). No flags affected.
     /// LD (HL), n — 10 T: M1(4) + MR(3) + MW(3)
     /// LD (IX+d), n — 19 T: DD M1(4) + M1(4) + MR(3) + MR(3) + internal(2) + MW(3)
     /// Opcode mask: 00 rrr 110
@@ -85,7 +85,7 @@ impl Z80 {
         }
     }
 
-    /// LD r, r' — 4 T: M1 only (register-register)
+    /// LD r, r' — 4 T: M1 only (register-register). No flags affected.
     /// LD r, (HL) — 7 T: M1(4) + MR(3)
     /// LD r, (IX+d) — 19 T: DD M1(4) + M1(4) + MR(3) + internal(5) + MR(3)
     /// LD (HL), r — 7 T: M1(4) + MW(3)
@@ -183,7 +183,7 @@ impl Z80 {
         }
     }
 
-    /// LD rr, nn — 10 T: M1(4) + MR(3) + MR(3)
+    /// LD rr, nn — 10 T: M1(4) + MR(3) + MR(3). No flags affected.
     /// Opcode mask: 00 rr0 001 (rr: 0=BC, 1=DE, 2=HL/IX/IY, 3=SP)
     pub fn op_ld_rr_nn<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -213,7 +213,7 @@ impl Z80 {
         }
     }
 
-    /// LD A, (BC) — 7 T: M1(4) + MR(3)
+    /// LD A, (BC) — 7 T: M1(4) + MR(3). No flags affected.
     pub fn op_ld_a_bc<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -234,7 +234,7 @@ impl Z80 {
         }
     }
 
-    /// LD A, (DE) — 7 T: M1(4) + MR(3)
+    /// LD A, (DE) — 7 T: M1(4) + MR(3). No flags affected.
     pub fn op_ld_a_de<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -255,7 +255,7 @@ impl Z80 {
         }
     }
 
-    /// LD (BC), A — 7 T: M1(4) + MW(3)
+    /// LD (BC), A — 7 T: M1(4) + MW(3). No flags affected.
     pub fn op_ld_bc_a<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -276,7 +276,7 @@ impl Z80 {
         }
     }
 
-    /// LD (DE), A — 7 T: M1(4) + MW(3)
+    /// LD (DE), A — 7 T: M1(4) + MW(3). No flags affected.
     pub fn op_ld_de_a<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -297,7 +297,7 @@ impl Z80 {
         }
     }
 
-    /// LD A, (nn) — 13 T: M1(4) + MR(3) + MR(3) + MR(3)
+    /// LD A, (nn) — 13 T: M1(4) + MR(3) + MR(3) + MR(3). No flags affected.
     pub fn op_ld_a_nn<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -330,7 +330,7 @@ impl Z80 {
         }
     }
 
-    /// LD (nn), A — 13 T: M1(4) + MR(3) + MR(3) + MW(3)
+    /// LD (nn), A — 13 T: M1(4) + MR(3) + MR(3) + MW(3). No flags affected.
     pub fn op_ld_nn_a<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -361,7 +361,7 @@ impl Z80 {
         }
     }
 
-    /// LD SP, HL — 6 T: M1(4) + 2 internal
+    /// LD SP, HL — 6 T: M1(4) + 2 internal. No flags affected.
     pub fn op_ld_sp_hl<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -380,7 +380,7 @@ impl Z80 {
         }
     }
 
-    /// LD (nn), HL — 16 T: M1(4) + MR(3) + MR(3) + MW(3) + MW(3)
+    /// LD (nn), HL — 16 T: M1(4) + MR(3) + MR(3) + MW(3) + MW(3). No flags affected.
     pub fn op_ld_nn_hl<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -421,7 +421,7 @@ impl Z80 {
         }
     }
 
-    /// LD HL, (nn) — 16 T: M1(4) + MR(3) + MR(3) + MR(3) + MR(3)
+    /// LD HL, (nn) — 16 T: M1(4) + MR(3) + MR(3) + MR(3) + MR(3). No flags affected.
     pub fn op_ld_hl_nn_ind<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -462,14 +462,14 @@ impl Z80 {
         }
     }
 
-    /// EX AF, AF' — 4 T: M1 only
+    /// EX AF, AF' — 4 T: M1 only. No flags affected (swaps AF with AF').
     pub fn op_ex_af_af(&mut self) {
         std::mem::swap(&mut self.a, &mut self.a_prime);
         std::mem::swap(&mut self.f, &mut self.f_prime);
         self.state = ExecState::Fetch;
     }
 
-    /// EXX — 4 T: M1 only
+    /// EXX — 4 T: M1 only. No flags affected.
     pub fn op_exx(&mut self) {
         std::mem::swap(&mut self.b, &mut self.b_prime);
         std::mem::swap(&mut self.c, &mut self.c_prime);
@@ -480,7 +480,7 @@ impl Z80 {
         self.state = ExecState::Fetch;
     }
 
-    /// EX DE, HL — 4 T: M1 only (NOT affected by DD/FD prefix)
+    /// EX DE, HL — 4 T: M1 only (NOT affected by DD/FD prefix). No flags affected.
     pub fn op_ex_de_hl(&mut self) {
         std::mem::swap(&mut self.d, &mut self.h);
         std::mem::swap(&mut self.e, &mut self.l);
@@ -489,7 +489,7 @@ impl Z80 {
 
     // --- ED Load/Store Operations ---
 
-    /// LD I,A — 9T (ED prefix): 2 handler cycles.
+    /// LD I,A — 9T (ED prefix): 2 handler cycles. No flags affected.
     pub fn op_ld_i_a(&mut self, opcode: u8, cycle: u8) {
         match cycle {
             0 => {
@@ -501,7 +501,7 @@ impl Z80 {
         }
     }
 
-    /// LD R,A — 9T (ED prefix): 2 handler cycles.
+    /// LD R,A — 9T (ED prefix): 2 handler cycles. No flags affected.
     pub fn op_ld_r_a(&mut self, opcode: u8, cycle: u8) {
         match cycle {
             0 => {
@@ -567,7 +567,7 @@ impl Z80 {
         }
     }
 
-    /// LD (nn),rr — 20T (ED prefix): M1(4)+M1(4)+MR(3)+MR(3)+MW(3)+MW(3)
+    /// LD (nn),rr — 20T (ED prefix): M1(4)+M1(4)+MR(3)+MR(3)+MW(3)+MW(3). No flags affected.
     /// 13 handler cycles: 0=pad, 1=read addr_lo, 2=pad, 3=pad, 4=read addr_hi,
     /// 5=pad, 6=write data_lo, 7-8=pad, 9=write data_hi, 10-11=pad, 12=done.
     pub fn op_ld_nn_rr_ed<B: Bus<Address = u16, Data = u8> + ?Sized>(
@@ -609,7 +609,7 @@ impl Z80 {
         }
     }
 
-    /// LD rr,(nn) — 20T (ED prefix): M1(4)+M1(4)+MR(3)+MR(3)+MR(3)+MR(3)
+    /// LD rr,(nn) — 20T (ED prefix): M1(4)+M1(4)+MR(3)+MR(3)+MR(3)+MR(3). No flags affected.
     /// 13 handler cycles (same structure as LD (nn),rr but reads instead of writes).
     pub fn op_ld_rr_nn_ed<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -715,7 +715,7 @@ impl Z80 {
         }
     }
 
-    /// IN A,(n) — 11T: M1(4) + MR(3) + IO(4)
+    /// IN A,(n) — 11T: M1(4) + MR(3) + IO(4). No flags affected.
     /// Reads port address n from immediate byte via bus.io_read().
     /// MEMPTR = ((A << 8) | n) + 1
     pub fn op_in_a_n<B: Bus<Address = u16, Data = u8> + ?Sized>(
@@ -745,7 +745,7 @@ impl Z80 {
         }
     }
 
-    /// OUT (n),A — 11T: M1(4) + MR(3) + IO(4)
+    /// OUT (n),A — 11T: M1(4) + MR(3) + IO(4). No flags affected.
     /// Reads port address n from immediate byte, writes A via bus.io_write().
     /// MEMPTR low = (n+1) & 0xFF, MEMPTR high = A
     pub fn op_out_n_a<B: Bus<Address = u16, Data = u8> + ?Sized>(
@@ -774,7 +774,7 @@ impl Z80 {
         }
     }
 
-    /// EX (SP), HL — 19 T: M1(4) + MR(3) + MR(4) + MW(3) + MW(5)
+    /// EX (SP), HL — 19 T: M1(4) + MR(3) + MR(4) + MW(3) + MW(5). No flags affected.
     pub fn op_ex_sp_hl<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,

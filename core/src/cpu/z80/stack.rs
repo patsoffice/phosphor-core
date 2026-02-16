@@ -2,7 +2,7 @@ use crate::core::{Bus, BusMaster};
 use crate::cpu::z80::{ExecState, Z80};
 
 impl Z80 {
-    /// PUSH rr — 11 T: M1(4) + internal(1) + MW(3) + MW(3)
+    /// PUSH rr — 11 T: M1(4) + internal(1) + MW(3) + MW(3). No flags affected.
     /// Opcode mask: 11 rr0 101 (rr: 0=BC, 1=DE, 2=HL/IX/IY, 3=AF)
     pub fn op_push<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -32,7 +32,7 @@ impl Z80 {
         }
     }
 
-    /// POP rr — 10 T: M1(4) + MR(3) + MR(3)
+    /// POP rr — 10 T: M1(4) + MR(3) + MR(3). No flags affected (POP AF restores F from stack).
     /// Opcode mask: 11 rr0 001 (rr: 0=BC, 1=DE, 2=HL/IX/IY, 3=AF)
     pub fn op_pop<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,

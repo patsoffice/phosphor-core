@@ -77,6 +77,9 @@ impl Z80 {
 
     /// Execute CB-prefixed instruction.
     /// Called from ExecuteCB state with the CB sub-opcode and cycle counter.
+    /// Rotate/shift: S, Z, PV(parity), C from shifted bit, H=0, N=0.
+    /// BIT: Z = ~bit, S = bit 7 if tested, PV = Z, H=1, N=0, C preserved.
+    /// SET/RES: No flags affected.
     /// CB register ops: 1 handler cycle (8T total).
     /// BIT b,(HL): 5 handler cycles (12T total).
     /// Rotate/shift/SET/RES (HL): 8 handler cycles (15T total).
@@ -140,6 +143,7 @@ impl Z80 {
     }
 
     /// BIT b,(HL) — 12T: Main M1(4) + CB M1(4) + MR_ext(4)
+    /// Z = ~bit, S = bit 7 if tested, PV = Z, H=1, N=0, C preserved. X/Y from MEMPTR high.
     /// 5 handler cycles: 0=pad, 1=read, 2=pad, 3=internal, 4=done
     fn op_cb_bit_hl<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -176,6 +180,7 @@ impl Z80 {
     }
 
     /// Rotate/shift/SET/RES (HL) — 15T: Main M1(4) + CB M1(4) + MR_ext(4) + MW(3)
+    /// Rotate/shift flags: see `do_cb_rotate_shift`. SET/RES: no flags affected.
     /// 8 handler cycles: 0=pad, 1=read, 2=pad, 3=compute, 4=write, 5-6=pad, 7=done
     fn op_cb_rmw_hl<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -219,6 +224,7 @@ impl Z80 {
 
     /// Execute DD CB d op / FD CB d op (indexed bit operations).
     /// Address is pre-computed in temp_addr, displacement in temp_data.
+    /// Flags: see `execute_instruction_cb`. BIT X/Y from address high byte.
     /// BIT b,(IX+d): 4 handler cycles (20T total).
     /// Other (IX+d): 7 handler cycles (23T total).
     /// For non-BIT ops with zzz != 6, result is also copied to register zzz (undocumented).

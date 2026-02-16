@@ -152,7 +152,9 @@ impl Z80 {
     // --- Instructions ---
 
     /// ALU A, r — 4 T (reg) or 7 T ((HL)) or 19 T ((IX+d))
-    /// ADD, ADC, SUB, SBC, AND, XOR, OR, CP
+    /// ADD/ADC: S, Z, H, PV(overflow), N=0, C affected.
+    /// SUB/SBC/CP: S, Z, H, PV(overflow), N=1, C affected. CP: X/Y from operand.
+    /// AND: S, Z, PV(parity), H=1, N=0, C=0. XOR/OR: S, Z, PV(parity), H=0, N=0, C=0.
     /// Opcode mask: 10 xxx zzz
     pub fn op_alu_r<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -209,7 +211,7 @@ impl Z80 {
         }
     }
 
-    /// ALU A, n — 7 T: M1(4) + MR(3)
+    /// ALU A, n — 7 T: M1(4) + MR(3). Flags: see `op_alu_r`.
     /// Opcode mask: 11 xxx 110
     pub fn op_alu_n<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -235,6 +237,8 @@ impl Z80 {
     }
 
     /// INC/DEC r — 4 T (reg) or 11 T ((HL)) or 23 T ((IX+d))
+    /// INC: S, Z, H, PV(overflow: 7F→80), N=0, C preserved.
+    /// DEC: S, Z, H, PV(overflow: 80→7F), N=1, C preserved.
     /// Opcode mask: 00 rrr 10x
     pub fn op_inc_dec_r<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -444,6 +448,7 @@ impl Z80 {
 
     /// RRCA — 4 T: M1 only.
     /// Rotate A right circular. Old bit 0 to carry and bit 7.
+    /// H = 0, N = 0, C = old bit 0. X/Y from A. S, Z, PV preserved.
     pub fn op_rrca(&mut self) {
         let bit0 = self.a & 1;
         self.a = (self.a >> 1) | (bit0 << 7);
@@ -459,6 +464,7 @@ impl Z80 {
 
     /// RLA — 4 T: M1 only.
     /// Rotate A left through carry. Old bit 7 to C, old C to bit 0.
+    /// H = 0, N = 0, C = old bit 7. X/Y from A. S, Z, PV preserved.
     pub fn op_rla(&mut self) {
         let old_carry = if (self.f & Flag::C as u8) != 0 {
             1u8
@@ -479,6 +485,7 @@ impl Z80 {
 
     /// RRA — 4 T: M1 only.
     /// Rotate A right through carry. Old bit 0 to C, old C to bit 7.
+    /// H = 0, N = 0, C = old bit 0. X/Y from A. S, Z, PV preserved.
     pub fn op_rra(&mut self) {
         let old_carry = if (self.f & Flag::C as u8) != 0 {
             0x80u8
@@ -501,6 +508,7 @@ impl Z80 {
 
     /// DAA — 4 T: M1 only.
     /// Decimal adjust accumulator after BCD add/sub.
+    /// S, Z, H, PV(parity), C affected. N preserved.
     pub fn op_daa(&mut self) {
         let a = self.a;
         let n = (self.f & Flag::N as u8) != 0;
@@ -737,6 +745,7 @@ impl Z80 {
 
     /// RRD — 18T (ED prefix): rotate right nibbles between A and (HL).
     /// (HL)_low → A_low, A_low → (HL)_high, (HL)_high → (HL)_low.
+    /// Flags from A: S, Z, PV(parity), H=0, N=0, C preserved.
     /// 11 handler cycles: 0=pad, 1=read(HL), 2=pad, 3-6=internal, 7=write(HL), 8-9=pad, 10=done.
     pub fn op_rrd<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -788,6 +797,7 @@ impl Z80 {
 
     /// RLD — 18T (ED prefix): rotate left nibbles between A and (HL).
     /// (HL)_high → A_low, A_low → (HL)_low, (HL)_low → (HL)_high.
+    /// Flags from A: S, Z, PV(parity), H=0, N=0, C preserved.
     /// Same cycle structure as RRD.
     pub fn op_rld<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,

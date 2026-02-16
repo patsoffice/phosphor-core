@@ -18,7 +18,7 @@ impl Z80 {
         }
     }
 
-    /// JP nn — 10 T: M1(4) + MR(3) + MR(3)
+    /// JP nn — 10 T: M1(4) + MR(3) + MR(3). No flags affected.
     pub fn op_jp_nn<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -47,7 +47,7 @@ impl Z80 {
         }
     }
 
-    /// JP cc,nn — 10 T: M1(4) + MR(3) + MR(3). Always 10T whether taken or not.
+    /// JP cc,nn — 10 T: M1(4) + MR(3) + MR(3). No flags affected. Always 10T whether taken or not.
     pub fn op_jp_cc_nn<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -78,7 +78,7 @@ impl Z80 {
         }
     }
 
-    /// JR e — 12 T: M1(4) + MR(3) + internal(5)
+    /// JR e — 12 T: M1(4) + MR(3) + internal(5). No flags affected.
     pub fn op_jr_e<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -101,7 +101,7 @@ impl Z80 {
         }
     }
 
-    /// JR cc,e — 12 T taken / 7 T not taken
+    /// JR cc,e — 12 T taken / 7 T not taken. No flags affected.
     /// M1(4) + MR(3) + internal(5) when taken; M1(4) + MR(3) when not taken.
     pub fn op_jr_cc_e<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -138,13 +138,13 @@ impl Z80 {
         }
     }
 
-    /// JP (HL) — 4 T: M1 only. Really "JP HL" (load PC from HL/IX/IY).
+    /// JP (HL) — 4 T: M1 only. No flags affected. Really "JP HL" (load PC from HL/IX/IY).
     pub fn op_jp_hl(&mut self) {
         self.pc = self.get_rp(2); // respects index_mode
         self.state = ExecState::Fetch;
     }
 
-    /// DJNZ e — 13 T taken / 8 T not taken
+    /// DJNZ e — 13 T taken / 8 T not taken. No flags affected.
     /// M1(5) + MR(3) + internal(5) when taken; M1(5) + MR(3) when not taken.
     pub fn op_djnz<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -186,7 +186,7 @@ impl Z80 {
         }
     }
 
-    /// CALL nn — 17 T: M1(4) + MR(3) + MR(3) + internal(1) + MW(3) + MW(3)
+    /// CALL nn — 17 T: M1(4) + MR(3) + MR(3) + internal(1) + MW(3) + MW(3). No flags affected.
     pub fn op_call_nn<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -230,7 +230,7 @@ impl Z80 {
         }
     }
 
-    /// CALL cc,nn — 17 T taken / 10 T not taken
+    /// CALL cc,nn — 17 T taken / 10 T not taken. No flags affected.
     /// When not taken: reads both address bytes but doesn't push or jump (same as JP cc,nn).
     pub fn op_call_cc_nn<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -281,7 +281,7 @@ impl Z80 {
         }
     }
 
-    /// RET — 10 T: M1(4) + MR(3) + MR(3)
+    /// RET — 10 T: M1(4) + MR(3) + MR(3). No flags affected.
     pub fn op_ret<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -309,7 +309,7 @@ impl Z80 {
         }
     }
 
-    /// RET cc — 11 T taken / 5 T not taken
+    /// RET cc — 11 T taken / 5 T not taken. No flags affected.
     /// M1(5) + MR(3) + MR(3) when taken; M1(5) when not taken.
     pub fn op_ret_cc<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -350,7 +350,7 @@ impl Z80 {
         }
     }
 
-    /// RST p — 11 T: M1(5) + MW(3) + MW(3)
+    /// RST p — 11 T: M1(5) + MW(3) + MW(3). No flags affected.
     /// Target address = opcode & 0x38 (0x00, 0x08, ..., 0x38).
     pub fn op_rst<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -385,14 +385,14 @@ impl Z80 {
         }
     }
 
-    /// DI — 4 T: M1 only. Disable interrupts.
+    /// DI — 4 T: M1 only. Disable interrupts. No flags affected.
     pub fn op_di(&mut self) {
         self.iff1 = false;
         self.iff2 = false;
         self.state = ExecState::Fetch;
     }
 
-    /// EI — 4 T: M1 only. Enable interrupts (with 1-instruction delay).
+    /// EI — 4 T: M1 only. Enable interrupts (with 1-instruction delay). No flags affected.
     pub fn op_ei(&mut self) {
         self.iff1 = true;
         self.iff2 = true;
@@ -402,7 +402,7 @@ impl Z80 {
 
     // --- ED Control Flow ---
 
-    /// RETN/RETI — 14T (ED prefix): pop PC, copy IFF2 → IFF1.
+    /// RETN/RETI — 14T (ED prefix): pop PC, copy IFF2 → IFF1. No flags affected.
     /// 7 handler cycles: 0=IFF2→IFF1+pad, 1=read low, 2=pad, 3=pad, 4=read high, 5=pad, 6=done.
     pub fn op_retn<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -434,7 +434,7 @@ impl Z80 {
         }
     }
 
-    /// IM 0/1/2 — 8T (ED prefix): set interrupt mode.
+    /// IM 0/1/2 — 8T (ED prefix): set interrupt mode. No flags affected.
     /// Bits 4-3: 00/01→IM 0, 10→IM 1, 11→IM 2.
     pub fn op_im(&mut self, opcode: u8) {
         self.im = match (opcode >> 3) & 0x03 {

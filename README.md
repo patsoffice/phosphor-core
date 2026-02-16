@@ -8,8 +8,6 @@
 
 A modular emulator framework for retro CPUs, designed for extensibility and educational purposes. Features a trait-based architecture that allows easy addition of new CPUs, peripherals, and complete systems.
 
-**Current Focus:** Joust (1982) arcade board emulation — M6809 CPU (285 opcodes), M6800 CPU (192 opcodes), M6502 CPU (151 opcodes), Z80 CPU (1604 opcodes), MC6821 PIA, Williams SC1 blitter, CMOS RAM, Machine trait for frontend abstraction. 1401 tests passing, 3.57M cross-validated test vectors across 4 CPUs
-
 ## Quick Start
 
 ### Prerequisites

@@ -7,6 +7,7 @@ impl Z80 {
     /// LDI/LDD — 16T: Main M1(4) + ED M1(4) + MR(3) + MW(3) + internal(2)
     /// LDI (0xA0): (DE)←(HL), HL++, DE++, BC--
     /// LDD (0xA8): (DE)←(HL), HL--, DE--, BC--
+    /// H=0, N=0, PV=(BC!=0), C preserved. S, Z preserved.
     /// 9 handler cycles: 0=pad, 1=read(HL), 2=pad, 3=write(DE), 4-5=pad, 6-7=internal, 8=done
     pub fn op_ldi_ldd<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -56,6 +57,7 @@ impl Z80 {
 
     /// LDIR/LDDR — 21T repeating / 16T when done
     /// Like LDI/LDD but repeats while BC != 0.
+    /// H=0, N=0, PV=0 (always terminates with BC=0), C preserved. S, Z preserved.
     /// 9 handler cycles when done, 14 when repeating (extra 5T for PC -= 2).
     pub fn op_ldir_lddr<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -121,6 +123,7 @@ impl Z80 {
     /// CPI/CPD — 16T: Main M1(4) + ED M1(4) + MR(3) + internal(5)
     /// CPI (0xA1): compare A-(HL), HL++, BC--
     /// CPD (0xA9): compare A-(HL), HL--, BC--
+    /// S, Z, H from A-(HL), N=1, PV=(BC!=0), C preserved.
     /// 9 handler cycles: 0=pad, 1=read(HL), 2=pad, 3-7=internal, 8=done
     pub fn op_cpi_cpd<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -184,6 +187,7 @@ impl Z80 {
 
     /// CPIR/CPDR — 21T repeating / 16T when done
     /// Repeats while BC != 0 and Z = 0 (not found).
+    /// S, Z, H from A-(HL), N=1, PV=(BC!=0), C preserved.
     pub fn op_cpir_cpdr<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -262,6 +266,7 @@ impl Z80 {
 
     /// INI/IND — 16T: Main M1(4) + ED M1(5) + IO(4) + MW(3)
     /// B--, IN port BC_original → (HL), HL±±
+    /// S, Z from B (after dec). N = bit 7 of input. H, C, PV: undocumented.
     /// 9 handler cycles: 0=save BC then B--, 1-4=IO, 5=write(HL), 6-7=pad, 8=done
     pub fn op_ini_ind<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -332,7 +337,7 @@ impl Z80 {
         }
     }
 
-    /// INIR/INDR — 21T repeating / 16T when done
+    /// INIR/INDR — 21T repeating / 16T when done. Flags: see `op_ini_ind`.
     pub fn op_inir_indr<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
@@ -405,6 +410,7 @@ impl Z80 {
 
     /// OUTI/OUTD — 16T: Main M1(4) + ED M1(5) + MR(3) + IO(4)
     /// B--, (HL) → OUT port C, HL±±
+    /// S, Z from B (after dec). N = bit 7 of output. H, C, PV: undocumented.
     /// 9 handler cycles: 0=B--, 1=pad, 2=read(HL), 3=pad, 4-7=IO, 8=done
     pub fn op_outi_outd<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -469,7 +475,7 @@ impl Z80 {
         }
     }
 
-    /// OTIR/OTDR — 21T repeating / 16T when done
+    /// OTIR/OTDR — 21T repeating / 16T when done. Flags: see `op_outi_outd`.
     pub fn op_otir_otdr<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,

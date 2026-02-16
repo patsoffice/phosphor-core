@@ -588,10 +588,10 @@ impl Z80 {
         }
 
         match opcode {
-            // NOP — 4 T: M1 only
+            // NOP — 4 T: M1 only. No flags affected.
             0x00 => self.state = ExecState::Fetch,
 
-            // HALT — 4 T: M1 only. PC stays past HALT (already incremented by FetchRead).
+            // HALT — 4 T: M1 only. No flags affected. PC stays past HALT (already incremented by FetchRead).
             0x76 => {
                 self.halted = true;
                 self.state = ExecState::Fetch;
