@@ -53,7 +53,7 @@ impl M6502 {
 
     // ---- Branch instructions ----
 
-    /// BPL (0x10) - Branch if Plus (N=0)
+    /// BPL (0x10) - Branch if Plus (N=0). No flags affected.
     pub(crate) fn op_bpl<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
@@ -64,7 +64,7 @@ impl M6502 {
         self.branch(cycle, bus, master, condition);
     }
 
-    /// BMI (0x30) - Branch if Minus (N=1)
+    /// BMI (0x30) - Branch if Minus (N=1). No flags affected.
     pub(crate) fn op_bmi<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
@@ -75,7 +75,7 @@ impl M6502 {
         self.branch(cycle, bus, master, condition);
     }
 
-    /// BVC (0x50) - Branch if Overflow Clear (V=0)
+    /// BVC (0x50) - Branch if Overflow Clear (V=0). No flags affected.
     pub(crate) fn op_bvc<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
@@ -86,7 +86,7 @@ impl M6502 {
         self.branch(cycle, bus, master, condition);
     }
 
-    /// BVS (0x70) - Branch if Overflow Set (V=1)
+    /// BVS (0x70) - Branch if Overflow Set (V=1). No flags affected.
     pub(crate) fn op_bvs<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
@@ -97,7 +97,7 @@ impl M6502 {
         self.branch(cycle, bus, master, condition);
     }
 
-    /// BCC (0x90) - Branch if Carry Clear (C=0)
+    /// BCC (0x90) - Branch if Carry Clear (C=0). No flags affected.
     pub(crate) fn op_bcc<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
@@ -108,7 +108,7 @@ impl M6502 {
         self.branch(cycle, bus, master, condition);
     }
 
-    /// BCS (0xB0) - Branch if Carry Set (C=1)
+    /// BCS (0xB0) - Branch if Carry Set (C=1). No flags affected.
     pub(crate) fn op_bcs<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
@@ -119,7 +119,7 @@ impl M6502 {
         self.branch(cycle, bus, master, condition);
     }
 
-    /// BNE (0xD0) - Branch if Not Equal (Z=0)
+    /// BNE (0xD0) - Branch if Not Equal (Z=0). No flags affected.
     pub(crate) fn op_bne<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
@@ -130,7 +130,7 @@ impl M6502 {
         self.branch(cycle, bus, master, condition);
     }
 
-    /// BEQ (0xF0) - Branch if Equal (Z=1)
+    /// BEQ (0xF0) - Branch if Equal (Z=1). No flags affected.
     pub(crate) fn op_beq<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
@@ -143,7 +143,7 @@ impl M6502 {
 
     // ---- Jump instructions ----
 
-    /// JMP Absolute (0x4C) - 3 cycles
+    /// JMP Absolute (0x4C) - 3 cycles. No flags affected.
     pub(crate) fn op_jmp_abs<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
@@ -165,7 +165,7 @@ impl M6502 {
         }
     }
 
-    /// JMP Indirect (0x6C) - 5 cycles
+    /// JMP Indirect (0x6C) - 5 cycles. No flags affected.
     /// NMOS bug: if pointer is at $xxFF, high byte is fetched from $xx00 (not $xx00+$100).
     pub(crate) fn op_jmp_ind<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -199,7 +199,7 @@ impl M6502 {
         }
     }
 
-    /// JSR (0x20) - 6 cycles
+    /// JSR (0x20) - 6 cycles. No flags affected.
     /// Pushes address of last byte of JSR instruction (return addr - 1). RTS adds 1.
     pub(crate) fn op_jsr<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -241,7 +241,7 @@ impl M6502 {
         }
     }
 
-    /// RTS (0x60) - 6 cycles
+    /// RTS (0x60) - 6 cycles. No flags affected.
     /// Pulls address from stack and adds 1.
     pub(crate) fn op_rts<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -282,7 +282,7 @@ impl M6502 {
         }
     }
 
-    /// RTI (0x40) - 6 cycles
+    /// RTI (0x40) - 6 cycles. All flags restored from stack.
     /// Pulls P then PC from stack. No +1 adjustment (unlike RTS).
     pub(crate) fn op_rti<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
