@@ -361,7 +361,7 @@ impl JoustSystem {
 
             // Render this scanline from current VRAM + palette before the CPU
             // processes it, matching hardware CRT read timing.
-            if scanline >= 7 && scanline <= 246 {
+            if (7..=246).contains(&scanline) {
                 self.render_scanline(scanline as usize);
             }
 
