@@ -80,7 +80,7 @@
 ///    AUDC selects which combination of 4-bit, 5-bit, and 17/9-bit
 ///    polynomials to use.
 /// 6. **Volume scaling**: the gated signal (0 or 1) selects between 0 and
-///    the 4-bit volume level from AUDC. If AUDC bit 4 is clear, the output
+///    the 4-bit volume level from AUDC. If AUDC bit 4 is set, the output
 ///    is forced to the volume level regardless of tone/poly state ("volume
 ///    only" mode, used for DAC-style sample playback).
 /// 7. **Mixing**: all four channels are summed and normalized.
@@ -148,7 +148,7 @@ const AUDCTL_CLOCK_15KHZ: u8 = 0x01; // Bit 0: 0 = 64 kHz base, 1 = 15 kHz base
 // AUDC (per-channel control) bit positions
 const AUDC_DIST_MASK: u8 = 0xE0; // Bits 7:5: distortion (polynomial select)
 const AUDC_DIST_SHIFT: u8 = 5; // Right-shift to extract distortion field
-const AUDC_TONE_GATE: u8 = 0x10; // Bit 4: 1 = use poly/tone, 0 = force constant output
+const AUDC_VOLUME_ONLY: u8 = 0x10; // Bit 4: 1 = force volume level (DAC mode), 0 = use poly/tone
 const AUDC_VOL_MASK: u8 = 0x0F; // Bits 3:0: volume (0-15)
 
 // IRQEN / IRQST bit positions (active-low in IRQST: 0 = pending)
@@ -483,12 +483,12 @@ impl Pokey {
             let vol = audc & AUDC_VOL_MASK;
             let dist = (audc & AUDC_DIST_MASK) >> AUDC_DIST_SHIFT;
 
-            // When AUDC bit 4 is clear, the channel output is forced high
-            // (constant volume level, bypassing tone/polynomial gating).
-            // This is "volume only" mode, used for DAC-style sample playback.
-            let force_constant = (audc & AUDC_TONE_GATE) == 0;
+            // When AUDC bit 4 is set, the channel output is forced to the
+            // volume level (bypassing tone/polynomial gating). This is
+            // "volume only" mode, used for DAC-style sample playback.
+            let volume_only = (audc & AUDC_VOLUME_ONLY) != 0;
 
-            let mut signal = if force_constant {
+            let mut signal = if volume_only {
                 true
             } else {
                 let poly_val = self.get_poly_output(dist);

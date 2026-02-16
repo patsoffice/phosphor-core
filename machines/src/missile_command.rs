@@ -102,7 +102,7 @@ const CYCLES_PER_FRAME: u64 = SCANLINES_PER_FRAME * CYCLES_PER_SCANLINE;
 /// Video: 256x231 bitmap, bit-planar 2bpp (8-color with 3rd bit region
 /// for bottom scanlines), 8-entry programmable palette at 0x4B00.
 ///
-/// Memory map (from MAME atari/missile.cpp):
+/// Memory map:
 ///   0x0000-0x3FFF  Video/Work RAM (16KB)
 ///   0x4000-0x400F  POKEY (mirrored across 0x4000-0x47FF)
 ///   0x4800         Read: IN0 (switches) or trackball (CTRLD-dependent)
@@ -158,13 +158,21 @@ pub struct MissileCommandSystem {
     irq_state: bool,
 
     // MADSEL circuit: intercepts (zp,X) addressing mode instructions (opcodes with
-    // low 5 bits == 0x01) and redirects bus access 5 cycles later to VRAM.
+    // low 5 bits == 0x01) and redirects bus access 5 CPU cycles later to VRAM.
     // This is how the game writes pixels — without it, the screen stays blank.
+    // Timed in CPU cycles (not master ticks) so clock halving doesn't break it.
     madsel_lastcycles: u64,
+    stall_cycles: u8, // extra cycle penalty for 3rd-bit MUSHROOM MADSEL accesses
 
     // System
     clock: u64,
-    watchdog_counter: u32,
+    cpu_cycles: u64,          // incremented only when CPU actually executes
+    watchdog_frame_count: u8, // frames since last write to 0x4C00; resets machine at 8
+
+    scanline_buffer: Vec<u8>,       // 256 * 231 * 3 = 177,408 bytes (RGB24)
+    scanline_buffer_valid: bool,    // true after run_frame() completes
+
+    audio_buffer: Vec<i16>,
 }
 
 impl MissileCommandSystem {
@@ -187,8 +195,13 @@ impl MissileCommandSystem {
             trackball_d_pressed: false,
             irq_state: false,
             madsel_lastcycles: 0,
+            stall_cycles: 0,
             clock: 0,
-            watchdog_counter: 0,
+            cpu_cycles: 0,
+            watchdog_frame_count: 0,
+            scanline_buffer: vec![0u8; 256 * 231 * 3],
+            scanline_buffer_valid: false,
+            audio_buffer: Vec::with_capacity(1024),
         }
     }
 
@@ -207,27 +220,28 @@ impl MissileCommandSystem {
             if self.trackball_d_pressed { self.trackball_y = self.trackball_y.wrapping_add(1) & 0x0F; }
         }
 
-        // IRQ generation based on /32V signal (from MAME: missile.cpp)
-        // /IRQ is clocked by /16V transitions. When not flipped:
-        //   At V=0,64,128,192 (32V=0): IRQ asserted
-        //   At V=32,96,160,224 (32V=1): IRQ deasserted
-        // The IRQ is latched on each SYNC (instruction fetch).
-        // For simplicity, we assert IRQ at 16V boundaries based on 32V.
+        // Per-scanline rendering: at each scanline boundary, render the current
+        // scanline from VRAM + palette before the CPU processes it, matching
+        // hardware CRT read timing (the beam scans using VRAM at line start).
         let frame_cycle = self.clock % CYCLES_PER_FRAME;
         if frame_cycle.is_multiple_of(CYCLES_PER_SCANLINE) {
             let scanline = (frame_cycle / CYCLES_PER_SCANLINE) as u16;
-            // Clock at 16V boundaries (every 16 scanlines)
+            if scanline >= 25 {
+                self.render_scanline_to_buffer(scanline as usize);
+            }
+
+            // IRQ generation based on /32V signal
+            // /IRQ is clocked by /16V transitions. When not flipped:
+            //   At V=0,64,128,192 (32V=0): IRQ asserted
+            //   At V=32,96,160,224 (32V=1): IRQ deasserted
+            // The IRQ is latched on each SYNC (instruction fetch).
             if scanline.is_multiple_of(16) {
-                // /32V = inverted bit 5 of V counter
-                let bit_32v = (scanline >> 5) & 1;
-                if bit_32v == 0 {
-                    self.irq_state = true;
-                }
+                self.irq_state = (scanline >> 5) & 1 == 0;
             }
         }
 
         // Update VBLANK bit in IN1 (bit 7, active-high)
-        // VBLANK is active when V < 25 (VBEND=25 from MAME)
+        // VBLANK is active when V < 25
         let scanline = self.current_scanline();
         if scanline < 25 {
             self.in1 |= 0x80;
@@ -240,7 +254,11 @@ impl MissileCommandSystem {
 
         // CPU clock halving: at scanline 224+, CPU runs at MASTER_CLOCK/16 (0.625 MHz)
         // instead of MASTER_CLOCK/8 (1.25 MHz). We skip every other CPU cycle.
-        let run_cpu = if scanline >= 224 {
+        // stall_cycles handles the extra cycle penalty for 3rd-bit MADSEL accesses.
+        let run_cpu = if self.stall_cycles > 0 {
+            self.stall_cycles -= 1;
+            false
+        } else if scanline >= 224 {
             self.clock.is_multiple_of(2)
         } else {
             true
@@ -252,10 +270,10 @@ impl MissileCommandSystem {
                 let bus = &mut *bus_ptr as &mut dyn Bus<Address = u16, Data = u8>;
                 self.cpu.execute_cycle(bus, BusMaster::Cpu(0));
             }
+            self.cpu_cycles += 1;
         }
 
         self.clock += 1;
-        self.watchdog_counter += 1;
     }
 
     pub fn load_rom_set(
@@ -287,11 +305,12 @@ impl MissileCommandSystem {
         self.clock
     }
 
-    /// Check if the MADSEL signal is active. MADSEL goes high exactly 5 cycles
-    /// after arming and stays high for 1 cycle. Resets after firing.
+    /// Check if the MADSEL signal is active. MADSEL goes high exactly 5 CPU
+    /// cycles after arming and stays high for 1 cycle. Resets after firing.
+    /// Uses cpu_cycles (not master clock) so clock halving doesn't break timing.
     fn get_madsel(&mut self) -> bool {
         if self.madsel_lastcycles > 0 {
-            let elapsed = self.clock.wrapping_sub(self.madsel_lastcycles);
+            let elapsed = self.cpu_cycles.wrapping_sub(self.madsel_lastcycles);
             if elapsed == 5 {
                 self.madsel_lastcycles = 0;
                 return true;
@@ -318,6 +337,7 @@ impl MissileCommandSystem {
         }
 
         // 3rd color bit write (MUSHROOM region): offset & 0xE000 == 0xE000
+        // Extra cycle penalty: adjust_icount(-1)
         if (offset & 0xE000) == 0xE000 {
             let bit3_addr = Self::get_bit3_addr(offset) as usize;
             let bit3_data: u8 = if data & 0x20 != 0 { 0xFF } else { 0x00 };
@@ -327,12 +347,13 @@ impl MissileCommandSystem {
                 self.ram[bit3_addr] =
                     (self.ram[bit3_addr] & bit3_mask) | (bit3_data & !bit3_mask);
             }
+            self.stall_cycles += 1;
         }
     }
 
     /// MADSEL read: extract pixel color from VRAM and return in bits 7:6 (and bit 5
     /// for 3rd color bit region).
-    fn vram_madsel_read(&self, offset: u16) -> u8 {
+    fn vram_madsel_read(&mut self, offset: u16) -> u8 {
         let vramaddr = (offset >> 2) as usize;
         let vrammask = 0x11u8 << (offset & 3);
         let vramdata = if vramaddr < 0x4000 {
@@ -350,6 +371,7 @@ impl MissileCommandSystem {
         }
 
         // 3rd color bit read (MUSHROOM region)
+        // Extra cycle penalty: adjust_icount(-1)
         if (offset & 0xE000) == 0xE000 {
             let bit3_addr = Self::get_bit3_addr(offset) as usize;
             let bit3_mask = 1u8 << (offset & 7);
@@ -361,18 +383,140 @@ impl MissileCommandSystem {
             if bit3_data == 0 {
                 result &= !0x20;
             }
+            self.stall_cycles += 1;
         }
 
         result
     }
 
     /// Convert a 16-bit pixel address to a VRAM address for the 3rd color bit.
-    /// Based on MAME's get_bit3_addr() logic from the hardware schematics.
     pub fn get_bit3_addr(pixaddr: u16) -> u16 {
         ((pixaddr & 0x0800) >> 1)
             | ((!pixaddr & 0x0800) >> 2)
             | ((pixaddr & 0x07F8) >> 2)
             | ((pixaddr & 0x1000) >> 12)
+    }
+
+    /// Render the full frame directly from VRAM (fallback before first run_frame() completes).
+    fn render_frame_from_vram(&self, buffer: &mut [u8]) {
+        let (width, height) = self.display_size();
+        let w = width as usize;
+        let h = height as usize;
+
+        // Resolve palette: each entry has 1-bit per RGB channel (inverted)
+        // Bits 3/2/1 = ~R/~G/~B
+        let mut palette_rgb = [(0u8, 0u8, 0u8); 8];
+        for (i, rgb) in palette_rgb.iter_mut().enumerate() {
+            let entry = self.palette[i];
+            *rgb = (
+                if entry & 0x08 == 0 { 255 } else { 0 }, // R = inverted bit 3
+                if entry & 0x04 == 0 { 255 } else { 0 }, // G = inverted bit 2
+                if entry & 0x02 == 0 { 255 } else { 0 }, // B = inverted bit 1
+            );
+        }
+
+        let ram = &self.ram;
+
+        for screen_y in 0..h {
+            let effy = screen_y + 25;
+            let src_base = effy * 64;
+
+            let bit3_base = if effy >= 224 {
+                Some(Self::get_bit3_addr((effy as u16) << 8) as usize)
+            } else {
+                None
+            };
+
+            for screen_x in 0..w {
+                let byte_offset = src_base + screen_x / 4;
+                let pixel_in_byte = screen_x & 3;
+
+                let byte = if byte_offset < 0x4000 {
+                    ram[byte_offset]
+                } else {
+                    0
+                };
+
+                let pix = byte >> pixel_in_byte;
+                let mut color_idx = ((pix >> 2) & 4) | ((pix << 1) & 2);
+
+                if let Some(base) = bit3_base {
+                    let bit3_offset = base + (screen_x / 8) * 2;
+                    if bit3_offset < 0x4000 {
+                        color_idx |= (ram[bit3_offset] >> (screen_x & 7)) & 1;
+                    }
+                }
+
+                let (r, g, b) = palette_rgb[color_idx as usize];
+
+                let pixel_offset = (screen_y * w + screen_x) * 3;
+                buffer[pixel_offset] = r;
+                buffer[pixel_offset + 1] = g;
+                buffer[pixel_offset + 2] = b;
+            }
+        }
+    }
+
+    /// Render a single scanline from VRAM + palette into the internal scanline buffer.
+    ///
+    /// `effy` is the V counter value (25-255, where 25 = first visible line).
+    /// Decodes the 8-entry palette, reads one VRAM row (64 bytes, 4 pixels/byte),
+    /// and writes 256 RGB24 pixels to `self.scanline_buffer` at screen_y = effy - 25.
+    /// For effy >= 224, the 3rd color bit region is used to enable 8-color output.
+    pub fn render_scanline_to_buffer(&mut self, effy: usize) {
+        // Resolve palette: each entry has 1-bit per RGB channel (inverted)
+        // Bits 3/2/1 = ~R/~G/~B
+        let mut palette_rgb = [(0u8, 0u8, 0u8); 8];
+        for (i, rgb) in palette_rgb.iter_mut().enumerate() {
+            let entry = self.palette[i];
+            *rgb = (
+                if entry & 0x08 == 0 { 255 } else { 0 }, // R = inverted bit 3
+                if entry & 0x04 == 0 { 255 } else { 0 }, // G = inverted bit 2
+                if entry & 0x02 == 0 { 255 } else { 0 }, // B = inverted bit 1
+            );
+        }
+
+        let screen_y = effy - 25;
+        let src_base = effy * 64;
+
+        // Compute 3rd color bit base address for bottom scanlines
+        let bit3_base = if effy >= 224 {
+            Some(Self::get_bit3_addr((effy as u16) << 8) as usize)
+        } else {
+            None
+        };
+
+        let row_offset = screen_y * 256 * 3;
+
+        for screen_x in 0..256 {
+            let byte_offset = src_base + screen_x / 4;
+            let pixel_in_byte = screen_x & 3;
+
+            let byte = if byte_offset < 0x4000 {
+                self.ram[byte_offset]
+            } else {
+                0
+            };
+
+            // Extract 2-bit color from bit-planar format
+            let pix = byte >> pixel_in_byte;
+            let mut color_idx = ((pix >> 2) & 4) | ((pix << 1) & 2);
+
+            // Add 3rd color bit for bottom scanlines (effy >= 224)
+            if let Some(base) = bit3_base {
+                let bit3_offset = base + (screen_x / 8) * 2;
+                if bit3_offset < 0x4000 {
+                    color_idx |= (self.ram[bit3_offset] >> (screen_x & 7)) & 1;
+                }
+            }
+
+            let (r, g, b) = palette_rgb[color_idx as usize];
+
+            let pixel_offset = row_offset + screen_x * 3;
+            self.scanline_buffer[pixel_offset] = r;
+            self.scanline_buffer[pixel_offset + 1] = g;
+            self.scanline_buffer[pixel_offset + 2] = b;
+        }
     }
 }
 
@@ -396,7 +540,7 @@ impl Bus for MissileCommandSystem {
             return self.vram_madsel_read(addr);
         }
 
-        // 15-bit address bus masking (global_mask 0x7FFF from MAME).
+        // 15-bit address bus masking (global_mask 0x7FFF).
         // The 6502 vectors at 0xFFFC map through: 0xFFFC & 0x7FFF = 0x7FFC → ROM.
         let addr = addr & 0x7FFF;
 
@@ -433,13 +577,12 @@ impl Bus for MissileCommandSystem {
 
         // MADSEL arming: during SYNC (opcode fetch), if the opcode has low 5 bits
         // == 0x01 (indirect X addressing mode) and IRQ is not asserted, arm the
-        // MADSEL counter. It will fire 5 cycles later.
+        // MADSEL counter. It will fire 5 CPU cycles later.
         if self.cpu.is_sync()
             && (data & 0x1F) == 0x01
             && !self.irq_state
-            && !self.pokey.irq()
         {
-            self.madsel_lastcycles = self.clock;
+            self.madsel_lastcycles = self.cpu_cycles;
         }
 
         data
@@ -477,9 +620,9 @@ impl Bus for MissileCommandSystem {
                 self.palette[(addr & 0x07) as usize] = data;
             }
 
-            // Watchdog reset: 0x4C00-0x4CFF
+            // Watchdog reset: 0x4C00-0x4CFF (8-VBLANK timeout)
             0x4C00..=0x4CFF => {
-                self.watchdog_counter = 0;
+                self.watchdog_frame_count = 0;
             }
 
             // IRQ acknowledge: 0x4D00-0x4DFF
@@ -494,7 +637,7 @@ impl Bus for MissileCommandSystem {
     fn check_interrupts(&self, _target: BusMaster) -> InterruptState {
         InterruptState {
             nmi: false,
-            irq: self.irq_state || self.pokey.irq(),
+            irq: self.irq_state,
             firq: false,
             irq_vector: 0,
         }
@@ -510,79 +653,40 @@ impl Machine for MissileCommandSystem {
         for _ in 0..CYCLES_PER_FRAME {
             self.tick();
         }
+        self.scanline_buffer_valid = true;
+
+        // Watchdog: 8-VBLANK timeout. If the game hasn't written
+        // to 0x4C00 within 8 frames, reset the machine.
+        self.watchdog_frame_count += 1;
+        if self.watchdog_frame_count >= 8 {
+            self.reset();
+            return;
+        }
+
+        // Drain POKEY's resampled f32 buffer and convert to i16 PCM.
+        // POKEY outputs unipolar [0.0, 1.0]; center around zero for signed PCM.
+        let samples = self.pokey.drain_audio();
+        self.audio_buffer.extend(samples.iter().map(|&s| {
+            ((s * 2.0 - 1.0) * 32767.0) as i16
+        }));
+    }
+
+    fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
+        let n = buffer.len().min(self.audio_buffer.len());
+        buffer[..n].copy_from_slice(&self.audio_buffer[..n]);
+        self.audio_buffer.drain(..n);
+        n
+    }
+
+    fn audio_sample_rate(&self) -> u32 {
+        44100
     }
 
     fn render_frame(&self, buffer: &mut [u8]) {
-        let (width, height) = self.display_size();
-        let w = width as usize;
-        let h = height as usize;
-
-        // Resolve palette: each entry has 1-bit per RGB channel (inverted)
-        // Bits 3/2/1 = ~R/~G/~B (from MAME palette_w)
-        let mut palette_rgb = [(0u8, 0u8, 0u8); 8];
-        for (i, rgb) in palette_rgb.iter_mut().enumerate() {
-            let entry = self.palette[i];
-            *rgb = (
-                if entry & 0x08 == 0 { 255 } else { 0 }, // R = inverted bit 3
-                if entry & 0x04 == 0 { 255 } else { 0 }, // G = inverted bit 2
-                if entry & 0x02 == 0 { 255 } else { 0 }, // B = inverted bit 1
-            );
-        }
-
-        // Video RAM layout (from MAME screen_update_missile):
-        // Row-major: each row is 64 bytes, 4 pixels per byte.
-        // Bit-planar format within each byte:
-        //   Lower nibble (bits 0-3) = plane 0 for 4 pixels
-        //   Upper nibble (bits 4-7) = plane 1 for 4 pixels
-        // Pixel N (0-3) uses bit N (plane 0) and bit N+4 (plane 1).
-        //
-        // For scanlines >= 224, a 3rd color bit is stored in a separate VRAM
-        // region, enabling 8 colors for the bottom 32 scanlines (score area).
-        //
-        // Visible area: scanlines 25-255 (VBEND=25), 256 pixels wide.
-
-        let ram = &self.ram;
-
-        for screen_y in 0..h {
-            let effy = screen_y + 25; // visible starts at V=25 (VBEND)
-            let src_base = effy * 64;
-
-            // Compute 3rd color bit base address for bottom scanlines
-            let bit3_base = if effy >= 224 {
-                Some(Self::get_bit3_addr((effy as u16) << 8) as usize)
-            } else {
-                None
-            };
-
-            for screen_x in 0..w {
-                let byte_offset = src_base + screen_x / 4;
-                let pixel_in_byte = screen_x & 3;
-
-                let byte = if byte_offset < 0x4000 {
-                    ram[byte_offset]
-                } else {
-                    0
-                };
-
-                // Extract 2-bit color from bit-planar format (matches MAME exactly)
-                let pix = byte >> pixel_in_byte;
-                let mut color_idx = ((pix >> 2) & 4) | ((pix << 1) & 2);
-
-                // Add 3rd color bit for bottom scanlines (effy >= 224)
-                if let Some(base) = bit3_base {
-                    let bit3_offset = base + (screen_x / 8) * 2;
-                    if bit3_offset < 0x4000 {
-                        color_idx |= (ram[bit3_offset] >> (screen_x & 7)) & 1;
-                    }
-                }
-
-                let (r, g, b) = palette_rgb[color_idx as usize];
-
-                let pixel_offset = (screen_y * w + screen_x) * 3;
-                buffer[pixel_offset] = r;
-                buffer[pixel_offset + 1] = g;
-                buffer[pixel_offset + 2] = b;
-            }
+        if self.scanline_buffer_valid {
+            buffer.copy_from_slice(&self.scanline_buffer);
+        } else {
+            self.render_frame_from_vram(buffer);
         }
     }
 
@@ -619,6 +723,13 @@ impl Machine for MissileCommandSystem {
         let vec_lo = self.rom[0x2FFC];
         let vec_hi = self.rom[0x2FFD];
         self.cpu.pc = u16::from_le_bytes([vec_lo, vec_hi]);
+        self.irq_state = false;
+        self.madsel_lastcycles = 0;
+        self.stall_cycles = 0;
+        self.watchdog_frame_count = 0;
+        self.scanline_buffer.fill(0);
+        self.scanline_buffer_valid = false;
+        self.audio_buffer.clear();
     }
 
     fn save_nvram(&self) -> Option<&[u8]> { None }
