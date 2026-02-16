@@ -241,6 +241,10 @@ pub struct JoustSystem {
     p2_controls: u8,   // bits 0-2: left, right, flap (LS157 mux A input)
     start_bits: u8,    // bit 4: P2 Start, bit 5: P1 Start
     rom_pia_input: u8, // ROM PIA Port A: coins, service, tilt
+
+    // Scanline-rendered framebuffer (292 x 240 x RGB24 = 210,240 bytes).
+    // Populated incrementally during run_frame(), one row per visible scanline.
+    scanline_buffer: Vec<u8>,
 }
 
 impl JoustSystem {
@@ -271,6 +275,7 @@ impl JoustSystem {
             p2_controls: 0,
             start_bits: 0,
             rom_pia_input: 0,
+            scanline_buffer: vec![0u8; 292 * 240 * 3],
         }
     }
 
@@ -298,6 +303,54 @@ impl JoustSystem {
         (frame_cycle / CYCLES_PER_SCANLINE) as u8
     }
 
+    /// Render a single scanline from VRAM + palette into the internal scanline buffer.
+    /// `scanline` is the raw scanline number (0-259); only call for visible lines (7-246).
+    fn render_scanline(&mut self, scanline: usize) {
+        const CROP_X: usize = 6;
+        const CROP_Y: usize = 7;
+        const WIDTH: usize = 292;
+        const RG_LUT: [u8; 8] = [0, 38, 81, 118, 137, 174, 217, 255];
+        const B_LUT: [u8; 4] = [0, 95, 160, 255];
+
+        // Decode the current palette (16 entries, BBGGGRRR)
+        let mut palette_rgb = [(0u8, 0u8, 0u8); 16];
+        for (i, rgb) in palette_rgb.iter_mut().enumerate() {
+            let entry = self.palette_ram[i];
+            *rgb = (
+                RG_LUT[(entry & 0x07) as usize],
+                RG_LUT[((entry >> 3) & 0x07) as usize],
+                B_LUT[((entry >> 6) & 0x03) as usize],
+            );
+        }
+
+        let screen_y = scanline - CROP_Y;
+        let row_offset = screen_y * WIDTH * 3;
+
+        for screen_x in 0..WIDTH {
+            let pixel_x = screen_x + CROP_X;
+            let byte_column = pixel_x / 2;
+            let vram_addr = byte_column * 256 + scanline;
+
+            let byte = if vram_addr < self.video_ram.len() {
+                self.video_ram[vram_addr]
+            } else {
+                0
+            };
+
+            let color_index = if pixel_x & 1 == 0 {
+                (byte >> 4) & 0x0F
+            } else {
+                byte & 0x0F
+            };
+
+            let (r, g, b) = palette_rgb[color_index as usize];
+            let pixel_offset = row_offset + screen_x * 3;
+            self.scanline_buffer[pixel_offset] = r;
+            self.scanline_buffer[pixel_offset + 1] = g;
+            self.scanline_buffer[pixel_offset + 2] = b;
+        }
+    }
+
     pub fn tick(&mut self) {
         // Video timing signals on ROM PIA (from MAME williams_m.cpp).
         // VA11 (scanline bit 5) → ROM PIA CB1, count240 → ROM PIA CA1.
@@ -305,6 +358,13 @@ impl JoustSystem {
         let frame_cycle = self.clock % CYCLES_PER_FRAME;
         if frame_cycle.is_multiple_of(CYCLES_PER_SCANLINE) {
             let scanline = (frame_cycle / CYCLES_PER_SCANLINE) as u16;
+
+            // Render this scanline from current VRAM + palette before the CPU
+            // processes it, matching hardware CRT read timing.
+            if scanline >= 7 && scanline <= 246 {
+                self.render_scanline(scanline as usize);
+            }
+
             if scanline != 256 {
                 // VA11: toggles every 32 scanlines
                 self.rom_pia.set_cb1((scanline & 0x20) != 0);
@@ -584,65 +644,7 @@ impl Machine for JoustSystem {
     }
 
     fn render_frame(&self, buffer: &mut [u8]) {
-        let (width, height) = self.display_size();
-        let w = width as usize;
-        let h = height as usize;
-
-        // Williams palette: 16 entries of BBGGGRRR (from MAME williams_v.cpp).
-        // Resistor-weighted DAC: R/G use 1200/560/330 ohm, B uses 560/330 ohm.
-        const RG_LUT: [u8; 8] = [0, 38, 81, 118, 137, 174, 217, 255];
-        const B_LUT: [u8; 4] = [0, 95, 160, 255];
-
-        let mut palette_rgb = [(0u8, 0u8, 0u8); 16];
-        for (i, rgb) in palette_rgb.iter_mut().enumerate() {
-            let entry = self.palette_ram[i];
-            *rgb = (
-                RG_LUT[(entry & 0x07) as usize],         // Red   = bits 0-2
-                RG_LUT[((entry >> 3) & 0x07) as usize],  // Green = bits 3-5
-                B_LUT[((entry >> 6) & 0x03) as usize],   // Blue  = bits 6-7
-            );
-        }
-
-        // Williams video RAM is organized in column-major order with 2 pixels per byte.
-        // Each byte holds two horizontally-adjacent 4-bit pixels:
-        //   Upper nibble (bits 7-4) = color index for the even (left) pixel
-        //   Lower nibble (bits 3-0) = color index for the odd (right) pixel
-        //
-        // VRAM addressing: byte_column * 256 + row
-        // Each byte_column spans 2 screen pixels, so screen pixel X maps to:
-        //   byte_column = X / 2,  upper nibble if X is even, lower nibble if X is odd
-        //
-        // Visible area: 292 pixels wide (146 byte-columns) x 240 pixels tall,
-        // cropped from the full 304x256 frame starting at byte-column 3, row 7.
-        const CROP_X: usize = 6; // First visible byte-column * 2 (pixel offset)
-        const CROP_Y: usize = 7; // First visible row
-
-        for screen_y in 0..h {
-            let row = screen_y + CROP_Y;
-            for screen_x in 0..w {
-                let pixel_x = screen_x + CROP_X;
-                let byte_column = pixel_x / 2;
-                let vram_addr = byte_column * 256 + row;
-
-                let byte = if vram_addr < self.video_ram.len() {
-                    self.video_ram[vram_addr]
-                } else {
-                    0
-                };
-
-                // Even pixel = upper nibble, odd pixel = lower nibble
-                let color_index = if pixel_x & 1 == 0 {
-                    (byte >> 4) & 0x0F
-                } else {
-                    byte & 0x0F
-                };
-                let (r, g, b) = palette_rgb[color_index as usize];
-                let pixel_offset = (screen_y * w + screen_x) * 3;
-                buffer[pixel_offset] = r;
-                buffer[pixel_offset + 1] = g;
-                buffer[pixel_offset + 2] = b;
-            }
-        }
+        buffer.copy_from_slice(&self.scanline_buffer);
     }
 
     fn set_input(&mut self, button: u8, pressed: bool) {
@@ -694,6 +696,7 @@ impl Machine for JoustSystem {
         self.p2_controls = 0;
         self.start_bits = 0;
         self.rom_pia_input = 0;
+        self.scanline_buffer.fill(0);
         // CMOS RAM and video RAM NOT cleared (battery-backed / not cleared by hardware)
 
         // Fetch reset vectors through the bus (matches hardware behavior)

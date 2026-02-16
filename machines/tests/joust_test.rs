@@ -34,13 +34,22 @@ fn test_render_frame_correct_size() {
 #[test]
 fn test_render_frame_uses_palette() {
     let mut sys = JoustSystem::new();
+    // Park both CPUs in BRA * loops so they don't corrupt VRAM during the frame
+    sys.write_video_ram(0, 0x20); // BRA opcode (main CPU at PC=0)
+    sys.write_video_ram(1, 0xFE); // offset -2
+    sys.write(BusMaster::Cpu(1), 0x0000, 0x20); // sound CPU BRA *
+    sys.write(BusMaster::Cpu(1), 0x0001, 0xFE);
+
     // Set palette entry 5 to a known BBGGGRRR color: R=7, G=0, B=3 => 0b11_000_111 = 0xC7
     sys.write(BusMaster::Cpu(0), 0xC005, 0xC7);
 
     // Screen pixel (0,0) maps to VRAM at byte_column=3, row=7 (crop offset 6,7).
     // pixel_x=6 is even, so the upper nibble is used.
     // VRAM address = 3 * 256 + 7 = 0x0307
-    sys.write(BusMaster::Cpu(0), 0x0307, 0x50);
+    sys.write_video_ram(0x0307, 0x50);
+
+    // Run a full frame so render_scanline populates the scanline buffer
+    sys.run_frame();
 
     let (w, h) = sys.display_size();
     let mut buffer = vec![0u8; (w * h * 3) as usize];
@@ -56,6 +65,12 @@ fn test_render_frame_uses_palette() {
 #[test]
 fn test_render_frame_two_pixels_per_byte() {
     let mut sys = JoustSystem::new();
+    // Park both CPUs in BRA * loops so they don't corrupt VRAM during the frame
+    sys.write_video_ram(0, 0x20);
+    sys.write_video_ram(1, 0xFE);
+    sys.write(BusMaster::Cpu(1), 0x0000, 0x20);
+    sys.write(BusMaster::Cpu(1), 0x0001, 0xFE);
+
     // Palette entry 3 (BBGGGRRR): R=0, G=7, B=0 => 0b00_111_000 = 0x38
     // Palette entry 9 (BBGGGRRR): R=4, G=4, B=2 => 0b10_100_100 = 0xA4
     sys.write(BusMaster::Cpu(0), 0xC003, 0x38);
@@ -64,7 +79,10 @@ fn test_render_frame_two_pixels_per_byte() {
     // Screen pixels (0,0) and (1,0) share the same VRAM byte at byte_column=3, row=7.
     // pixel_x=6 (even) reads upper nibble, pixel_x=7 (odd) reads lower nibble.
     // Write 0x39 → upper nibble=3 (palette 3), lower nibble=9 (palette 9).
-    sys.write(BusMaster::Cpu(0), 0x0307, 0x39);
+    sys.write_video_ram(0x0307, 0x39);
+
+    // Run a full frame so render_scanline populates the scanline buffer
+    sys.run_frame();
 
     let (w, _h) = sys.display_size();
     let mut buffer = vec![0u8; w as usize * 240 * 3];
