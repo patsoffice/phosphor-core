@@ -4,7 +4,7 @@ use crate::core::{Bus, BusMaster};
 impl M6502 {
     // ---- INC (Increment Memory) ----
 
-    /// INC Zero Page (0xE6) - 5 cycles
+    /// INC Zero Page (0xE6) - 5 cycles. N, Z affected.
     pub(crate) fn op_inc_zp<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
@@ -18,7 +18,7 @@ impl M6502 {
         });
     }
 
-    /// INC Zero Page,X (0xF6) - 6 cycles
+    /// INC Zero Page,X (0xF6) - 6 cycles. N, Z affected.
     pub(crate) fn op_inc_zp_x<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
@@ -32,7 +32,7 @@ impl M6502 {
         });
     }
 
-    /// INC Absolute (0xEE) - 6 cycles
+    /// INC Absolute (0xEE) - 6 cycles. N, Z affected.
     pub(crate) fn op_inc_abs<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
@@ -46,7 +46,7 @@ impl M6502 {
         });
     }
 
-    /// INC Absolute,X (0xFE) - 7 cycles
+    /// INC Absolute,X (0xFE) - 7 cycles. N, Z affected.
     pub(crate) fn op_inc_abs_x<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
@@ -62,7 +62,7 @@ impl M6502 {
 
     // ---- DEC (Decrement Memory) ----
 
-    /// DEC Zero Page (0xC6) - 5 cycles
+    /// DEC Zero Page (0xC6) - 5 cycles. N, Z affected.
     pub(crate) fn op_dec_zp<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
@@ -76,7 +76,7 @@ impl M6502 {
         });
     }
 
-    /// DEC Zero Page,X (0xD6) - 6 cycles
+    /// DEC Zero Page,X (0xD6) - 6 cycles. N, Z affected.
     pub(crate) fn op_dec_zp_x<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
@@ -90,7 +90,7 @@ impl M6502 {
         });
     }
 
-    /// DEC Absolute (0xCE) - 6 cycles
+    /// DEC Absolute (0xCE) - 6 cycles. N, Z affected.
     pub(crate) fn op_dec_abs<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
@@ -104,7 +104,7 @@ impl M6502 {
         });
     }
 
-    /// DEC Absolute,X (0xDE) - 7 cycles
+    /// DEC Absolute,X (0xDE) - 7 cycles. N, Z affected.
     pub(crate) fn op_dec_abs_x<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
