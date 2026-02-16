@@ -496,6 +496,7 @@ impl Bus for MissileCommandSystem {
             nmi: false,
             irq: self.irq_state || self.pokey.irq(),
             firq: false,
+            irq_vector: 0,
         }
     }
 }

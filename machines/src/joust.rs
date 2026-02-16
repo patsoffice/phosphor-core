@@ -547,11 +547,13 @@ impl Bus for JoustSystem {
                 nmi: false,
                 irq: self.rom_pia.irq_a() || self.rom_pia.irq_b(),
                 firq: false,
+                ..Default::default()
             },
             BusMaster::Cpu(1) => InterruptState {
                 nmi: false,
                 irq: self.sound_pia.irq_a() || self.sound_pia.irq_b(),
                 firq: false,
+                ..Default::default()
             },
             _ => InterruptState::default(),
         }

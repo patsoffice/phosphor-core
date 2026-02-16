@@ -99,6 +99,7 @@ impl Bus for Simple6800System {
             nmi: false,
             firq: false,
             irq: false,
+            irq_vector: 0,
         }
     }
 }

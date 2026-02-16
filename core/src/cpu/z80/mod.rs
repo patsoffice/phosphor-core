@@ -526,8 +526,10 @@ impl Z80 {
                     self.state = ExecState::Interrupt(2, 10);
                 }
                 12 => {
-                    // Read vector low byte from (I*256 + 0xFF)
-                    self.temp_addr = ((self.i as u16) << 8) | 0xFF;
+                    // Read vector low byte: Z80 places I on upper address bus,
+                    // interrupting device places vector byte on data bus
+                    let ints = bus.check_interrupts(master);
+                    self.temp_addr = ((self.i as u16) << 8) | (ints.irq_vector as u16);
                     self.temp_data = bus.read(master, self.temp_addr);
                     self.state = ExecState::Interrupt(2, 13);
                 }

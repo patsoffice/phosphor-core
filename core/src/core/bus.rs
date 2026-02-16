@@ -36,10 +36,21 @@ pub trait Bus {
     fn check_interrupts(&self, target: BusMaster) -> InterruptState;
 }
 
-#[derive(Default, Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct InterruptState {
     pub nmi: bool,
     pub irq: bool,
-    pub firq: bool, // 6809-specific; ignored by other CPUs
-                    // Future: add vectored interrupt info for 68000, etc.
+    pub firq: bool,      // 6809-specific; ignored by other CPUs
+    pub irq_vector: u8,  // Byte placed on data bus during Z80 IRQ ACK (IM2 vectoring)
+}
+
+impl Default for InterruptState {
+    fn default() -> Self {
+        Self {
+            nmi: false,
+            irq: false,
+            firq: false,
+            irq_vector: 0xFF,
+        }
+    }
 }

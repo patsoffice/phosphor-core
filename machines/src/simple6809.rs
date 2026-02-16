@@ -122,6 +122,7 @@ impl Bus for Simple6809System {
             nmi: false,
             firq: false,
             irq: self.clock.is_multiple_of(16667),
+            irq_vector: 0,
         }
     }
 }

@@ -1,6 +1,7 @@
 use phosphor_core::core::machine::Machine;
 use phosphor_machines::JoustSystem;
 use phosphor_machines::MissileCommandSystem;
+use phosphor_machines::PacmanSystem;
 use phosphor_machines::joust::JOUST_DECODER_PROM;
 
 mod audio;
@@ -42,9 +43,17 @@ fn main() {
                 .expect("Failed to map program ROMs");
             Box::new(sys)
         }
+        "pacman" => {
+            let rom_set = rom_path::load_rom_set("pacman", rom_path).expect("Failed to load ROMs");
+
+            let mut sys = PacmanSystem::new();
+            sys.load_rom_set(&rom_set)
+                .expect("Failed to map ROMs");
+            Box::new(sys)
+        }
         _ => {
             eprintln!("Unknown machine: {}", machine_name);
-            eprintln!("Available: joust, missile");
+            eprintln!("Available: joust, missile, pacman");
             std::process::exit(1);
         }
     };
