@@ -4,11 +4,11 @@
 
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-916%20passing-brightgreen.svg)](core/tests/)
+[![Tests](https://img.shields.io/badge/tests-1401%20passing-brightgreen.svg)](core/tests/)
 
 A modular emulator framework for retro CPUs, designed for extensibility and educational purposes. Features a trait-based architecture that allows easy addition of new CPUs, peripherals, and complete systems.
 
-**Current Focus:** Joust (1982) arcade board emulation — M6809 CPU (285 opcodes), M6800 CPU (192 opcodes), M6502 CPU (151 opcodes), MC6821 PIA, Williams SC1 blitter, CMOS RAM, Machine trait for frontend abstraction. 916 tests passing, 1.97M cross-validated test vectors across 3 CPUs
+**Current Focus:** Joust (1982) arcade board emulation — M6809 CPU (285 opcodes), M6800 CPU (192 opcodes), M6502 CPU (151 opcodes), Z80 CPU (1604 opcodes), MC6821 PIA, Williams SC1 blitter, CMOS RAM, Machine trait for frontend abstraction. 1401 tests passing, 3.57M cross-validated test vectors across 4 CPUs
 
 ## Quick Start
 
@@ -30,7 +30,7 @@ cargo build
 cargo test
 
 # Expected output:
-#   test result: ok. 916 passed; 0 failed
+#   test result: ok. 1401 passed; 0 failed
 ```
 
 ### Running the Emulator
@@ -71,15 +71,15 @@ ROMs are matched by CRC32 checksum, so any MAME ROM naming convention works. All
 | **M6809 CPU** | Complete | 285 opcodes, cycle-accurate, all addressing modes. [Details](core/src/cpu/m6809/README.md) |
 | **M6800 CPU** | Complete | 192 opcodes, cycle-accurate, all addressing modes. [Details](core/src/cpu/m6800/README.md) |
 | **M6502 CPU** | Complete | 151 opcodes, cycle-accurate with bus-level traces. [Details](core/src/cpu/m6502/README.md) |
-| **Z80 CPU** | Partial | Initial structure, LD A, n only |
+| **Z80 CPU** | Complete | 1604 opcodes, cycle-accurate, all prefix groups (CB/DD/ED/FD/DDCB/FDCB). [Details](core/src/cpu/z80/README.md) |
 | **MC6821 PIA** | Complete | Full register set, interrupts, edge detection, control lines |
 | **Williams SC1 Blitter** | Complete | DMA block copy/fill, mask, shift, foreground-only modes |
 | **CMOS RAM** | Complete | 1KB battery-backed RAM with save/load persistence |
 | **ROM Loader** | Complete | MAME ZIP support, CRC32-based ROM matching, multi-variant support |
 | **Joust System** | Complete | Williams board: CPU + video RAM + PIAs + blitter + CMOS + ROM |
 | **Machine Trait** | Complete | Frontend-agnostic interface: display, input, render, reset |
-| **CPU Validation** | Complete | M6809: 266K vectors (100%), M6800: 192K vectors (99.998%), M6502: 1.51M vectors (100%) |
-| **Test Suite** | Complete | 916 tests across core, devices, and machine integration |
+| **CPU Validation** | Complete | M6809: 266K vectors (100%), M6800: 192K vectors (99.998%), M6502: 1.51M vectors (100%), Z80: 1.60M vectors (100%) |
+| **Test Suite** | Complete | 1401 tests across core, devices, and machine integration |
 
 ## Workspace Architecture
 
@@ -121,6 +121,7 @@ SDL2-based windowed frontend — external dependencies: SDL2, zip:
 - **M6809** — 266 opcodes, 266,000 test vectors, cross-validated against [elmerucr/MC6809](https://github.com/elmerucr/MC6809). See [cpu-validation/README_6809.md](cpu-validation/README_6809.md).
 - **M6800** — 192 opcodes, 192,000 test vectors, cross-validated against [mame4all](https://github.com/mamedev/mame) M6800. See [cpu-validation/README_6800.md](cpu-validation/README_6800.md).
 - **M6502** — 151 opcodes, 1,510,000 test vectors, validated against [SingleStepTests/65x02](https://github.com/SingleStepTests/65x02) with cycle-by-cycle bus traces. See [cpu-validation/README_6502.md](cpu-validation/README_6502.md).
+- **Z80** — 1604 opcodes, 1,604,000 test vectors, validated against [SingleStepTests/z80](https://github.com/SingleStepTests/z80) with full register/flag/timing verification. See [cpu-validation/README_z80.md](cpu-validation/README_z80.md).
 
 ### Cross-Validation (`cross-validation/`)
 
@@ -129,6 +130,7 @@ C++ harnesses that validate phosphor-core's test vectors against independent ref
 - **M6809** — 266,000/266,000 tests pass (100%)
 - **M6800** — 191,996/192,000 tests pass (99.998%)
 - **M6502** — 1,510,000/1,510,000 tests pass (100%) — via SingleStepTests/65x02 reference vectors
+- **Z80** — 1,604,000/1,604,000 tests pass (100%) — via SingleStepTests/z80 reference vectors
 
 ## Project Structure
 
@@ -151,7 +153,7 @@ phosphor-core/
 │   │   │   ├── m6800/              # M6800 CPU (192 opcodes) — see [README](core/src/cpu/m6800/README.md)
 │   │   │   ├── m6809/              # M6809 CPU (285 opcodes) — see [README](core/src/cpu/m6809/README.md)
 │   │   │   ├── m6502/              # M6502 CPU (151 opcodes) — see [README](core/src/cpu/m6502/README.md)
-│   │   │   └── z80/                # Z80 CPU (initial implementation)
+│   │   │   └── z80/                # Z80 CPU (1604 opcodes) — see [README](core/src/cpu/z80/README.md)
 │   │   └── device/                 # Peripheral devices
 │   │       ├── pia6820.rs          # MC6821 PIA (full: registers, interrupts, edge detection)
 │   │       ├── williams_blitter.rs # Williams SC1 DMA blitter (copy/fill/shift/mask)
@@ -164,7 +166,7 @@ phosphor-core/
 │       ├── m6502_*_test.rs         # M6502 tests
 │       ├── pia6820_test.rs         # MC6821 PIA tests
 │       ├── williams_blitter_test.rs # Blitter tests
-│       └── z80_basic_test.rs       # Basic Z80 tests
+│       └── z80_*_test.rs           # Z80 tests (241 tests across 11 files)
 ├── machines/                       # phosphor-machines crate
 │   ├── Cargo.toml
 │   ├── src/
@@ -190,11 +192,13 @@ phosphor-core/
 │   ├── tests/
 │   │   ├── m6809_single_step_test.rs  # Validates M6809 against JSON
 │   │   ├── m6800_single_step_test.rs  # Validates M6800 against JSON
-│   │   └── m6502_single_step_test.rs  # Validates M6502 against SingleStepTests/65x02
+│   │   ├── m6502_single_step_test.rs  # Validates M6502 against SingleStepTests/65x02
+│   │   └── z80_single_step_test.rs   # Validates Z80 against SingleStepTests/z80
 │   └── test_data/
 │       ├── m6809/                  # Generated M6809 test vectors
 │       ├── m6800/                  # Generated M6800 test vectors
-│       └── 65x02/                  # Git submodule: SingleStepTests/65x02
+│       ├── 65x02/                  # Git submodule: SingleStepTests/65x02
+│       └── z80/                    # Git submodule: SingleStepTests/z80
 ├── frontend/                       # phosphor-frontend crate (SDL2 frontend)
 │   ├── Cargo.toml                  # Deps: phosphor-core, phosphor-machines, sdl2, zip
 │   └── src/
@@ -348,7 +352,7 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 
 - [x] Motorola 6800 CPU (192 opcodes, cross-validated against mame4all)
 - [x] MOS 6502 CPU (151 opcodes, cross-validated against SingleStepTests/65x02)
-- [ ] Zilog Z80 CPU (instruction prefixes, alternate register set)
+- [x] Zilog Z80 CPU (1604 opcodes, cross-validated against SingleStepTests/z80)
 - [ ] Motorola 68000 CPU (32-bit address space, 16-bit data bus)
 
 ### Phase 4: Peripherals & Systems
