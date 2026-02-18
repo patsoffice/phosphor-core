@@ -44,7 +44,7 @@ pub struct I8035 {
     pub(crate) timer_enabled: bool,
     pub(crate) counter_enabled: bool,
     pub(crate) timer_overflow: bool,
-    pub(crate) t0_prev: bool,
+    pub(crate) t1_prev: bool,
 
     // Interrupt state
     pub(crate) int_enabled: bool,
@@ -94,7 +94,7 @@ impl I8035 {
             timer_enabled: false,
             counter_enabled: false,
             timer_overflow: false,
-            t0_prev: false,
+            t1_prev: false,
             int_enabled: false,
             tcnti_enabled: false,
             in_interrupt: false,
@@ -187,19 +187,40 @@ impl I8035 {
         }
     }
 
-    // --- Timer ---
+    // --- Timer/Counter ---
 
-    /// Advance the timer by one tick (called every machine cycle when enabled).
-    fn tick_timer(&mut self) {
-        if self.timer_enabled {
-            let (new_t, overflow) = self.t.overflowing_add(1);
-            self.t = new_t;
-            if overflow {
-                self.timer_overflow = true;
-                if self.tcnti_enabled {
-                    self.timer_irq_pending = true;
-                }
+    /// Bus I/O address for T1 test pin (counter input).
+    const PORT_T1: u16 = 0x111;
+
+    /// Increment the T register; set overflow flag and IRQ pending on wrap.
+    fn increment_t(&mut self) {
+        let (new_t, overflow) = self.t.overflowing_add(1);
+        self.t = new_t;
+        if overflow {
+            self.timer_overflow = true;
+            if self.tcnti_enabled {
+                self.timer_irq_pending = true;
             }
+        }
+    }
+
+    /// Advance timer and/or counter (called every machine cycle).
+    /// Timer mode: increments T every cycle.
+    /// Counter mode: increments T on T1 falling edge.
+    fn tick_timer_counter<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        if self.timer_enabled {
+            self.increment_t();
+        }
+        if self.counter_enabled {
+            let t1 = bus.io_read(master, Self::PORT_T1) != 0;
+            if self.t1_prev && !t1 {
+                self.increment_t();
+            }
+            self.t1_prev = t1;
         }
     }
 
@@ -216,7 +237,7 @@ impl I8035 {
                 // Check interrupts at instruction boundary
                 let ints = bus.check_interrupts(master);
                 if self.handle_interrupts(ints) {
-                    self.tick_timer();
+                    self.tick_timer_counter(bus, master);
                     return;
                 }
 
@@ -226,16 +247,16 @@ impl I8035 {
 
                 // Execute cycle 0 (1-cycle ops complete here)
                 self.execute_instruction(self.opcode, 0, bus, master);
-                self.tick_timer();
+                self.tick_timer_counter(bus, master);
             }
             ExecState::Execute(op) => {
                 // Execute cycle 1 of a 2-cycle instruction
                 self.execute_instruction(op, 1, bus, master);
-                self.tick_timer();
+                self.tick_timer_counter(bus, master);
             }
             ExecState::Interrupt(cycle) => {
                 self.execute_interrupt(cycle, bus, master);
-                self.tick_timer();
+                self.tick_timer_counter(bus, master);
             }
             ExecState::Stopped => {}
         }
