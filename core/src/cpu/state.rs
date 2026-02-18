@@ -42,6 +42,19 @@ pub struct M6800State {
     pub cc: u8,  // Condition codes
 }
 
+/// I8035 (MCS-48) CPU state snapshot
+#[derive(Debug, Clone, PartialEq)]
+pub struct I8035State {
+    pub a: u8,    // Accumulator
+    pub pc: u16,  // Program counter (12-bit)
+    pub psw: u8,  // Program status word (CY, AC, F0, BS, SP[2:0])
+    pub f1: bool, // User flag 1 (not in PSW)
+    pub t: u8,    // Timer/counter register
+    pub dbbb: u8, // BUS port latch
+    pub p1: u8,   // Port 1 output latch
+    pub p2: u8,   // Port 2 output latch
+}
+
 /// Z80 CPU state snapshot
 #[derive(Debug, Clone, PartialEq)]
 pub struct Z80State {

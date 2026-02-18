@@ -14,7 +14,7 @@ pub trait Cpu: BusMasterComponent + CpuStateTrait {
 
 // Re-export state types
 pub mod state;
-pub use state::{CpuStateTrait, M6502State, M6800State, M6809State, Z80State};
+pub use state::{CpuStateTrait, I8035State, M6502State, M6800State, M6809State, Z80State};
 
 // Re-export specific CPUs
 pub mod m6800;
@@ -30,3 +30,7 @@ pub use m6502::M6502;
 // Z80 CPU
 pub mod z80;
 pub use z80::Z80;
+
+// Intel 8035 (MCS-48 family)
+pub mod i8035;
+pub use i8035::I8035;
