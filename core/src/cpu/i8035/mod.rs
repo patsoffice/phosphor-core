@@ -265,20 +265,272 @@ impl I8035 {
     fn execute_instruction<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         opcode: u8,
-        _cycle: u8,
-        _bus: &mut B,
-        _master: BusMaster,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
     ) {
         match opcode {
-            // NOP (0x00) - 1 machine cycle
-            0x00 => {
+            // ===== NOP (0x00) =====
+            0x00 => self.state = ExecState::Fetch,
+
+            // ===== Accumulator unary (1-cycle) =====
+            0x07 => { self.a = Self::perform_dec(self.a); self.state = ExecState::Fetch; }
+            0x17 => { self.a = Self::perform_inc(self.a); self.state = ExecState::Fetch; }
+            0x27 => { self.perform_clr_a(); self.state = ExecState::Fetch; }
+            0x37 => { self.perform_cpl_a(); self.state = ExecState::Fetch; }
+            0x47 => { self.perform_swap(); self.state = ExecState::Fetch; }
+            0x57 => { self.perform_da(); self.state = ExecState::Fetch; }
+            0x67 => { self.perform_rrc(); self.state = ExecState::Fetch; }
+            0x77 => { self.perform_rr(); self.state = ExecState::Fetch; }
+            0xE7 => { self.perform_rl(); self.state = ExecState::Fetch; }
+            0xF7 => { self.perform_rlc(); self.state = ExecState::Fetch; }
+
+            // ===== Status flag ops (1-cycle) =====
+            0x97 => { self.set_flag(PswFlag::CY, false); self.state = ExecState::Fetch; }
+            0xA7 => {
+                let cy = !self.flag_set(PswFlag::CY);
+                self.set_flag(PswFlag::CY, cy);
+                self.state = ExecState::Fetch;
+            }
+            0x85 => { self.set_flag(PswFlag::F0, false); self.state = ExecState::Fetch; }
+            0x95 => {
+                let f0 = !self.flag_set(PswFlag::F0);
+                self.set_flag(PswFlag::F0, f0);
+                self.state = ExecState::Fetch;
+            }
+            0xA5 => { self.f1 = false; self.state = ExecState::Fetch; }
+            0xB5 => { self.f1 = !self.f1; self.state = ExecState::Fetch; }
+
+            // ===== Register INC/DEC (1-cycle) =====
+            0x10 | 0x11 => { // INC @Ri
+                let addr = self.get_reg(opcode & 0x01);
+                self.write_ram(addr, Self::perform_inc(self.read_ram(addr)));
+                self.state = ExecState::Fetch;
+            }
+            0x18..=0x1F => { // INC Rn
+                let n = opcode & 0x07;
+                self.set_reg(n, Self::perform_inc(self.get_reg(n)));
+                self.state = ExecState::Fetch;
+            }
+            0xC8..=0xCF => { // DEC Rn
+                let n = opcode & 0x07;
+                self.set_reg(n, Self::perform_dec(self.get_reg(n)));
                 self.state = ExecState::Fetch;
             }
 
-            // Unknown/unimplemented opcode - treat as NOP
-            _ => {
+            // ===== Register ALU (1-cycle) =====
+            0x60 | 0x61 => { // ADD A,@Ri
+                self.perform_add(self.read_ram(self.get_reg(opcode & 0x01)));
                 self.state = ExecState::Fetch;
             }
+            0x68..=0x6F => { // ADD A,Rn
+                self.perform_add(self.get_reg(opcode & 0x07));
+                self.state = ExecState::Fetch;
+            }
+            0x70 | 0x71 => { // ADDC A,@Ri
+                self.perform_addc(self.read_ram(self.get_reg(opcode & 0x01)));
+                self.state = ExecState::Fetch;
+            }
+            0x78..=0x7F => { // ADDC A,Rn
+                self.perform_addc(self.get_reg(opcode & 0x07));
+                self.state = ExecState::Fetch;
+            }
+            0x40 | 0x41 => { // ORL A,@Ri
+                self.perform_orl(self.read_ram(self.get_reg(opcode & 0x01)));
+                self.state = ExecState::Fetch;
+            }
+            0x48..=0x4F => { // ORL A,Rn
+                self.perform_orl(self.get_reg(opcode & 0x07));
+                self.state = ExecState::Fetch;
+            }
+            0x50 | 0x51 => { // ANL A,@Ri
+                self.perform_anl(self.read_ram(self.get_reg(opcode & 0x01)));
+                self.state = ExecState::Fetch;
+            }
+            0x58..=0x5F => { // ANL A,Rn
+                self.perform_anl(self.get_reg(opcode & 0x07));
+                self.state = ExecState::Fetch;
+            }
+            0xD0 | 0xD1 => { // XRL A,@Ri
+                self.perform_xrl(self.read_ram(self.get_reg(opcode & 0x01)));
+                self.state = ExecState::Fetch;
+            }
+            0xD8..=0xDF => { // XRL A,Rn
+                self.perform_xrl(self.get_reg(opcode & 0x07));
+                self.state = ExecState::Fetch;
+            }
+
+            // ===== Immediate ALU (2-cycle) =====
+            0x03 => { // ADD A,#data
+                match cycle {
+                    0 => self.state = ExecState::Execute(self.opcode),
+                    _ => {
+                        let data = bus.read(master, self.pc);
+                        self.pc = (self.pc + 1) & 0x0FFF;
+                        self.perform_add(data);
+                        self.state = ExecState::Fetch;
+                    }
+                }
+            }
+            0x13 => { // ADDC A,#data
+                match cycle {
+                    0 => self.state = ExecState::Execute(self.opcode),
+                    _ => {
+                        let data = bus.read(master, self.pc);
+                        self.pc = (self.pc + 1) & 0x0FFF;
+                        self.perform_addc(data);
+                        self.state = ExecState::Fetch;
+                    }
+                }
+            }
+            0x43 => { // ORL A,#data
+                match cycle {
+                    0 => self.state = ExecState::Execute(self.opcode),
+                    _ => {
+                        let data = bus.read(master, self.pc);
+                        self.pc = (self.pc + 1) & 0x0FFF;
+                        self.perform_orl(data);
+                        self.state = ExecState::Fetch;
+                    }
+                }
+            }
+            0x53 => { // ANL A,#data
+                match cycle {
+                    0 => self.state = ExecState::Execute(self.opcode),
+                    _ => {
+                        let data = bus.read(master, self.pc);
+                        self.pc = (self.pc + 1) & 0x0FFF;
+                        self.perform_anl(data);
+                        self.state = ExecState::Fetch;
+                    }
+                }
+            }
+            0xD3 => { // XRL A,#data
+                match cycle {
+                    0 => self.state = ExecState::Execute(self.opcode),
+                    _ => {
+                        let data = bus.read(master, self.pc);
+                        self.pc = (self.pc + 1) & 0x0FFF;
+                        self.perform_xrl(data);
+                        self.state = ExecState::Fetch;
+                    }
+                }
+            }
+
+            // ===== Data movement - register (1-cycle) =====
+            0xF0 | 0xF1 => self.op_mov_a_indirect(opcode & 0x01),
+            0xF8..=0xFF => self.op_mov_a_rn(opcode & 0x07),
+            0xA0 | 0xA1 => self.op_mov_indirect_a(opcode & 0x01),
+            0xA8..=0xAF => self.op_mov_rn_a(opcode & 0x07),
+            0x20 | 0x21 => self.op_xch_a_indirect(opcode & 0x01),
+            0x28..=0x2F => self.op_xch_a_rn(opcode & 0x07),
+            0x30 | 0x31 => self.op_xchd_a_indirect(opcode & 0x01),
+            0x42 => self.op_mov_a_t(),
+            0x62 => self.op_mov_t_a(),
+            0xC7 => self.op_mov_a_psw(),
+            0xD7 => self.op_mov_psw_a(),
+
+            // ===== Data movement - immediate (2-cycle) =====
+            0x23 => self.op_mov_a_imm(cycle, bus, master),
+            0xB0 | 0xB1 => self.op_mov_indirect_imm(opcode & 0x01, cycle, bus, master),
+            0xB8..=0xBF => self.op_mov_rn_imm(opcode & 0x07, cycle, bus, master),
+
+            // ===== External memory / program memory (2-cycle) =====
+            0x80 | 0x81 => self.op_movx_a_indirect(opcode & 0x01, cycle, bus, master),
+            0x90 | 0x91 => self.op_movx_indirect_a(opcode & 0x01, cycle, bus, master),
+            0xA3 => self.op_movp_a(cycle, bus, master),
+            0xE3 => self.op_movp3_a(cycle, bus, master),
+
+            // ===== Port I/O (2-cycle) =====
+            0x02 => self.op_outl_bus_a(cycle, bus, master),
+            0x08 => self.op_ins_a_bus(cycle, bus, master),
+            0x09 => self.op_in_a_p1(cycle, bus, master),
+            0x0A => self.op_in_a_p2(cycle, bus, master),
+            0x39 => self.op_outl_p1_a(cycle, bus, master),
+            0x3A => self.op_outl_p2_a(cycle, bus, master),
+
+            // ===== Port read-modify-write (2-cycle) =====
+            0x88 => self.op_orl_bus_imm(cycle, bus, master),
+            0x89 => self.op_orl_p1_imm(cycle, bus, master),
+            0x8A => self.op_orl_p2_imm(cycle, bus, master),
+            0x98 => self.op_anl_bus_imm(cycle, bus, master),
+            0x99 => self.op_anl_p1_imm(cycle, bus, master),
+            0x9A => self.op_anl_p2_imm(cycle, bus, master),
+
+            // ===== 4-bit expander port I/O (2-cycle) =====
+            0x0C..=0x0F => self.op_movd_a_pp(opcode & 0x03, cycle, bus, master),
+            0x3C..=0x3F => self.op_movd_pp_a(opcode & 0x03, cycle, bus, master),
+            0x8C..=0x8F => self.op_orld_pp_a(opcode & 0x03, cycle, bus, master),
+            0x9C..=0x9F => self.op_anld_pp_a(opcode & 0x03, cycle, bus, master),
+
+            // ===== Unconditional jumps / calls (2-cycle) =====
+            0x04 | 0x24 | 0x44 | 0x64 | 0x84 | 0xA4 | 0xC4 | 0xE4 => {
+                self.op_jmp(cycle, bus, master);
+            }
+            0x14 | 0x34 | 0x54 | 0x74 | 0x94 | 0xB4 | 0xD4 | 0xF4 => {
+                self.op_call(cycle, bus, master);
+            }
+            0xB3 => self.op_jmpp(cycle, bus, master),
+
+            // ===== Returns (2-cycle) =====
+            0x83 => self.op_ret(cycle),
+            0x93 => self.op_retr(cycle),
+
+            // ===== DJNZ (2-cycle) =====
+            0xE8..=0xEF => self.op_djnz(opcode & 0x07, cycle, bus, master),
+
+            // ===== Conditional jumps - flags (2-cycle) =====
+            0xF6 => self.op_jc(cycle, bus, master),
+            0xE6 => self.op_jnc(cycle, bus, master),
+            0xC6 => self.op_jz(cycle, bus, master),
+            0x96 => self.op_jnz(cycle, bus, master),
+            0xB6 => self.op_jf0(cycle, bus, master),
+            0x76 => self.op_jf1(cycle, bus, master),
+
+            // ===== Conditional jumps - pins/interrupts (2-cycle) =====
+            0x36 => self.op_jt0(cycle, bus, master),
+            0x26 => self.op_jnt0(cycle, bus, master),
+            0x56 => self.op_jt1(cycle, bus, master),
+            0x46 => self.op_jnt1(cycle, bus, master),
+            0x16 => self.op_jtf(cycle, bus, master),
+            0x86 => self.op_jni(cycle, bus, master),
+
+            // ===== Bit test jumps (2-cycle) =====
+            0x12 | 0x32 | 0x52 | 0x72 | 0x92 | 0xB2 | 0xD2 | 0xF2 => {
+                self.op_jbb(opcode >> 5, cycle, bus, master);
+            }
+
+            // ===== Control - interrupt enable/disable (1-cycle) =====
+            0x05 => { self.int_enabled = true; self.state = ExecState::Fetch; }
+            0x15 => { self.int_enabled = false; self.state = ExecState::Fetch; }
+            0x25 => { self.tcnti_enabled = true; self.state = ExecState::Fetch; }
+            0x35 => { self.tcnti_enabled = false; self.state = ExecState::Fetch; }
+
+            // ===== Control - timer/counter (1-cycle) =====
+            0x45 => { // STRT CNT
+                self.counter_enabled = true;
+                self.timer_enabled = false;
+                self.state = ExecState::Fetch;
+            }
+            0x55 => { // STRT T
+                self.timer_enabled = true;
+                self.counter_enabled = false;
+                self.state = ExecState::Fetch;
+            }
+            0x65 => { // STOP TCNT
+                self.timer_enabled = false;
+                self.counter_enabled = false;
+                self.state = ExecState::Fetch;
+            }
+
+            // ===== Control - bank select (1-cycle) =====
+            0xC5 => { self.set_flag(PswFlag::BS, false); self.state = ExecState::Fetch; }
+            0xD5 => { self.set_flag(PswFlag::BS, true); self.state = ExecState::Fetch; }
+            0xE5 => { self.a11_pending = false; self.state = ExecState::Fetch; }
+            0xF5 => { self.a11_pending = true; self.state = ExecState::Fetch; }
+
+            // ===== Undefined opcodes - treat as NOP =====
+            _ => self.state = ExecState::Fetch,
         }
     }
 

@@ -168,7 +168,7 @@ impl I8035 {
         }
     }
 
-    /// JZ addr (0x96): Jump if accumulator is zero. 2 cycles.
+    /// JZ addr (0xC6): Jump if accumulator is zero. 2 cycles.
     pub(crate) fn op_jz<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
@@ -184,7 +184,7 @@ impl I8035 {
         }
     }
 
-    /// JNZ addr (0xA6): Jump if accumulator is non-zero. 2 cycles.
+    /// JNZ addr (0x96): Jump if accumulator is non-zero. 2 cycles.
     pub(crate) fn op_jnz<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
@@ -234,7 +234,7 @@ impl I8035 {
 
     // === Conditional jumps (pin/interrupt tests, require bus access) ===
 
-    /// JT0 addr (0x26): Jump if T0 pin is high. 2 cycles.
+    /// JT0 addr (0x36): Jump if T0 pin is high. 2 cycles.
     pub(crate) fn op_jt0<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
@@ -250,7 +250,7 @@ impl I8035 {
         }
     }
 
-    /// JNT0 addr (0x46): Jump if T0 pin is low. 2 cycles.
+    /// JNT0 addr (0x26): Jump if T0 pin is low. 2 cycles.
     pub(crate) fn op_jnt0<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
@@ -266,7 +266,7 @@ impl I8035 {
         }
     }
 
-    /// JT1 addr (0x36): Jump if T1 pin is high. 2 cycles.
+    /// JT1 addr (0x56): Jump if T1 pin is high. 2 cycles.
     pub(crate) fn op_jt1<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
@@ -282,7 +282,7 @@ impl I8035 {
         }
     }
 
-    /// JNT1 addr (0x56): Jump if T1 pin is low. 2 cycles.
+    /// JNT1 addr (0x46): Jump if T1 pin is low. 2 cycles.
     pub(crate) fn op_jnt1<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,

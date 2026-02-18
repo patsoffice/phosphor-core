@@ -121,6 +121,6 @@ impl I8035 {
 
     /// SWAP A: Exchange upper and lower nibbles. No flags affected.
     pub(crate) fn perform_swap(&mut self) {
-        self.a = (self.a >> 4) | (self.a << 4);
+        self.a = self.a.rotate_left(4);
     }
 }
