@@ -37,21 +37,21 @@ pub struct I8035 {
     pub ram_mask: u8,
 
     // Memory bank flag
-    pub(crate) a11: bool,
-    pub(crate) a11_pending: bool,
+    pub a11: bool,
+    pub a11_pending: bool,
 
     // Timer/counter state
-    pub(crate) timer_enabled: bool,
-    pub(crate) counter_enabled: bool,
-    pub(crate) timer_overflow: bool,
-    pub(crate) t1_prev: bool,
+    pub timer_enabled: bool,
+    pub counter_enabled: bool,
+    pub timer_overflow: bool,
+    pub t1_prev: bool,
 
     // Interrupt state
-    pub(crate) int_enabled: bool,
-    pub(crate) tcnti_enabled: bool,
-    pub(crate) in_interrupt: bool,
-    pub(crate) irq_pending: bool,
-    pub(crate) timer_irq_pending: bool,
+    pub int_enabled: bool,
+    pub tcnti_enabled: bool,
+    pub in_interrupt: bool,
+    pub irq_pending: bool,
+    pub timer_irq_pending: bool,
 
     // Execution state
     pub(crate) state: ExecState,
