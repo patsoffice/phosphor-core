@@ -223,3 +223,38 @@ pub struct M6800CpuState {
     pub cc: u8,
     pub ram: Vec<(u16, u8)>,
 }
+
+// --- I8035 (MCS-48) JSON test vector types ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct I8035TestCase {
+    pub name: String,
+    pub initial: I8035CpuState,
+    #[serde(rename = "final")]
+    pub final_state: I8035CpuState,
+    pub cycles: Vec<(u16, u8, String)>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct I8035CpuState {
+    pub a: u8,
+    pub pc: u16,
+    pub psw: u8,
+    pub f1: bool,
+    pub t: u8,
+    pub dbbb: u8,
+    pub p1: u8,
+    pub p2: u8,
+    pub a11: bool,
+    pub a11_pending: bool,
+    pub timer_enabled: bool,
+    pub counter_enabled: bool,
+    pub timer_overflow: bool,
+    pub int_enabled: bool,
+    pub tcnti_enabled: bool,
+    pub in_interrupt: bool,
+    /// External bus memory (program memory + I/O mapped via io_read/io_write).
+    pub ram: Vec<(u16, u8)>,
+    /// Internal CPU RAM (64 bytes for 8035). Sparse (addr, value) pairs.
+    pub internal_ram: Vec<(u8, u8)>,
+}

@@ -16,3 +16,7 @@ path = "src/bin/gen_m6809_tests.rs"
 [[bin]]
 name = "gen_m6800_tests"
 path = "src/bin/gen_m6800_tests.rs"
+
+[[bin]]
+name = "gen_i8035_tests"
+path = "src/bin/gen_i8035_tests.rs"

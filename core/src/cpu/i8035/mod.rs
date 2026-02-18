@@ -67,6 +67,7 @@ pub(crate) enum ExecState {
     /// Hardware interrupt entry sequence
     Interrupt(u8),
     /// Halted / idle (not used by standard MCS-48 but reserved)
+    #[allow(dead_code)]
     Stopped,
 }
 
