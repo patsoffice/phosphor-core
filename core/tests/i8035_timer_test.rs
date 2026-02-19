@@ -77,10 +77,15 @@ fn test_timer_increments() {
     let mut bus = TestBus::new();
     cpu.t = 0x00;
     cpu.timer_enabled = true;
-    // NOP takes 1 cycle, timer ticks each cycle
-    bus.load(0, &[0x00, 0x00, 0x00]); // 3 NOPs
-    tick(&mut cpu, &mut bus, 3);
-    assert_eq!(cpu.t, 3);
+    // Timer uses 5-bit prescaler: T increments every 32 machine cycles.
+    // Fill ROM with NOPs (1 cycle each).
+    bus.load(0, &[0x00; 96]);
+    tick(&mut cpu, &mut bus, 31);
+    assert_eq!(cpu.t, 0); // prescaler at 31, T not yet incremented
+    tick(&mut cpu, &mut bus, 1);
+    assert_eq!(cpu.t, 1); // prescaler wraps at 32, T increments
+    tick(&mut cpu, &mut bus, 32);
+    assert_eq!(cpu.t, 2); // another 32 cycles, T increments again
 }
 
 #[test]
@@ -89,11 +94,13 @@ fn test_timer_overflow_sets_flag() {
     let mut bus = TestBus::new();
     cpu.t = 0xFE;
     cpu.timer_enabled = true;
-    bus.load(0, &[0x00, 0x00]); // 2 NOPs
-    tick(&mut cpu, &mut bus, 1); // T becomes 0xFF
+    bus.load(0, &[0x00; 128]);
+    // 32 cycles → T becomes 0xFF
+    tick(&mut cpu, &mut bus, 32);
     assert_eq!(cpu.t, 0xFF);
     assert!(!cpu.timer_overflow);
-    tick(&mut cpu, &mut bus, 1); // T wraps to 0x00
+    // 32 more cycles → T wraps to 0x00
+    tick(&mut cpu, &mut bus, 32);
     assert_eq!(cpu.t, 0x00);
     assert!(cpu.timer_overflow);
 }
@@ -105,8 +112,9 @@ fn test_timer_overflow_irq_pending() {
     cpu.t = 0xFF;
     cpu.timer_enabled = true;
     cpu.tcnti_enabled = true;
-    bus.load(0, &[0x00]); // NOP
-    tick(&mut cpu, &mut bus, 1);
+    bus.load(0, &[0x00; 64]);
+    // 32 cycles → prescaler fills, T wraps 0xFF → 0x00
+    tick(&mut cpu, &mut bus, 32);
     assert!(cpu.timer_overflow);
     assert!(cpu.timer_irq_pending);
 }

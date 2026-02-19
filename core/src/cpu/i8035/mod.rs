@@ -45,6 +45,7 @@ pub struct I8035 {
     pub counter_enabled: bool,
     pub timer_overflow: bool,
     pub t1_prev: bool,
+    pub prescaler: u8, // 5-bit prescaler (T increments every 32 machine cycles)
 
     // Interrupt state
     pub int_enabled: bool,
@@ -96,6 +97,7 @@ impl I8035 {
             counter_enabled: false,
             timer_overflow: false,
             t1_prev: false,
+            prescaler: 0,
             int_enabled: false,
             tcnti_enabled: false,
             in_interrupt: false,
@@ -203,7 +205,7 @@ impl I8035 {
     }
 
     /// Advance timer and/or counter (called every machine cycle).
-    /// Timer mode: increments T every cycle.
+    /// Timer mode: 5-bit prescaler divides by 32, then increments T.
     /// Counter mode: increments T on T1 falling edge.
     fn tick_timer_counter<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -211,7 +213,11 @@ impl I8035 {
         master: BusMaster,
     ) {
         if self.timer_enabled {
-            self.increment_t();
+            self.prescaler += 1;
+            if self.prescaler >= 32 {
+                self.prescaler = 0;
+                self.increment_t();
+            }
         }
         if self.counter_enabled {
             let t1 = bus.io_read(master, Self::PORT_T1) != 0;
@@ -587,6 +593,7 @@ impl I8035 {
                 // STRT T
                 self.timer_enabled = true;
                 self.counter_enabled = false;
+                self.prescaler = 0;
                 self.state = ExecState::Fetch;
             }
             0x65 => {
@@ -692,6 +699,7 @@ impl Cpu for I8035 {
         self.timer_enabled = false;
         self.counter_enabled = false;
         self.timer_overflow = false;
+        self.prescaler = 0;
         self.int_enabled = false;
         self.tcnti_enabled = false;
         self.in_interrupt = false;

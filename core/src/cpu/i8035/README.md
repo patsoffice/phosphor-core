@@ -106,7 +106,7 @@ enum ExecState {
 
 ### Timer/Counter
 
-- **Timer mode** (`STRT T`): T register increments every machine cycle
+- **Timer mode** (`STRT T`): 5-bit prescaler divides by 32; T register increments every 32 machine cycles
 - **Counter mode** (`STRT CNT`): T register increments on T1 pin falling edge
 - Overflow (0xFF → 0x00) sets `timer_overflow` flag and optionally triggers interrupt
 - `JTF` tests and auto-clears the overflow flag
