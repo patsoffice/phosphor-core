@@ -1,4 +1,5 @@
 use phosphor_core::core::machine::Machine;
+use phosphor_machines::DkongSystem;
 use phosphor_machines::JoustSystem;
 use phosphor_machines::MissileCommandSystem;
 use phosphor_machines::PacmanSystem;
@@ -50,9 +51,16 @@ fn main() {
             sys.load_rom_set(&rom_set).expect("Failed to map ROMs");
             Box::new(sys)
         }
+        "dkong" => {
+            let rom_set = rom_path::load_rom_set("dkong", rom_path).expect("Failed to load ROMs");
+
+            let mut sys = DkongSystem::new();
+            sys.load_rom_set(&rom_set).expect("Failed to map ROMs");
+            Box::new(sys)
+        }
         _ => {
             eprintln!("Unknown machine: {}", machine_name);
-            eprintln!("Available: joust, missile, pacman");
+            eprintln!("Available: dkong, joust, missile, pacman");
             std::process::exit(1);
         }
     };

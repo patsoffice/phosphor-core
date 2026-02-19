@@ -40,6 +40,7 @@ pub fn default_key_map(buttons: &[InputButton]) -> KeyMap {
             "P1 Up" => Some(Scancode::Up),
             "P1 Down" => Some(Scancode::Down),
             "P1 Flap" => Some(Scancode::Space),
+            "P1 Jump" => Some(Scancode::Space),
             "P1 Fire" => Some(Scancode::LCtrl),
             "P1 Start" => Some(Scancode::Num1),
 
@@ -49,6 +50,7 @@ pub fn default_key_map(buttons: &[InputButton]) -> KeyMap {
             "P2 Up" => Some(Scancode::W),
             "P2 Down" => Some(Scancode::S),
             "P2 Flap" => Some(Scancode::W),
+            "P2 Jump" => Some(Scancode::E),
             "P2 Fire" => Some(Scancode::E),
             "P2 Start" => Some(Scancode::Num2),
 
