@@ -51,7 +51,7 @@ cargo run --package phosphor-frontend -- joust /path/to/roms --scale 3
 cargo test -p phosphor-cpu-validation
 
 # Cross-validation (against reference emulators)
-cd cross-validation && make && ./validate ../cpu-validation/test_data/m6809/*.json
+cd cross-validation && make && ./bin/validate_m6809 ../cpu-validation/test_data/m6809/*.json
 ```
 
 - If cross-validation differs from datasheet for timings, use the datasheet values

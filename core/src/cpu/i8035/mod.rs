@@ -166,10 +166,7 @@ impl I8035 {
         let sp = self.psw & 0x07;
         let addr = 2 * sp + 8;
         self.write_ram(addr, self.pc as u8);
-        self.write_ram(
-            addr + 1,
-            ((self.pc >> 8) as u8 & 0x0F) | (self.psw & 0xF0),
-        );
+        self.write_ram(addr + 1, ((self.pc >> 8) as u8 & 0x0F) | (self.psw & 0xF0));
         let new_sp = (sp + 1) & 0x07;
         self.psw = (self.psw & 0xF8) | new_sp;
     }
@@ -275,94 +272,150 @@ impl I8035 {
             0x00 => self.state = ExecState::Fetch,
 
             // ===== Accumulator unary (1-cycle) =====
-            0x07 => { self.a = Self::perform_dec(self.a); self.state = ExecState::Fetch; }
-            0x17 => { self.a = Self::perform_inc(self.a); self.state = ExecState::Fetch; }
-            0x27 => { self.perform_clr_a(); self.state = ExecState::Fetch; }
-            0x37 => { self.perform_cpl_a(); self.state = ExecState::Fetch; }
-            0x47 => { self.perform_swap(); self.state = ExecState::Fetch; }
-            0x57 => { self.perform_da(); self.state = ExecState::Fetch; }
-            0x67 => { self.perform_rrc(); self.state = ExecState::Fetch; }
-            0x77 => { self.perform_rr(); self.state = ExecState::Fetch; }
-            0xE7 => { self.perform_rl(); self.state = ExecState::Fetch; }
-            0xF7 => { self.perform_rlc(); self.state = ExecState::Fetch; }
+            0x07 => {
+                self.a = Self::perform_dec(self.a);
+                self.state = ExecState::Fetch;
+            }
+            0x17 => {
+                self.a = Self::perform_inc(self.a);
+                self.state = ExecState::Fetch;
+            }
+            0x27 => {
+                self.perform_clr_a();
+                self.state = ExecState::Fetch;
+            }
+            0x37 => {
+                self.perform_cpl_a();
+                self.state = ExecState::Fetch;
+            }
+            0x47 => {
+                self.perform_swap();
+                self.state = ExecState::Fetch;
+            }
+            0x57 => {
+                self.perform_da();
+                self.state = ExecState::Fetch;
+            }
+            0x67 => {
+                self.perform_rrc();
+                self.state = ExecState::Fetch;
+            }
+            0x77 => {
+                self.perform_rr();
+                self.state = ExecState::Fetch;
+            }
+            0xE7 => {
+                self.perform_rl();
+                self.state = ExecState::Fetch;
+            }
+            0xF7 => {
+                self.perform_rlc();
+                self.state = ExecState::Fetch;
+            }
 
             // ===== Status flag ops (1-cycle) =====
-            0x97 => { self.set_flag(PswFlag::CY, false); self.state = ExecState::Fetch; }
+            0x97 => {
+                self.set_flag(PswFlag::CY, false);
+                self.state = ExecState::Fetch;
+            }
             0xA7 => {
                 let cy = !self.flag_set(PswFlag::CY);
                 self.set_flag(PswFlag::CY, cy);
                 self.state = ExecState::Fetch;
             }
-            0x85 => { self.set_flag(PswFlag::F0, false); self.state = ExecState::Fetch; }
+            0x85 => {
+                self.set_flag(PswFlag::F0, false);
+                self.state = ExecState::Fetch;
+            }
             0x95 => {
                 let f0 = !self.flag_set(PswFlag::F0);
                 self.set_flag(PswFlag::F0, f0);
                 self.state = ExecState::Fetch;
             }
-            0xA5 => { self.f1 = false; self.state = ExecState::Fetch; }
-            0xB5 => { self.f1 = !self.f1; self.state = ExecState::Fetch; }
+            0xA5 => {
+                self.f1 = false;
+                self.state = ExecState::Fetch;
+            }
+            0xB5 => {
+                self.f1 = !self.f1;
+                self.state = ExecState::Fetch;
+            }
 
             // ===== Register INC/DEC (1-cycle) =====
-            0x10 | 0x11 => { // INC @Ri
+            0x10 | 0x11 => {
+                // INC @Ri
                 let addr = self.get_reg(opcode & 0x01);
                 self.write_ram(addr, Self::perform_inc(self.read_ram(addr)));
                 self.state = ExecState::Fetch;
             }
-            0x18..=0x1F => { // INC Rn
+            0x18..=0x1F => {
+                // INC Rn
                 let n = opcode & 0x07;
                 self.set_reg(n, Self::perform_inc(self.get_reg(n)));
                 self.state = ExecState::Fetch;
             }
-            0xC8..=0xCF => { // DEC Rn
+            0xC8..=0xCF => {
+                // DEC Rn
                 let n = opcode & 0x07;
                 self.set_reg(n, Self::perform_dec(self.get_reg(n)));
                 self.state = ExecState::Fetch;
             }
 
             // ===== Register ALU (1-cycle) =====
-            0x60 | 0x61 => { // ADD A,@Ri
+            0x60 | 0x61 => {
+                // ADD A,@Ri
                 self.perform_add(self.read_ram(self.get_reg(opcode & 0x01)));
                 self.state = ExecState::Fetch;
             }
-            0x68..=0x6F => { // ADD A,Rn
+            0x68..=0x6F => {
+                // ADD A,Rn
                 self.perform_add(self.get_reg(opcode & 0x07));
                 self.state = ExecState::Fetch;
             }
-            0x70 | 0x71 => { // ADDC A,@Ri
+            0x70 | 0x71 => {
+                // ADDC A,@Ri
                 self.perform_addc(self.read_ram(self.get_reg(opcode & 0x01)));
                 self.state = ExecState::Fetch;
             }
-            0x78..=0x7F => { // ADDC A,Rn
+            0x78..=0x7F => {
+                // ADDC A,Rn
                 self.perform_addc(self.get_reg(opcode & 0x07));
                 self.state = ExecState::Fetch;
             }
-            0x40 | 0x41 => { // ORL A,@Ri
+            0x40 | 0x41 => {
+                // ORL A,@Ri
                 self.perform_orl(self.read_ram(self.get_reg(opcode & 0x01)));
                 self.state = ExecState::Fetch;
             }
-            0x48..=0x4F => { // ORL A,Rn
+            0x48..=0x4F => {
+                // ORL A,Rn
                 self.perform_orl(self.get_reg(opcode & 0x07));
                 self.state = ExecState::Fetch;
             }
-            0x50 | 0x51 => { // ANL A,@Ri
+            0x50 | 0x51 => {
+                // ANL A,@Ri
                 self.perform_anl(self.read_ram(self.get_reg(opcode & 0x01)));
                 self.state = ExecState::Fetch;
             }
-            0x58..=0x5F => { // ANL A,Rn
+            0x58..=0x5F => {
+                // ANL A,Rn
                 self.perform_anl(self.get_reg(opcode & 0x07));
                 self.state = ExecState::Fetch;
             }
-            0xD0 | 0xD1 => { // XRL A,@Ri
+            0xD0 | 0xD1 => {
+                // XRL A,@Ri
                 self.perform_xrl(self.read_ram(self.get_reg(opcode & 0x01)));
                 self.state = ExecState::Fetch;
             }
-            0xD8..=0xDF => { // XRL A,Rn
+            0xD8..=0xDF => {
+                // XRL A,Rn
                 self.perform_xrl(self.get_reg(opcode & 0x07));
                 self.state = ExecState::Fetch;
             }
 
             // ===== Immediate ALU (2-cycle) =====
-            0x03 => { // ADD A,#data
+            0x03 => {
+                // ADD A,#data
                 match cycle {
                     0 => self.state = ExecState::Execute(self.opcode),
                     _ => {
@@ -373,7 +426,8 @@ impl I8035 {
                     }
                 }
             }
-            0x13 => { // ADDC A,#data
+            0x13 => {
+                // ADDC A,#data
                 match cycle {
                     0 => self.state = ExecState::Execute(self.opcode),
                     _ => {
@@ -384,7 +438,8 @@ impl I8035 {
                     }
                 }
             }
-            0x43 => { // ORL A,#data
+            0x43 => {
+                // ORL A,#data
                 match cycle {
                     0 => self.state = ExecState::Execute(self.opcode),
                     _ => {
@@ -395,7 +450,8 @@ impl I8035 {
                     }
                 }
             }
-            0x53 => { // ANL A,#data
+            0x53 => {
+                // ANL A,#data
                 match cycle {
                     0 => self.state = ExecState::Execute(self.opcode),
                     _ => {
@@ -406,7 +462,8 @@ impl I8035 {
                     }
                 }
             }
-            0xD3 => { // XRL A,#data
+            0xD3 => {
+                // XRL A,#data
                 match cycle {
                     0 => self.state = ExecState::Execute(self.opcode),
                     _ => {
@@ -502,33 +559,60 @@ impl I8035 {
             }
 
             // ===== Control - interrupt enable/disable (1-cycle) =====
-            0x05 => { self.int_enabled = true; self.state = ExecState::Fetch; }
-            0x15 => { self.int_enabled = false; self.state = ExecState::Fetch; }
-            0x25 => { self.tcnti_enabled = true; self.state = ExecState::Fetch; }
-            0x35 => { self.tcnti_enabled = false; self.state = ExecState::Fetch; }
+            0x05 => {
+                self.int_enabled = true;
+                self.state = ExecState::Fetch;
+            }
+            0x15 => {
+                self.int_enabled = false;
+                self.state = ExecState::Fetch;
+            }
+            0x25 => {
+                self.tcnti_enabled = true;
+                self.state = ExecState::Fetch;
+            }
+            0x35 => {
+                self.tcnti_enabled = false;
+                self.state = ExecState::Fetch;
+            }
 
             // ===== Control - timer/counter (1-cycle) =====
-            0x45 => { // STRT CNT
+            0x45 => {
+                // STRT CNT
                 self.counter_enabled = true;
                 self.timer_enabled = false;
                 self.state = ExecState::Fetch;
             }
-            0x55 => { // STRT T
+            0x55 => {
+                // STRT T
                 self.timer_enabled = true;
                 self.counter_enabled = false;
                 self.state = ExecState::Fetch;
             }
-            0x65 => { // STOP TCNT
+            0x65 => {
+                // STOP TCNT
                 self.timer_enabled = false;
                 self.counter_enabled = false;
                 self.state = ExecState::Fetch;
             }
 
             // ===== Control - bank select (1-cycle) =====
-            0xC5 => { self.set_flag(PswFlag::BS, false); self.state = ExecState::Fetch; }
-            0xD5 => { self.set_flag(PswFlag::BS, true); self.state = ExecState::Fetch; }
-            0xE5 => { self.a11_pending = false; self.state = ExecState::Fetch; }
-            0xF5 => { self.a11_pending = true; self.state = ExecState::Fetch; }
+            0xC5 => {
+                self.set_flag(PswFlag::BS, false);
+                self.state = ExecState::Fetch;
+            }
+            0xD5 => {
+                self.set_flag(PswFlag::BS, true);
+                self.state = ExecState::Fetch;
+            }
+            0xE5 => {
+                self.a11_pending = false;
+                self.state = ExecState::Fetch;
+            }
+            0xF5 => {
+                self.a11_pending = true;
+                self.state = ExecState::Fetch;
+            }
 
             // ===== Undefined opcodes - treat as NOP =====
             _ => self.state = ExecState::Fetch,

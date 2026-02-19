@@ -659,7 +659,7 @@ fn test_sel_rb1_and_add() {
     let mut cpu = I8035::new();
     let mut bus = TestBus::new();
     cpu.a = 0x10;
-    cpu.ram[0] = 0x01;  // Bank 0: R0 = 0x01
+    cpu.ram[0] = 0x01; // Bank 0: R0 = 0x01
     cpu.ram[0x18] = 0xFF; // Bank 1: R0 = 0xFF
     bus.load(0, &[0xD5, 0x68]); // SEL RB1; ADD A,R0
     tick(&mut cpu, &mut bus, 1); // SEL RB1

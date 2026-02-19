@@ -17,7 +17,7 @@ as a standalone reference emulator.
 
 ```bash
 # Build
-make -C cross-validation validate_m6800
+make -C cross-validation bin/validate_m6800
 
 # Generate test vectors (must run from cpu-validation/ directory)
 cd cpu-validation && cargo run --bin gen_m6800_tests --release -- all
@@ -27,10 +27,10 @@ cd cpu-validation && cargo run --bin gen_m6800_tests --release -- all
 
 ```bash
 # Validate a single opcode
-./cross-validation/validate_m6800 cpu-validation/test_data/m6800/80.json
+./cross-validation/bin/validate_m6800 cpu-validation/test_data/m6800/80.json
 
 # Validate all opcodes
-./cross-validation/validate_m6800 cpu-validation/test_data/m6800/*.json
+./cross-validation/bin/validate_m6800 cpu-validation/test_data/m6800/*.json
 ```
 
 ## What It Validates

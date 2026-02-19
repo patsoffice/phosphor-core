@@ -59,21 +59,21 @@ impl I8035 {
     // --- BCD ---
 
     /// DA A: Decimal adjust accumulator after BCD addition.
-    /// CY affected (can be set, never cleared).
+    /// Low nibble is corrected first (+6 if >9 or AC), then high nibble is
+    /// checked on the *corrected* value (+6 if >9 or CY), per the Intel
+    /// MCS-48 User's Manual. CY can be set but never cleared.
     pub(crate) fn perform_da(&mut self) {
-        let mut correction: u8 = 0;
         let mut carry = self.flag_set(PswFlag::CY);
 
         if (self.a & 0x0F) > 0x09 || self.flag_set(PswFlag::AC) {
-            correction = 0x06;
+            self.a = self.a.wrapping_add(0x06);
         }
 
-        if self.a > 0x99 || carry {
-            correction |= 0x60;
+        if (self.a & 0xF0) > 0x90 || carry {
+            self.a = self.a.wrapping_add(0x60);
             carry = true;
         }
 
-        self.a = self.a.wrapping_add(correction);
         self.set_flag(PswFlag::CY, carry);
     }
 

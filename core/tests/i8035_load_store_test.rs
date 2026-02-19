@@ -161,12 +161,12 @@ fn test_xch_a_indirect() {
 fn test_xchd_a_indirect() {
     let mut cpu = I8035::new();
     let mut bus = TestBus::new();
-    cpu.a = 0xA5;        // A = 0xA5
-    cpu.ram[0] = 0x20;   // R0 = 0x20 (pointer)
+    cpu.a = 0xA5; // A = 0xA5
+    cpu.ram[0] = 0x20; // R0 = 0x20 (pointer)
     cpu.ram[0x20] = 0x3C; // RAM[0x20] = 0x3C
     bus.load(0, &[0x30]); // XCHD A,@R0
     tick(&mut cpu, &mut bus, 1);
-    assert_eq!(cpu.a, 0xAC);       // high nibble A preserved, low nibble from RAM
+    assert_eq!(cpu.a, 0xAC); // high nibble A preserved, low nibble from RAM
     assert_eq!(cpu.ram[0x20], 0x35); // high nibble RAM preserved, low nibble from A
 }
 

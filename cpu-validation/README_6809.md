@@ -21,7 +21,7 @@ cycle-accurate 6809 emulator.
 git submodule update --init
 
 # Build
-make -C cross-validation validate
+make -C cross-validation bin/validate_m6809
 
 # Generate test vectors (must run from cpu-validation/ directory)
 cd cpu-validation && cargo run --bin gen_m6809_tests --release -- all
@@ -31,10 +31,10 @@ cd cpu-validation && cargo run --bin gen_m6809_tests --release -- all
 
 ```bash
 # Validate a single opcode
-./cross-validation/validate cpu-validation/test_data/m6809/86.json
+./cross-validation/bin/validate_m6809 cpu-validation/test_data/m6809/86.json
 
 # Validate all opcodes
-./cross-validation/validate cpu-validation/test_data/m6809/*.json
+./cross-validation/bin/validate_m6809 cpu-validation/test_data/m6809/*.json
 ```
 
 ## What It Validates
@@ -140,5 +140,5 @@ and per-cycle bus traces.
 | `cpu-validation/src/lib.rs` | TracingBus, JSON types (shared by M6809 and M6800) |
 | `cpu-validation/src/bin/gen_m6809_tests.rs` | Test vector generator (266 opcodes x 1,000 vectors) |
 | `cpu-validation/tests/m6809_single_step_test.rs` | Self-validation (phosphor against its own vectors) |
-| `cross-validation/validate.cpp` | Cross-validation harness |
+| `cross-validation/validate_m6809.cpp` | Cross-validation harness |
 | `cross-validation/mc6809/` | Git submodule: elmerucr/MC6809 reference emulator |

@@ -60,7 +60,7 @@ fn test_call_and_ret() {
     // Wait, 0x14 & 0xE0 = 0x00, so target = 0x000 | addr_byte
     // We need the CALL to go to page 1: opcode 0x34 → bits[7:5]=001 → page=0x100
     bus.load(0, &[0x34, 0x00]); // CALL 0x100
-    bus.load(0x100, &[0x83]);    // RET
+    bus.load(0x100, &[0x83]); // RET
     tick(&mut cpu, &mut bus, 2); // CALL
     assert_eq!(cpu.pc, 0x100);
     // Stack should have return address (PC after CALL = 0x002) and PSW
@@ -165,7 +165,7 @@ fn test_djnz_branches() {
     bus.load(0, &[0xE8, 0x00]); // DJNZ R0, 0x00
     tick(&mut cpu, &mut bus, 2);
     assert_eq!(cpu.ram[0], 0x01); // R0 decremented
-    assert_eq!(cpu.pc, 0x00);     // jumped (R0 != 0)
+    assert_eq!(cpu.pc, 0x00); // jumped (R0 != 0)
 }
 
 #[test]
@@ -176,7 +176,7 @@ fn test_djnz_falls_through() {
     bus.load(0, &[0xE8, 0x00]); // DJNZ R0, 0x00
     tick(&mut cpu, &mut bus, 2);
     assert_eq!(cpu.ram[0], 0x00); // R0 decremented to 0
-    assert_eq!(cpu.pc, 0x02);     // fell through (R0 == 0)
+    assert_eq!(cpu.pc, 0x02); // fell through (R0 == 0)
 }
 
 #[test]

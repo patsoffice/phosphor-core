@@ -120,6 +120,7 @@ SDL2-based windowed frontend — external dependencies: SDL2, zip:
 - **M6800** — 192 opcodes, 192,000 test vectors, cross-validated against [mame4all](https://github.com/mamedev/mame) M6800. See [cpu-validation/README_6800.md](cpu-validation/README_6800.md).
 - **M6502** — 151 opcodes, 1,510,000 test vectors, validated against [SingleStepTests/65x02](https://github.com/SingleStepTests/65x02) with cycle-by-cycle bus traces. See [cpu-validation/README_6502.md](cpu-validation/README_6502.md).
 - **Z80** — 1604 opcodes, 1,604,000 test vectors, validated against [SingleStepTests/z80](https://github.com/SingleStepTests/z80) with full register/flag/timing verification. See [cpu-validation/README_z80.md](cpu-validation/README_z80.md).
+- **I8035** — 229 opcodes, 229,000 test vectors, cross-validated against [MAME](https://github.com/mamedev/mame) MCS-48. See [cpu-validation/README_i8035.md](cpu-validation/README_i8035.md).
 
 ### Cross-Validation (`cross-validation/`)
 
@@ -129,6 +130,7 @@ C++ harnesses that validate phosphor-core's test vectors against independent ref
 - **M6800** — 191,996/192,000 tests pass (99.998%)
 - **M6502** — 1,510,000/1,510,000 tests pass (100%) — via SingleStepTests/65x02 reference vectors
 - **Z80** — 1,604,000/1,604,000 tests pass (100%) — via SingleStepTests/z80 reference vectors
+- **I8035** — 229,000 test vectors generated, cross-validation harness ready (awaiting vendored MAME mcs48)
 
 ## Project Structure
 
@@ -151,7 +153,8 @@ phosphor-core/
 │   │   │   ├── m6800/              # M6800 CPU (192 opcodes) — see [README](core/src/cpu/m6800/README.md)
 │   │   │   ├── m6809/              # M6809 CPU (285 opcodes) — see [README](core/src/cpu/m6809/README.md)
 │   │   │   ├── m6502/              # M6502 CPU (151 opcodes) — see [README](core/src/cpu/m6502/README.md)
-│   │   │   └── z80/                # Z80 CPU (1604 opcodes) — see [README](core/src/cpu/z80/README.md)
+│   │   │   ├── z80/                # Z80 CPU (1604 opcodes) — see [README](core/src/cpu/z80/README.md)
+│   │   │   └── i8035/              # I8035 CPU (229 opcodes, MCS-48) — see [README](core/src/cpu/i8035/README.md)
 │   │   └── device/                 # Peripheral devices
 │   │       ├── pia6820.rs          # MC6821 PIA (full: registers, interrupts, edge detection)
 │   │       ├── williams_blitter.rs # Williams SC1 DMA blitter (copy/fill/shift/mask)
@@ -162,6 +165,7 @@ phosphor-core/
 │       ├── m6809_*_test.rs         # M6809 tests
 │       ├── m6800_*_test.rs         # M6800 tests
 │       ├── m6502_*_test.rs         # M6502 tests
+│       ├── i8035_*_test.rs         # I8035 tests (148 tests across 4 files)
 │       ├── pia6820_test.rs         # MC6821 PIA tests
 │       ├── williams_blitter_test.rs # Blitter tests
 │       └── z80_*_test.rs           # Z80 tests (241 tests across 11 files)
@@ -182,11 +186,13 @@ phosphor-core/
 │   ├── README_6809.md              # M6809 cross-validation details
 │   ├── README_6800.md              # M6800 cross-validation details & MAME differences
 │   ├── README_6502.md              # M6502 cross-validation details & bus quirks
+│   ├── README_i8035.md             # I8035 cross-validation details
 │   ├── src/
 │   │   ├── lib.rs                  # TracingBus + JSON types
 │   │   └── bin/
 │   │       ├── gen_m6809_tests.rs  # M6809 test vector generator
-│   │       └── gen_m6800_tests.rs  # M6800 test vector generator
+│   │       ├── gen_m6800_tests.rs  # M6800 test vector generator
+│   │       └── gen_i8035_tests.rs  # I8035 test vector generator
 │   ├── tests/
 │   │   ├── m6809_single_step_test.rs  # Validates M6809 against JSON
 │   │   ├── m6800_single_step_test.rs  # Validates M6800 against JSON
@@ -195,6 +201,7 @@ phosphor-core/
 │   └── test_data/
 │       ├── m6809/                  # Generated M6809 test vectors
 │       ├── m6800/                  # Generated M6800 test vectors
+│       ├── i8035/                  # Generated I8035 test vectors
 │       ├── 65x02/                  # Git submodule: SingleStepTests/65x02
 │       └── z80/                    # Git submodule: SingleStepTests/z80
 ├── frontend/                       # phosphor-frontend crate (SDL2 frontend)
@@ -207,8 +214,10 @@ phosphor-core/
 │       └── input.rs                # Keyboard → Machine::set_input() mapping
 └── cross-validation/               # C++ reference validation
     ├── Makefile
-    ├── validate.cpp                # M6809 harness using elmerucr/MC6809
+    ├── validate_m6809.cpp          # M6809 harness using elmerucr/MC6809
     ├── validate_m6800.cpp          # M6800 harness using mame4all
+    ├── validate_i8035.cpp          # I8035 (MCS-48) harness using MAME mcs48
+    ├── bin/                        # Compiled binaries (gitignored)
     ├── mc6809/                     # Git submodule: elmerucr/MC6809
     ├── m6800/                      # mame4all M6800 CPU core + shim
     └── include/nlohmann/json.hpp   # Single-header JSON parser
@@ -351,7 +360,7 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 - [x] Motorola 6800 CPU (192 opcodes, cross-validated against mame4all)
 - [x] MOS 6502 CPU (151 opcodes, cross-validated against SingleStepTests/65x02)
 - [x] Zilog Z80 CPU (1604 opcodes, cross-validated against SingleStepTests/z80)
-- [ ] Intel I8035 CPU (MCS-48 family, Donkey Kong sound CPU)
+- [x] Intel I8035 CPU (229 opcodes, MCS-48 family, cross-validated against MAME)
 - [ ] Motorola 68000 CPU (32-bit address space, 16-bit data bus)
 
 ### Phase 4: Peripherals & Systems

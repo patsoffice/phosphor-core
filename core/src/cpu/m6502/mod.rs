@@ -316,49 +316,56 @@ impl M6502 {
             0xDE => self.op_dec_abs_x(cycle, bus, master),
 
             // --- Flag instructions (all 2-cycle implied, no other flags affected) ---
-            0x18 => { // CLC - C cleared.
+            0x18 => {
+                // CLC - C cleared.
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.set_flag(StatusFlag::C, false);
                     self.state = ExecState::Fetch;
                 }
             }
-            0x38 => { // SEC - C set.
+            0x38 => {
+                // SEC - C set.
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.set_flag(StatusFlag::C, true);
                     self.state = ExecState::Fetch;
                 }
             }
-            0x58 => { // CLI - I cleared.
+            0x58 => {
+                // CLI - I cleared.
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.set_flag(StatusFlag::I, false);
                     self.state = ExecState::Fetch;
                 }
             }
-            0x78 => { // SEI - I set.
+            0x78 => {
+                // SEI - I set.
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.set_flag(StatusFlag::I, true);
                     self.state = ExecState::Fetch;
                 }
             }
-            0xB8 => { // CLV - V cleared.
+            0xB8 => {
+                // CLV - V cleared.
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.set_flag(StatusFlag::V, false);
                     self.state = ExecState::Fetch;
                 }
             }
-            0xD8 => { // CLD - D cleared.
+            0xD8 => {
+                // CLD - D cleared.
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.set_flag(StatusFlag::D, false);
                     self.state = ExecState::Fetch;
                 }
             }
-            0xF8 => { // SED - D set.
+            0xF8 => {
+                // SED - D set.
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.set_flag(StatusFlag::D, true);
@@ -367,7 +374,8 @@ impl M6502 {
             }
 
             // --- Transfer instructions (all 2-cycle implied) ---
-            0xAA => { // TAX - N, Z affected.
+            0xAA => {
+                // TAX - N, Z affected.
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.x = self.a;
@@ -375,7 +383,8 @@ impl M6502 {
                     self.state = ExecState::Fetch;
                 }
             }
-            0xA8 => { // TAY - N, Z affected.
+            0xA8 => {
+                // TAY - N, Z affected.
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.y = self.a;
@@ -383,7 +392,8 @@ impl M6502 {
                     self.state = ExecState::Fetch;
                 }
             }
-            0x8A => { // TXA - N, Z affected.
+            0x8A => {
+                // TXA - N, Z affected.
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.a = self.x;
@@ -391,7 +401,8 @@ impl M6502 {
                     self.state = ExecState::Fetch;
                 }
             }
-            0x98 => { // TYA - N, Z affected.
+            0x98 => {
+                // TYA - N, Z affected.
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.a = self.y;
@@ -399,7 +410,8 @@ impl M6502 {
                     self.state = ExecState::Fetch;
                 }
             }
-            0xBA => { // TSX - N, Z affected.
+            0xBA => {
+                // TSX - N, Z affected.
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.x = self.sp;
@@ -407,7 +419,8 @@ impl M6502 {
                     self.state = ExecState::Fetch;
                 }
             }
-            0x9A => { // TXS - No flags affected.
+            0x9A => {
+                // TXS - No flags affected.
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.sp = self.x;
@@ -416,7 +429,8 @@ impl M6502 {
             }
 
             // --- Register increment/decrement (all 2-cycle implied, N, Z affected) ---
-            0xE8 => { // INX
+            0xE8 => {
+                // INX
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.x = self.x.wrapping_add(1);
@@ -424,7 +438,8 @@ impl M6502 {
                     self.state = ExecState::Fetch;
                 }
             }
-            0xC8 => { // INY
+            0xC8 => {
+                // INY
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.y = self.y.wrapping_add(1);
@@ -432,7 +447,8 @@ impl M6502 {
                     self.state = ExecState::Fetch;
                 }
             }
-            0xCA => { // DEX
+            0xCA => {
+                // DEX
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.x = self.x.wrapping_sub(1);
@@ -440,7 +456,8 @@ impl M6502 {
                     self.state = ExecState::Fetch;
                 }
             }
-            0x88 => { // DEY
+            0x88 => {
+                // DEY
                 if cycle == 0 {
                     let _ = bus.read(master, self.pc); // dummy read
                     self.y = self.y.wrapping_sub(1);
