@@ -1,16 +1,13 @@
 use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::machine::{InputButton, Machine};
 use phosphor_core::core::{Bus, BusMaster};
-use phosphor_core::cpu::m6800::M6800;
-use phosphor_core::cpu::m6809::M6809;
 use phosphor_core::cpu::state::{M6800State, M6809State};
-use phosphor_core::cpu::{Cpu, CpuStateTrait};
-use phosphor_core::device::cmos_ram::CmosRam;
-use phosphor_core::device::dac::Mc1408Dac;
-use phosphor_core::device::pia6820::Pia6820;
-use phosphor_core::device::williams_blitter::WilliamsBlitter;
 
 use crate::rom_loader::{RomEntry, RomRegion};
+use crate::williams::{self, WILLIAMS_SOUND_ROM, WilliamsBoard, set_bit};
+
+// Re-export decoder PROM under the original name for backward compatibility.
+pub use crate::williams::WILLIAMS_DECODER_PROM as JOUST_DECODER_PROM;
 
 // ---------------------------------------------------------------------------
 // Joust ROM definitions (from MAME williams.cpp)
@@ -107,35 +104,9 @@ pub static JOUST_PROGRAM_ROM: RomRegion = RomRegion {
     ],
 };
 
-/// Sound CPU ROM: 4KB at 0xF000.
-pub static JOUST_SOUND_ROM: RomRegion = RomRegion {
-    size: 0x1000,
-    entries: &[RomEntry {
-        name: "video_sound_rom_4_std_780.ic12",
-        size: 0x1000,
-        offset: 0x0000,
-        crc32: &[0xf1835bdd], // same across all variants
-    }],
-};
-
-/// Decoder PROMs: 2 x 512B.
-pub static JOUST_DECODER_PROM: RomRegion = RomRegion {
-    size: 0x0400,
-    entries: &[
-        RomEntry {
-            name: "decoder_rom_4.3g",
-            size: 0x0200,
-            offset: 0x0000,
-            crc32: &[0xe6631c23],
-        },
-        RomEntry {
-            name: "decoder_rom_6.3c",
-            size: 0x0200,
-            offset: 0x0200,
-            crc32: &[0x83faf25e],
-        },
-    ],
-};
+// ---------------------------------------------------------------------------
+// Input definitions
+// ---------------------------------------------------------------------------
 
 // Widget PIA Port A — player controls via LS157 mux (active-high)
 // CB2 output selects P1 (B input, CB2=1) vs P2 (A input, CB2=0).
@@ -191,91 +162,30 @@ const JOUST_INPUT_MAP: &[InputButton] = &[
     },
 ];
 
-// Video timing constants (Williams gen-1 hardware)
-// 8 MHz pixel clock, 512 pixels/line, 260 lines/frame → ~60.10 fps
-const CYCLES_PER_SCANLINE: u64 = 64; // 1 MHz CPU / (6 MHz / 384 pixels)
-const CYCLES_PER_FRAME: u64 = 260 * CYCLES_PER_SCANLINE; // 16640 cycles
+// ---------------------------------------------------------------------------
+// JoustSystem — Williams gen-1 board configured for Joust (1982)
+// ---------------------------------------------------------------------------
 
-/// Williams 2nd-generation arcade board configured for Joust (1982)
+/// Joust-specific wrapper around the shared Williams gen-1 board.
 ///
-/// Hardware: Motorola 6809E @ 1 MHz, 48KB video RAM, two MC6821 PIAs,
-/// Williams SC1 blitter, 1KB battery-backed CMOS RAM, 12KB program ROM.
+/// Adds the LS157 mux for player input multiplexing (CB2 selects P1 vs P2)
+/// and Joust-specific ROM definitions.
 pub struct JoustSystem {
-    // CPU
-    cpu: M6809,
+    pub(crate) board: WilliamsBoard,
 
-    // Memory regions
-    video_ram: [u8; 0xC000],   // 0x0000-0xBFFF: 48KB video/color RAM
-    banked_rom: [u8; 0x9000],  // 0x0000-0x8FFF: 36KB banked ROM overlay (when rom_bank != 0)
-    palette_ram: [u8; 16],     // 0xC000-0xC00F: 16-color palette
-    cmos_ram: CmosRam,         // 0xCC00-0xCFFF: 1KB battery-backed
-    program_rom: [u8; 0x3000], // 0xD000-0xFFFF: 12KB program ROM
-
-    // Peripheral devices
-    widget_pia: Pia6820,      // 0xC804-0xC807: player inputs, coins, sound
-    rom_pia: Pia6820,         // 0xC80C-0xC80F: ROM bank, screen flip
-    blitter: WilliamsBlitter, // 0xCA00-0xCA07: DMA blitter
-
-    // I/O registers
-    rom_bank: u8, // 0xC900: ROM bank select
-
-    // Sound board (M6808 stand-in for M6802)
-    sound_cpu: M6800,
-    sound_ram: [u8; 256],    // 0x0000-0x00FF: 256 bytes RAM
-    sound_pia: Pia6820,      // 0x0400-0x0403: Sound PIA
-    sound_rom: [u8; 0x1000], // 0xF000-0xFFFF: 4KB sound ROM
-
-    // Audio output
-    dac: Mc1408Dac,
-    audio_buffer: Vec<i16>,
-    sample_accum: i64,
-    sample_count: u32,
-    sample_phase: u64,
-
-    // System state
-    pub watchdog_counter: u32, // Reset by write to 0xCBFF
-    clock: u64,                // Master clock cycle counter
-
-    // Input state (active-high: 1 = pressed, 0 = released)
-    p1_controls: u8,   // bits 0-2: left, right, flap (LS157 mux B input)
-    p2_controls: u8,   // bits 0-2: left, right, flap (LS157 mux A input)
-    start_bits: u8,    // bit 4: P2 Start, bit 5: P1 Start
-    rom_pia_input: u8, // ROM PIA Port A: coins, service, tilt
-
-    // Scanline-rendered framebuffer (292 x 240 x RGB24 = 210,240 bytes).
-    // Populated incrementally during run_frame(), one row per visible scanline.
-    scanline_buffer: Vec<u8>,
+    // Joust-specific: LS157 mux input state
+    p1_controls: u8, // bits 0-2: left, right, flap (mux B input)
+    p2_controls: u8, // bits 0-2: left, right, flap (mux A input)
+    start_bits: u8,  // bit 4: P2 Start, bit 5: P1 Start
 }
 
 impl JoustSystem {
     pub fn new() -> Self {
         Self {
-            cpu: M6809::new(),
-            video_ram: [0; 0xC000],
-            banked_rom: [0; 0x9000],
-            palette_ram: [0; 16],
-            cmos_ram: CmosRam::new(),
-            program_rom: [0; 0x3000],
-            widget_pia: Pia6820::new(),
-            rom_pia: Pia6820::new(),
-            blitter: WilliamsBlitter::new(),
-            rom_bank: 0,
-            sound_cpu: M6800::new(),
-            sound_ram: [0; 256],
-            sound_pia: Pia6820::new(),
-            sound_rom: [0; 0x1000],
-            dac: Mc1408Dac::new(),
-            audio_buffer: Vec::with_capacity(1024),
-            sample_accum: 0,
-            sample_count: 0,
-            sample_phase: 0,
-            watchdog_counter: 0,
-            clock: 0,
+            board: WilliamsBoard::new(),
             p1_controls: 0,
             p2_controls: 0,
             start_bits: 0,
-            rom_pia_input: 0,
-            scanline_buffer: vec![0u8; 292 * 240 * 3],
         }
     }
 
@@ -287,152 +197,28 @@ impl JoustSystem {
     ///
     /// Start buttons on bits 4-5 are always present (direct wiring).
     fn update_widget_mux(&mut self) {
-        let select_p1 = self.widget_pia.cb2_output();
+        let select_p1 = self.board.widget_pia.cb2_output();
         let mux_bits = if select_p1 {
             self.p1_controls
         } else {
             self.p2_controls
         };
         let port_a = self.start_bits | (mux_bits & 0x0F);
-        self.widget_pia.set_port_a_input(port_a);
+        self.board.widget_pia.set_port_a_input(port_a);
     }
 
-    /// Current scanline number derived from the master clock.
-    fn current_scanline(&self) -> u8 {
-        let frame_cycle = self.clock % CYCLES_PER_FRAME;
-        (frame_cycle / CYCLES_PER_SCANLINE) as u8
-    }
+    // --- Delegation accessors (preserve public API for tests) ---
 
-    /// Render a single scanline from VRAM + palette into the internal scanline buffer.
-    /// `scanline` is the raw scanline number (0-259); only call for visible lines (7-246).
-    fn render_scanline(&mut self, scanline: usize) {
-        const CROP_X: usize = 6;
-        const CROP_Y: usize = 7;
-        const WIDTH: usize = 292;
-        const RG_LUT: [u8; 8] = [0, 38, 81, 118, 137, 174, 217, 255];
-        const B_LUT: [u8; 4] = [0, 95, 160, 255];
-
-        // Decode the current palette (16 entries, BBGGGRRR)
-        let mut palette_rgb = [(0u8, 0u8, 0u8); 16];
-        for (i, rgb) in palette_rgb.iter_mut().enumerate() {
-            let entry = self.palette_ram[i];
-            *rgb = (
-                RG_LUT[(entry & 0x07) as usize],
-                RG_LUT[((entry >> 3) & 0x07) as usize],
-                B_LUT[((entry >> 6) & 0x03) as usize],
-            );
-        }
-
-        let screen_y = scanline - CROP_Y;
-        let row_offset = screen_y * WIDTH * 3;
-
-        for screen_x in 0..WIDTH {
-            let pixel_x = screen_x + CROP_X;
-            let byte_column = pixel_x / 2;
-            let vram_addr = byte_column * 256 + scanline;
-
-            let byte = if vram_addr < self.video_ram.len() {
-                self.video_ram[vram_addr]
-            } else {
-                0
-            };
-
-            let color_index = if pixel_x & 1 == 0 {
-                (byte >> 4) & 0x0F
-            } else {
-                byte & 0x0F
-            };
-
-            let (r, g, b) = palette_rgb[color_index as usize];
-            let pixel_offset = row_offset + screen_x * 3;
-            self.scanline_buffer[pixel_offset] = r;
-            self.scanline_buffer[pixel_offset + 1] = g;
-            self.scanline_buffer[pixel_offset + 2] = b;
-        }
-    }
-
-    pub fn tick(&mut self) {
-        // Video timing signals on ROM PIA (from MAME williams_m.cpp).
-        // VA11 (scanline bit 5) → ROM PIA CB1, count240 → ROM PIA CA1.
-        // These drive the main CPU's IRQ via ROM PIA interrupt outputs.
-        let frame_cycle = self.clock % CYCLES_PER_FRAME;
-        if frame_cycle.is_multiple_of(CYCLES_PER_SCANLINE) {
-            let scanline = (frame_cycle / CYCLES_PER_SCANLINE) as u16;
-
-            // Render this scanline from current VRAM + palette before the CPU
-            // processes it, matching hardware CRT read timing.
-            if (7..=246).contains(&scanline) {
-                self.render_scanline(scanline as usize);
-            }
-
-            if scanline != 256 {
-                // VA11: toggles every 32 scanlines
-                self.rom_pia.set_cb1((scanline & 0x20) != 0);
-            }
-            // count240: asserted from scanline 240 through VBLANK
-            self.rom_pia.set_ca1(scanline >= 240);
-        }
-
-        // Propagate sound commands from main board ROM PIA to sound board PIA.
-        // High two bits are externally pulled high on real hardware (MAME: data | 0xC0).
-        // CB1 is held low for 0xFF (silence sentinel), asserted high otherwise to
-        // generate an IRQ on the sound CPU.
-        if self.rom_pia.take_port_b_written() {
-            let command = self.rom_pia.read_output_b() | 0xC0;
-            self.sound_pia.set_port_b_input(command);
-            self.sound_pia.set_cb1(command != 0xFF);
-        }
-
-        let bus_ptr: *mut Self = self;
-        unsafe {
-            let bus = &mut *bus_ptr as &mut dyn Bus<Address = u16, Data = u8>;
-            if self.blitter.is_active() {
-                self.blitter.do_dma_cycle(bus);
-            } else {
-                self.cpu.execute_cycle(bus, BusMaster::Cpu(0));
-            }
-            // Sound CPU runs every cycle (separate bus, not halted by blitter)
-            self.sound_cpu.execute_cycle(bus, BusMaster::Cpu(1));
-        }
-
-        // DAC is continuously connected to sound PIA Port A output pins
-        let dac_byte = self.sound_pia.read_output_a();
-        self.dac.write(dac_byte);
-
-        // Bresenham downsample: 1 MHz CPU clock -> 44.1 kHz output
-        const CPU_CLOCK_HZ: u64 = 1_000_000;
-        const OUTPUT_SAMPLE_RATE: u64 = 44_100;
-
-        self.sample_accum += self.dac.sample_i16() as i64;
-        self.sample_count += 1;
-        self.sample_phase += OUTPUT_SAMPLE_RATE;
-
-        if self.sample_phase >= CPU_CLOCK_HZ {
-            self.sample_phase -= CPU_CLOCK_HZ;
-            let sample = (self.sample_accum / self.sample_count as i64) as i16;
-            self.audio_buffer.push(sample);
-            self.sample_accum = 0;
-            self.sample_count = 0;
-        }
-
-        self.clock += 1;
-        self.watchdog_counter += 1;
-    }
-
-    /// Load program ROM from a byte slice at the given offset (for testing).
-    /// Offset is relative to the start of the ROM region (0 = address 0xD000).
     pub fn load_program_rom(&mut self, offset: usize, data: &[u8]) {
-        let end = (offset + data.len()).min(self.program_rom.len());
-        let len = end - offset;
-        self.program_rom[offset..end].copy_from_slice(&data[..len]);
+        self.board.load_program_rom(offset, data);
     }
 
-    /// Load banked ROM from a byte slice at the given offset (for testing).
-    /// Offset is relative to the start of the banked ROM region (0 = address 0x0000).
     pub fn load_banked_rom(&mut self, offset: usize, data: &[u8]) {
-        let end = (offset + data.len()).min(self.banked_rom.len());
-        let len = end - offset;
-        self.banked_rom[offset..end].copy_from_slice(&data[..len]);
+        self.board.load_banked_rom(offset, data);
+    }
+
+    pub fn load_sound_rom(&mut self, offset: usize, data: &[u8]) {
+        self.board.load_sound_rom(offset, data);
     }
 
     /// Load program ROM from a RomSet using the Joust ROM mapping.
@@ -443,70 +229,56 @@ impl JoustSystem {
         &mut self,
         rom_set: &crate::rom_loader::RomSet,
     ) -> Result<(), crate::rom_loader::RomLoadError> {
-        let banked_data = JOUST_BANKED_ROM.load(rom_set)?;
-        self.banked_rom.copy_from_slice(&banked_data);
-
-        let rom_data = JOUST_PROGRAM_ROM.load(rom_set)?;
-        self.program_rom.copy_from_slice(&rom_data);
-
-        let sound_data = JOUST_SOUND_ROM.load(rom_set)?;
-        self.sound_rom.copy_from_slice(&sound_data);
-
-        Ok(())
+        self.board.load_rom_regions(
+            rom_set,
+            &JOUST_BANKED_ROM,
+            &JOUST_PROGRAM_ROM,
+            &WILLIAMS_SOUND_ROM,
+        )
     }
 
     pub fn get_cpu_state(&self) -> M6809State {
-        self.cpu.snapshot()
+        self.board.get_cpu_state()
     }
 
     pub fn get_sound_cpu_state(&self) -> M6800State {
-        self.sound_cpu.snapshot()
-    }
-
-    /// Load sound ROM from a byte slice at the given offset (for testing).
-    /// Offset is relative to the start of the sound ROM region (0 = address 0xF000).
-    pub fn load_sound_rom(&mut self, offset: usize, data: &[u8]) {
-        let end = (offset + data.len()).min(self.sound_rom.len());
-        let len = end - offset;
-        self.sound_rom[offset..end].copy_from_slice(&data[..len]);
+        self.board.get_sound_cpu_state()
     }
 
     pub fn read_video_ram(&self, addr: usize) -> u8 {
-        if addr < self.video_ram.len() {
-            self.video_ram[addr]
-        } else {
-            0
-        }
+        self.board.read_video_ram(addr)
     }
 
     pub fn write_video_ram(&mut self, addr: usize, data: u8) {
-        if addr < self.video_ram.len() {
-            self.video_ram[addr] = data;
-        }
+        self.board.write_video_ram(addr, data);
     }
 
     pub fn read_palette(&self, index: usize) -> u8 {
-        if index < 16 {
-            self.palette_ram[index]
-        } else {
-            0
-        }
+        self.board.read_palette(index)
     }
 
     pub fn rom_bank(&self) -> u8 {
-        self.rom_bank
+        self.board.rom_bank()
     }
 
     pub fn clock(&self) -> u64 {
-        self.clock
+        self.board.clock()
     }
 
     pub fn load_cmos(&mut self, data: &[u8]) {
-        self.cmos_ram.load_from(data);
+        self.board.load_cmos(data);
     }
 
     pub fn save_cmos(&self) -> &[u8; 1024] {
-        self.cmos_ram.snapshot()
+        self.board.save_cmos()
+    }
+
+    pub fn tick(&mut self) {
+        self.board.tick();
+    }
+
+    pub fn watchdog_counter(&self) -> u32 {
+        self.board.watchdog_counter
     }
 }
 
@@ -516,135 +288,56 @@ impl Default for JoustSystem {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Bus — delegates to WilliamsBoard with Joust-specific mux hook
+// ---------------------------------------------------------------------------
+
 impl Bus for JoustSystem {
     type Address = u16;
     type Data = u8;
 
     fn read(&mut self, master: BusMaster, addr: u16) -> u8 {
-        if master == BusMaster::Cpu(1) {
-            // Sound board memory map
-            return match addr {
-                0x0000..=0x00FF => self.sound_ram[addr as usize],
-                0x0400..=0x0403 => self.sound_pia.read((addr - 0x0400) as u8),
-                // 4KB ROM mirrored via incomplete address decoding (MAME: 0xB000-0xFFFF)
-                0xB000..=0xFFFF => self.sound_rom[(addr & 0x0FFF) as usize],
-                _ => 0xFF,
-            };
+        // Joust-specific: update LS157 mux before Widget PIA reads
+        if master != BusMaster::Cpu(1) && (0xC804..=0xC807).contains(&addr) {
+            self.update_widget_mux();
         }
-
-        // Main board memory map
-        match addr {
-            0x0000..=0x8FFF => {
-                // DmaVram reads bypass ROM banking — the blitter reads dest
-                // directly from VRAM for keepmask blending, matching MAME's
-                // blit_pixel which reads from m_vram[] instead of the address space.
-                if master != BusMaster::DmaVram && self.rom_bank != 0 {
-                    self.banked_rom[addr as usize]
-                } else {
-                    self.video_ram[addr as usize]
-                }
-            }
-            0x9000..=0xBFFF => self.video_ram[addr as usize],
-            0xC000..=0xC00F => self.palette_ram[(addr - 0xC000) as usize],
-            0xC804..=0xC807 => {
-                self.update_widget_mux();
-                self.widget_pia.read((addr - 0xC804) as u8)
-            }
-            0xC80C..=0xC80F => self.rom_pia.read((addr - 0xC80C) as u8),
-            0xC900 => self.rom_bank,
-            0xCA00..=0xCA07 => 0, // Blitter registers are write-only on real hardware
-            0xCB00..=0xCBFF => self.current_scanline() & 0xFC, // Video counter read
-            0xCC00..=0xCFFF => self.cmos_ram.read(addr - 0xCC00),
-            0xD000..=0xFFFF => self.program_rom[(addr - 0xD000) as usize],
-            _ => 0xFF,
-        }
+        self.board.read(master, addr)
     }
 
     fn write(&mut self, master: BusMaster, addr: u16, data: u8) {
-        if master == BusMaster::Cpu(1) {
-            // Sound board memory map
-            return match addr {
-                0x0000..=0x00FF => self.sound_ram[addr as usize] = data,
-                0x0400..=0x0403 => self.sound_pia.write((addr - 0x0400) as u8, data),
-                _ => { /* ROM or unmapped: ignored */ }
-            };
-        }
-
-        // Main board memory map
-        match addr {
-            0x0000..=0xBFFF => self.video_ram[addr as usize] = data,
-            0xC000..=0xC00F => self.palette_ram[(addr - 0xC000) as usize] = data,
-            0xC804..=0xC807 => self.widget_pia.write((addr - 0xC804) as u8, data),
-            0xC80C..=0xC80F => self.rom_pia.write((addr - 0xC80C) as u8, data),
-            0xC900 => self.rom_bank = data,
-            0xCA00..=0xCA07 => self.blitter.write_register((addr - 0xCA00) as u8, data),
-            // MAME: only data == 0x39 resets watchdog (williams_m.cpp:251)
-            0xCBFF => {
-                if data == 0x39 {
-                    self.watchdog_counter = 0;
-                }
-            }
-            // Only lower 4 bits valid on Williams 5114/6514 SRAM (MAME: data | 0xF0)
-            0xCC00..=0xCFFF => self.cmos_ram.write(addr - 0xCC00, data | 0xF0),
-            0xD000..=0xFFFF => { /* ROM: ignored */ }
-            _ => { /* Unmapped: ignored */ }
-        }
+        self.board.write(master, addr, data);
     }
 
     fn is_halted_for(&self, master: BusMaster) -> bool {
-        match master {
-            BusMaster::Cpu(0) => self.blitter.is_active(),
-            _ => false,
-        }
+        self.board.is_halted_for(master)
     }
 
     fn check_interrupts(&self, target: BusMaster) -> InterruptState {
-        match target {
-            // Only ROM PIA interrupts are wired to the main CPU IRQ line
-            // via INPUT_MERGER_ANY_HIGH. Widget PIA IRQs are not connected.
-            // FIRQ is not used on Williams gen-1 hardware.
-            BusMaster::Cpu(0) => InterruptState {
-                nmi: false,
-                irq: self.rom_pia.irq_a() || self.rom_pia.irq_b(),
-                firq: false,
-                ..Default::default()
-            },
-            BusMaster::Cpu(1) => InterruptState {
-                nmi: false,
-                irq: self.sound_pia.irq_a() || self.sound_pia.irq_b(),
-                firq: false,
-                ..Default::default()
-            },
-            _ => InterruptState::default(),
-        }
+        self.board.check_interrupts(target)
     }
 }
 
-/// Active-high bit manipulation: set bit on press, clear on release.
-fn set_bit(reg: &mut u8, bit: u8, pressed: bool) {
-    if pressed {
-        *reg |= 1 << bit;
-    } else {
-        *reg &= !(1 << bit);
-    }
-}
+// ---------------------------------------------------------------------------
+// Machine trait — delegates to WilliamsBoard with Joust input wiring
+// ---------------------------------------------------------------------------
 
 impl Machine for JoustSystem {
     fn display_size(&self) -> (u32, u32) {
-        (292, 240)
+        (williams::DISPLAY_WIDTH, williams::DISPLAY_HEIGHT)
     }
 
     fn run_frame(&mut self) {
-        self.update_widget_mux();
-        self.rom_pia.set_port_a_input(self.rom_pia_input);
-
-        for _ in 0..CYCLES_PER_FRAME {
-            self.tick();
+        self.board
+            .rom_pia
+            .set_port_a_input(self.board.rom_pia_input);
+        for _ in 0..williams::CYCLES_PER_FRAME {
+            self.update_widget_mux();
+            self.board.tick();
         }
     }
 
     fn render_frame(&self, buffer: &mut [u8]) {
-        buffer.copy_from_slice(&self.scanline_buffer);
+        self.board.render_frame(buffer);
     }
 
     fn set_input(&mut self, button: u8, pressed: bool) {
@@ -663,8 +356,10 @@ impl Machine for JoustSystem {
             INPUT_P2_START => set_bit(&mut self.start_bits, 4, pressed),
             // Coin goes to ROM PIA Port A bit 4 (Left Coin)
             INPUT_COIN => {
-                set_bit(&mut self.rom_pia_input, 4, pressed);
-                self.rom_pia.set_port_a_input(self.rom_pia_input);
+                set_bit(&mut self.board.rom_pia_input, 4, pressed);
+                self.board
+                    .rom_pia
+                    .set_port_a_input(self.board.rom_pia_input);
             }
             _ => {}
         }
@@ -676,56 +371,22 @@ impl Machine for JoustSystem {
     }
 
     fn reset(&mut self) {
-        self.cpu.reset();
-        self.sound_cpu.reset();
-
-        // Reset peripherals first so bus is in a known state
-        self.widget_pia = Pia6820::new();
-        self.rom_pia = Pia6820::new();
-        self.sound_pia = Pia6820::new();
-        self.blitter = WilliamsBlitter::new();
-        self.rom_bank = 0;
-        self.dac = Mc1408Dac::new();
-        self.audio_buffer.clear();
-        self.sample_accum = 0;
-        self.sample_count = 0;
-        self.sample_phase = 0;
-        self.watchdog_counter = 0;
-        self.clock = 0;
+        self.board.reset();
         self.p1_controls = 0;
         self.p2_controls = 0;
         self.start_bits = 0;
-        self.rom_pia_input = 0;
-        self.scanline_buffer.fill(0);
-        // CMOS RAM and video RAM NOT cleared (battery-backed / not cleared by hardware)
-
-        // Fetch reset vectors through the bus (matches hardware behavior)
-        let bus_ptr: *mut Self = self;
-        unsafe {
-            let bus = &mut *bus_ptr as &mut dyn Bus<Address = u16, Data = u8>;
-            let main_hi = bus.read(BusMaster::Cpu(0), 0xFFFE);
-            let main_lo = bus.read(BusMaster::Cpu(0), 0xFFFF);
-            self.cpu.pc = u16::from_be_bytes([main_hi, main_lo]);
-
-            let snd_hi = bus.read(BusMaster::Cpu(1), 0xFFFE);
-            let snd_lo = bus.read(BusMaster::Cpu(1), 0xFFFF);
-            self.sound_cpu.pc = u16::from_be_bytes([snd_hi, snd_lo]);
-        }
     }
 
     fn save_nvram(&self) -> Option<&[u8]> {
-        Some(self.cmos_ram.snapshot())
+        Some(self.board.save_cmos())
     }
 
     fn load_nvram(&mut self, data: &[u8]) {
-        self.cmos_ram.load_from(data);
+        self.board.load_cmos(data);
     }
 
     fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
-        let n = buffer.len().min(self.audio_buffer.len());
-        buffer[..n].copy_from_slice(&self.audio_buffer[..n]);
-        self.audio_buffer.drain(..n);
-        n
+        self.board.fill_audio(buffer)
     }
 
     fn audio_sample_rate(&self) -> u32 {
@@ -734,6 +395,6 @@ impl Machine for JoustSystem {
 
     fn frame_rate_hz(&self) -> f64 {
         // 1 MHz CPU clock / (260 scanlines * 64 cycles/scanline) = 60.096 Hz
-        1_000_000.0 / CYCLES_PER_FRAME as f64
+        1_000_000.0 / williams::CYCLES_PER_FRAME as f64
     }
 }

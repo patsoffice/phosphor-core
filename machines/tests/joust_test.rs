@@ -857,7 +857,7 @@ fn test_watchdog_reset_on_write() {
     }
     // Writing 0x39 to 0xCBFF resets watchdog (MAME: williams_m.cpp:251)
     sys.write(BusMaster::Cpu(0), 0xCBFF, 0x39);
-    assert_eq!(sys.watchdog_counter, 0);
+    assert_eq!(sys.watchdog_counter(), 0);
 }
 
 #[test]
@@ -866,12 +866,12 @@ fn test_watchdog_ignores_non_0x39() {
     for _ in 0..100 {
         sys.tick();
     }
-    let before = sys.watchdog_counter;
+    let before = sys.watchdog_counter();
     // Writing any value other than 0x39 does NOT reset watchdog
     sys.write(BusMaster::Cpu(0), 0xCBFF, 0x00);
-    assert_eq!(sys.watchdog_counter, before);
+    assert_eq!(sys.watchdog_counter(), before);
     sys.write(BusMaster::Cpu(0), 0xCBFF, 0xFF);
-    assert_eq!(sys.watchdog_counter, before);
+    assert_eq!(sys.watchdog_counter(), before);
 }
 
 // =================================================================

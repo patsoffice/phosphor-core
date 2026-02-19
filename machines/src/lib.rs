@@ -7,6 +7,7 @@ pub mod simple6502;
 pub mod simple6800;
 pub mod simple6809;
 pub mod simplez80;
+pub mod williams;
 
 pub use dkong::DkongSystem;
 pub use joust::JoustSystem;
