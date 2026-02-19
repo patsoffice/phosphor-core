@@ -191,6 +191,16 @@ impl I8257 {
         }
     }
 
+    /// Read the current address register for a channel.
+    pub fn channel_address(&self, channel: usize) -> u16 {
+        self.channels[channel].address
+    }
+
+    /// Read the current count register for a channel (includes mode bits 15:14).
+    pub fn channel_count(&self, channel: usize) -> u16 {
+        self.channels[channel].count
+    }
+
     /// Set the DREQ (DMA request) input for a channel.
     pub fn set_dreq(&mut self, channel: usize, active: bool) {
         if channel < 4 {
