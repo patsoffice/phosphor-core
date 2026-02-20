@@ -3,7 +3,9 @@ use phosphor_machines::DkongSystem;
 use phosphor_machines::JoustSystem;
 use phosphor_machines::MissileCommandSystem;
 use phosphor_machines::PacmanSystem;
+use phosphor_machines::RobotronSystem;
 use phosphor_machines::joust::JOUST_DECODER_PROM;
+use phosphor_machines::robotron::ROBOTRON_DECODER_PROM;
 
 mod audio;
 mod emulator;
@@ -58,9 +60,23 @@ fn main() {
             sys.load_rom_set(&rom_set).expect("Failed to map ROMs");
             Box::new(sys)
         }
+        "robotron" => {
+            let rom_set =
+                rom_path::load_rom_set("robotron", rom_path).expect("Failed to load ROMs");
+
+            // Validate ROM regions not yet wired into memory
+            ROBOTRON_DECODER_PROM
+                .load(&rom_set)
+                .expect("Failed to load decoder PROMs");
+
+            let mut sys = RobotronSystem::new();
+            sys.load_rom_set(&rom_set)
+                .expect("Failed to map program ROMs");
+            Box::new(sys)
+        }
         _ => {
             eprintln!("Unknown machine: {}", machine_name);
-            eprintln!("Available: dkong, joust, missile, pacman");
+            eprintln!("Available: dkong, joust, missile, pacman, robotron");
             std::process::exit(1);
         }
     };

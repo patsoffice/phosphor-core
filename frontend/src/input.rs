@@ -54,6 +54,12 @@ pub fn default_key_map(buttons: &[InputButton]) -> KeyMap {
             "P2 Fire" => Some(Scancode::E),
             "P2 Start" => Some(Scancode::Num2),
 
+            // Fire stick (Robotron twin-stick)
+            "P1 Fire Up" => Some(Scancode::I),
+            "P1 Fire Down" => Some(Scancode::K),
+            "P1 Fire Left" => Some(Scancode::J),
+            "P1 Fire Right" => Some(Scancode::L),
+
             // Missile Command fire buttons
             "Fire Left" => Some(Scancode::Z),
             "Fire Center" => Some(Scancode::X),
