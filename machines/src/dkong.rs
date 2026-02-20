@@ -8,7 +8,8 @@ use phosphor_core::device::dac::Mc1408Dac;
 use phosphor_core::device::dkong_discrete::DkongDiscrete;
 use phosphor_core::device::i8257::I8257;
 
-use crate::rom_loader::{RomEntry, RomRegion};
+use crate::registry::MachineEntry;
+use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
 
 // ---------------------------------------------------------------------------
 // Donkey Kong ROM definitions (TKG-04 / "dkong" MAME set)
@@ -1004,4 +1005,20 @@ fn emitter_2bit(bit0: f64, bit1: f64) -> u8 {
     let active = g0 + g1;
     let voltage = if total > 0.0 { active / total } else { 0.0 };
     (voltage * 255.0).round().min(255.0) as u8
+}
+
+// ---------------------------------------------------------------------------
+// Machine registry
+// ---------------------------------------------------------------------------
+
+fn create_machine(
+    rom_set: &RomSet,
+) -> Result<Box<dyn phosphor_core::core::machine::Machine>, RomLoadError> {
+    let mut sys = DkongSystem::new();
+    sys.load_rom_set(rom_set)?;
+    Ok(Box::new(sys))
+}
+
+inventory::submit! {
+    MachineEntry::new("dkong", "dkong", create_machine)
 }

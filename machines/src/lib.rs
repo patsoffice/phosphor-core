@@ -2,6 +2,7 @@ pub mod dkong;
 pub mod joust;
 pub mod missile_command;
 pub mod pacman;
+pub mod registry;
 pub mod robotron;
 pub mod rom_loader;
 pub mod simple6502;

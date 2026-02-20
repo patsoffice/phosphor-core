@@ -1,11 +1,4 @@
-use phosphor_core::core::machine::Machine;
-use phosphor_machines::DkongSystem;
-use phosphor_machines::JoustSystem;
-use phosphor_machines::MissileCommandSystem;
-use phosphor_machines::PacmanSystem;
-use phosphor_machines::RobotronSystem;
-use phosphor_machines::joust::JOUST_DECODER_PROM;
-use phosphor_machines::robotron::ROBOTRON_DECODER_PROM;
+use phosphor_machines::registry;
 
 mod audio;
 mod emulator;
@@ -24,62 +17,15 @@ fn main() {
     let rom_path = args.get(2).expect("ROM path required");
     let scale = parse_scale_arg(&args).unwrap_or(3);
 
-    let mut machine: Box<dyn Machine> = match machine_name.as_str() {
-        "joust" => {
-            let rom_set = rom_path::load_rom_set("joust", rom_path).expect("Failed to load ROMs");
+    let entry = registry::find(machine_name).unwrap_or_else(|| {
+        let names: Vec<_> = registry::all().iter().map(|e| e.name).collect();
+        eprintln!("Unknown machine: {machine_name}");
+        eprintln!("Available: {}", names.join(", "));
+        std::process::exit(1);
+    });
 
-            // Validate ROM regions not yet wired into memory
-            JOUST_DECODER_PROM
-                .load(&rom_set)
-                .expect("Failed to load decoder PROMs");
-
-            let mut sys = JoustSystem::new();
-            sys.load_rom_set(&rom_set)
-                .expect("Failed to map program ROMs");
-            Box::new(sys)
-        }
-        "missile" => {
-            let rom_set = rom_path::load_rom_set("missile", rom_path).expect("Failed to load ROMs");
-
-            let mut sys = MissileCommandSystem::new();
-            sys.load_rom_set(&rom_set)
-                .expect("Failed to map program ROMs");
-            Box::new(sys)
-        }
-        "pacman" => {
-            let rom_set = rom_path::load_rom_set("pacman", rom_path).expect("Failed to load ROMs");
-
-            let mut sys = PacmanSystem::new();
-            sys.load_rom_set(&rom_set).expect("Failed to map ROMs");
-            Box::new(sys)
-        }
-        "dkong" => {
-            let rom_set = rom_path::load_rom_set("dkong", rom_path).expect("Failed to load ROMs");
-
-            let mut sys = DkongSystem::new();
-            sys.load_rom_set(&rom_set).expect("Failed to map ROMs");
-            Box::new(sys)
-        }
-        "robotron" => {
-            let rom_set =
-                rom_path::load_rom_set("robotron", rom_path).expect("Failed to load ROMs");
-
-            // Validate ROM regions not yet wired into memory
-            ROBOTRON_DECODER_PROM
-                .load(&rom_set)
-                .expect("Failed to load decoder PROMs");
-
-            let mut sys = RobotronSystem::new();
-            sys.load_rom_set(&rom_set)
-                .expect("Failed to map program ROMs");
-            Box::new(sys)
-        }
-        _ => {
-            eprintln!("Unknown machine: {}", machine_name);
-            eprintln!("Available: dkong, joust, missile, pacman, robotron");
-            std::process::exit(1);
-        }
-    };
+    let rom_set = rom_path::load_rom_set(entry.rom_name, rom_path).expect("Failed to load ROMs");
+    let mut machine = (entry.create)(&rom_set).expect("Failed to initialize machine");
 
     // Load battery-backed NVRAM from disk (if available)
     let nvram_path = nvram_path_for(machine_name, rom_path);

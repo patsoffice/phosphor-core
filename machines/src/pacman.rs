@@ -6,7 +6,8 @@ use phosphor_core::cpu::z80::Z80;
 use phosphor_core::cpu::{Cpu, CpuStateTrait};
 use phosphor_core::device::namco_wsg::NamcoWsg;
 
-use crate::rom_loader::{RomEntry, RomRegion};
+use crate::registry::MachineEntry;
+use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
 
 // ---------------------------------------------------------------------------
 // Pac-Man ROM definitions ("pacman" Midway set)
@@ -835,4 +836,20 @@ fn combine_weights_3(_weights: &[f64; 3], scale: &[f64], bit0: u8, bit1: u8, bit
 fn combine_weights_2(_weights: &[f64; 2], scale: &[f64], bit0: u8, bit1: u8) -> u8 {
     let val = bit0 as f64 * scale[0] + bit1 as f64 * scale[1];
     (val * 255.0).round().min(255.0) as u8
+}
+
+// ---------------------------------------------------------------------------
+// Machine registry
+// ---------------------------------------------------------------------------
+
+fn create_machine(
+    rom_set: &RomSet,
+) -> Result<Box<dyn phosphor_core::core::machine::Machine>, RomLoadError> {
+    let mut sys = PacmanSystem::new();
+    sys.load_rom_set(rom_set)?;
+    Ok(Box::new(sys))
+}
+
+inventory::submit! {
+    MachineEntry::new("pacman", "pacman", create_machine)
 }

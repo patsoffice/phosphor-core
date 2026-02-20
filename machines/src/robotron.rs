@@ -3,7 +3,8 @@ use phosphor_core::core::machine::{InputButton, Machine};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::state::{M6800State, M6809State};
 
-use crate::rom_loader::{RomEntry, RomRegion};
+use crate::registry::MachineEntry;
+use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
 use crate::williams::{self, WilliamsBoard, set_bit};
 
 // Re-export decoder PROM under the game-specific name.
@@ -229,6 +230,9 @@ impl RobotronSystem {
         &mut self,
         rom_set: &crate::rom_loader::RomSet,
     ) -> Result<(), crate::rom_loader::RomLoadError> {
+        // Validate decoder PROMs (not yet wired into memory, but must be present)
+        crate::williams::WILLIAMS_DECODER_PROM.load(rom_set)?;
+
         self.board.load_rom_regions(
             rom_set,
             &ROBOTRON_BANKED_ROM,
@@ -393,4 +397,20 @@ impl Machine for RobotronSystem {
         // 1 MHz CPU clock / (260 scanlines × 64 cycles/scanline) = 60.096 Hz
         1_000_000.0 / williams::CYCLES_PER_FRAME as f64
     }
+}
+
+// ---------------------------------------------------------------------------
+// Machine registry
+// ---------------------------------------------------------------------------
+
+fn create_machine(
+    rom_set: &RomSet,
+) -> Result<Box<dyn phosphor_core::core::machine::Machine>, RomLoadError> {
+    let mut sys = RobotronSystem::new();
+    sys.load_rom_set(rom_set)?;
+    Ok(Box::new(sys))
+}
+
+inventory::submit! {
+    MachineEntry::new("robotron", "robotron", create_machine)
 }

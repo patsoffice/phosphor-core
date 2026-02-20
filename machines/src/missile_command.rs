@@ -6,7 +6,8 @@ use phosphor_core::cpu::state::M6502State;
 use phosphor_core::cpu::{Cpu, CpuStateTrait};
 use phosphor_core::device::pokey::Pokey;
 
-use crate::rom_loader::{RomEntry, RomRegion};
+use crate::registry::MachineEntry;
+use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
 
 // ---------------------------------------------------------------------------
 // Missile Command ROM definitions
@@ -789,4 +790,20 @@ fn set_bit_active_low(reg: &mut u8, bit: u8, pressed: bool) {
     } else {
         *reg |= 1 << bit;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Machine registry
+// ---------------------------------------------------------------------------
+
+fn create_machine(
+    rom_set: &RomSet,
+) -> Result<Box<dyn phosphor_core::core::machine::Machine>, RomLoadError> {
+    let mut sys = MissileCommandSystem::new();
+    sys.load_rom_set(rom_set)?;
+    Ok(Box::new(sys))
+}
+
+inventory::submit! {
+    MachineEntry::new("missile", "missile", create_machine)
 }
