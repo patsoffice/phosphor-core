@@ -1,3 +1,4 @@
+pub mod asteroids;
 pub mod dkong;
 pub mod joust;
 pub mod missile_command;
@@ -11,6 +12,7 @@ pub mod simple6809;
 pub mod simplez80;
 pub mod williams;
 
+pub use asteroids::AsteroidsSystem;
 pub use dkong::DkongSystem;
 pub use joust::JoustSystem;
 pub use missile_command::MissileCommandSystem;
