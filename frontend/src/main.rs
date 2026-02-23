@@ -15,7 +15,7 @@ fn main() {
         .get(1)
         .expect("Usage: phosphor <machine> <rom-path> [--scale N]");
     let rom_path = args.get(2).expect("ROM path required");
-    let scale = parse_scale_arg(&args).unwrap_or(3);
+    let explicit_scale = parse_scale_arg(&args);
 
     let entry = registry::find(machine_name).unwrap_or_else(|| {
         let names: Vec<_> = registry::all().iter().map(|e| e.name).collect();
@@ -32,6 +32,9 @@ fn main() {
     if let Ok(data) = std::fs::read(&nvram_path) {
         machine.load_nvram(&data);
     }
+
+    let (native_w, native_h) = machine.display_size();
+    let scale = explicit_scale.unwrap_or_else(|| auto_scale(native_w, native_h));
 
     let key_map = input::default_key_map(machine.input_map());
     machine.reset();
@@ -52,6 +55,13 @@ fn nvram_path_for(machine_name: &str, rom_path: &str) -> std::path::PathBuf {
     } else {
         path.with_extension("nvram")
     }
+}
+
+/// Pick the largest integer scale that keeps the window under 1200 pixels
+/// on its longest axis (fits comfortably on most displays).
+fn auto_scale(native_w: u32, native_h: u32) -> u32 {
+    let longest = native_w.max(native_h);
+    (1200 / longest).max(1)
 }
 
 fn parse_scale_arg(args: &[String]) -> Option<u32> {

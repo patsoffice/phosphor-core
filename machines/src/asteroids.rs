@@ -221,10 +221,16 @@ impl AsteroidsSystem {
     }
 
     /// Trigger the DVG: assemble vector memory and run to completion.
+    ///
+    /// The DVG has a 13-bit (8 KB) byte address space:
+    ///   0x0000–0x07FF  Vector RAM (2 KB, CPU addresses 0x4000–0x47FF)
+    ///   0x0800–0x0FFF  Unmapped gap
+    ///   0x1000–0x17FF  Vector ROM (2 KB, CPU addresses 0x5000–0x57FF)
+    ///   0x1800–0x1FFF  Unmapped
     fn trigger_dvg(&mut self) {
-        let mut vmem = vec![0u8; 0x1000]; // 4 KB: 2 KB RAM + 2 KB ROM
-        vmem[..0x0800].copy_from_slice(&self.vector_ram);
-        vmem[0x0800..].copy_from_slice(&self.vector_rom);
+        let mut vmem = vec![0u8; 0x2000]; // 8 KB DVG address space
+        vmem[0x0000..0x0800].copy_from_slice(&self.vector_ram);
+        vmem[0x1000..0x1800].copy_from_slice(&self.vector_rom);
         self.dvg.go();
         self.dvg.execute(&vmem);
         self.display_list = self.dvg.take_display_list();
@@ -258,41 +264,51 @@ impl Bus for AsteroidsSystem {
             0x0000..=0x03FF => self.ram[addr as usize],
             0x0400..=0x07FF => self.ram[(addr - 0x0400) as usize],
 
-            // IN0: 0x2000–0x2007 (active-HIGH, except VG_HALT which is active-LOW)
+            // IN0: 0x2000–0x2007 — 74LS251 8:1 multiplexer.
+            // A0–A2 select which input bit to read; the selected bit appears on D7.
+            // The 6502 tests it via BIT (N flag = D7).
             //   Bit 0: unused
             //   Bit 1: 3 KHz clock (cpu total_cycles & 0x100)
             //   Bit 2: VG_HALT (active-LOW: 0 = done, 1 = running)
-            //   Bit 3: Hyperspace (active-HIGH)
-            //   Bit 4: Fire (active-HIGH)
-            //   Bit 5: Diagnostic step
-            //   Bit 6: Tilt
-            //   Bit 7: Self-test
+            //   Bit 3: Hyperspace     Bit 4: Fire
+            //   Bit 5: Diagnostic     Bit 6: Tilt     Bit 7: Self-test
             0x2000..=0x2007 => {
+                let offset = (addr & 7) as u8;
                 let mut val = self.in0;
-                // Bit 1: 3 KHz clock — toggles based on total CPU cycles.
-                // MAME: `(m_maincpu->total_cycles() & 0x100) ? 1 : 0`
+                // Bit 1: 3 KHz clock
                 if self.clock & 0x100 != 0 {
                     val |= 0x02;
                 } else {
                     val &= !0x02;
                 }
-                // Bit 2: VG_HALT (active-LOW). 0 = DVG done/halted, 1 = DVG running.
+                // Bit 2: VG_HALT (0 = halted/done, 1 = running)
                 if !self.dvg.is_halted() {
                     val |= 0x04;
                 } else {
                     val &= !0x04;
                 }
-                val
+                // Mux: selected bit → D7
+                ((val >> offset) & 1) << 7
             }
 
-            // IN1: 0x2400–0x2407 (all active-HIGH)
+            // IN1: 0x2400–0x2407 — 74LS251 8:1 multiplexer.
+            // Same as IN0: A0–A2 select bit, result in D7.
             //   Bit 0: Left coin   Bit 1: Center coin   Bit 2: Right coin
             //   Bit 3: 1P Start    Bit 4: 2P Start
             //   Bit 5: Thrust      Bit 6: Rotate right   Bit 7: Rotate left
-            0x2400..=0x2407 => self.in1,
+            0x2400..=0x2407 => {
+                let offset = (addr & 7) as u8;
+                ((self.in1 >> offset) & 1) << 7
+            }
 
-            // DSW1: 0x2800–0x2803
-            0x2800..=0x2803 => self.dip_switches,
+            // DSW1: 0x2800–0x2803 — 74LS253 dual 4:1 multiplexer.
+            // A0–A1 select a pair of DIP switch bits: even bit → D0, odd bit → D7.
+            0x2800..=0x2803 => {
+                let offset = (addr & 3) as u8;
+                let bit0 = (self.dip_switches >> (offset * 2)) & 1;
+                let bit7 = (self.dip_switches >> (offset * 2 + 1)) & 1;
+                bit0 | (bit7 << 7)
+            }
 
             // Vector RAM: 0x4000–0x47FF
             0x4000..=0x47FF => self.vector_ram[(addr - 0x4000) as usize],

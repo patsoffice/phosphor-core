@@ -76,6 +76,7 @@ ROMs are matched by CRC32 checksum, so any MAME ROM naming convention works. All
 | **ROM Loader** | Complete | MAME ZIP support, CRC32-based ROM matching, multi-variant support |
 | **Joust System** | Complete | Williams board: CPU + video RAM + PIAs + blitter + CMOS + ROM |
 | **Machine Trait** | Complete | Frontend-agnostic interface: display, input, render, reset |
+| **Atari DVG** | Complete | Digital Vector Generator: 8 opcodes, 7497 BRM drawing, hardware clipping |
 | **CPU Validation** | Complete | M6809: 266K vectors (100%), M6800: 192K vectors (99.998%), M6502: 1.51M vectors (100%), Z80: 1.60M vectors (100%) |
 | **Test Suite** | Complete | 1401 tests across core, devices, and machine integration |
 
@@ -96,11 +97,13 @@ Contains all reusable components — zero external dependencies:
 
 Complete system implementations that wire core components together:
 
+- **AsteroidsSystem** — Atari vector arcade (M6502 + DVG + 1024×1024 vector display)
+- **DkongSystem** — Nintendo arcade (Z80 + I8035 + I8257 DMA + tile/sprite video)
 - **JoustSystem** — Williams arcade board (M6809 + 48KB video RAM + two PIAs + blitter + CMOS + 12KB ROM)
-- Simple6800System (M6800 + RAM/ROM)
-- Simple6809System (M6809 + RAM/ROM + PIA)
-- Simple6502System (M6502 + flat memory)
-- SimpleZ80System (Z80 + flat memory)
+- **MissileCommandSystem** — Atari raster arcade (M6502 + POKEY + bitmap video)
+- **PacmanSystem** — Namco arcade (Z80 + WSG + tile/sprite video)
+- **RobotronSystem** — Williams twin-stick arcade (M6809 + blitter + PIAs)
+- Simple6502System, Simple6800System, Simple6809System, SimpleZ80System (test harnesses)
 
 ### Frontend Crate (`phosphor-frontend`)
 
@@ -375,6 +378,7 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 - [ ] Namco 51xx input multiplexer (Dig Dug, Galaga)
 - [ ] Namco 54xx noise generator (Galaga)
 - [ ] Starfield generator (Galaga)
+- [x] Atari DVG vector generator (Asteroids)
 - [ ] Atari AVG vector generator (Tempest, Star Wars)
 - [ ] Math box (Tempest, Star Wars)
 - [ ] TMS5220 speech synthesizer (Star Wars)
@@ -390,8 +394,11 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 
 ### Phase 6: More Games
 
-- [ ] Additional Williams boards (Robotron, Defender)
-- [ ] Donkey Kong (Nintendo: Z80 + I8035 + tile/sprite video)
+- [x] Robotron 2084 (Williams: twin-stick M6809 + blitter)
+- [x] Missile Command (Atari: M6502 + POKEY + trackball)
+- [x] Pac-Man (Namco: Z80 + WSG + tile/sprite video)
+- [x] Donkey Kong (Nintendo: Z80 + I8035 + I8257 DMA + tile/sprite video)
+- [x] Asteroids (Atari: M6502 + DVG vector display)
 - [ ] Dig Dug (Namco: 3×Z80 + WSG + 06xx/51xx)
 - [ ] Galaga (Namco: 3×Z80 + WSG + 06xx/51xx/54xx + starfield)
 - [ ] Crystal Castles (Atari: M6502 + POKEY + bitmap video + trackball)

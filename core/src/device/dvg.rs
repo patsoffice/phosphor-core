@@ -383,16 +383,17 @@ impl Dvg {
         let x = self.xpos & 0x3FF;
         let y = self.ypos & 0x3FF;
 
-        if let Some(prev) = self.display_list.last() {
-            // If the previous point matches this point, skip duplicate.
-            if prev.x1 == x && prev.y1 == y {
-                return;
-            }
-        }
-
         // Connect from the previous endpoint (if any) to the current position.
         // Intensity 0 means a blank (invisible) move.
+        //
+        // Note: zero-length vectors (same start and end) with intensity > 0 are
+        // valid — they represent bright dots (e.g., shots in Asteroids). On real
+        // CRT hardware the beam dwells at the position with the beam on, producing
+        // a visible point. We only skip consecutive blank moves to the same spot.
         if let Some(prev) = self.display_list.last() {
+            if prev.x1 == x && prev.y1 == y && intensity == 0 {
+                return; // skip consecutive blank moves to same position
+            }
             self.display_list.push(VectorLine {
                 x0: prev.x1,
                 y0: prev.y1,

@@ -39,9 +39,9 @@ pub fn default_key_map(buttons: &[InputButton]) -> KeyMap {
             "P1 Right" => Some(Scancode::Right),
             "P1 Up" => Some(Scancode::Up),
             "P1 Down" => Some(Scancode::Down),
-            "P1 Flap" => Some(Scancode::Space),
-            "P1 Jump" => Some(Scancode::Space),
-            "P1 Fire" => Some(Scancode::LCtrl),
+            "P1 Flap" => Some(Scancode::LCtrl),
+            "P1 Jump" => Some(Scancode::LShift),
+            "P1 Fire" => Some(Scancode::Space),
             "P1 Start" => Some(Scancode::Num1),
 
             // Player 2
