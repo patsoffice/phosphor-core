@@ -1,5 +1,6 @@
 use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::machine::{InputButton, Machine};
+use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::m6809::M6809;
 use phosphor_core::cpu::state::M6809State;
@@ -891,6 +892,74 @@ impl Machine for GridleeSystem {
     fn frame_rate_hz(&self) -> f64 {
         CPU_CLOCK_HZ as f64 / CYCLES_PER_FRAME as f64
     }
+
+    fn machine_id(&self) -> &str {
+        "gridlee"
+    }
+
+    fn save_state(&self) -> Option<Vec<u8>> {
+        let mut w = StateWriter::new();
+        save_state::write_header(&mut w, self.machine_id());
+        self.cpu.save_state(&mut w);
+        w.write_bytes(&self.ram);
+        w.write_bytes(&self.video_ram);
+        w.write_bytes(&self.nvram);
+        w.write_u8(self.palette_bank);
+        w.write_bytes(&self.palette_bank_per_scanline);
+        w.write_u8(self.fire_buttons);
+        w.write_u8(self.coin_start);
+        w.write_bool(self.cocktail_flip);
+        w.write_bool(self.track_u_pressed);
+        w.write_bool(self.track_d_pressed);
+        w.write_bool(self.track_l_pressed);
+        w.write_bool(self.track_r_pressed);
+        w.write_bytes(&self.last_analog_input);
+        w.write_bytes(&self.last_analog_output);
+        w.write_bytes(&self.trackball_pos);
+        w.write_bytes(&self.sound_data);
+        w.write_u64_le(self.tone_step);
+        w.write_u64_le(self.tone_fraction);
+        w.write_u8(self.tone_volume);
+        w.write_u64_le(self.audio_phase);
+        w.write_bool(self.irq_pending);
+        w.write_bool(self.firq_pending);
+        w.write_u64_le(self.clock);
+        w.write_u64_le(self.cpu_cycles);
+        w.write_u8(self.watchdog_frame_count);
+        Some(w.into_vec())
+    }
+
+    fn load_state(&mut self, data: &[u8]) -> Result<(), SaveError> {
+        let mut r = save_state::read_header(data, self.machine_id())?;
+        self.cpu.load_state(&mut r)?;
+        r.read_bytes_into(&mut self.ram)?;
+        r.read_bytes_into(&mut self.video_ram)?;
+        r.read_bytes_into(&mut self.nvram)?;
+        self.palette_bank = r.read_u8()?;
+        r.read_bytes_into(&mut self.palette_bank_per_scanline)?;
+        self.fire_buttons = r.read_u8()?;
+        self.coin_start = r.read_u8()?;
+        self.cocktail_flip = r.read_bool()?;
+        self.track_u_pressed = r.read_bool()?;
+        self.track_d_pressed = r.read_bool()?;
+        self.track_l_pressed = r.read_bool()?;
+        self.track_r_pressed = r.read_bool()?;
+        r.read_bytes_into(&mut self.last_analog_input)?;
+        r.read_bytes_into(&mut self.last_analog_output)?;
+        r.read_bytes_into(&mut self.trackball_pos)?;
+        r.read_bytes_into(&mut self.sound_data)?;
+        self.tone_step = r.read_u64_le()?;
+        self.tone_fraction = r.read_u64_le()?;
+        self.tone_volume = r.read_u8()?;
+        self.audio_phase = r.read_u64_le()?;
+        self.irq_pending = r.read_bool()?;
+        self.firq_pending = r.read_bool()?;
+        self.clock = r.read_u64_le()?;
+        self.cpu_cycles = r.read_u64_le()?;
+        self.watchdog_frame_count = r.read_u8()?;
+        self.audio_buffer.clear();
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -912,6 +981,8 @@ inventory::submit! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use phosphor_core::core::machine::Machine;
+    use phosphor_core::cpu::CpuStateTrait;
 
     fn make_system() -> GridleeSystem {
         let mut sys = GridleeSystem::new();
@@ -1467,5 +1538,104 @@ mod tests {
             (59.0..60.0).contains(&hz),
             "Frame rate {hz} Hz not in expected range 59-60 Hz"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Save state
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn save_load_round_trip() {
+        let mut sys = make_system();
+
+        // Set known state
+        sys.ram[0x100] = 0xAA;
+        sys.video_ram[0x200] = 0xBB;
+        sys.nvram[50] = 0xCC;
+        sys.palette_bank = 0x1F;
+        sys.fire_buttons = 0xFE;
+        sys.coin_start = 0xCE;
+        sys.cocktail_flip = true;
+        sys.track_u_pressed = true;
+        sys.track_r_pressed = true;
+        sys.last_analog_input = [5, 10];
+        sys.last_analog_output = [15, 20];
+        sys.trackball_pos = [25, 30];
+        sys.sound_data[0x10] = 0x40;
+        sys.tone_step = 1234;
+        sys.tone_fraction = 5678;
+        sys.tone_volume = 0xAB;
+        sys.audio_phase = 9012;
+        sys.irq_pending = true;
+        sys.firq_pending = true;
+        sys.clock = 150_000;
+        sys.cpu_cycles = 120_000;
+        sys.watchdog_frame_count = 3;
+
+        // Save
+        let data = sys.save_state().expect("save_state should return Some");
+        let cpu_snap = sys.cpu.snapshot();
+
+        // Mutate everything
+        let mut sys2 = make_system();
+        sys2.ram[0x100] = 0xFF;
+        sys2.clock = 999;
+
+        // Load
+        sys2.load_state(&data).unwrap();
+
+        // Verify
+        assert_eq!(sys2.cpu.snapshot(), cpu_snap);
+        assert_eq!(sys2.ram[0x100], 0xAA);
+        assert_eq!(sys2.video_ram[0x200], 0xBB);
+        assert_eq!(sys2.nvram[50], 0xCC);
+        assert_eq!(sys2.palette_bank, 0x1F);
+        assert_eq!(sys2.fire_buttons, 0xFE);
+        assert_eq!(sys2.coin_start, 0xCE);
+        assert!(sys2.cocktail_flip);
+        assert!(sys2.track_u_pressed);
+        assert!(sys2.track_r_pressed);
+        assert_eq!(sys2.last_analog_input, [5, 10]);
+        assert_eq!(sys2.last_analog_output, [15, 20]);
+        assert_eq!(sys2.trackball_pos, [25, 30]);
+        assert_eq!(sys2.sound_data[0x10], 0x40);
+        assert_eq!(sys2.tone_step, 1234);
+        assert_eq!(sys2.tone_fraction, 5678);
+        assert_eq!(sys2.tone_volume, 0xAB);
+        assert_eq!(sys2.audio_phase, 9012);
+        assert!(sys2.irq_pending);
+        assert!(sys2.firq_pending);
+        assert_eq!(sys2.clock, 150_000);
+        assert_eq!(sys2.cpu_cycles, 120_000);
+        assert_eq!(sys2.watchdog_frame_count, 3);
+    }
+
+    #[test]
+    fn save_load_machine_id_validated() {
+        let sys = make_system();
+        let data = sys.save_state().unwrap();
+
+        let mut bad = data.clone();
+        let id_offset = 4 + 4 + 4;
+        bad[id_offset..id_offset + 7].copy_from_slice(b"xxxxxxx");
+
+        let mut sys2 = make_system();
+        let result = sys2.load_state(&bad);
+        assert!(result.is_err(), "should reject mismatched machine ID");
+    }
+
+    #[test]
+    fn save_does_not_include_rom() {
+        let mut sys = make_system();
+        sys.program_rom[0] = 0xDE;
+        sys.gfx_rom[0] = 0xAD;
+
+        let data = sys.save_state().unwrap();
+
+        let mut sys2 = make_system();
+        sys2.load_state(&data).unwrap();
+
+        assert_eq!(sys2.program_rom[0], 0x00);
+        assert_eq!(sys2.gfx_rom[0], 0x00);
     }
 }

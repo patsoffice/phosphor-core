@@ -1,5 +1,6 @@
 use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::machine::{InputButton, Machine};
+use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::m6502::M6502;
 use phosphor_core::cpu::state::M6502State;
@@ -780,6 +781,61 @@ impl Machine for MissileCommandSystem {
         // 1.25 MHz CPU clock / (256 scanlines * 80 cycles/scanline) = 61.035 Hz
         1_250_000.0 / CYCLES_PER_FRAME as f64
     }
+
+    fn machine_id(&self) -> &str {
+        "missile_command"
+    }
+
+    fn save_state(&self) -> Option<Vec<u8>> {
+        let mut w = StateWriter::new();
+        save_state::write_header(&mut w, self.machine_id());
+        self.cpu.save_state(&mut w);
+        self.pokey.save_state(&mut w);
+        w.write_bytes(&self.ram);
+        w.write_u8(self.in0);
+        w.write_u8(self.in1);
+        w.write_bool(self.ctrld);
+        w.write_bytes(&self.palette);
+        w.write_u8(self.trackball_x);
+        w.write_u8(self.trackball_y);
+        w.write_bool(self.trackball_l_pressed);
+        w.write_bool(self.trackball_r_pressed);
+        w.write_bool(self.trackball_u_pressed);
+        w.write_bool(self.trackball_d_pressed);
+        w.write_bool(self.irq_state);
+        w.write_u64_le(self.madsel_lastcycles);
+        w.write_u8(self.stall_cycles);
+        w.write_u64_le(self.clock);
+        w.write_u64_le(self.cpu_cycles);
+        w.write_u8(self.watchdog_frame_count);
+        Some(w.into_vec())
+    }
+
+    fn load_state(&mut self, data: &[u8]) -> Result<(), SaveError> {
+        let mut r = save_state::read_header(data, self.machine_id())?;
+        self.cpu.load_state(&mut r)?;
+        self.pokey.load_state(&mut r)?;
+        r.read_bytes_into(&mut self.ram)?;
+        self.in0 = r.read_u8()?;
+        self.in1 = r.read_u8()?;
+        self.ctrld = r.read_bool()?;
+        r.read_bytes_into(&mut self.palette)?;
+        self.trackball_x = r.read_u8()?;
+        self.trackball_y = r.read_u8()?;
+        self.trackball_l_pressed = r.read_bool()?;
+        self.trackball_r_pressed = r.read_bool()?;
+        self.trackball_u_pressed = r.read_bool()?;
+        self.trackball_d_pressed = r.read_bool()?;
+        self.irq_state = r.read_bool()?;
+        self.madsel_lastcycles = r.read_u64_le()?;
+        self.stall_cycles = r.read_u8()?;
+        self.clock = r.read_u64_le()?;
+        self.cpu_cycles = r.read_u64_le()?;
+        self.watchdog_frame_count = r.read_u8()?;
+        self.scanline_buffer_valid = false;
+        self.audio_buffer.clear();
+        Ok(())
+    }
 }
 
 /// Active-low bit manipulation: clear bit on press, set bit on release.
@@ -805,4 +861,91 @@ fn create_machine(
 
 inventory::submit! {
     MachineEntry::new("missile", "missile", create_machine)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use phosphor_core::core::machine::Machine;
+    use phosphor_core::cpu::CpuStateTrait;
+
+    #[test]
+    fn save_load_round_trip() {
+        let mut sys = MissileCommandSystem::new();
+
+        // Set known state
+        sys.ram[0x100] = 0xAA;
+        sys.in0 = 0xEE;
+        sys.in1 = 0x77;
+        sys.ctrld = true;
+        sys.palette[3] = 0x0E;
+        sys.trackball_x = 7;
+        sys.trackball_y = 12;
+        sys.trackball_l_pressed = true;
+        sys.trackball_d_pressed = true;
+        sys.irq_state = true;
+        sys.madsel_lastcycles = 42;
+        sys.stall_cycles = 1;
+        sys.clock = 100_000;
+        sys.cpu_cycles = 80_000;
+        sys.watchdog_frame_count = 5;
+
+        // Save
+        let data = sys.save_state().expect("save_state should return Some");
+        let cpu_snap = sys.cpu.snapshot();
+
+        // Mutate everything
+        let mut sys2 = MissileCommandSystem::new();
+        sys2.ram[0x100] = 0xFF;
+        sys2.clock = 999;
+
+        // Load
+        sys2.load_state(&data).unwrap();
+
+        // Verify
+        assert_eq!(sys2.cpu.snapshot(), cpu_snap);
+        assert_eq!(sys2.ram[0x100], 0xAA);
+        assert_eq!(sys2.in0, 0xEE);
+        assert_eq!(sys2.in1, 0x77);
+        assert!(sys2.ctrld);
+        assert_eq!(sys2.palette[3], 0x0E);
+        assert_eq!(sys2.trackball_x, 7);
+        assert_eq!(sys2.trackball_y, 12);
+        assert!(sys2.trackball_l_pressed);
+        assert!(sys2.trackball_d_pressed);
+        assert!(sys2.irq_state);
+        assert_eq!(sys2.madsel_lastcycles, 42);
+        assert_eq!(sys2.stall_cycles, 1);
+        assert_eq!(sys2.clock, 100_000);
+        assert_eq!(sys2.cpu_cycles, 80_000);
+        assert_eq!(sys2.watchdog_frame_count, 5);
+        assert!(!sys2.scanline_buffer_valid);
+    }
+
+    #[test]
+    fn save_load_machine_id_validated() {
+        let sys = MissileCommandSystem::new();
+        let data = sys.save_state().unwrap();
+
+        let mut bad = data.clone();
+        let id_offset = 4 + 4 + 4;
+        bad[id_offset..id_offset + 15].copy_from_slice(b"xxxxxxxxxxxxxxx");
+
+        let mut sys2 = MissileCommandSystem::new();
+        let result = sys2.load_state(&bad);
+        assert!(result.is_err(), "should reject mismatched machine ID");
+    }
+
+    #[test]
+    fn save_does_not_include_rom() {
+        let mut sys = MissileCommandSystem::new();
+        sys.rom[0] = 0xDE;
+
+        let data = sys.save_state().unwrap();
+
+        let mut sys2 = MissileCommandSystem::new();
+        sys2.load_state(&data).unwrap();
+
+        assert_eq!(sys2.rom[0], 0x00);
+    }
 }

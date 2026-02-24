@@ -1,5 +1,6 @@
 use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::machine::{InputButton, Machine};
+use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::Cpu;
 use phosphor_core::cpu::i8035::I8035;
@@ -973,6 +974,70 @@ impl Machine for DkongSystem {
     fn frame_rate_hz(&self) -> f64 {
         CPU_CLOCK_HZ as f64 / CYCLES_PER_FRAME as f64
     }
+
+    fn machine_id(&self) -> &str {
+        "dkong"
+    }
+
+    fn save_state(&self) -> Option<Vec<u8>> {
+        let mut w = StateWriter::new();
+        save_state::write_header(&mut w, self.machine_id());
+        self.cpu.save_state(&mut w);
+        self.sound_cpu.save_state(&mut w);
+        w.write_bytes(&self.ram);
+        w.write_bytes(&self.sprite_ram);
+        w.write_bytes(&self.video_ram);
+        w.write_u8(self.in0);
+        w.write_u8(self.in1);
+        w.write_u8(self.in2);
+        w.write_u8(self.sound_latch);
+        w.write_u8(self.sound_control_latch);
+        w.write_bool(self.flip_screen);
+        w.write_bool(self.sprite_bank);
+        w.write_bool(self.nmi_mask);
+        w.write_u8(self.palette_bank);
+        self.dma.save_state(&mut w);
+        self.dac.save_state(&mut w);
+        self.discrete.save_state(&mut w);
+        w.write_bool(self.sound_irq_pending);
+        w.write_i64_le(self.sample_accum);
+        w.write_u32_le(self.sample_count);
+        w.write_u64_le(self.sample_phase);
+        w.write_u64_le(self.clock);
+        w.write_u32_le(self.sound_phase_accum);
+        w.write_bool(self.vblank_nmi_pending);
+        Some(w.into_vec())
+    }
+
+    fn load_state(&mut self, data: &[u8]) -> Result<(), SaveError> {
+        let mut r = save_state::read_header(data, self.machine_id())?;
+        self.cpu.load_state(&mut r)?;
+        self.sound_cpu.load_state(&mut r)?;
+        r.read_bytes_into(&mut self.ram)?;
+        r.read_bytes_into(&mut self.sprite_ram)?;
+        r.read_bytes_into(&mut self.video_ram)?;
+        self.in0 = r.read_u8()?;
+        self.in1 = r.read_u8()?;
+        self.in2 = r.read_u8()?;
+        self.sound_latch = r.read_u8()?;
+        self.sound_control_latch = r.read_u8()?;
+        self.flip_screen = r.read_bool()?;
+        self.sprite_bank = r.read_bool()?;
+        self.nmi_mask = r.read_bool()?;
+        self.palette_bank = r.read_u8()?;
+        self.dma.load_state(&mut r)?;
+        self.dac.load_state(&mut r)?;
+        self.discrete.load_state(&mut r)?;
+        self.sound_irq_pending = r.read_bool()?;
+        self.sample_accum = r.read_i64_le()?;
+        self.sample_count = r.read_u32_le()?;
+        self.sample_phase = r.read_u64_le()?;
+        self.clock = r.read_u64_le()?;
+        self.sound_phase_accum = r.read_u32_le()?;
+        self.vblank_nmi_pending = r.read_bool()?;
+        self.audio_buffer.clear();
+        Ok(())
+    }
 }
 
 /// Active-high bit manipulation: set bit on press, clear on release.
@@ -1024,4 +1089,110 @@ fn create_machine(
 
 inventory::submit! {
     MachineEntry::new("dkong", "dkong", create_machine)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use phosphor_core::core::machine::Machine;
+    use phosphor_core::cpu::CpuStateTrait;
+
+    #[test]
+    fn save_load_round_trip() {
+        let mut sys = DkongSystem::new();
+
+        // Set known state
+        sys.ram[0x100] = 0xAA;
+        sys.sprite_ram[0x50] = 0xBB;
+        sys.video_ram[0x100] = 0xCC;
+        sys.in0 = 0x1F;
+        sys.in1 = 0x0F;
+        sys.in2 = 0x8C;
+        sys.sound_latch = 0x42;
+        sys.sound_control_latch = 0x33;
+        sys.flip_screen = true;
+        sys.sprite_bank = true;
+        sys.nmi_mask = true;
+        sys.palette_bank = 2;
+        sys.sound_irq_pending = true;
+        sys.sample_accum = 12345;
+        sys.sample_count = 67;
+        sys.sample_phase = 89012;
+        sys.clock = 200_000;
+        sys.sound_phase_accum = 150;
+        sys.vblank_nmi_pending = true;
+
+        // Save
+        let data = sys.save_state().expect("save_state should return Some");
+        let cpu_snap = sys.cpu.snapshot();
+        let sound_snap = sys.sound_cpu.snapshot();
+
+        // Mutate everything
+        let mut sys2 = DkongSystem::new();
+        sys2.ram[0x100] = 0xFF;
+        sys2.clock = 999;
+
+        // Load
+        sys2.load_state(&data).unwrap();
+
+        // Verify CPUs
+        assert_eq!(sys2.cpu.snapshot(), cpu_snap);
+        assert_eq!(sys2.sound_cpu.snapshot(), sound_snap);
+
+        // Verify memory
+        assert_eq!(sys2.ram[0x100], 0xAA);
+        assert_eq!(sys2.sprite_ram[0x50], 0xBB);
+        assert_eq!(sys2.video_ram[0x100], 0xCC);
+
+        // Verify I/O and control
+        assert_eq!(sys2.in0, 0x1F);
+        assert_eq!(sys2.in1, 0x0F);
+        assert_eq!(sys2.in2, 0x8C);
+        assert_eq!(sys2.sound_latch, 0x42);
+        assert_eq!(sys2.sound_control_latch, 0x33);
+        assert!(sys2.flip_screen);
+        assert!(sys2.sprite_bank);
+        assert!(sys2.nmi_mask);
+        assert_eq!(sys2.palette_bank, 2);
+        assert!(sys2.sound_irq_pending);
+        assert_eq!(sys2.sample_accum, 12345);
+        assert_eq!(sys2.sample_count, 67);
+        assert_eq!(sys2.sample_phase, 89012);
+        assert_eq!(sys2.clock, 200_000);
+        assert_eq!(sys2.sound_phase_accum, 150);
+        assert!(sys2.vblank_nmi_pending);
+    }
+
+    #[test]
+    fn save_load_machine_id_validated() {
+        let sys = DkongSystem::new();
+        let data = sys.save_state().unwrap();
+
+        let mut bad = data.clone();
+        let id_offset = 4 + 4 + 4;
+        bad[id_offset..id_offset + 5].copy_from_slice(b"xxxxx");
+
+        let mut sys2 = DkongSystem::new();
+        let result = sys2.load_state(&bad);
+        assert!(result.is_err(), "should reject mismatched machine ID");
+    }
+
+    #[test]
+    fn save_does_not_include_rom() {
+        let mut sys = DkongSystem::new();
+        sys.rom[0] = 0xDE;
+        sys.sound_rom[0] = 0xAD;
+        sys.tile_rom[0] = 0xBE;
+        sys.sprite_rom[0] = 0xEF;
+
+        let data = sys.save_state().unwrap();
+
+        let mut sys2 = DkongSystem::new();
+        sys2.load_state(&data).unwrap();
+
+        assert_eq!(sys2.rom[0], 0x00);
+        assert_eq!(sys2.sound_rom[0], 0x00);
+        assert_eq!(sys2.tile_rom[0], 0x00);
+        assert_eq!(sys2.sprite_rom[0], 0x00);
+    }
 }
