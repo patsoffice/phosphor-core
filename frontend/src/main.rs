@@ -38,8 +38,15 @@ fn main() {
 
     let save_path = save_path_for(machine_name, rom_path);
     let key_map = input::default_key_map(machine.input_map());
+    let controller_map = input::default_controller_map(machine.input_map());
     machine.reset();
-    emulator::run(machine.as_mut(), &key_map, scale, &save_path);
+    emulator::run(
+        machine.as_mut(),
+        &key_map,
+        &controller_map,
+        scale,
+        &save_path,
+    );
 
     // Save battery-backed NVRAM to disk on exit
     if let Some(data) = machine.save_nvram()

@@ -5,13 +5,68 @@ use phosphor_core::core::machine::Machine;
 use sdl2::event::Event;
 use sdl2::keyboard::Scancode;
 
-use crate::input::KeyMap;
+use crate::input::{self, ControllerMap, KeyMap};
 use crate::video::Video;
 
-pub fn run(machine: &mut dyn Machine, key_map: &KeyMap, scale: u32, save_path: &Path) {
+pub fn run(
+    machine: &mut dyn Machine,
+    key_map: &KeyMap,
+    controller_map: &ControllerMap,
+    scale: u32,
+    save_path: &Path,
+) {
+    // Enable controller backends before SDL init — needed for Xbox on macOS
+    sdl2::hint::set("SDL_JOYSTICK_HIDAPI", "1");
+    sdl2::hint::set("SDL_JOYSTICK_HIDAPI_XBOX", "1");
+    sdl2::hint::set("SDL_JOYSTICK_MFI", "1");
+
     let sdl_context = sdl2::init().expect("Failed to initialize SDL2");
     let sdl_video = sdl_context.video().expect("Failed to init SDL video");
     let sdl_audio = sdl_context.audio().expect("Failed to init SDL audio");
+
+    // Initialize game controller and joystick subsystems for joypad support
+    let controller_subsystem = sdl_context
+        .game_controller()
+        .expect("Failed to init SDL game controller");
+    let joystick_subsystem = sdl_context.joystick().expect("Failed to init SDL joystick");
+
+    // Load community controller database (gamecontrollerdb.txt) if present.
+    // Download from: https://github.com/mdqinc/SDL_GameControllerDB
+    let db_paths: Vec<std::path::PathBuf> = {
+        let mut paths = vec![std::path::PathBuf::from("gamecontrollerdb.txt")];
+        if let Some(home) = std::env::var_os("HOME") {
+            paths.push(std::path::Path::new(&home).join(".config/phosphor/gamecontrollerdb.txt"));
+        }
+        paths
+    };
+    for path in &db_paths {
+        if path.exists() {
+            match controller_subsystem.load_mappings(path) {
+                Ok(n) => eprintln!("Loaded {n} controller mappings from {}", path.display()),
+                Err(e) => eprintln!("Failed to load {}: {e}", path.display()),
+            }
+        }
+    }
+    let mut controllers: Vec<sdl2::controller::GameController> = Vec::new();
+    let num_joysticks = joystick_subsystem.num_joysticks().unwrap_or(0);
+    if num_joysticks == 0 {
+        eprintln!("No joysticks detected");
+    }
+    for i in 0..num_joysticks {
+        let name = joystick_subsystem
+            .name_for_index(i)
+            .unwrap_or_else(|_| "unknown".into());
+        if controller_subsystem.is_game_controller(i) {
+            if let Ok(gc) = controller_subsystem.open(i) {
+                eprintln!("Controller {i}: {}", gc.name());
+                controllers.push(gc);
+            } else {
+                eprintln!("Controller {i}: {name} (failed to open)");
+            }
+        } else {
+            eprintln!("Joystick {i}: {name} (not in controller database)");
+        }
+    }
 
     let (width, height) = machine.display_size();
     let mut video = Video::new(&sdl_video, "Phosphor Emulator", width, height, scale);
@@ -34,6 +89,15 @@ pub fn run(machine: &mut dyn Machine, key_map: &KeyMap, scale: u32, save_path: &
     let mut fps_text = String::new();
     let mut fps_smoothed: f64 = machine.frame_rate_hz();
     let mut fps_last_instant = Instant::now();
+
+    // Mouse grab for trackball games (F11 to toggle)
+    let has_analog = !machine.analog_map().is_empty();
+    let analog_axes: Vec<u8> = machine.analog_map().iter().map(|a| a.id).collect();
+    let mut mouse_grabbed = false;
+    if has_analog {
+        sdl_context.mouse().set_relative_mouse_mode(true);
+        mouse_grabbed = true;
+    }
 
     'main: loop {
         // Poll all pending SDL events, translate to machine input
@@ -75,6 +139,16 @@ pub fn run(machine: &mut dyn Machine, key_map: &KeyMap, scale: u32, save_path: &
                     fps_last_instant = Instant::now();
                 }
 
+                // Mouse grab toggle (F11)
+                Event::KeyDown {
+                    scancode: Some(Scancode::F11),
+                    repeat: false,
+                    ..
+                } => {
+                    mouse_grabbed = !mouse_grabbed;
+                    sdl_context.mouse().set_relative_mouse_mode(mouse_grabbed);
+                }
+
                 // Quick Save (F6)
                 Event::KeyDown {
                     scancode: Some(Scancode::F6),
@@ -104,6 +178,7 @@ pub fn run(machine: &mut dyn Machine, key_map: &KeyMap, scale: u32, save_path: &
                     Err(e) => eprintln!("No save file found: {e}"),
                 },
 
+                // Keyboard input
                 Event::KeyDown {
                     scancode: Some(sc),
                     repeat: false,
@@ -119,6 +194,66 @@ pub fn run(machine: &mut dyn Machine, key_map: &KeyMap, scale: u32, save_path: &
                 } => {
                     if let Some(button_id) = key_map.get(sc) {
                         machine.set_input(button_id, false);
+                    }
+                }
+
+                // Game controller button press/release
+                Event::ControllerButtonDown { button, .. } => {
+                    if let Some(button_id) = controller_map.get_button(button) {
+                        machine.set_input(button_id, true);
+                    }
+                }
+
+                Event::ControllerButtonUp { button, .. } => {
+                    if let Some(button_id) = controller_map.get_button(button) {
+                        machine.set_input(button_id, false);
+                    }
+                }
+
+                // Game controller analog stick → digital directions
+                Event::ControllerAxisMotion { axis, value, .. } => {
+                    for (button_id, pressed) in controller_map.axis_to_digital(axis, value) {
+                        machine.set_input(button_id, pressed);
+                    }
+                }
+
+                // Controller hotplug
+                Event::ControllerDeviceAdded { which, .. } => {
+                    if let Ok(gc) = controller_subsystem.open(which) {
+                        eprintln!("Controller connected: {}", gc.name());
+                        controllers.push(gc);
+                    }
+                }
+
+                Event::ControllerDeviceRemoved { which, .. } => {
+                    controllers.retain(|c| c.instance_id() != which);
+                    eprintln!("Controller disconnected");
+                }
+
+                // Mouse motion → analog axes (trackball games)
+                Event::MouseMotion { xrel, yrel, .. } => {
+                    if mouse_grabbed && analog_axes.len() >= 2 {
+                        machine.set_analog(analog_axes[0], xrel);
+                        machine.set_analog(analog_axes[1], yrel);
+                    }
+                }
+
+                // Mouse buttons → fire (trackball games)
+                Event::MouseButtonDown { mouse_btn, .. } => {
+                    if mouse_grabbed
+                        && let Some(id) =
+                            input::mouse_button_to_input(machine.input_map(), mouse_btn)
+                    {
+                        machine.set_input(id, true);
+                    }
+                }
+
+                Event::MouseButtonUp { mouse_btn, .. } => {
+                    if mouse_grabbed
+                        && let Some(id) =
+                            input::mouse_button_to_input(machine.input_map(), mouse_btn)
+                    {
+                        machine.set_input(id, false);
                     }
                 }
 

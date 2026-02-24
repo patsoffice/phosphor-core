@@ -75,6 +75,10 @@ impl StateWriter {
         self.data.extend_from_slice(&v.to_le_bytes());
     }
 
+    pub fn write_i32_le(&mut self, v: i32) {
+        self.data.extend_from_slice(&v.to_le_bytes());
+    }
+
     pub fn write_i64_le(&mut self, v: i64) {
         self.data.extend_from_slice(&v.to_le_bytes());
     }
@@ -151,6 +155,11 @@ impl<'a> StateReader<'a> {
         Ok(u64::from_le_bytes([
             b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
         ]))
+    }
+
+    pub fn read_i32_le(&mut self) -> Result<i32, SaveError> {
+        let b = self.take(4)?;
+        Ok(i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     }
 
     pub fn read_i64_le(&mut self) -> Result<i64, SaveError> {

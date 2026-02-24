@@ -389,7 +389,7 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 ### Phase 5: Frontend & Developer Tools
 
 - [x] SDL2 frontend (renders any Machine impl, keyboard input, VSync timing)
-- [ ] Joypad, mouse and trackball input
+- [x] Joypad, mouse and trackball input
 - [ ] Debugger with breakpoints and step execution
 - [ ] Memory viewer/editor
 - [ ] Disassembly viewer

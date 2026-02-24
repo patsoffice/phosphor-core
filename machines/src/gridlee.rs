@@ -1,5 +1,5 @@
 use phosphor_core::core::bus::InterruptState;
-use phosphor_core::core::machine::{InputButton, Machine};
+use phosphor_core::core::machine::{AnalogInput, InputButton, Machine};
 use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::m6809::M6809;
@@ -160,6 +160,23 @@ const GRIDLEE_INPUT_MAP: &[InputButton] = &[
     InputButton {
         id: INPUT_START2,
         name: "P2 Start",
+    },
+];
+
+// ---------------------------------------------------------------------------
+// Analog axis IDs (trackball)
+// ---------------------------------------------------------------------------
+const ANALOG_TRACKBALL_X: u8 = 0;
+const ANALOG_TRACKBALL_Y: u8 = 1;
+
+const GRIDLEE_ANALOG_MAP: &[AnalogInput] = &[
+    AnalogInput {
+        id: ANALOG_TRACKBALL_X,
+        name: "Trackball X",
+    },
+    AnalogInput {
+        id: ANALOG_TRACKBALL_Y,
+        name: "Trackball Y",
     },
 ];
 
@@ -858,6 +875,26 @@ impl Machine for GridleeSystem {
 
     fn input_map(&self) -> &[InputButton] {
         GRIDLEE_INPUT_MAP
+    }
+
+    fn set_analog(&mut self, axis: u8, delta: i32) {
+        // Scale down mouse motion for comfortable sensitivity (÷3, clamp ±6)
+        let scaled = (delta / 3).clamp(-6, 6) as i8;
+        match axis {
+            // X axis is reversed: positive mouse motion (right) decreases counter
+            ANALOG_TRACKBALL_X => {
+                self.trackball_pos[1] = self.trackball_pos[1].wrapping_sub(scaled as u8);
+            }
+            // Y axis: positive mouse motion (down) increases counter
+            ANALOG_TRACKBALL_Y => {
+                self.trackball_pos[0] = self.trackball_pos[0].wrapping_add(scaled as u8);
+            }
+            _ => {}
+        }
+    }
+
+    fn analog_map(&self) -> &[AnalogInput] {
+        GRIDLEE_ANALOG_MAP
     }
 
     fn reset(&mut self) {
@@ -1637,5 +1674,36 @@ mod tests {
 
         assert_eq!(sys2.program_rom[0], 0x00);
         assert_eq!(sys2.gfx_rom[0], 0x00);
+    }
+
+    #[test]
+    fn set_analog_y_updates_trackball() {
+        let mut sys = make_system();
+        sys.set_analog(ANALOG_TRACKBALL_Y, 6); // 6 / 3 = 2
+        assert_eq!(sys.trackball_pos[0], 2);
+    }
+
+    #[test]
+    fn set_analog_x_reversed() {
+        let mut sys = make_system();
+        sys.set_analog(ANALOG_TRACKBALL_X, 9); // 9 / 3 = 3
+        // X axis is reversed: positive mouse motion (right) subtracts
+        assert_eq!(sys.trackball_pos[1], 253); // 0u8.wrapping_sub(3)
+    }
+
+    #[test]
+    fn set_analog_negative_x() {
+        let mut sys = make_system();
+        sys.set_analog(ANALOG_TRACKBALL_X, -9); // -9 / 3 = -3
+        // Negative delta (left) → adds 3 due to reversal
+        assert_eq!(sys.trackball_pos[1], 3); // 0u8.wrapping_sub(-3 as u8) = wrapping_sub(253) = 3
+    }
+
+    #[test]
+    fn analog_map_returns_two_axes() {
+        let sys = make_system();
+        assert_eq!(sys.analog_map().len(), 2);
+        assert_eq!(sys.analog_map()[0].name, "Trackball X");
+        assert_eq!(sys.analog_map()[1].name, "Trackball Y");
     }
 }

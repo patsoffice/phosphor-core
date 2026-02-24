@@ -6,6 +6,14 @@ pub struct InputButton {
     pub name: &'static str,
 }
 
+/// Describes an analog axis that a machine accepts (trackball, spinner, etc.).
+pub struct AnalogInput {
+    /// Machine-defined axis identifier, passed to `set_analog()`.
+    pub id: u8,
+    /// Human-readable name for display/configuration (e.g., "Trackball X").
+    pub name: &'static str,
+}
+
 use super::save_state::SaveError;
 
 /// Machine-agnostic interface for emulated systems.
@@ -41,6 +49,18 @@ pub trait Machine {
     /// Get the list of input buttons this machine accepts.
     /// The frontend uses this to build key mappings and display configuration UI.
     fn input_map(&self) -> &[InputButton];
+
+    /// Handle an analog input event. `axis` is a machine-defined ID from `analog_map()`.
+    /// `delta` is a signed motion value (e.g., mouse dx/dy in pixels).
+    ///
+    /// Called per-event as motion occurs. The machine accumulates deltas internally.
+    fn set_analog(&mut self, _axis: u8, _delta: i32) {}
+
+    /// Get the list of analog axes this machine accepts.
+    /// The frontend uses this to determine whether to capture mouse/trackball motion.
+    fn analog_map(&self) -> &[AnalogInput] {
+        &[]
+    }
 
     /// Reset the machine to its initial power-on state.
     fn reset(&mut self);

@@ -1,5 +1,5 @@
 use phosphor_core::core::bus::InterruptState;
-use phosphor_core::core::machine::{InputButton, Machine};
+use phosphor_core::core::machine::{AnalogInput, InputButton, Machine};
 use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::m6502::M6502;
@@ -116,6 +116,23 @@ const MISSILE_INPUT_MAP: &[InputButton] = &[
 ];
 
 // ---------------------------------------------------------------------------
+// Analog axis IDs (trackball)
+// ---------------------------------------------------------------------------
+pub const ANALOG_TRACKBALL_X: u8 = 0;
+pub const ANALOG_TRACKBALL_Y: u8 = 1;
+
+const MISSILE_ANALOG_MAP: &[AnalogInput] = &[
+    AnalogInput {
+        id: ANALOG_TRACKBALL_X,
+        name: "Trackball X",
+    },
+    AnalogInput {
+        id: ANALOG_TRACKBALL_Y,
+        name: "Trackball Y",
+    },
+];
+
+// ---------------------------------------------------------------------------
 // Timing
 // ---------------------------------------------------------------------------
 // Master clock: 10 MHz XTAL
@@ -183,6 +200,10 @@ pub struct MissileCommandSystem {
     trackball_r_pressed: bool,
     trackball_u_pressed: bool,
     trackball_d_pressed: bool,
+    // Mouse accumulator: set_analog() adds here; tick() drains ±1 per tick
+    // so the 4-bit counters never skip values and the game reads correct deltas.
+    mouse_accum_x: i32,
+    mouse_accum_y: i32,
 
     // IRQ state — based on /32V signal (inverted bit 5 of V counter)
     // Asserted at scanlines where 32V=0 (scanlines 0-31, 64-95, 128-159, 192-223)
@@ -225,6 +246,8 @@ impl MissileCommandSystem {
             trackball_r_pressed: false,
             trackball_u_pressed: false,
             trackball_d_pressed: false,
+            mouse_accum_x: 0,
+            mouse_accum_y: 0,
             irq_state: false,
             madsel_lastcycles: 0,
             stall_cycles: 0,
@@ -244,7 +267,10 @@ impl MissileCommandSystem {
     }
 
     pub fn tick(&mut self) {
-        // Trackball movement simulation: increment counters while direction keys are held
+        // Trackball movement: increment 4-bit counters from keyboard or mouse accumulator.
+        // Keyboard: ±1 per tick while held. Mouse: drain ±1 per tick from accumulator.
+        // Rate: every 1000 cycles ≈ 20 ticks/frame — enough for smooth crosshair tracking
+        // while keeping deltas small enough for the 4-bit counter.
         if self.clock.is_multiple_of(1000) {
             if self.trackball_l_pressed {
                 self.trackball_x = self.trackball_x.wrapping_sub(1) & 0x0F;
@@ -257,6 +283,21 @@ impl MissileCommandSystem {
             }
             if self.trackball_d_pressed {
                 self.trackball_y = self.trackball_y.wrapping_add(1) & 0x0F;
+            }
+            // Drain mouse accumulator ±1 per tick
+            if self.mouse_accum_x > 0 {
+                self.trackball_x = self.trackball_x.wrapping_add(1) & 0x0F;
+                self.mouse_accum_x -= 1;
+            } else if self.mouse_accum_x < 0 {
+                self.trackball_x = self.trackball_x.wrapping_sub(1) & 0x0F;
+                self.mouse_accum_x += 1;
+            }
+            if self.mouse_accum_y > 0 {
+                self.trackball_y = self.trackball_y.wrapping_add(1) & 0x0F;
+                self.mouse_accum_y -= 1;
+            } else if self.mouse_accum_y < 0 {
+                self.trackball_y = self.trackball_y.wrapping_sub(1) & 0x0F;
+                self.mouse_accum_y += 1;
             }
         }
 
@@ -756,6 +797,20 @@ impl Machine for MissileCommandSystem {
         MISSILE_INPUT_MAP
     }
 
+    fn set_analog(&mut self, axis: u8, delta: i32) {
+        match axis {
+            ANALOG_TRACKBALL_X => self.mouse_accum_x += delta,
+            // Y axis inverted: mouse down (positive delta) moves crosshair down on screen,
+            // but the trackball counter must decrease for downward motion.
+            ANALOG_TRACKBALL_Y => self.mouse_accum_y -= delta,
+            _ => {}
+        }
+    }
+
+    fn analog_map(&self) -> &[AnalogInput] {
+        MISSILE_ANALOG_MAP
+    }
+
     fn reset(&mut self) {
         self.irq_state = false;
         self.madsel_lastcycles = 0;
@@ -802,6 +857,8 @@ impl Machine for MissileCommandSystem {
         w.write_bool(self.trackball_r_pressed);
         w.write_bool(self.trackball_u_pressed);
         w.write_bool(self.trackball_d_pressed);
+        w.write_i32_le(self.mouse_accum_x);
+        w.write_i32_le(self.mouse_accum_y);
         w.write_bool(self.irq_state);
         w.write_u64_le(self.madsel_lastcycles);
         w.write_u8(self.stall_cycles);
@@ -826,6 +883,8 @@ impl Machine for MissileCommandSystem {
         self.trackball_r_pressed = r.read_bool()?;
         self.trackball_u_pressed = r.read_bool()?;
         self.trackball_d_pressed = r.read_bool()?;
+        self.mouse_accum_x = r.read_i32_le()?;
+        self.mouse_accum_y = r.read_i32_le()?;
         self.irq_state = r.read_bool()?;
         self.madsel_lastcycles = r.read_u64_le()?;
         self.stall_cycles = r.read_u8()?;
@@ -883,6 +942,8 @@ mod tests {
         sys.trackball_y = 12;
         sys.trackball_l_pressed = true;
         sys.trackball_d_pressed = true;
+        sys.mouse_accum_x = -7;
+        sys.mouse_accum_y = 12;
         sys.irq_state = true;
         sys.madsel_lastcycles = 42;
         sys.stall_cycles = 1;
@@ -913,6 +974,8 @@ mod tests {
         assert_eq!(sys2.trackball_y, 12);
         assert!(sys2.trackball_l_pressed);
         assert!(sys2.trackball_d_pressed);
+        assert_eq!(sys2.mouse_accum_x, -7);
+        assert_eq!(sys2.mouse_accum_y, 12);
         assert!(sys2.irq_state);
         assert_eq!(sys2.madsel_lastcycles, 42);
         assert_eq!(sys2.stall_cycles, 1);
@@ -947,5 +1010,69 @@ mod tests {
         sys2.load_state(&data).unwrap();
 
         assert_eq!(sys2.rom[0], 0x00);
+    }
+
+    #[test]
+    fn set_analog_accumulates_x() {
+        let mut sys = MissileCommandSystem::new();
+        sys.set_analog(ANALOG_TRACKBALL_X, 3);
+        assert_eq!(sys.mouse_accum_x, 3);
+        // Counter unchanged until tick() drains
+        assert_eq!(sys.trackball_x, 0);
+    }
+
+    #[test]
+    fn set_analog_accumulates_y_inverted() {
+        let mut sys = MissileCommandSystem::new();
+        sys.set_analog(ANALOG_TRACKBALL_Y, -5);
+        // Y axis is inverted: negative mouse delta → positive accumulator
+        assert_eq!(sys.mouse_accum_y, 5);
+    }
+
+    #[test]
+    fn tick_drains_mouse_accum_positive() {
+        let mut sys = MissileCommandSystem::new();
+        sys.mouse_accum_x = 3;
+        // Run enough ticks to drain (tick fires every 1000 cycles)
+        for _ in 0..3000 {
+            sys.tick();
+            sys.clock += 1;
+        }
+        assert_eq!(sys.trackball_x, 3);
+        assert_eq!(sys.mouse_accum_x, 0);
+    }
+
+    #[test]
+    fn tick_drains_mouse_accum_negative() {
+        let mut sys = MissileCommandSystem::new();
+        sys.trackball_y = 5;
+        sys.mouse_accum_y = -3;
+        for _ in 0..3000 {
+            sys.tick();
+            sys.clock += 1;
+        }
+        assert_eq!(sys.trackball_y, 2);
+        assert_eq!(sys.mouse_accum_y, 0);
+    }
+
+    #[test]
+    fn tick_drains_mouse_accum_wraps_4_bit() {
+        let mut sys = MissileCommandSystem::new();
+        sys.trackball_x = 14;
+        sys.mouse_accum_x = 5;
+        for _ in 0..5000 {
+            sys.tick();
+            sys.clock += 1;
+        }
+        assert_eq!(sys.trackball_x, 3); // (14 + 5) & 0x0F = 3
+        assert_eq!(sys.mouse_accum_x, 0);
+    }
+
+    #[test]
+    fn analog_map_returns_two_axes() {
+        let sys = MissileCommandSystem::new();
+        assert_eq!(sys.analog_map().len(), 2);
+        assert_eq!(sys.analog_map()[0].name, "Trackball X");
+        assert_eq!(sys.analog_map()[1].name, "Trackball Y");
     }
 }
