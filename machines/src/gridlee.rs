@@ -248,8 +248,6 @@ pub struct GridleeSystem {
     tone_fraction: u64,   // 24-bit phase accumulator
     tone_volume: u8,      // 8-bit volume
     audio_buffer: Vec<i16>,
-    audio_accum: i64, // Accumulator for Bresenham downsampling
-    audio_count: u32, // Sample count for averaging
     audio_phase: u64, // Bresenham phase for 1.25 MHz → 44.1 kHz
 
     // Interrupt state
@@ -259,7 +257,7 @@ pub struct GridleeSystem {
     // Timing
     clock: u64,
     cpu_cycles: u64,
-    watchdog_counter: u32,
+    watchdog_frame_count: u8,
 
     // Framebuffer (256 x 240 x RGB24)
     scanline_buffer: Vec<u8>,
@@ -294,14 +292,12 @@ impl GridleeSystem {
             tone_fraction: 0,
             tone_volume: 0,
             audio_buffer: Vec::with_capacity(1024),
-            audio_accum: 0,
-            audio_count: 0,
             audio_phase: 0,
             irq_pending: false,
             firq_pending: false,
             clock: 0,
             cpu_cycles: 0,
-            watchdog_counter: 0,
+            watchdog_frame_count: 0,
             scanline_buffer: vec![0u8; SCREEN_WIDTH as usize * SCREEN_HEIGHT as usize * 3],
         }
     }
@@ -363,30 +359,22 @@ impl GridleeSystem {
             self.firq_pending = false;
         }
 
-        // Sound: accumulate tone samples for Bresenham downsampling
-        let sample = if self.tone_volume > 0 && self.tone_step > 0 {
-            self.tone_fraction = self.tone_fraction.wrapping_add(self.tone_step);
-            if self.tone_fraction & 0x0800000 != 0 {
-                self.tone_volume as i16 * 128
-            } else {
-                0
-            }
-        } else {
-            0
-        };
-        self.audio_accum += sample as i64;
-        self.audio_count += 1;
+        // Sound: Bresenham downsampling from 1.25 MHz → 44.1 kHz.
+        // Tone phase accumulator advances once per output sample (matching MAME).
         self.audio_phase += 44100;
         if self.audio_phase >= CPU_CLOCK_HZ {
             self.audio_phase -= CPU_CLOCK_HZ;
-            let avg = if self.audio_count > 0 {
-                (self.audio_accum / self.audio_count as i64) as i16
+            let sample = if self.tone_volume > 0 && self.tone_step > 0 {
+                self.tone_fraction = self.tone_fraction.wrapping_add(self.tone_step);
+                if self.tone_fraction & 0x0800000 != 0 {
+                    self.tone_volume as i16 * 128
+                } else {
+                    0
+                }
             } else {
                 0
             };
-            self.audio_buffer.push(avg);
-            self.audio_accum = 0;
-            self.audio_count = 0;
+            self.audio_buffer.push(sample);
         }
 
         // CPU execution
@@ -398,7 +386,6 @@ impl GridleeSystem {
         self.cpu_cycles += 1;
 
         self.clock += 1;
-        self.watchdog_counter += 1;
     }
 
     /// Read trackball axis (0=Y, 1=X). Implements the MAME analog_port_r logic:
@@ -529,21 +516,22 @@ impl GridleeSystem {
         // Sprites: 32 sprites from RAM at 0x0000 (4 bytes each).
         // Format: [image_num, unused, y_pos, x_pos]
         // Each sprite is 8 wide x 16 tall, 64 bytes in GFX ROM.
+        // Y positions wrap at 256 (matching MAME's `(ypos + 1) & 255`).
         for i in 0..32 {
             let base = i * 4;
             let image_num = self.ram[base] as usize;
-            let sprite_y = self.ram[base + 2] as i32 + 17 + VBEND as i32;
+            // Start Y = sprite_ram[2] + 17 + VBEND, wrapped to 8 bits
+            let sprite_y_start = (self.ram[base + 2] as u16 + 17 + VBEND as u16) as u8;
             let sprite_x = self.ram[base + 3] as usize;
 
-            // Check if this scanline intersects the sprite
-            let sy = scanline as i32;
-            if sy < sprite_y || sy >= sprite_y + 16 {
+            // Which row of the sprite falls on this scanline? (wrapping subtraction)
+            let row_in_sprite = (scanline as u8).wrapping_sub(sprite_y_start);
+            if row_in_sprite >= 16 {
                 continue;
             }
 
-            let row_in_sprite = (sy - sprite_y) as usize;
             // 4 bytes per row in GFX ROM, 64 bytes per image
-            let gfx_offset = image_num * 64 + row_in_sprite * 4;
+            let gfx_offset = image_num * 64 + row_in_sprite as usize * 4;
 
             for x_byte in 0..4 {
                 let gfx_idx = gfx_offset + x_byte;
@@ -707,7 +695,7 @@ impl Bus for GridleeSystem {
             0x9200 => self.palette_bank = data & 0x3F,
 
             // Watchdog reset
-            0x9380 => self.watchdog_counter = 0,
+            0x9380 => self.watchdog_frame_count = 0,
 
             // Sound registers (base 0x9828)
             0x9828..=0x993F => self.write_sound(addr - 0x9828, data),
@@ -746,9 +734,9 @@ impl Machine for GridleeSystem {
             self.tick();
         }
 
-        // Watchdog: reset if not serviced within ~8 frames
-        self.watchdog_counter += 1;
-        if self.watchdog_counter >= 8 * CYCLES_PER_FRAME as u32 {
+        // Watchdog: reset if not serviced within 8 frames
+        self.watchdog_frame_count += 1;
+        if self.watchdog_frame_count >= 8 {
             self.reset();
         }
     }
@@ -813,15 +801,13 @@ impl Machine for GridleeSystem {
     fn reset(&mut self) {
         self.irq_pending = false;
         self.firq_pending = false;
-        self.watchdog_counter = 0;
+        self.watchdog_frame_count = 0;
         self.clock = 0;
         self.cpu_cycles = 0;
         self.tone_step = 0;
         self.tone_fraction = 0;
         self.tone_volume = 0;
         self.audio_buffer.clear();
-        self.audio_accum = 0;
-        self.audio_count = 0;
         self.audio_phase = 0;
         self.scanline_buffer.fill(0);
 
@@ -860,4 +846,348 @@ fn create_machine(
 
 inventory::submit! {
     MachineEntry::new("gridlee", "gridlee", create_machine)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_system() -> GridleeSystem {
+        let mut sys = GridleeSystem::new();
+        sys.init_lfsr();
+        sys
+    }
+
+    // -----------------------------------------------------------------------
+    // Palette
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn palette_4bit_to_8bit_expansion() {
+        let mut sys = GridleeSystem::new();
+        // Build a minimal PROM: R=0xF, G=0x0, B=0x8 at entry 0
+        let mut prom = vec![0u8; 0x1800];
+        prom[0] = 0x0F; // R = 15
+        prom[0x0800] = 0x00; // G = 0
+        prom[0x1000] = 0x08; // B = 8
+        sys.build_palette(&prom);
+        // 0xF * 17 = 255, 0x0 * 17 = 0, 0x8 * 17 = 136
+        assert_eq!(sys.palette_rgb[0], (255, 0, 136));
+    }
+
+    #[test]
+    fn palette_bank_addressing() {
+        let mut sys = GridleeSystem::new();
+        let mut prom = vec![0u8; 0x1800];
+        // Set entry at bank 2, index 5 → address (2 << 5) | 5 = 69
+        prom[69] = 0x0A; // R
+        prom[0x0800 + 69] = 0x05; // G
+        prom[0x1000 + 69] = 0x03; // B
+        sys.build_palette(&prom);
+        let color = sys.resolve_color(2, 5);
+        assert_eq!(color, (0x0A * 17, 0x05 * 17, 0x03 * 17));
+    }
+
+    // -----------------------------------------------------------------------
+    // LFSR random number generator
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn lfsr_table_non_zero() {
+        let sys = make_system();
+        assert_eq!(sys.rand17.len(), POLY17_SIZE + 1);
+        // Table should have non-zero entries (not all zeros)
+        let nonzero_count = sys.rand17.iter().filter(|&&b| b != 0).count();
+        assert!(nonzero_count > POLY17_SIZE / 2, "LFSR table mostly zero");
+    }
+
+    #[test]
+    fn rng_returns_different_values_at_different_cycles() {
+        let mut sys = make_system();
+        sys.cpu_cycles = 100;
+        let v1 = sys.read_rng();
+        sys.cpu_cycles = 200;
+        let v2 = sys.read_rng();
+        sys.cpu_cycles = 300;
+        let v3 = sys.read_rng();
+        // At least two of three should differ
+        assert!(
+            v1 != v2 || v2 != v3,
+            "RNG returned same value at cycles 100, 200, 300"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Memory map
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ram_read_write_roundtrip() {
+        let mut sys = make_system();
+        sys.write(BusMaster::Cpu(0), 0x0042, 0xAB);
+        assert_eq!(sys.read(BusMaster::Cpu(0), 0x0042), 0xAB);
+    }
+
+    #[test]
+    fn vram_read_write_roundtrip() {
+        let mut sys = make_system();
+        sys.write(BusMaster::Cpu(0), 0x0800, 0xCD);
+        assert_eq!(sys.read(BusMaster::Cpu(0), 0x0800), 0xCD);
+    }
+
+    #[test]
+    fn nvram_read_write_roundtrip() {
+        let mut sys = make_system();
+        sys.write(BusMaster::Cpu(0), 0x9C42, 0x77);
+        assert_eq!(sys.read(BusMaster::Cpu(0), 0x9C42), 0x77);
+    }
+
+    #[test]
+    fn rom_write_ignored() {
+        let mut sys = make_system();
+        sys.program_rom[0] = 0xAA;
+        sys.write(BusMaster::Cpu(0), 0xA000, 0x55);
+        assert_eq!(sys.read(BusMaster::Cpu(0), 0xA000), 0xAA);
+    }
+
+    #[test]
+    fn unmapped_reads_return_ff() {
+        let mut sys = make_system();
+        assert_eq!(sys.read(BusMaster::Cpu(0), 0x8000), 0xFF);
+    }
+
+    // -----------------------------------------------------------------------
+    // VBLANK
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn vblank_active_during_blanking() {
+        let mut sys = make_system();
+        // Scanline 0 (< VBEND=16): in VBLANK
+        sys.clock = 0;
+        let status = sys.read(BusMaster::Cpu(0), 0x9700);
+        assert_ne!(status & 0x80, 0, "VBLANK should be active at scanline 0");
+    }
+
+    #[test]
+    fn vblank_inactive_during_active_display() {
+        let mut sys = make_system();
+        // Scanline 128 (within VBEND..VBSTART): active display
+        sys.clock = 128 * CYCLES_PER_SCANLINE;
+        let status = sys.read(BusMaster::Cpu(0), 0x9700);
+        assert_eq!(
+            status & 0x80,
+            0,
+            "VBLANK should be inactive at scanline 128"
+        );
+    }
+
+    #[test]
+    fn vblank_active_after_vbstart() {
+        let mut sys = make_system();
+        // Scanline 256 (>= VBSTART): in VBLANK
+        sys.clock = 256 * CYCLES_PER_SCANLINE;
+        let status = sys.read(BusMaster::Cpu(0), 0x9700);
+        assert_ne!(status & 0x80, 0, "VBLANK should be active at scanline 256");
+    }
+
+    // -----------------------------------------------------------------------
+    // Interrupts
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn irq_asserted_at_scanline_0() {
+        let mut sys = make_system();
+        // Advance to start of scanline 0 (frame_cycle = 0)
+        sys.clock = CYCLES_PER_FRAME; // Start of next frame = scanline 0
+        sys.tick();
+        assert!(sys.irq_pending, "IRQ should be pending at scanline 0");
+    }
+
+    #[test]
+    fn irq_asserted_at_scanline_64() {
+        let mut sys = make_system();
+        // Set clock so tick() processes scanline 64
+        sys.clock = 64 * CYCLES_PER_SCANLINE;
+        sys.tick();
+        assert!(sys.irq_pending, "IRQ should be pending at scanline 64");
+    }
+
+    #[test]
+    fn firq_asserted_at_scanline_92() {
+        let mut sys = make_system();
+        sys.clock = 92 * CYCLES_PER_SCANLINE;
+        sys.tick();
+        assert!(sys.firq_pending, "FIRQ should be pending at scanline 92");
+    }
+
+    #[test]
+    fn irq_cleared_at_hblank() {
+        let mut sys = make_system();
+        // Assert IRQ at scanline 0
+        sys.clock = 0;
+        sys.tick();
+        assert!(sys.irq_pending);
+        // Advance to HBLANK (last cycle of scanline 0)
+        sys.clock = CYCLES_PER_SCANLINE - 1;
+        sys.tick();
+        assert!(!sys.irq_pending, "IRQ should be cleared at HBLANK");
+    }
+
+    // -----------------------------------------------------------------------
+    // Watchdog
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn watchdog_reset_prevents_timeout() {
+        let mut sys = make_system();
+        sys.watchdog_frame_count = 7;
+        // Write to watchdog resets counter
+        sys.write(BusMaster::Cpu(0), 0x9380, 0x00);
+        assert_eq!(sys.watchdog_frame_count, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Palette bank select
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn palette_bank_select_masks_to_6_bits() {
+        let mut sys = make_system();
+        sys.write(BusMaster::Cpu(0), 0x9200, 0xFF);
+        assert_eq!(sys.palette_bank, 0x3F);
+    }
+
+    // -----------------------------------------------------------------------
+    // Trackball
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn trackball_filters_small_deltas() {
+        let mut sys = make_system();
+        // Move by 1 (should be filtered)
+        sys.trackball_pos[0] = 1;
+        let result = sys.read_trackball(0);
+        assert_eq!(result, 0, "Delta of 1 should be filtered out");
+    }
+
+    #[test]
+    fn trackball_reports_magnitude_and_sign() {
+        let mut sys = make_system();
+        // Move by +5
+        sys.trackball_pos[0] = 5;
+        let result = sys.read_trackball(0);
+        // Magnitude = 5 & 0xF = 5, sign = 0 (positive)
+        assert_eq!(result & 0x0F, 5);
+        assert_eq!(result & 0x10, 0, "Should be positive direction");
+    }
+
+    #[test]
+    fn trackball_negative_direction() {
+        let mut sys = make_system();
+        // Move by -5 (wraps to 251)
+        sys.trackball_pos[0] = 251;
+        let result = sys.read_trackball(0);
+        // Magnitude = 5 & 0xF = 5, sign = 0x10 (negative)
+        assert_eq!(result & 0x0F, 5);
+        assert_eq!(result & 0x10, 0x10, "Should be negative direction");
+    }
+
+    // -----------------------------------------------------------------------
+    // Sound
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn sound_tone_step_zero_when_freq_zero() {
+        let mut sys = make_system();
+        sys.write_sound(0x10, 0);
+        assert_eq!(sys.tone_step, 0);
+    }
+
+    #[test]
+    fn sound_tone_step_nonzero_when_freq_set() {
+        let mut sys = make_system();
+        sys.write_sound(0x10, 0x40);
+        assert!(
+            sys.tone_step > 0,
+            "tone_step should be non-zero for freq=0x40"
+        );
+    }
+
+    #[test]
+    fn sound_volume_register() {
+        let mut sys = make_system();
+        sys.write_sound(0x11, 0xAB);
+        assert_eq!(sys.tone_volume, 0xAB);
+    }
+
+    // -----------------------------------------------------------------------
+    // Input
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn fire_button_set_and_clear() {
+        let mut sys = make_system();
+        sys.set_input(INPUT_P1_FIRE, true);
+        assert_eq!(sys.fire_buttons & 0x01, 0x01);
+        sys.set_input(INPUT_P1_FIRE, false);
+        assert_eq!(sys.fire_buttons & 0x01, 0x00);
+    }
+
+    #[test]
+    fn coin_and_start_buttons() {
+        let mut sys = make_system();
+        sys.set_input(INPUT_COIN, true);
+        assert_eq!(sys.coin_start & 0x01, 0x01);
+        sys.set_input(INPUT_START1, true);
+        assert_eq!(sys.coin_start & 0x04, 0x04);
+        sys.set_input(INPUT_START2, true);
+        assert_eq!(sys.coin_start & 0x08, 0x08);
+    }
+
+    // -----------------------------------------------------------------------
+    // NVRAM persistence
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn nvram_save_load_roundtrip() {
+        let mut sys = make_system();
+        sys.nvram[0] = 0x42;
+        sys.nvram[255] = 0xFF;
+        let saved = sys.save_nvram().unwrap().to_vec();
+        assert_eq!(saved.len(), 256);
+
+        let mut sys2 = make_system();
+        sys2.load_nvram(&saved);
+        assert_eq!(sys2.nvram[0], 0x42);
+        assert_eq!(sys2.nvram[255], 0xFF);
+    }
+
+    // -----------------------------------------------------------------------
+    // LS259 latch
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn latch_cocktail_flip() {
+        let mut sys = make_system();
+        // Q7 (bit 7 select) = address bits 6:4 = 0b111, so addr = 0x9070
+        sys.write(BusMaster::Cpu(0), 0x9070, 0x01);
+        assert!(sys.cocktail_flip);
+        sys.write(BusMaster::Cpu(0), 0x9070, 0x00);
+        assert!(!sys.cocktail_flip);
+    }
+
+    // -----------------------------------------------------------------------
+    // Frame rate
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn frame_rate_approximately_59hz() {
+        let sys = make_system();
+        let hz = sys.frame_rate_hz();
+        assert!(
+            (59.0..60.0).contains(&hz),
+            "Frame rate {hz} Hz not in expected range 59-60 Hz"
+        );
+    }
 }
