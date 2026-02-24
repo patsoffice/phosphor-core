@@ -1,4 +1,5 @@
 use phosphor_core::core::bus::InterruptState;
+use phosphor_core::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::m6800::M6800;
 use phosphor_core::cpu::m6809::M6809;
@@ -428,6 +429,61 @@ impl WilliamsBoard {
         self.audio_buffer.drain(..n);
         n
     }
+
+    // --- Save state helpers (called by game wrappers) ---
+
+    pub(crate) fn save_board_state(&self, w: &mut StateWriter) {
+        // CPUs
+        self.cpu.save_state(w);
+        self.sound_cpu.save_state(w);
+        // RAM
+        w.write_bytes(&self.video_ram);
+        w.write_bytes(&self.palette_ram);
+        self.cmos_ram.save_state(w);
+        w.write_bytes(&self.sound_ram);
+        // Peripherals
+        self.widget_pia.save_state(w);
+        self.rom_pia.save_state(w);
+        self.sound_pia.save_state(w);
+        self.blitter.save_state(w);
+        self.dac.save_state(w);
+        // I/O & timing
+        w.write_u8(self.rom_bank);
+        w.write_i64_le(self.sample_accum);
+        w.write_u32_le(self.sample_count);
+        w.write_u64_le(self.sample_phase);
+        w.write_u32_le(self.watchdog_counter);
+        w.write_u64_le(self.clock);
+        w.write_u8(self.rom_pia_input);
+    }
+
+    pub(crate) fn load_board_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        // CPUs
+        self.cpu.load_state(r)?;
+        self.sound_cpu.load_state(r)?;
+        // RAM
+        r.read_bytes_into(&mut self.video_ram)?;
+        r.read_bytes_into(&mut self.palette_ram)?;
+        self.cmos_ram.load_state(r)?;
+        r.read_bytes_into(&mut self.sound_ram)?;
+        // Peripherals
+        self.widget_pia.load_state(r)?;
+        self.rom_pia.load_state(r)?;
+        self.sound_pia.load_state(r)?;
+        self.blitter.load_state(r)?;
+        self.dac.load_state(r)?;
+        // I/O & timing
+        self.rom_bank = r.read_u8()?;
+        self.sample_accum = r.read_i64_le()?;
+        self.sample_count = r.read_u32_le()?;
+        self.sample_phase = r.read_u64_le()?;
+        self.watchdog_counter = r.read_u32_le()?;
+        self.clock = r.read_u64_le()?;
+        self.rom_pia_input = r.read_u8()?;
+        // Clear transient buffers
+        self.audio_buffer.clear();
+        Ok(())
+    }
 }
 
 impl Default for WilliamsBoard {
@@ -536,5 +592,111 @@ impl Bus for WilliamsBoard {
             },
             _ => InterruptState::default(),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use phosphor_core::cpu::CpuStateTrait;
+
+    #[test]
+    fn board_save_load_round_trip() {
+        let mut board = WilliamsBoard::new();
+
+        // Set known state across various subsystems
+        board.video_ram[0] = 0xAA;
+        board.video_ram[0x5FFF] = 0xBB;
+        board.palette_ram[3] = 0x42;
+        board.sound_ram[0x10] = 0xCD;
+        board.rom_bank = 5;
+        board.clock = 123_456;
+        board.watchdog_counter = 789;
+        board.rom_pia_input = 0x10;
+        board.sample_accum = -42;
+        board.sample_count = 17;
+        board.sample_phase = 99_999;
+
+        // Write CMOS data
+        board.cmos_ram.write(0, 0xF1);
+        board.cmos_ram.write(100, 0xF9);
+
+        // Save
+        let mut w = StateWriter::new();
+        board.save_board_state(&mut w);
+        let data = w.into_vec();
+
+        // Mutate everything
+        let mut board2 = WilliamsBoard::new();
+        board2.video_ram[0] = 0xFF;
+        board2.video_ram[0x5FFF] = 0xFF;
+        board2.palette_ram[3] = 0x00;
+        board2.rom_bank = 0;
+        board2.clock = 0;
+        board2.watchdog_counter = 0;
+
+        // Load
+        let mut r = StateReader::new(&data);
+        board2.load_board_state(&mut r).unwrap();
+
+        // Verify CPU state matches
+        assert_eq!(
+            board.cpu.snapshot(),
+            board2.cpu.snapshot(),
+            "main CPU state mismatch"
+        );
+        assert_eq!(
+            board.sound_cpu.snapshot(),
+            board2.sound_cpu.snapshot(),
+            "sound CPU state mismatch"
+        );
+
+        // Verify RAM
+        assert_eq!(board2.video_ram[0], 0xAA);
+        assert_eq!(board2.video_ram[0x5FFF], 0xBB);
+        assert_eq!(board2.palette_ram[3], 0x42);
+        assert_eq!(board2.sound_ram[0x10], 0xCD);
+
+        // Verify CMOS
+        assert_eq!(board2.cmos_ram.read(0), 0xF1);
+        assert_eq!(board2.cmos_ram.read(100), 0xF9);
+
+        // Verify I/O & timing
+        assert_eq!(board2.rom_bank, 5);
+        assert_eq!(board2.clock, 123_456);
+        assert_eq!(board2.watchdog_counter, 789);
+        assert_eq!(board2.rom_pia_input, 0x10);
+        assert_eq!(board2.sample_accum, -42);
+        assert_eq!(board2.sample_count, 17);
+        assert_eq!(board2.sample_phase, 99_999);
+    }
+
+    #[test]
+    fn board_save_load_preserves_rom_unchanged() {
+        let mut board = WilliamsBoard::new();
+        board.program_rom[0] = 0xDE;
+        board.banked_rom[0] = 0xAD;
+        board.sound_rom[0] = 0xBE;
+
+        let mut w = StateWriter::new();
+        board.save_board_state(&mut w);
+        let data = w.into_vec();
+
+        // Load into a board with different ROM contents — ROM should NOT be overwritten
+        let mut board2 = WilliamsBoard::new();
+        board2.program_rom[0] = 0x11;
+        board2.banked_rom[0] = 0x22;
+        board2.sound_rom[0] = 0x33;
+
+        let mut r = StateReader::new(&data);
+        board2.load_board_state(&mut r).unwrap();
+
+        assert_eq!(board2.program_rom[0], 0x11, "program ROM should be untouched");
+        assert_eq!(board2.banked_rom[0], 0x22, "banked ROM should be untouched");
+        assert_eq!(board2.sound_rom[0], 0x33, "sound ROM should be untouched");
     }
 }

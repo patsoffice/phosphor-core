@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use phosphor_core::core::machine::Machine;
@@ -7,7 +8,7 @@ use sdl2::keyboard::Scancode;
 use crate::input::KeyMap;
 use crate::video::Video;
 
-pub fn run(machine: &mut dyn Machine, key_map: &KeyMap, scale: u32) {
+pub fn run(machine: &mut dyn Machine, key_map: &KeyMap, scale: u32, save_path: &Path) {
     let sdl_context = sdl2::init().expect("Failed to initialize SDL2");
     let sdl_video = sdl_context.video().expect("Failed to init SDL video");
     let sdl_audio = sdl_context.audio().expect("Failed to init SDL audio");
@@ -73,6 +74,35 @@ pub fn run(machine: &mut dyn Machine, key_map: &KeyMap, scale: u32) {
                     fps_smoothed = machine.frame_rate_hz();
                     fps_last_instant = Instant::now();
                 }
+
+                // Quick Save (F6)
+                Event::KeyDown {
+                    scancode: Some(Scancode::F6),
+                    repeat: false,
+                    ..
+                } => {
+                    if let Some(data) = machine.save_state() {
+                        match std::fs::write(save_path, &data) {
+                            Ok(()) => eprintln!("Save state written ({} bytes)", data.len()),
+                            Err(e) => eprintln!("Save state failed: {e}"),
+                        }
+                    } else {
+                        eprintln!("Save states not supported for this machine");
+                    }
+                }
+
+                // Quick Load (F7)
+                Event::KeyDown {
+                    scancode: Some(Scancode::F7),
+                    repeat: false,
+                    ..
+                } => match std::fs::read(save_path) {
+                    Ok(data) => match machine.load_state(&data) {
+                        Ok(()) => eprintln!("Save state loaded"),
+                        Err(e) => eprintln!("Load state failed: {e}"),
+                    },
+                    Err(e) => eprintln!("No save file found: {e}"),
+                },
 
                 Event::KeyDown {
                     scancode: Some(sc),

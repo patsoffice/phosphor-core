@@ -36,15 +36,25 @@ fn main() {
     let (native_w, native_h) = machine.display_size();
     let scale = explicit_scale.unwrap_or_else(|| auto_scale(native_w, native_h));
 
+    let save_path = save_path_for(machine_name, rom_path);
     let key_map = input::default_key_map(machine.input_map());
     machine.reset();
-    emulator::run(machine.as_mut(), &key_map, scale);
+    emulator::run(machine.as_mut(), &key_map, scale, &save_path);
 
     // Save battery-backed NVRAM to disk on exit
     if let Some(data) = machine.save_nvram()
         && let Err(e) = std::fs::write(&nvram_path, data)
     {
         eprintln!("Warning: failed to save NVRAM: {e}");
+    }
+}
+
+fn save_path_for(machine_name: &str, rom_path: &str) -> std::path::PathBuf {
+    let path = std::path::Path::new(rom_path);
+    if path.is_dir() {
+        path.join(format!("{machine_name}.sav"))
+    } else {
+        path.with_extension("sav")
     }
 }
 
