@@ -45,6 +45,18 @@ impl Default for CmosRam {
     }
 }
 
+use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
+
+impl Saveable for CmosRam {
+    fn save_state(&self, w: &mut StateWriter) {
+        w.write_bytes(&self.data);
+    }
+
+    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        r.read_bytes_into(&mut self.data)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

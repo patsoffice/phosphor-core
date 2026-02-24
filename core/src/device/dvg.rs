@@ -419,6 +419,39 @@ impl Default for Dvg {
     }
 }
 
+use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
+
+impl Saveable for Dvg {
+    fn save_state(&self, w: &mut StateWriter) {
+        w.write_u16_le(self.pc);
+        for &addr in &self.stack {
+            w.write_u16_le(addr);
+        }
+        w.write_u8(self.sp);
+        w.write_u32_le(self.xpos as u32);
+        w.write_u32_le(self.ypos as u32);
+        w.write_u8(self.scale);
+        w.write_u8(self.intensity);
+        w.write_bool(self.halted);
+    }
+
+    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        self.pc = r.read_u16_le()?;
+        for addr in &mut self.stack {
+            *addr = r.read_u16_le()?;
+        }
+        self.sp = r.read_u8()?;
+        self.xpos = r.read_u32_le()? as i32;
+        self.ypos = r.read_u32_le()? as i32;
+        self.scale = r.read_u8()?;
+        self.intensity = r.read_u8()?;
+        self.halted = r.read_bool()?;
+        // Clear display list on load (will be regenerated on next frame)
+        self.display_list.clear();
+        Ok(())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

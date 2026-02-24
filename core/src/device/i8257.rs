@@ -332,3 +332,42 @@ impl Default for I8257 {
         Self::new()
     }
 }
+
+use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
+
+impl Saveable for I8257 {
+    fn save_state(&self, w: &mut StateWriter) {
+        for ch in &self.channels {
+            w.write_u16_le(ch.address);
+            w.write_u16_le(ch.count);
+            w.write_u16_le(ch.base_address);
+            w.write_u16_le(ch.base_count);
+        }
+        w.write_bool(self.flip_flop);
+        w.write_u8(self.mode);
+        w.write_u8(self.tc_flags);
+        w.write_bool(self.update_flag);
+        for &d in &self.dreq {
+            w.write_bool(d);
+        }
+        w.write_u8(self.last_serviced as u8);
+    }
+
+    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        for ch in &mut self.channels {
+            ch.address = r.read_u16_le()?;
+            ch.count = r.read_u16_le()?;
+            ch.base_address = r.read_u16_le()?;
+            ch.base_count = r.read_u16_le()?;
+        }
+        self.flip_flop = r.read_bool()?;
+        self.mode = r.read_u8()?;
+        self.tc_flags = r.read_u8()?;
+        self.update_flag = r.read_bool()?;
+        for d in &mut self.dreq {
+            *d = r.read_bool()?;
+        }
+        self.last_serviced = r.read_u8()? as usize;
+        Ok(())
+    }
+}

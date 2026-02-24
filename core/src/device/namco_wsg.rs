@@ -219,3 +219,43 @@ impl NamcoWsg {
         self.sample_phase = 0;
     }
 }
+
+use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
+
+impl Saveable for NamcoWsg {
+    fn save_state(&self, w: &mut StateWriter) {
+        // Voices
+        for voice in &self.voices {
+            w.write_u32_le(voice.frequency);
+            w.write_u32_le(voice.counter);
+            w.write_u8(voice.volume);
+            w.write_u8(voice.waveform_select);
+        }
+        // Sound registers
+        w.write_bytes(&self.sound_regs);
+        w.write_bool(self.sound_enabled);
+        // Bresenham resampling state
+        w.write_i64_le(self.sample_accum);
+        w.write_u32_le(self.sample_count);
+        w.write_u64_le(self.sample_phase);
+        w.write_u64_le(self.cpu_clock_hz);
+    }
+
+    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        for voice in &mut self.voices {
+            voice.frequency = r.read_u32_le()?;
+            voice.counter = r.read_u32_le()?;
+            voice.volume = r.read_u8()?;
+            voice.waveform_select = r.read_u8()?;
+        }
+        r.read_bytes_into(&mut self.sound_regs)?;
+        self.sound_enabled = r.read_bool()?;
+        self.sample_accum = r.read_i64_le()?;
+        self.sample_count = r.read_u32_le()?;
+        self.sample_phase = r.read_u64_le()?;
+        self.cpu_clock_hz = r.read_u64_le()?;
+        // Clear audio buffer on load (will be regenerated)
+        self.audio_buffer.clear();
+        Ok(())
+    }
+}

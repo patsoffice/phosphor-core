@@ -25,3 +25,16 @@ impl Mc1408Dac {
         ((self.value as i16) - 128) * 256
     }
 }
+
+use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
+
+impl Saveable for Mc1408Dac {
+    fn save_state(&self, w: &mut StateWriter) {
+        w.write_u8(self.value);
+    }
+
+    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        self.value = r.read_u8()?;
+        Ok(())
+    }
+}

@@ -305,3 +305,48 @@ impl Default for Pia6820 {
         Self::new()
     }
 }
+
+use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
+
+impl Saveable for Pia6820 {
+    fn save_state(&self, w: &mut StateWriter) {
+        w.write_u8(self.output_a);
+        w.write_u8(self.ddr_a);
+        w.write_u8(self.ctrl_a);
+        w.write_u8(self.input_a);
+        w.write_u8(self.output_b);
+        w.write_u8(self.ddr_b);
+        w.write_u8(self.ctrl_b);
+        w.write_u8(self.input_b);
+        w.write_bool(self.irq_a1);
+        w.write_bool(self.irq_a2);
+        w.write_bool(self.irq_b1);
+        w.write_bool(self.irq_b2);
+        w.write_bool(self.ca1);
+        w.write_bool(self.ca2);
+        w.write_bool(self.cb1);
+        w.write_bool(self.cb2);
+        w.write_bool(self.port_b_written);
+    }
+
+    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        self.output_a = r.read_u8()?;
+        self.ddr_a = r.read_u8()?;
+        self.ctrl_a = r.read_u8()?;
+        self.input_a = r.read_u8()?;
+        self.output_b = r.read_u8()?;
+        self.ddr_b = r.read_u8()?;
+        self.ctrl_b = r.read_u8()?;
+        self.input_b = r.read_u8()?;
+        self.irq_a1 = r.read_bool()?;
+        self.irq_a2 = r.read_bool()?;
+        self.irq_b1 = r.read_bool()?;
+        self.irq_b2 = r.read_bool()?;
+        self.ca1 = r.read_bool()?;
+        self.ca2 = r.read_bool()?;
+        self.cb1 = r.read_bool()?;
+        self.cb2 = r.read_bool()?;
+        self.port_b_written = r.read_bool()?;
+        Ok(())
+    }
+}
