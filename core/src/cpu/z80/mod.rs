@@ -857,3 +857,98 @@ impl CpuStateTrait for Z80 {
         }
     }
 }
+
+// -- Save state support ------------------------------------------------------
+
+use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
+
+impl Z80 {
+    /// Returns true when the CPU is at a saveable instruction boundary.
+    pub fn is_at_save_boundary(&self) -> bool {
+        matches!(self.state, ExecState::Fetch) && !self.prefix_pending
+    }
+}
+
+impl Saveable for Z80 {
+    fn save_state(&self, w: &mut StateWriter) {
+        // Main registers
+        w.write_u8(self.a);
+        w.write_u8(self.f);
+        w.write_u8(self.b);
+        w.write_u8(self.c);
+        w.write_u8(self.d);
+        w.write_u8(self.e);
+        w.write_u8(self.h);
+        w.write_u8(self.l);
+        // Shadow registers
+        w.write_u8(self.a_prime);
+        w.write_u8(self.f_prime);
+        w.write_u8(self.b_prime);
+        w.write_u8(self.c_prime);
+        w.write_u8(self.d_prime);
+        w.write_u8(self.e_prime);
+        w.write_u8(self.h_prime);
+        w.write_u8(self.l_prime);
+        // Index & special
+        w.write_u16_le(self.ix);
+        w.write_u16_le(self.iy);
+        w.write_u16_le(self.sp);
+        w.write_u16_le(self.pc);
+        w.write_u8(self.i);
+        w.write_u8(self.r);
+        // Internal state
+        w.write_bool(self.iff1);
+        w.write_bool(self.iff2);
+        w.write_u8(self.im);
+        w.write_u16_le(self.memptr);
+        w.write_bool(self.halted);
+        w.write_bool(self.ei_delay);
+        w.write_bool(self.p);
+        w.write_u8(self.q);
+        w.write_u8(self.prev_q);
+        w.write_bool(self.nmi_previous);
+    }
+
+    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        self.a = r.read_u8()?;
+        self.f = r.read_u8()?;
+        self.b = r.read_u8()?;
+        self.c = r.read_u8()?;
+        self.d = r.read_u8()?;
+        self.e = r.read_u8()?;
+        self.h = r.read_u8()?;
+        self.l = r.read_u8()?;
+        self.a_prime = r.read_u8()?;
+        self.f_prime = r.read_u8()?;
+        self.b_prime = r.read_u8()?;
+        self.c_prime = r.read_u8()?;
+        self.d_prime = r.read_u8()?;
+        self.e_prime = r.read_u8()?;
+        self.h_prime = r.read_u8()?;
+        self.l_prime = r.read_u8()?;
+        self.ix = r.read_u16_le()?;
+        self.iy = r.read_u16_le()?;
+        self.sp = r.read_u16_le()?;
+        self.pc = r.read_u16_le()?;
+        self.i = r.read_u8()?;
+        self.r = r.read_u8()?;
+        self.iff1 = r.read_bool()?;
+        self.iff2 = r.read_bool()?;
+        self.im = r.read_u8()?;
+        self.memptr = r.read_u16_le()?;
+        self.halted = r.read_bool()?;
+        self.ei_delay = r.read_bool()?;
+        self.p = r.read_bool()?;
+        self.q = r.read_u8()?;
+        self.prev_q = r.read_u8()?;
+        self.nmi_previous = r.read_bool()?;
+        // Reset execution temporaries
+        self.state = ExecState::Fetch;
+        self.opcode = 0;
+        self.temp_addr = 0;
+        self.temp_data = 0;
+        self.index_mode = IndexMode::HL;
+        self.prefix_pending = false;
+        Ok(())
+    }
+}

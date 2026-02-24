@@ -734,3 +734,95 @@ impl CpuStateTrait for I8035 {
         }
     }
 }
+
+// -- Save state support ------------------------------------------------------
+
+use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
+
+const STATE_TAG_FETCH: u8 = 0;
+const STATE_TAG_STOPPED: u8 = 1;
+
+impl I8035 {
+    /// Returns true when the CPU is at a saveable instruction boundary.
+    pub fn is_at_save_boundary(&self) -> bool {
+        matches!(self.state, ExecState::Fetch | ExecState::Stopped)
+    }
+}
+
+impl Saveable for I8035 {
+    fn save_state(&self, w: &mut StateWriter) {
+        // Registers
+        w.write_u8(self.a);
+        w.write_u16_le(self.pc);
+        w.write_u8(self.psw);
+        w.write_bool(self.f1);
+        w.write_u8(self.t);
+        w.write_u8(self.dbbb);
+        w.write_u8(self.p1);
+        w.write_u8(self.p2);
+        // Internal RAM (length-prefixed)
+        w.write_bytes(&self.ram[..(self.ram_mask as usize + 1)]);
+        w.write_u8(self.ram_mask);
+        // Memory bank
+        w.write_bool(self.a11);
+        w.write_bool(self.a11_pending);
+        // Timer/counter
+        w.write_bool(self.timer_enabled);
+        w.write_bool(self.counter_enabled);
+        w.write_bool(self.timer_overflow);
+        w.write_bool(self.t1_prev);
+        w.write_u8(self.prescaler);
+        // Interrupts
+        w.write_bool(self.int_enabled);
+        w.write_bool(self.tcnti_enabled);
+        w.write_bool(self.in_interrupt);
+        w.write_bool(self.irq_pending);
+        w.write_bool(self.timer_irq_pending);
+        // ExecState tag
+        let tag = match self.state {
+            ExecState::Stopped => STATE_TAG_STOPPED,
+            _ => STATE_TAG_FETCH,
+        };
+        w.write_u8(tag);
+    }
+
+    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        self.a = r.read_u8()?;
+        self.pc = r.read_u16_le()?;
+        self.psw = r.read_u8()?;
+        self.f1 = r.read_bool()?;
+        self.t = r.read_u8()?;
+        self.dbbb = r.read_u8()?;
+        self.p1 = r.read_u8()?;
+        self.p2 = r.read_u8()?;
+        // Internal RAM
+        let ram_data = r.read_bytes()?;
+        let len = ram_data.len().min(self.ram.len());
+        self.ram[..len].copy_from_slice(&ram_data[..len]);
+        self.ram_mask = r.read_u8()?;
+        // Memory bank
+        self.a11 = r.read_bool()?;
+        self.a11_pending = r.read_bool()?;
+        // Timer/counter
+        self.timer_enabled = r.read_bool()?;
+        self.counter_enabled = r.read_bool()?;
+        self.timer_overflow = r.read_bool()?;
+        self.t1_prev = r.read_bool()?;
+        self.prescaler = r.read_u8()?;
+        // Interrupts
+        self.int_enabled = r.read_bool()?;
+        self.tcnti_enabled = r.read_bool()?;
+        self.in_interrupt = r.read_bool()?;
+        self.irq_pending = r.read_bool()?;
+        self.timer_irq_pending = r.read_bool()?;
+        // ExecState
+        let tag = r.read_u8()?;
+        self.state = match tag {
+            STATE_TAG_STOPPED => ExecState::Stopped,
+            _ => ExecState::Fetch,
+        };
+        self.opcode = 0;
+        self.temp_data = 0;
+        Ok(())
+    }
+}

@@ -634,3 +634,43 @@ impl CpuStateTrait for M6502 {
         }
     }
 }
+
+// -- Save state support ------------------------------------------------------
+
+use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
+
+impl M6502 {
+    /// Returns true when the CPU is at a saveable instruction boundary.
+    pub fn is_at_save_boundary(&self) -> bool {
+        matches!(self.state, ExecState::Fetch)
+    }
+}
+
+impl Saveable for M6502 {
+    fn save_state(&self, w: &mut StateWriter) {
+        w.write_u8(self.a);
+        w.write_u8(self.x);
+        w.write_u8(self.y);
+        w.write_u16_le(self.pc);
+        w.write_u8(self.sp);
+        w.write_u8(self.p);
+        w.write_bool(self.nmi_previous);
+        w.write_u8(self.interrupt_type);
+    }
+
+    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        self.a = r.read_u8()?;
+        self.x = r.read_u8()?;
+        self.y = r.read_u8()?;
+        self.pc = r.read_u16_le()?;
+        self.sp = r.read_u8()?;
+        self.p = r.read_u8()?;
+        self.nmi_previous = r.read_bool()?;
+        self.interrupt_type = r.read_u8()?;
+        self.state = ExecState::Fetch;
+        self.opcode = 0;
+        self.temp_addr = 0;
+        self.temp_data = 0;
+        Ok(())
+    }
+}

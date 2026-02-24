@@ -735,3 +735,58 @@ impl CpuStateTrait for M6800 {
         }
     }
 }
+
+// -- Save state support ------------------------------------------------------
+
+use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
+
+const STATE_TAG_FETCH: u8 = 0;
+const STATE_TAG_WAIT: u8 = 1;
+
+impl M6800 {
+    /// Returns true when the CPU is at a saveable instruction boundary.
+    pub fn is_at_save_boundary(&self) -> bool {
+        matches!(
+            self.state,
+            ExecState::Fetch | ExecState::WaitForInterrupt
+        )
+    }
+}
+
+impl Saveable for M6800 {
+    fn save_state(&self, w: &mut StateWriter) {
+        w.write_u8(self.a);
+        w.write_u8(self.b);
+        w.write_u16_le(self.x);
+        w.write_u16_le(self.sp);
+        w.write_u16_le(self.pc);
+        w.write_u8(self.cc);
+        w.write_bool(self.nmi_previous);
+        w.write_u8(self.interrupt_type);
+        let tag = match self.state {
+            ExecState::WaitForInterrupt => STATE_TAG_WAIT,
+            _ => STATE_TAG_FETCH,
+        };
+        w.write_u8(tag);
+    }
+
+    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        self.a = r.read_u8()?;
+        self.b = r.read_u8()?;
+        self.x = r.read_u16_le()?;
+        self.sp = r.read_u16_le()?;
+        self.pc = r.read_u16_le()?;
+        self.cc = r.read_u8()?;
+        self.nmi_previous = r.read_bool()?;
+        self.interrupt_type = r.read_u8()?;
+        let tag = r.read_u8()?;
+        self.state = match tag {
+            STATE_TAG_WAIT => ExecState::WaitForInterrupt,
+            _ => ExecState::Fetch,
+        };
+        self.opcode = 0;
+        self.temp_addr = 0;
+        self.temp_data = 0;
+        Ok(())
+    }
+}

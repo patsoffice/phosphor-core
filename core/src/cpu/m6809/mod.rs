@@ -648,3 +648,71 @@ impl CpuStateTrait for M6809 {
         }
     }
 }
+
+// -- Save state support ------------------------------------------------------
+
+use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
+
+const STATE_TAG_FETCH: u8 = 0;
+const STATE_TAG_WAIT: u8 = 1;
+const STATE_TAG_SYNC: u8 = 2;
+
+impl M6809 {
+    /// Returns true when the CPU is at a saveable instruction boundary.
+    pub fn is_at_save_boundary(&self) -> bool {
+        matches!(
+            self.state,
+            ExecState::Fetch | ExecState::WaitForInterrupt | ExecState::SyncWait
+        )
+    }
+}
+
+impl Saveable for M6809 {
+    fn save_state(&self, w: &mut StateWriter) {
+        // Registers
+        w.write_u8(self.a);
+        w.write_u8(self.b);
+        w.write_u8(self.dp);
+        w.write_u16_le(self.x);
+        w.write_u16_le(self.y);
+        w.write_u16_le(self.u);
+        w.write_u16_le(self.s);
+        w.write_u16_le(self.pc);
+        w.write_u8(self.cc);
+        // Internal state
+        w.write_bool(self.nmi_previous);
+        w.write_u8(self.interrupt_type);
+        // ExecState tag
+        let tag = match self.state {
+            ExecState::WaitForInterrupt => STATE_TAG_WAIT,
+            ExecState::SyncWait => STATE_TAG_SYNC,
+            _ => STATE_TAG_FETCH,
+        };
+        w.write_u8(tag);
+    }
+
+    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        self.a = r.read_u8()?;
+        self.b = r.read_u8()?;
+        self.dp = r.read_u8()?;
+        self.x = r.read_u16_le()?;
+        self.y = r.read_u16_le()?;
+        self.u = r.read_u16_le()?;
+        self.s = r.read_u16_le()?;
+        self.pc = r.read_u16_le()?;
+        self.cc = r.read_u8()?;
+        self.nmi_previous = r.read_bool()?;
+        self.interrupt_type = r.read_u8()?;
+        let tag = r.read_u8()?;
+        self.state = match tag {
+            STATE_TAG_WAIT => ExecState::WaitForInterrupt,
+            STATE_TAG_SYNC => ExecState::SyncWait,
+            _ => ExecState::Fetch,
+        };
+        self.opcode = 0;
+        self.temp_addr = 0;
+        self.indexed_internal = 0;
+        self.resume_delay = 0;
+        Ok(())
+    }
+}
