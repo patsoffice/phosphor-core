@@ -746,10 +746,7 @@ const STATE_TAG_WAIT: u8 = 1;
 impl M6800 {
     /// Returns true when the CPU is at a saveable instruction boundary.
     pub fn is_at_save_boundary(&self) -> bool {
-        matches!(
-            self.state,
-            ExecState::Fetch | ExecState::WaitForInterrupt
-        )
+        matches!(self.state, ExecState::Fetch | ExecState::WaitForInterrupt)
     }
 }
 

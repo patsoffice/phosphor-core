@@ -695,7 +695,10 @@ mod tests {
         let mut r = StateReader::new(&data);
         board2.load_board_state(&mut r).unwrap();
 
-        assert_eq!(board2.program_rom[0], 0x11, "program ROM should be untouched");
+        assert_eq!(
+            board2.program_rom[0], 0x11,
+            "program ROM should be untouched"
+        );
         assert_eq!(board2.banked_rom[0], 0x22, "banked ROM should be untouched");
         assert_eq!(board2.sound_rom[0], 0x33, "sound ROM should be untouched");
     }

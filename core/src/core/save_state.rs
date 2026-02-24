@@ -148,12 +148,16 @@ impl<'a> StateReader<'a> {
 
     pub fn read_u64_le(&mut self) -> Result<u64, SaveError> {
         let b = self.take(8)?;
-        Ok(u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+        Ok(u64::from_le_bytes([
+            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+        ]))
     }
 
     pub fn read_i64_le(&mut self) -> Result<i64, SaveError> {
         let b = self.take(8)?;
-        Ok(i64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+        Ok(i64::from_le_bytes([
+            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+        ]))
     }
 
     pub fn read_f32_le(&mut self) -> Result<f32, SaveError> {
@@ -163,7 +167,9 @@ impl<'a> StateReader<'a> {
 
     pub fn read_f64_le(&mut self) -> Result<f64, SaveError> {
         let b = self.take(8)?;
-        Ok(f64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+        Ok(f64::from_le_bytes([
+            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+        ]))
     }
 
     pub fn read_bool(&mut self) -> Result<bool, SaveError> {
