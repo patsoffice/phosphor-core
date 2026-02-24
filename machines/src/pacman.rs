@@ -1,5 +1,6 @@
 use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::machine::{InputButton, Machine};
+use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::state::Z80State;
 use phosphor_core::cpu::z80::Z80;
@@ -810,6 +811,51 @@ impl Machine for PacmanSystem {
     fn frame_rate_hz(&self) -> f64 {
         CPU_CLOCK_HZ as f64 / CYCLES_PER_FRAME as f64
     }
+
+    fn machine_id(&self) -> &str {
+        "pacman"
+    }
+
+    fn save_state(&self) -> Option<Vec<u8>> {
+        let mut w = StateWriter::new();
+        save_state::write_header(&mut w, self.machine_id());
+        self.cpu.save_state(&mut w);
+        w.write_bytes(&self.video_ram);
+        w.write_bytes(&self.color_ram);
+        w.write_bytes(&self.ram);
+        w.write_bytes(&self.sprite_coords);
+        self.wsg.save_state(&mut w);
+        w.write_u8(self.in0);
+        w.write_u8(self.in1);
+        w.write_bool(self.irq_enabled);
+        w.write_bool(self.sound_enabled);
+        w.write_bool(self.flip_screen);
+        w.write_u8(self.interrupt_vector);
+        w.write_bool(self.vblank_irq_pending);
+        w.write_u64_le(self.clock);
+        w.write_u32_le(self.watchdog_counter);
+        Some(w.into_vec())
+    }
+
+    fn load_state(&mut self, data: &[u8]) -> Result<(), SaveError> {
+        let mut r = save_state::read_header(data, self.machine_id())?;
+        self.cpu.load_state(&mut r)?;
+        r.read_bytes_into(&mut self.video_ram)?;
+        r.read_bytes_into(&mut self.color_ram)?;
+        r.read_bytes_into(&mut self.ram)?;
+        r.read_bytes_into(&mut self.sprite_coords)?;
+        self.wsg.load_state(&mut r)?;
+        self.in0 = r.read_u8()?;
+        self.in1 = r.read_u8()?;
+        self.irq_enabled = r.read_bool()?;
+        self.sound_enabled = r.read_bool()?;
+        self.flip_screen = r.read_bool()?;
+        self.interrupt_vector = r.read_u8()?;
+        self.vblank_irq_pending = r.read_bool()?;
+        self.clock = r.read_u64_le()?;
+        self.watchdog_counter = r.read_u32_le()?;
+        Ok(())
+    }
 }
 
 /// Active-low bit manipulation: clear bit on press, set bit on release.
@@ -854,4 +900,96 @@ fn create_machine(
 
 inventory::submit! {
     MachineEntry::new("pacman", "pacman", create_machine)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use phosphor_core::core::machine::Machine;
+    use phosphor_core::cpu::CpuStateTrait;
+
+    #[test]
+    fn save_load_round_trip() {
+        let mut sys = PacmanSystem::new();
+
+        // Set known state
+        sys.video_ram[0x100] = 0xAA;
+        sys.color_ram[0x200] = 0xBB;
+        sys.ram[0x300] = 0xCC;
+        sys.sprite_coords[5] = 0xDD;
+        sys.in0 = 0xEE;
+        sys.in1 = 0x77;
+        sys.irq_enabled = true;
+        sys.sound_enabled = true;
+        sys.flip_screen = true;
+        sys.interrupt_vector = 0xCF;
+        sys.vblank_irq_pending = true;
+        sys.clock = 100_000;
+        sys.watchdog_counter = 99;
+
+        // Save
+        let data = sys.save_state().expect("save_state should return Some");
+        let cpu_snap = sys.cpu.snapshot();
+
+        // Mutate everything
+        let mut sys2 = PacmanSystem::new();
+        sys2.video_ram[0x100] = 0xFF;
+        sys2.in0 = 0x00;
+        sys2.clock = 999;
+
+        // Load
+        sys2.load_state(&data).unwrap();
+
+        // Verify CPU
+        assert_eq!(sys2.cpu.snapshot(), cpu_snap);
+
+        // Verify memory
+        assert_eq!(sys2.video_ram[0x100], 0xAA);
+        assert_eq!(sys2.color_ram[0x200], 0xBB);
+        assert_eq!(sys2.ram[0x300], 0xCC);
+        assert_eq!(sys2.sprite_coords[5], 0xDD);
+
+        // Verify I/O and control state
+        assert_eq!(sys2.in0, 0xEE);
+        assert_eq!(sys2.in1, 0x77);
+        assert!(sys2.irq_enabled);
+        assert!(sys2.sound_enabled);
+        assert!(sys2.flip_screen);
+        assert_eq!(sys2.interrupt_vector, 0xCF);
+        assert!(sys2.vblank_irq_pending);
+        assert_eq!(sys2.clock, 100_000);
+        assert_eq!(sys2.watchdog_counter, 99);
+    }
+
+    #[test]
+    fn save_load_machine_id_validated() {
+        let sys = PacmanSystem::new();
+        let data = sys.save_state().unwrap();
+
+        // Tamper with the machine ID
+        let mut bad = data.clone();
+        let id_offset = 4 + 4 + 4; // magic(4) + version(4) + id_len(4)
+        bad[id_offset..id_offset + 6].copy_from_slice(b"xxxxxx");
+
+        let mut sys2 = PacmanSystem::new();
+        let result = sys2.load_state(&bad);
+        assert!(result.is_err(), "should reject mismatched machine ID");
+    }
+
+    #[test]
+    fn save_does_not_include_rom() {
+        let mut sys = PacmanSystem::new();
+        sys.rom[0] = 0xDE;
+        sys.gfx_rom[0] = 0xAD;
+
+        let data = sys.save_state().unwrap();
+
+        // Load into a fresh system (ROMs are zeroed)
+        let mut sys2 = PacmanSystem::new();
+        sys2.load_state(&data).unwrap();
+
+        // ROMs should remain at their default (zeroed), not overwritten
+        assert_eq!(sys2.rom[0], 0x00);
+        assert_eq!(sys2.gfx_rom[0], 0x00);
+    }
 }

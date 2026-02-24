@@ -1,5 +1,6 @@
 use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::machine::{InputButton, Machine};
+use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::Cpu;
 use phosphor_core::cpu::m6502::M6502;
@@ -434,6 +435,42 @@ impl Machine for AsteroidsSystem {
     fn frame_rate_hz(&self) -> f64 {
         60.0
     }
+
+    fn machine_id(&self) -> &str {
+        "asteroids"
+    }
+
+    fn save_state(&self) -> Option<Vec<u8>> {
+        let mut w = StateWriter::new();
+        save_state::write_header(&mut w, self.machine_id());
+        self.cpu.save_state(&mut w);
+        self.dvg.save_state(&mut w);
+        w.write_bytes(&self.ram);
+        w.write_bytes(&self.vector_ram);
+        w.write_u8(self.in0);
+        w.write_u8(self.in1);
+        w.write_u64_le(self.clock);
+        w.write_u64_le(self.nmi_counter);
+        w.write_bool(self.nmi_pending);
+        w.write_u8(self.watchdog_frame_count);
+        Some(w.into_vec())
+    }
+
+    fn load_state(&mut self, data: &[u8]) -> Result<(), SaveError> {
+        let mut r = save_state::read_header(data, self.machine_id())?;
+        self.cpu.load_state(&mut r)?;
+        self.dvg.load_state(&mut r)?;
+        r.read_bytes_into(&mut self.ram)?;
+        r.read_bytes_into(&mut self.vector_ram)?;
+        self.in0 = r.read_u8()?;
+        self.in1 = r.read_u8()?;
+        self.clock = r.read_u64_le()?;
+        self.nmi_counter = r.read_u64_le()?;
+        self.nmi_pending = r.read_bool()?;
+        self.watchdog_frame_count = r.read_u8()?;
+        self.display_list.clear();
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -532,4 +569,89 @@ fn create_machine(rom_set: &RomSet) -> Result<Box<dyn Machine>, RomLoadError> {
 
 inventory::submit! {
     MachineEntry::new("asteroid", "asteroid", create_machine)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use phosphor_core::core::machine::Machine;
+    use phosphor_core::cpu::CpuStateTrait;
+
+    #[test]
+    fn save_load_round_trip() {
+        let mut sys = AsteroidsSystem::new();
+
+        // Set known state
+        sys.ram[0x100] = 0xAA;
+        sys.vector_ram[0x200] = 0xBB;
+        sys.in0 = 0x18;
+        sys.in1 = 0xE8;
+        sys.clock = 75_000;
+        sys.nmi_counter = 3000;
+        sys.nmi_pending = true;
+        sys.watchdog_frame_count = 5;
+
+        // Save
+        let data = sys.save_state().expect("save_state should return Some");
+        let cpu_snap = sys.cpu.snapshot();
+
+        // Mutate everything
+        let mut sys2 = AsteroidsSystem::new();
+        sys2.ram[0x100] = 0xFF;
+        sys2.in0 = 0xFF;
+        sys2.clock = 999;
+
+        // Load
+        sys2.load_state(&data).unwrap();
+
+        // Verify CPU
+        assert_eq!(sys2.cpu.snapshot(), cpu_snap);
+
+        // Verify memory
+        assert_eq!(sys2.ram[0x100], 0xAA);
+        assert_eq!(sys2.vector_ram[0x200], 0xBB);
+
+        // Verify I/O and timing state
+        assert_eq!(sys2.in0, 0x18);
+        assert_eq!(sys2.in1, 0xE8);
+        assert_eq!(sys2.clock, 75_000);
+        assert_eq!(sys2.nmi_counter, 3000);
+        assert!(sys2.nmi_pending);
+        assert_eq!(sys2.watchdog_frame_count, 5);
+
+        // Transient state should be cleared
+        assert!(sys2.display_list.is_empty());
+    }
+
+    #[test]
+    fn save_load_machine_id_validated() {
+        let sys = AsteroidsSystem::new();
+        let data = sys.save_state().unwrap();
+
+        // Tamper with the machine ID
+        let mut bad = data.clone();
+        let id_offset = 4 + 4 + 4; // magic(4) + version(4) + id_len(4)
+        bad[id_offset..id_offset + 9].copy_from_slice(b"xxxxxxxxx");
+
+        let mut sys2 = AsteroidsSystem::new();
+        let result = sys2.load_state(&bad);
+        assert!(result.is_err(), "should reject mismatched machine ID");
+    }
+
+    #[test]
+    fn save_does_not_include_rom() {
+        let mut sys = AsteroidsSystem::new();
+        sys.program_rom[0] = 0xDE;
+        sys.vector_rom[0] = 0xAD;
+
+        let data = sys.save_state().unwrap();
+
+        // Load into a fresh system (ROMs are zeroed)
+        let mut sys2 = AsteroidsSystem::new();
+        sys2.load_state(&data).unwrap();
+
+        // ROMs should remain at their default (zeroed), not overwritten
+        assert_eq!(sys2.program_rom[0], 0x00);
+        assert_eq!(sys2.vector_rom[0], 0x00);
+    }
 }

@@ -1,5 +1,6 @@
 use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::machine::{InputButton, Machine};
+use phosphor_core::core::save_state::{self, SaveError, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::state::{M6800State, M6809State};
 
@@ -397,6 +398,27 @@ impl Machine for RobotronSystem {
         // 1 MHz CPU clock / (260 scanlines × 64 cycles/scanline) = 60.096 Hz
         1_000_000.0 / williams::CYCLES_PER_FRAME as f64
     }
+
+    fn machine_id(&self) -> &str {
+        "robotron"
+    }
+
+    fn save_state(&self) -> Option<Vec<u8>> {
+        let mut w = StateWriter::new();
+        save_state::write_header(&mut w, self.machine_id());
+        self.board.save_board_state(&mut w);
+        w.write_u8(self.widget_port_a);
+        w.write_u8(self.widget_port_b);
+        Some(w.into_vec())
+    }
+
+    fn load_state(&mut self, data: &[u8]) -> Result<(), SaveError> {
+        let mut r = save_state::read_header(data, self.machine_id())?;
+        self.board.load_board_state(&mut r)?;
+        self.widget_port_a = r.read_u8()?;
+        self.widget_port_b = r.read_u8()?;
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -413,4 +435,76 @@ fn create_machine(
 
 inventory::submit! {
     MachineEntry::new("robotron", "robotron", create_machine)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use phosphor_core::core::machine::Machine;
+    use phosphor_core::cpu::CpuStateTrait;
+
+    #[test]
+    fn save_load_round_trip() {
+        let mut sys = RobotronSystem::new();
+
+        // Set known board state
+        sys.board.video_ram[0x100] = 0xAA;
+        sys.board.palette_ram[5] = 0x77;
+        sys.board.rom_bank = 3;
+        sys.board.clock = 50_000;
+        sys.board.watchdog_counter = 42;
+        sys.board.sound_ram[0x20] = 0xEF;
+
+        // Set Robotron-specific input state
+        sys.widget_port_a = 0x3F;
+        sys.widget_port_b = 0x03;
+
+        // Save
+        let data = sys.save_state().expect("save_state should return Some");
+
+        // Capture CPU snapshots for comparison
+        let cpu_snap = sys.board.cpu.snapshot();
+        let sound_snap = sys.board.sound_cpu.snapshot();
+
+        // Mutate everything
+        let mut sys2 = RobotronSystem::new();
+        sys2.board.video_ram[0x100] = 0xFF;
+        sys2.board.rom_bank = 7;
+        sys2.widget_port_a = 0xFF;
+        sys2.widget_port_b = 0xFF;
+
+        // Load
+        sys2.load_state(&data).unwrap();
+
+        // Verify CPU state
+        assert_eq!(sys2.board.cpu.snapshot(), cpu_snap);
+        assert_eq!(sys2.board.sound_cpu.snapshot(), sound_snap);
+
+        // Verify board state
+        assert_eq!(sys2.board.video_ram[0x100], 0xAA);
+        assert_eq!(sys2.board.palette_ram[5], 0x77);
+        assert_eq!(sys2.board.rom_bank, 3);
+        assert_eq!(sys2.board.clock, 50_000);
+        assert_eq!(sys2.board.watchdog_counter, 42);
+        assert_eq!(sys2.board.sound_ram[0x20], 0xEF);
+
+        // Verify Robotron-specific state
+        assert_eq!(sys2.widget_port_a, 0x3F);
+        assert_eq!(sys2.widget_port_b, 0x03);
+    }
+
+    #[test]
+    fn save_load_machine_id_validated() {
+        let sys = RobotronSystem::new();
+        let data = sys.save_state().unwrap();
+
+        // Tamper with the machine ID
+        let mut bad = data.clone();
+        let id_offset = 4 + 4 + 4; // magic(4) + version(4) + id_len(4)
+        bad[id_offset..id_offset + 8].copy_from_slice(b"xxxxxxxx");
+
+        let mut sys2 = RobotronSystem::new();
+        let result = sys2.load_state(&bad);
+        assert!(result.is_err(), "should reject mismatched machine ID");
+    }
 }
