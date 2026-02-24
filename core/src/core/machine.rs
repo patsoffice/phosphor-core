@@ -14,6 +14,7 @@ pub struct AnalogInput {
     pub name: &'static str,
 }
 
+use super::debug::Debuggable;
 use super::save_state::SaveError;
 
 /// Machine-agnostic interface for emulated systems.
@@ -105,5 +106,13 @@ pub trait Machine {
     /// Restore machine state from a previous `save_state()` snapshot.
     fn load_state(&mut self, _data: &[u8]) -> Result<(), SaveError> {
         Err(SaveError::InvalidFormat("save states not supported".into()))
+    }
+
+    /// Access the debug interface, if this machine supports it.
+    ///
+    /// Machines that implement `Debuggable` override this to return `Some(self)`.
+    /// The frontend uses this to enable the debug panel.
+    fn as_debuggable(&mut self) -> Option<&mut dyn Debuggable> {
+        None
     }
 }
