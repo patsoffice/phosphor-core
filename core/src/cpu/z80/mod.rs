@@ -2,6 +2,7 @@ mod alu;
 mod bit;
 mod block;
 mod branch;
+pub mod disasm;
 mod load_store;
 mod stack;
 
