@@ -46,6 +46,14 @@ pub fn run(machine: &mut dyn Machine, key_map: &KeyMap, scale: u32) {
                 } => break 'main,
 
                 Event::KeyDown {
+                    scancode: Some(Scancode::F5),
+                    repeat: false,
+                    ..
+                } => {
+                    machine.reset();
+                }
+
+                Event::KeyDown {
                     scancode: Some(Scancode::F9),
                     repeat: false,
                     ..

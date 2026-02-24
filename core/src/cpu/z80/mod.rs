@@ -803,12 +803,11 @@ impl BusMasterComponent for Z80 {
 }
 
 impl Cpu for Z80 {
-    fn reset(&mut self) {
-        self.pc = 0;
+    fn reset(&mut self, _bus: &mut Self::Bus, _master: BusMaster) {
+        self.pc = 0x0000;
         self.a = 0xFF;
         self.f = 0xFF;
         self.sp = 0xFFFF;
-        self.pc = 0x0000;
         self.i = 0;
         self.r = 0;
         self.im = 0;

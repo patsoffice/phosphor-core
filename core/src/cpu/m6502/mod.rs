@@ -604,10 +604,12 @@ impl BusMasterComponent for M6502 {
 }
 
 impl Cpu for M6502 {
-    fn reset(&mut self) {
-        self.pc = 0;
+    fn reset(&mut self, bus: &mut Self::Bus, master: BusMaster) {
         self.sp = 0xFD;
         self.p = 0x24;
+        let lo = bus.read(master, 0xFFFC);
+        let hi = bus.read(master, 0xFFFD);
+        self.pc = u16::from_le_bytes([lo, hi]);
     }
 
     fn signal_interrupt(&mut self, _int: InterruptState) {}

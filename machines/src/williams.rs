@@ -381,9 +381,6 @@ impl WilliamsBoard {
     // --- Reset ---
 
     pub fn reset(&mut self) {
-        self.cpu.reset();
-        self.sound_cpu.reset();
-
         // Reset peripherals first so bus is in a known state
         self.widget_pia = Pia6820::new();
         self.rom_pia = Pia6820::new();
@@ -401,17 +398,12 @@ impl WilliamsBoard {
         self.scanline_buffer.fill(0);
         // CMOS RAM and video RAM NOT cleared (battery-backed / not cleared by hardware)
 
-        // Fetch reset vectors through the bus (matches hardware behavior)
+        // CPU reset fetches the reset vector from the bus (matching real hardware)
         let bus_ptr: *mut Self = self;
         unsafe {
             let bus = &mut *bus_ptr as &mut dyn Bus<Address = u16, Data = u8>;
-            let main_hi = bus.read(BusMaster::Cpu(0), 0xFFFE);
-            let main_lo = bus.read(BusMaster::Cpu(0), 0xFFFF);
-            self.cpu.pc = u16::from_be_bytes([main_hi, main_lo]);
-
-            let snd_hi = bus.read(BusMaster::Cpu(1), 0xFFFE);
-            let snd_lo = bus.read(BusMaster::Cpu(1), 0xFFFF);
-            self.sound_cpu.pc = u16::from_be_bytes([snd_hi, snd_lo]);
+            self.cpu.reset(bus, BusMaster::Cpu(0));
+            self.sound_cpu.reset(bus, BusMaster::Cpu(1));
         }
     }
 

@@ -916,10 +916,6 @@ impl Machine for DkongSystem {
     }
 
     fn reset(&mut self) {
-        self.cpu.reset();
-        self.sound_cpu.reset();
-        self.cpu.pc = 0x0000;
-
         self.nmi_mask = false;
         self.vblank_nmi_pending = false;
         self.sound_irq_pending = false;
@@ -948,6 +944,13 @@ impl Machine for DkongSystem {
         self.scanline_buffer.fill(0);
 
         self.discrete.reset();
+
+        let bus_ptr: *mut Self = self;
+        unsafe {
+            let bus = &mut *bus_ptr as &mut dyn Bus<Address = u16, Data = u8>;
+            self.cpu.reset(bus, BusMaster::Cpu(0));
+            self.sound_cpu.reset(bus, BusMaster::Cpu(1));
+        }
     }
 
     fn save_nvram(&self) -> Option<&[u8]> {

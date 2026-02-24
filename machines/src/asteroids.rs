@@ -420,16 +420,17 @@ impl Machine for AsteroidsSystem {
     }
 
     fn reset(&mut self) {
-        self.cpu.reset();
-        // Load reset vector: 0xFFFC & 0x7FFF = 0x7FFC → program_rom offset 0x17FC
-        let vec_lo = self.program_rom[0x17FC];
-        let vec_hi = self.program_rom[0x17FD];
-        self.cpu.pc = u16::from_le_bytes([vec_lo, vec_hi]);
         self.dvg.reset();
         self.nmi_pending = false;
         self.nmi_counter = 0;
         self.watchdog_frame_count = 0;
         self.display_list.clear();
+
+        let bus_ptr: *mut Self = self;
+        unsafe {
+            let bus = &mut *bus_ptr as &mut dyn Bus<Address = u16, Data = u8>;
+            self.cpu.reset(bus, BusMaster::Cpu(0));
+        }
     }
 
     fn frame_rate_hz(&self) -> f64 {

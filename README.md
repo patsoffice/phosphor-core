@@ -48,16 +48,19 @@ ROMs are matched by CRC32 checksum, so any MAME ROM naming convention works. All
 
 **Controls:**
 
-| Key              | Action      |
-| ---------------- | ----------- |
-| Arrow Left/Right | P1 Move     |
-| Space            | P1 Flap     |
-| 1                | P1 Start    |
-| A/D              | P2 Move     |
-| W                | P2 Flap     |
-| 2                | P2 Start    |
-| 5                | Insert Coin |
-| Escape           | Quit        |
+| Key              | Action         |
+| ---------------- | -------------- |
+| Arrow Left/Right | P1 Move        |
+| Space            | P1 Flap        |
+| 1                | P1 Start       |
+| A/D              | P2 Move        |
+| W                | P2 Flap        |
+| 2                | P2 Start       |
+| 5                | Insert Coin    |
+| F5               | Reset Machine  |
+| F9               | Toggle Throttle|
+| F10              | Toggle FPS     |
+| Escape           | Quit           |
 
 > `.cargo/config.toml` sets the Homebrew library path for aarch64-apple-darwin automatically, so no manual `LIBRARY_PATH` is needed.
 
@@ -354,7 +357,7 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 - [x] CWAI and SYNC instructions
 - [x] Move SimpleSystem components to separate crate
 - [x] Cycle-accurate timing validation (M6809: 266K tests vs elmerucr/MC6809, M6800: 192K tests vs mame4all)
-- [ ] Reset vector fetch from 0xFFFE/0xFFFF
+- [x] Reset vector fetch from 0xFFFE/0xFFFF
 - [ ] Instruction disassembler
 - [ ] Save state support
 

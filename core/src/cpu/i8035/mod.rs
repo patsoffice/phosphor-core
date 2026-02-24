@@ -691,7 +691,7 @@ impl BusMasterComponent for I8035 {
 }
 
 impl Cpu for I8035 {
-    fn reset(&mut self) {
+    fn reset(&mut self, _bus: &mut Self::Bus, _master: BusMaster) {
         self.pc = 0;
         self.psw = 0;
         self.a11 = false;

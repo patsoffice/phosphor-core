@@ -611,9 +611,11 @@ impl BusMasterComponent for M6809 {
 }
 
 impl Cpu for M6809 {
-    fn reset(&mut self) {
-        self.pc = 0; // Should read vector from FFFE/FFFF via bus later
+    fn reset(&mut self, bus: &mut Self::Bus, master: BusMaster) {
         self.cc = CcFlag::I as u8 | CcFlag::F as u8; // IRQ/FIRQ masked
+        let hi = bus.read(master, 0xFFFE);
+        let lo = bus.read(master, 0xFFFF);
+        self.pc = u16::from_be_bytes([hi, lo]);
     }
 
     fn signal_interrupt(&mut self, _int: InterruptState) {

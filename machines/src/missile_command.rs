@@ -756,13 +756,6 @@ impl Machine for MissileCommandSystem {
     }
 
     fn reset(&mut self) {
-        self.cpu.reset();
-        // Load reset vector (6502 little-endian at 0xFFFC-0xFFFD)
-        // 0xFFFC maps to ROM offset 0x2FFC (0xFFFC - 0x5000 = 0xAFFC, but via mirror:
-        // 0xFFFC - 0xF800 + 0x2800 = 0x2FFC)
-        let vec_lo = self.rom[0x2FFC];
-        let vec_hi = self.rom[0x2FFD];
-        self.cpu.pc = u16::from_le_bytes([vec_lo, vec_hi]);
         self.irq_state = false;
         self.madsel_lastcycles = 0;
         self.stall_cycles = 0;
@@ -770,6 +763,12 @@ impl Machine for MissileCommandSystem {
         self.scanline_buffer.fill(0);
         self.scanline_buffer_valid = false;
         self.audio_buffer.clear();
+
+        let bus_ptr: *mut Self = self;
+        unsafe {
+            let bus = &mut *bus_ptr as &mut dyn Bus<Address = u16, Data = u8>;
+            self.cpu.reset(bus, BusMaster::Cpu(0));
+        }
     }
 
     fn save_nvram(&self) -> Option<&[u8]> {

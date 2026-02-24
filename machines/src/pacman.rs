@@ -769,7 +769,6 @@ impl Machine for PacmanSystem {
     }
 
     fn reset(&mut self) {
-        self.cpu.reset();
         self.wsg.reset();
         self.irq_enabled = false;
         self.sound_enabled = false;
@@ -787,8 +786,11 @@ impl Machine for PacmanSystem {
         self.scanline_buffer.fill(0);
         // ROM, GFX, PROMs, and palette_rgb are NOT cleared (loaded from ROM set)
 
-        // Z80 reset: PC starts at 0x0000, fetching the first ROM instruction
-        self.cpu.pc = 0x0000;
+        let bus_ptr: *mut Self = self;
+        unsafe {
+            let bus = &mut *bus_ptr as &mut dyn Bus<Address = u16, Data = u8>;
+            self.cpu.reset(bus, BusMaster::Cpu(0));
+        }
     }
 
     fn save_nvram(&self) -> Option<&[u8]> {

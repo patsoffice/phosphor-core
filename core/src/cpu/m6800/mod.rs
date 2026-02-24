@@ -701,9 +701,11 @@ impl BusMasterComponent for M6800 {
 }
 
 impl Cpu for M6800 {
-    fn reset(&mut self) {
-        self.pc = 0;
+    fn reset(&mut self, bus: &mut Self::Bus, master: BusMaster) {
         self.cc = CcFlag::I as u8 | CC_UNUSED_BITS;
+        let hi = bus.read(master, 0xFFFE);
+        let lo = bus.read(master, 0xFFFF);
+        self.pc = u16::from_be_bytes([hi, lo]);
     }
 
     fn signal_interrupt(&mut self, _int: InterruptState) {
