@@ -1,6 +1,7 @@
 mod alu;
 mod binary;
 mod branch;
+pub mod disasm;
 mod load_store;
 mod shift;
 mod stack;

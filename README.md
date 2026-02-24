@@ -358,7 +358,7 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 - [x] Move SimpleSystem components to separate crate
 - [x] Cycle-accurate timing validation (M6809: 266K tests vs elmerucr/MC6809, M6800: 192K tests vs mame4all)
 - [x] Reset vector fetch from 0xFFFE/0xFFFF
-- [x] Instruction disassembler (I8035, M6800; common `Disassemble` trait, 186 tests)
+- [x] Instruction disassembler (I8035, M6800, M6502; common `Disassemble` trait, 258 tests)
 - [ ] Save state support
 
 ### Phase 3: Additional CPUs
@@ -402,6 +402,7 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 - [x] Pac-Man (Namco: Z80 + WSG + tile/sprite video)
 - [x] Donkey Kong (Nintendo: Z80 + I8035 + I8257 DMA + tile/sprite video)
 - [x] Asteroids (Atari: M6502 + DVG vector display)
+- [x] Gridlee (Videa: M6809 + bitmap video + trackball — freely distributable ROMs)
 - [ ] Dig Dug (Namco: 3×Z80 + WSG + 06xx/51xx)
 - [ ] Galaga (Namco: 3×Z80 + WSG + 06xx/51xx/54xx + starfield)
 - [ ] Crystal Castles (Atari: M6502 + POKEY + bitmap video + trackball)
