@@ -1,16 +1,24 @@
-use sdl2::pixels::PixelFormatEnum;
-use sdl2::render::{Canvas, TextureCreator};
-use sdl2::video::{Window, WindowContext};
+use std::time::Instant;
+
+use egui_sdl2_gl as egui_backend;
+use egui_backend::painter::Painter;
+use egui_backend::{DpiScaling, EguiStateHandler, ShaderVersion};
+use sdl2::video::{GLContext, GLProfile, Window};
 
 pub struct Video {
-    canvas: Canvas<Window>,
-    texture_creator: TextureCreator<WindowContext>,
-    width: u32,
-    height: u32,
+    window: Window,
+    _gl_ctx: GLContext,
+    painter: Painter,
+    egui_state: EguiStateHandler,
+    egui_ctx: egui::Context,
+    game_texture_id: egui::TextureId,
+    native_width: u32,
+    native_height: u32,
+    rgba_buffer: Vec<u8>,
+    start_time: Instant,
 }
 
 impl Video {
-    /// Create an SDL window and renderer for the given native resolution.
     pub fn new(
         sdl_video: &sdl2::VideoSubsystem,
         title: &str,
@@ -18,43 +26,157 @@ impl Video {
         native_height: u32,
         scale: u32,
     ) -> Self {
+        let gl_attr = sdl_video.gl_attr();
+        gl_attr.set_context_profile(GLProfile::Core);
+        gl_attr.set_context_version(3, 2);
+        gl_attr.set_double_buffer(true);
+        gl_attr.set_multisample_samples(4);
+        gl_attr.set_framebuffer_srgb_compatible(true);
+
         let window = sdl_video
             .window(title, native_width * scale, native_height * scale)
+            .opengl()
             .position_centered()
             .build()
             .expect("Failed to create window");
 
-        let canvas = window
-            .into_canvas()
-            .accelerated()
-            .build()
-            .expect("Failed to create canvas");
+        let gl_ctx = window
+            .gl_create_context()
+            .expect("Failed to create GL context");
 
-        let texture_creator = canvas.texture_creator();
+        let (mut painter, egui_state) =
+            egui_backend::with_sdl2(&window, ShaderVersion::Default, DpiScaling::Default);
+        let egui_ctx = egui::Context::default();
+
+        // Create initial game texture (black with full alpha)
+        let pixel_count = (native_width * native_height) as usize;
+        let mut rgba_buffer = vec![0u8; pixel_count * 4];
+        for chunk in rgba_buffer.chunks_exact_mut(4) {
+            chunk[3] = 255;
+        }
+        let game_texture_id = painter.new_user_texture_rgba8(
+            (native_width as usize, native_height as usize),
+            rgba_buffer.clone(),
+            false, // nearest-neighbor for crisp pixels
+        );
 
         Self {
-            canvas,
-            texture_creator,
-            width: native_width,
-            height: native_height,
+            window,
+            _gl_ctx: gl_ctx,
+            painter,
+            egui_state,
+            egui_ctx,
+            game_texture_id,
+            native_width,
+            native_height,
+            rgba_buffer,
+            start_time: Instant::now(),
         }
     }
 
-    /// Upload an RGB24 framebuffer to the texture and present it.
+    /// Convert an RGB24 framebuffer to RGBA8 and upload to the game texture.
+    pub fn update_game_texture(&mut self, rgb24: &[u8]) {
+        let pixel_count = (self.native_width * self.native_height) as usize;
+        debug_assert_eq!(rgb24.len(), pixel_count * 3);
+
+        for i in 0..pixel_count {
+            self.rgba_buffer[i * 4] = rgb24[i * 3];
+            self.rgba_buffer[i * 4 + 1] = rgb24[i * 3 + 1];
+            self.rgba_buffer[i * 4 + 2] = rgb24[i * 3 + 2];
+            // alpha stays 255 from initialization
+        }
+
+        self.painter
+            .update_user_texture_rgba8_data(self.game_texture_id, self.rgba_buffer.clone());
+    }
+
+    /// Render the game filling the entire window (no debug panels).
+    pub fn present_game_only(&mut self) {
+        unsafe {
+            gl::ClearColor(0.0, 0.0, 0.0, 1.0);
+            gl::Clear(gl::COLOR_BUFFER_BIT);
+        }
+
+        self.egui_state.input.time = Some(self.start_time.elapsed().as_secs_f64());
+        self.egui_ctx.begin_pass(self.egui_state.input.take());
+
+        let tex_id = self.game_texture_id;
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE)
+            .show(&self.egui_ctx, |ui| {
+                let available = ui.available_size();
+                ui.image(egui::load::SizedTexture::new(tex_id, available));
+            });
+
+        self.finish_frame();
+    }
+
+    /// Render the game alongside debug panels. The closure builds the debug UI.
+    pub fn present_with_debug<F>(&mut self, debug_ui_fn: F)
+    where
+        F: FnOnce(&egui::Context, egui::TextureId, (u32, u32)),
+    {
+        unsafe {
+            gl::ClearColor(0.1, 0.1, 0.1, 1.0);
+            gl::Clear(gl::COLOR_BUFFER_BIT);
+        }
+
+        self.egui_state.input.time = Some(self.start_time.elapsed().as_secs_f64());
+        self.egui_ctx.begin_pass(self.egui_state.input.take());
+
+        debug_ui_fn(
+            &self.egui_ctx,
+            self.game_texture_id,
+            (self.native_width, self.native_height),
+        );
+
+        self.finish_frame();
+    }
+
+    fn finish_frame(&mut self) {
+        let egui::FullOutput {
+            platform_output,
+            textures_delta,
+            shapes,
+            pixels_per_point,
+            ..
+        } = self.egui_ctx.end_pass();
+
+        self.egui_state
+            .process_output(&self.window, &platform_output);
+
+        let paint_jobs = self.egui_ctx.tessellate(shapes, pixels_per_point);
+        self.painter.paint_jobs(None, textures_delta, paint_jobs);
+        self.window.gl_swap_window();
+    }
+
+    /// Forward an SDL2 event to egui for input processing.
+    pub fn process_event(&mut self, event: sdl2::event::Event) {
+        self.egui_state
+            .process_input(&self.window, event, &mut self.painter);
+    }
+
+    /// True if egui wants pointer events (mouse is over an egui area).
+    pub fn wants_pointer(&self) -> bool {
+        self.egui_ctx.is_pointer_over_area()
+    }
+
+    /// True if egui wants keyboard events (a text field is focused).
+    pub fn wants_keyboard(&self) -> bool {
+        self.egui_ctx.wants_keyboard_input()
+    }
+
+    /// Temporary compatibility: upload framebuffer and present game only.
+    /// Will be removed when emulator.rs is updated to use the new API.
     pub fn present(&mut self, framebuffer: &[u8]) {
-        let mut texture = self
-            .texture_creator
-            .create_texture_streaming(PixelFormatEnum::RGB24, self.width, self.height)
-            .expect("Failed to create texture");
+        self.update_game_texture(framebuffer);
+        self.present_game_only();
+    }
 
-        texture
-            .update(None, framebuffer, (self.width * 3) as usize)
-            .expect("Failed to update texture");
-
-        self.canvas.clear();
-        self.canvas
-            .copy(&texture, None, None)
-            .expect("Failed to copy texture");
-        self.canvas.present();
+    /// Resize the window.
+    pub fn resize_window(&mut self, width: u32, height: u32) {
+        self.window
+            .set_size(width, height)
+            .expect("Failed to resize window");
     }
 }
