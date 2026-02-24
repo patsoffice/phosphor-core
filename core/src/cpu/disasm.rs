@@ -24,8 +24,15 @@ impl DisassembledInstruction {
         if let Some(target) = self.target_addr
             && let Some(name) = resolve(target)
         {
-            let hex = format!("${:04X}", target);
-            let substituted = self.operands.replace(&hex, name);
+            let hex4 = format!("${:04X}", target);
+            let substituted = self.operands.replace(&hex4, name);
+            // If 4-digit hex didn't match, try 2-digit for direct/zero-page addressing
+            let substituted = if substituted == self.operands && target <= 0xFF {
+                let hex2 = format!("${:02X}", target);
+                self.operands.replace(&hex2, name)
+            } else {
+                substituted
+            };
             if self.operands.is_empty() {
                 return self.mnemonic.to_string();
             }
