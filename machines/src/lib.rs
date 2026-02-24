@@ -1,5 +1,6 @@
 pub mod asteroids;
 pub mod dkong;
+pub mod gridlee;
 pub mod joust;
 pub mod missile_command;
 pub mod pacman;
@@ -14,6 +15,7 @@ pub mod williams;
 
 pub use asteroids::AsteroidsSystem;
 pub use dkong::DkongSystem;
+pub use gridlee::GridleeSystem;
 pub use joust::JoustSystem;
 pub use missile_command::MissileCommandSystem;
 pub use pacman::PacmanSystem;
