@@ -665,6 +665,12 @@ impl M6809 {
             ExecState::Fetch | ExecState::WaitForInterrupt | ExecState::SyncWait
         )
     }
+
+    /// Returns true when the CPU is ready to fetch the next opcode.
+    /// Used by the debugger for instruction-level stepping.
+    pub fn at_instruction_boundary(&self) -> bool {
+        matches!(self.state, ExecState::Fetch)
+    }
 }
 
 impl Saveable for M6809 {

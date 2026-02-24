@@ -748,6 +748,12 @@ impl M6800 {
     pub fn is_at_save_boundary(&self) -> bool {
         matches!(self.state, ExecState::Fetch | ExecState::WaitForInterrupt)
     }
+
+    /// Returns true when the CPU is ready to fetch the next opcode.
+    /// Used by the debugger for instruction-level stepping.
+    pub fn at_instruction_boundary(&self) -> bool {
+        matches!(self.state, ExecState::Fetch)
+    }
 }
 
 impl Saveable for M6800 {

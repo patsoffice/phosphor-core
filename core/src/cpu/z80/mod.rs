@@ -867,6 +867,12 @@ impl Z80 {
     pub fn is_at_save_boundary(&self) -> bool {
         matches!(self.state, ExecState::Fetch) && !self.prefix_pending
     }
+
+    /// Returns true when the CPU is ready to fetch the next opcode
+    /// (not mid-prefix). Used by the debugger for instruction-level stepping.
+    pub fn at_instruction_boundary(&self) -> bool {
+        matches!(self.state, ExecState::Fetch) && !self.prefix_pending
+    }
 }
 
 impl Saveable for Z80 {
