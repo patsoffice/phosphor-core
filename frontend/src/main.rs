@@ -1,6 +1,7 @@
 use phosphor_machines::registry;
 
 mod audio;
+mod debug_ui;
 mod emulator;
 mod input;
 mod overlay;

@@ -25,15 +25,51 @@ pub struct M6809State {
 impl M6809State {
     pub fn debug_registers(&self) -> Vec<DebugRegister> {
         vec![
-            DebugRegister { name: "PC", value: self.pc as u64, width: 16 },
-            DebugRegister { name: "A", value: self.a as u64, width: 8 },
-            DebugRegister { name: "B", value: self.b as u64, width: 8 },
-            DebugRegister { name: "X", value: self.x as u64, width: 16 },
-            DebugRegister { name: "Y", value: self.y as u64, width: 16 },
-            DebugRegister { name: "U", value: self.u as u64, width: 16 },
-            DebugRegister { name: "S", value: self.s as u64, width: 16 },
-            DebugRegister { name: "DP", value: self.dp as u64, width: 8 },
-            DebugRegister { name: "CC", value: self.cc as u64, width: 8 },
+            DebugRegister {
+                name: "PC",
+                value: self.pc as u64,
+                width: 16,
+            },
+            DebugRegister {
+                name: "A",
+                value: self.a as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "B",
+                value: self.b as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "X",
+                value: self.x as u64,
+                width: 16,
+            },
+            DebugRegister {
+                name: "Y",
+                value: self.y as u64,
+                width: 16,
+            },
+            DebugRegister {
+                name: "U",
+                value: self.u as u64,
+                width: 16,
+            },
+            DebugRegister {
+                name: "S",
+                value: self.s as u64,
+                width: 16,
+            },
+            DebugRegister {
+                name: "DP",
+                value: self.dp as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "CC",
+                value: self.cc as u64,
+                width: 8,
+            },
         ]
     }
 }
@@ -52,12 +88,36 @@ pub struct M6502State {
 impl M6502State {
     pub fn debug_registers(&self) -> Vec<DebugRegister> {
         vec![
-            DebugRegister { name: "PC", value: self.pc as u64, width: 16 },
-            DebugRegister { name: "A", value: self.a as u64, width: 8 },
-            DebugRegister { name: "X", value: self.x as u64, width: 8 },
-            DebugRegister { name: "Y", value: self.y as u64, width: 8 },
-            DebugRegister { name: "SP", value: self.sp as u64, width: 8 },
-            DebugRegister { name: "P", value: self.p as u64, width: 8 },
+            DebugRegister {
+                name: "PC",
+                value: self.pc as u64,
+                width: 16,
+            },
+            DebugRegister {
+                name: "A",
+                value: self.a as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "X",
+                value: self.x as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "Y",
+                value: self.y as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "SP",
+                value: self.sp as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "P",
+                value: self.p as u64,
+                width: 8,
+            },
         ]
     }
 }
@@ -76,12 +136,36 @@ pub struct M6800State {
 impl M6800State {
     pub fn debug_registers(&self) -> Vec<DebugRegister> {
         vec![
-            DebugRegister { name: "PC", value: self.pc as u64, width: 16 },
-            DebugRegister { name: "A", value: self.a as u64, width: 8 },
-            DebugRegister { name: "B", value: self.b as u64, width: 8 },
-            DebugRegister { name: "X", value: self.x as u64, width: 16 },
-            DebugRegister { name: "SP", value: self.sp as u64, width: 16 },
-            DebugRegister { name: "CC", value: self.cc as u64, width: 8 },
+            DebugRegister {
+                name: "PC",
+                value: self.pc as u64,
+                width: 16,
+            },
+            DebugRegister {
+                name: "A",
+                value: self.a as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "B",
+                value: self.b as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "X",
+                value: self.x as u64,
+                width: 16,
+            },
+            DebugRegister {
+                name: "SP",
+                value: self.sp as u64,
+                width: 16,
+            },
+            DebugRegister {
+                name: "CC",
+                value: self.cc as u64,
+                width: 8,
+            },
         ]
     }
 }
@@ -102,12 +186,36 @@ pub struct I8035State {
 impl I8035State {
     pub fn debug_registers(&self) -> Vec<DebugRegister> {
         vec![
-            DebugRegister { name: "PC", value: self.pc as u64, width: 16 },
-            DebugRegister { name: "A", value: self.a as u64, width: 8 },
-            DebugRegister { name: "PSW", value: self.psw as u64, width: 8 },
-            DebugRegister { name: "T", value: self.t as u64, width: 8 },
-            DebugRegister { name: "P1", value: self.p1 as u64, width: 8 },
-            DebugRegister { name: "P2", value: self.p2 as u64, width: 8 },
+            DebugRegister {
+                name: "PC",
+                value: self.pc as u64,
+                width: 16,
+            },
+            DebugRegister {
+                name: "A",
+                value: self.a as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "PSW",
+                value: self.psw as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "T",
+                value: self.t as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "P1",
+                value: self.p1 as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "P2",
+                value: self.p2 as u64,
+                width: 8,
+            },
         ]
     }
 }
@@ -148,16 +256,56 @@ pub struct Z80State {
 impl Z80State {
     pub fn debug_registers(&self) -> Vec<DebugRegister> {
         vec![
-            DebugRegister { name: "PC", value: self.pc as u64, width: 16 },
-            DebugRegister { name: "AF", value: ((self.a as u64) << 8) | self.f as u64, width: 16 },
-            DebugRegister { name: "BC", value: ((self.b as u64) << 8) | self.c as u64, width: 16 },
-            DebugRegister { name: "DE", value: ((self.d as u64) << 8) | self.e as u64, width: 16 },
-            DebugRegister { name: "HL", value: ((self.h as u64) << 8) | self.l as u64, width: 16 },
-            DebugRegister { name: "IX", value: self.ix as u64, width: 16 },
-            DebugRegister { name: "IY", value: self.iy as u64, width: 16 },
-            DebugRegister { name: "SP", value: self.sp as u64, width: 16 },
-            DebugRegister { name: "I", value: self.i as u64, width: 8 },
-            DebugRegister { name: "R", value: self.r as u64, width: 8 },
+            DebugRegister {
+                name: "PC",
+                value: self.pc as u64,
+                width: 16,
+            },
+            DebugRegister {
+                name: "AF",
+                value: ((self.a as u64) << 8) | self.f as u64,
+                width: 16,
+            },
+            DebugRegister {
+                name: "BC",
+                value: ((self.b as u64) << 8) | self.c as u64,
+                width: 16,
+            },
+            DebugRegister {
+                name: "DE",
+                value: ((self.d as u64) << 8) | self.e as u64,
+                width: 16,
+            },
+            DebugRegister {
+                name: "HL",
+                value: ((self.h as u64) << 8) | self.l as u64,
+                width: 16,
+            },
+            DebugRegister {
+                name: "IX",
+                value: self.ix as u64,
+                width: 16,
+            },
+            DebugRegister {
+                name: "IY",
+                value: self.iy as u64,
+                width: 16,
+            },
+            DebugRegister {
+                name: "SP",
+                value: self.sp as u64,
+                width: 16,
+            },
+            DebugRegister {
+                name: "I",
+                value: self.i as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "R",
+                value: self.r as u64,
+                width: 8,
+            },
         ]
     }
 }

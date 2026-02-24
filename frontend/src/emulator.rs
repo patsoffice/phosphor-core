@@ -5,6 +5,7 @@ use phosphor_core::core::machine::Machine;
 use sdl2::event::Event;
 use sdl2::keyboard::Scancode;
 
+use crate::debug_ui::{self, DebugState, RunMode};
 use crate::input::{self, ControllerMap, KeyMap};
 use crate::video::Video;
 
@@ -99,9 +100,21 @@ pub fn run(
         mouse_grabbed = true;
     }
 
+    // Debug state
+    let has_debug = machine.as_debuggable().is_some();
+    let mut debug_state = DebugState::new();
+    if let Some(dbg) = machine.as_debuggable() {
+        debug_state.cpu_count = dbg.debug_cpu_count();
+        debug_state.cpu_name = dbg.debug_cpu_name().to_string();
+    }
+    let mut prev_selected_cpu: usize = 0;
+
     'main: loop {
         // Poll all pending SDL events, translate to machine input
         for event in event_pump.poll_iter() {
+            // Forward every event to egui first
+            video.process_event(event.clone());
+
             match event {
                 Event::Quit { .. } => break 'main,
 
@@ -110,6 +123,60 @@ pub fn run(
                     ..
                 } => break 'main,
 
+                // F1: Toggle debug mode
+                Event::KeyDown {
+                    scancode: Some(Scancode::F1),
+                    repeat: false,
+                    ..
+                } => {
+                    if has_debug {
+                        debug_state.active = !debug_state.active;
+                        if debug_state.active {
+                            video.resize_window(width * scale + 240, height * scale);
+                            debug_state.run_mode = RunMode::Paused;
+                            if let Some(dbg) = machine.as_debuggable() {
+                                debug_state.refresh(dbg);
+                            }
+                        } else {
+                            video.resize_window(width * scale, height * scale);
+                            debug_state.run_mode = RunMode::Running;
+                        }
+                    }
+                }
+
+                // F2: Step instruction (debug + paused)
+                Event::KeyDown {
+                    scancode: Some(Scancode::F2),
+                    repeat: false,
+                    ..
+                } => {
+                    if debug_state.active && debug_state.run_mode == RunMode::Paused {
+                        debug_state.run_mode = RunMode::StepInstruction;
+                    }
+                }
+
+                // F3: Step cycle (debug + paused)
+                Event::KeyDown {
+                    scancode: Some(Scancode::F3),
+                    repeat: false,
+                    ..
+                } => {
+                    if debug_state.active && debug_state.run_mode == RunMode::Paused {
+                        debug_state.run_mode = RunMode::StepCycle;
+                    }
+                }
+
+                // F4: Continue (resume running)
+                Event::KeyDown {
+                    scancode: Some(Scancode::F4),
+                    repeat: false,
+                    ..
+                } => {
+                    if debug_state.active {
+                        debug_state.run_mode = RunMode::Running;
+                    }
+                }
+
                 Event::KeyDown {
                     scancode: Some(Scancode::F5),
                     repeat: false,
@@ -117,6 +184,35 @@ pub fn run(
                 } => {
                     machine.reset();
                 }
+
+                // Quick Save (F6)
+                Event::KeyDown {
+                    scancode: Some(Scancode::F6),
+                    repeat: false,
+                    ..
+                } => {
+                    if let Some(data) = machine.save_state() {
+                        match std::fs::write(save_path, &data) {
+                            Ok(()) => eprintln!("Save state written ({} bytes)", data.len()),
+                            Err(e) => eprintln!("Save state failed: {e}"),
+                        }
+                    } else {
+                        eprintln!("Save states not supported for this machine");
+                    }
+                }
+
+                // Quick Load (F7)
+                Event::KeyDown {
+                    scancode: Some(Scancode::F7),
+                    repeat: false,
+                    ..
+                } => match std::fs::read(save_path) {
+                    Ok(data) => match machine.load_state(&data) {
+                        Ok(()) => eprintln!("Save state loaded"),
+                        Err(e) => eprintln!("Load state failed: {e}"),
+                    },
+                    Err(e) => eprintln!("No save file found: {e}"),
+                },
 
                 Event::KeyDown {
                     scancode: Some(Scancode::F9),
@@ -149,42 +245,15 @@ pub fn run(
                     sdl_context.mouse().set_relative_mouse_mode(mouse_grabbed);
                 }
 
-                // Quick Save (F6)
-                Event::KeyDown {
-                    scancode: Some(Scancode::F6),
-                    repeat: false,
-                    ..
-                } => {
-                    if let Some(data) = machine.save_state() {
-                        match std::fs::write(save_path, &data) {
-                            Ok(()) => eprintln!("Save state written ({} bytes)", data.len()),
-                            Err(e) => eprintln!("Save state failed: {e}"),
-                        }
-                    } else {
-                        eprintln!("Save states not supported for this machine");
-                    }
-                }
-
-                // Quick Load (F7)
-                Event::KeyDown {
-                    scancode: Some(Scancode::F7),
-                    repeat: false,
-                    ..
-                } => match std::fs::read(save_path) {
-                    Ok(data) => match machine.load_state(&data) {
-                        Ok(()) => eprintln!("Save state loaded"),
-                        Err(e) => eprintln!("Load state failed: {e}"),
-                    },
-                    Err(e) => eprintln!("No save file found: {e}"),
-                },
-
-                // Keyboard input
+                // Keyboard input — only pass to game if egui doesn't want it
                 Event::KeyDown {
                     scancode: Some(sc),
                     repeat: false,
                     ..
                 } => {
-                    if let Some(button_id) = key_map.get(sc) {
+                    if !video.wants_keyboard()
+                        && let Some(button_id) = key_map.get(sc)
+                    {
                         machine.set_input(button_id, true);
                     }
                 }
@@ -192,12 +261,14 @@ pub fn run(
                 Event::KeyUp {
                     scancode: Some(sc), ..
                 } => {
-                    if let Some(button_id) = key_map.get(sc) {
+                    if !video.wants_keyboard()
+                        && let Some(button_id) = key_map.get(sc)
+                    {
                         machine.set_input(button_id, false);
                     }
                 }
 
-                // Game controller button press/release
+                // Game controller button press/release (egui never intercepts these)
                 Event::ControllerButtonDown { button, .. } => {
                     if let Some(button_id) = controller_map.get_button(button) {
                         machine.set_input(button_id, true);
@@ -232,7 +303,7 @@ pub fn run(
 
                 // Mouse motion → analog axes (trackball games)
                 Event::MouseMotion { xrel, yrel, .. } => {
-                    if mouse_grabbed && analog_axes.len() >= 2 {
+                    if !video.wants_pointer() && mouse_grabbed && analog_axes.len() >= 2 {
                         machine.set_analog(analog_axes[0], xrel);
                         machine.set_analog(analog_axes[1], yrel);
                     }
@@ -240,7 +311,8 @@ pub fn run(
 
                 // Mouse buttons → fire (trackball games)
                 Event::MouseButtonDown { mouse_btn, .. } => {
-                    if mouse_grabbed
+                    if !video.wants_pointer()
+                        && mouse_grabbed
                         && let Some(id) =
                             input::mouse_button_to_input(machine.input_map(), mouse_btn)
                     {
@@ -249,7 +321,8 @@ pub fn run(
                 }
 
                 Event::MouseButtonUp { mouse_btn, .. } => {
-                    if mouse_grabbed
+                    if !video.wants_pointer()
+                        && mouse_grabbed
                         && let Some(id) =
                             input::mouse_button_to_input(machine.input_map(), mouse_btn)
                     {
@@ -261,11 +334,20 @@ pub fn run(
             }
         }
 
-        // Run one frame of emulation
-        machine.run_frame();
+        // Sync CPU selection if changed via debug panel
+        if debug_state.selected_cpu != prev_selected_cpu {
+            if let Some(dbg) = machine.as_debuggable() {
+                dbg.debug_select_cpu(debug_state.selected_cpu);
+                debug_state.refresh(dbg);
+            }
+            prev_selected_cpu = debug_state.selected_cpu;
+        }
 
-        // Drain audio samples from machine into SDL ring buffer
-        if let Some((ref device, ref ring, _)) = audio_state {
+        // Execute based on debug state
+        let frame_executed = debug_ui::execute_frame(machine, &mut debug_state);
+
+        // Drain audio samples only when a full frame was executed
+        if frame_executed && let Some((ref device, ref ring, _)) = audio_state {
             let n = machine.fill_audio(&mut audio_scratch);
             if n > 0 {
                 let mut buf = ring.lock().unwrap();
@@ -284,19 +366,28 @@ pub fn run(
             }
         }
 
-        // When unthrottled, only render once per frame_duration to avoid being
-        // gated by the display compositor (which syncs present() to refresh rate).
-        let should_render = throttle || last_render_time.elapsed() >= frame_duration;
+        // Render: always render when paused (to show debug UI), otherwise respect throttle
+        let should_render = throttle
+            || debug_state.run_mode == RunMode::Paused
+            || last_render_time.elapsed() >= frame_duration;
 
         if should_render {
             machine.render_frame(&mut framebuffer);
 
-            // FPS overlay: update counter and draw text onto framebuffer
-            if show_fps {
+            // FPS overlay onto framebuffer (only when debug panel is not active)
+            if show_fps && !debug_state.active {
                 crate::overlay::draw_fps(&mut framebuffer, width as usize, &fps_text);
             }
 
-            video.present(&framebuffer);
+            video.update_game_texture(&framebuffer);
+
+            if debug_state.active {
+                video.present_with_debug(|ctx, tex_id, native_size| {
+                    debug_ui::draw_debug_ui(ctx, tex_id, native_size, &mut debug_state);
+                });
+            } else {
+                video.present_game_only();
+            }
             last_render_time = Instant::now();
         }
 
@@ -312,10 +403,11 @@ pub fn run(
             }
         }
 
-        // Frame throttling (F9 to toggle): sleep until the target presentation time.
-        // Advancing next_frame_time by a fixed duration each frame
-        // automatically corrects sub-millisecond drift.
-        if throttle {
+        // Frame throttling
+        if debug_state.run_mode == RunMode::Paused {
+            // When paused, sleep to keep UI responsive without burning CPU
+            std::thread::sleep(Duration::from_millis(16));
+        } else if throttle {
             let now = Instant::now();
             if next_frame_time > now {
                 std::thread::sleep(next_frame_time - now);

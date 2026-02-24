@@ -1,8 +1,8 @@
 use std::time::Instant;
 
-use egui_sdl2_gl as egui_backend;
 use egui_backend::painter::Painter;
 use egui_backend::{DpiScaling, EguiStateHandler, ShaderVersion};
+use egui_sdl2_gl as egui_backend;
 use sdl2::video::{GLContext, GLProfile, Window};
 
 pub struct Video {
@@ -164,13 +164,6 @@ impl Video {
     /// True if egui wants keyboard events (a text field is focused).
     pub fn wants_keyboard(&self) -> bool {
         self.egui_ctx.wants_keyboard_input()
-    }
-
-    /// Temporary compatibility: upload framebuffer and present game only.
-    /// Will be removed when emulator.rs is updated to use the new API.
-    pub fn present(&mut self, framebuffer: &[u8]) {
-        self.update_game_texture(framebuffer);
-        self.present_game_only();
     }
 
     /// Resize the window.
