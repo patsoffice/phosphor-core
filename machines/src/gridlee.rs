@@ -181,6 +181,7 @@ const SCREEN_WIDTH: u32 = 256;
 const SCREEN_HEIGHT: u32 = 240;
 const VBEND: u64 = 16; // First visible scanline
 const VBSTART: u64 = 256; // First blanking scanline
+const HBSTART_CYCLE: u64 = 64; // HBLANK at pixel 256 = CPU cycle 64 (of 80)
 const FIRQ_SCANLINE: u64 = 92;
 
 // LFSR constants (MM5837 noise generator, same polynomial as POKEY)
@@ -224,10 +225,10 @@ pub struct GridleeSystem {
     palette_bank: u8, // Current bank (6 bits, 0-63)
     palette_bank_per_scanline: [u8; SCANLINES_PER_FRAME as usize], // Latched per-scanline
 
-    // I/O
-    fire_buttons: u8, // 0x9502: bit 0 = P1 fire, bit 1 = P2 fire
-    coin_start: u8,   // 0x9503: bits 0-3 = coin/start, bits 4-5 = coinage DIP
-    dip_switches: u8, // 0x9600
+    // I/O — coin/start and fire buttons are ACTIVE LOW (1 = not pressed, 0 = pressed)
+    fire_buttons: u8, // 0x9502: bit 0 = P1 fire, bit 1 = P2 fire (active low)
+    coin_start: u8,   // 0x9503: bits 0-3 = coin/start (active low), bits 4-5 = coinage DIP
+    dip_switches: u8, // 0x9600: bonus/lives/free-play/cabinet/reset
     cocktail_flip: bool,
 
     // Trackball state (keyboard emulation → cumulative delta)
@@ -275,9 +276,9 @@ impl GridleeSystem {
             palette_rgb: [(0, 0, 0); 2048],
             palette_bank: 0,
             palette_bank_per_scanline: [0; SCANLINES_PER_FRAME as usize],
-            fire_buttons: 0,
-            coin_start: 0,
-            dip_switches: 0x09, // Default: 3 lives (bits 3-2 = 01), bonus at 10000 (bits 1-0 = 01)
+            fire_buttons: 0xFF, // Active low: all bits high = no buttons pressed
+            coin_start: 0x0F,   // Active low bits 0-3 high + coinage DIP bits 4-5 = 0 (1C_1C)
+            dip_switches: 0x04, // 3 lives (bits 3-2=01), bonus 8000 (bits 1-0=00)
             cocktail_flip: false,
             track_u_pressed: false,
             track_d_pressed: false,
@@ -311,8 +312,8 @@ impl GridleeSystem {
         let frame_cycle = self.clock % CYCLES_PER_FRAME;
 
         // Trackball movement simulation: increment raw position while keys held.
-        // Rate of ~1000 cycles matches Missile Command's trackball feel.
-        if self.clock.is_multiple_of(1000) {
+        // MAME KEYDELTA=8 → 8 counts/frame. 21120 cycles/frame ÷ 8 ≈ 2640 cycles/count.
+        if self.clock.is_multiple_of(2640) {
             if self.track_u_pressed {
                 self.trackball_pos[0] = self.trackball_pos[0].wrapping_sub(1);
             }
@@ -340,21 +341,23 @@ impl GridleeSystem {
                 self.render_scanline(scanline as usize);
             }
 
-            // IRQ: every 64 scanlines (0, 64, 128, 192), cleared at next scanline
-            if scanline.is_multiple_of(64) && scanline < 256 {
+            // IRQ: every 64 scanlines (64, 128, 192, 256 in steady state).
+            // MAME starts at scanline 0 on reset, then shifts to {64,128,192,256}.
+            // We use the steady-state pattern directly.
+            if scanline > 0 && scanline <= 256 && scanline.is_multiple_of(64) {
                 self.irq_pending = true;
             }
 
-            // FIRQ: at scanline 92, cleared at next scanline
+            // FIRQ: at scanline 92, cleared at HBLANK
             if scanline == FIRQ_SCANLINE {
                 self.firq_pending = true;
             }
         }
 
-        // Clear IRQ/FIRQ at HBLANK (end of scanline = next scanline boundary - 1)
-        // In practice: clear one cycle before the next scanline boundary.
+        // Clear IRQ/FIRQ at HBLANK start (pixel 256 = CPU cycle 64 within scanline).
+        // This gives the CPU 64 cycles to respond (matching MAME's HBSTART clearing).
         let cycle_in_scanline = frame_cycle % CYCLES_PER_SCANLINE;
-        if cycle_in_scanline == CYCLES_PER_SCANLINE - 1 {
+        if cycle_in_scanline == HBSTART_CYCLE {
             self.irq_pending = false;
             self.firq_pending = false;
         }
@@ -394,11 +397,11 @@ impl GridleeSystem {
         let newval = self.trackball_pos[axis];
         let mut delta = newval as i16 - self.last_analog_input[axis] as i16;
 
-        // Handle wraparound
-        if delta >= 0x80 {
+        // Handle wraparound (strict inequality matches MAME's analog_port_r)
+        if delta > 0x80 {
             delta -= 0x100;
         }
-        if delta <= -0x80 {
+        if delta < -0x80 {
             delta += 0x100;
         }
 
@@ -762,32 +765,33 @@ impl Machine for GridleeSystem {
             INPUT_TRACK_D => self.track_d_pressed = pressed,
             INPUT_TRACK_L => self.track_l_pressed = pressed,
             INPUT_TRACK_R => self.track_r_pressed = pressed,
+            // Active-low buttons: clear bit on press, set bit on release
             INPUT_P1_FIRE => {
                 if pressed {
-                    self.fire_buttons |= 0x01;
-                } else {
                     self.fire_buttons &= !0x01;
+                } else {
+                    self.fire_buttons |= 0x01;
                 }
             }
             INPUT_COIN => {
                 if pressed {
-                    self.coin_start |= 0x01;
-                } else {
                     self.coin_start &= !0x01;
+                } else {
+                    self.coin_start |= 0x01;
                 }
             }
             INPUT_START1 => {
                 if pressed {
-                    self.coin_start |= 0x04;
-                } else {
                     self.coin_start &= !0x04;
+                } else {
+                    self.coin_start |= 0x04;
                 }
             }
             INPUT_START2 => {
                 if pressed {
-                    self.coin_start |= 0x08;
-                } else {
                     self.coin_start &= !0x08;
+                } else {
+                    self.coin_start |= 0x08;
                 }
             }
             _ => {}
@@ -996,21 +1000,29 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn irq_asserted_at_scanline_0() {
+    fn irq_not_asserted_at_scanline_0() {
         let mut sys = make_system();
-        // Advance to start of scanline 0 (frame_cycle = 0)
+        // Scanline 0 does NOT fire IRQ in steady state (MAME wraps 256→64)
         sys.clock = CYCLES_PER_FRAME; // Start of next frame = scanline 0
         sys.tick();
-        assert!(sys.irq_pending, "IRQ should be pending at scanline 0");
+        assert!(!sys.irq_pending, "IRQ should NOT fire at scanline 0");
     }
 
     #[test]
     fn irq_asserted_at_scanline_64() {
         let mut sys = make_system();
-        // Set clock so tick() processes scanline 64
         sys.clock = 64 * CYCLES_PER_SCANLINE;
         sys.tick();
         assert!(sys.irq_pending, "IRQ should be pending at scanline 64");
+    }
+
+    #[test]
+    fn irq_asserted_at_scanline_256() {
+        let mut sys = make_system();
+        // Scanline 256 fires IRQ (steady-state pattern: 64, 128, 192, 256)
+        sys.clock = 256 * CYCLES_PER_SCANLINE;
+        sys.tick();
+        assert!(sys.irq_pending, "IRQ should be pending at scanline 256");
     }
 
     #[test]
@@ -1024,12 +1036,12 @@ mod tests {
     #[test]
     fn irq_cleared_at_hblank() {
         let mut sys = make_system();
-        // Assert IRQ at scanline 0
-        sys.clock = 0;
+        // Assert IRQ at scanline 64
+        sys.clock = 64 * CYCLES_PER_SCANLINE;
         sys.tick();
         assert!(sys.irq_pending);
-        // Advance to HBLANK (last cycle of scanline 0)
-        sys.clock = CYCLES_PER_SCANLINE - 1;
+        // Cleared at HBSTART (CPU cycle 64 within scanline)
+        sys.clock = 64 * CYCLES_PER_SCANLINE + HBSTART_CYCLE;
         sys.tick();
         assert!(!sys.irq_pending, "IRQ should be cleared at HBLANK");
     }
@@ -1126,23 +1138,39 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn fire_button_set_and_clear() {
+    fn fire_button_active_low() {
         let mut sys = make_system();
-        sys.set_input(INPUT_P1_FIRE, true);
+        // Default: bit 0 high (not pressed)
         assert_eq!(sys.fire_buttons & 0x01, 0x01);
-        sys.set_input(INPUT_P1_FIRE, false);
+        // Press: bit 0 goes low
+        sys.set_input(INPUT_P1_FIRE, true);
         assert_eq!(sys.fire_buttons & 0x01, 0x00);
+        // Release: bit 0 goes high again
+        sys.set_input(INPUT_P1_FIRE, false);
+        assert_eq!(sys.fire_buttons & 0x01, 0x01);
     }
 
     #[test]
-    fn coin_and_start_buttons() {
+    fn coin_and_start_active_low() {
         let mut sys = make_system();
+        // Default: bits 0-3 all high (nothing pressed)
+        assert_eq!(sys.coin_start & 0x0F, 0x0F);
+        // Coin press: bit 0 goes low
         sys.set_input(INPUT_COIN, true);
-        assert_eq!(sys.coin_start & 0x01, 0x01);
+        assert_eq!(sys.coin_start & 0x01, 0x00);
+        // Start1 press: bit 2 goes low
         sys.set_input(INPUT_START1, true);
-        assert_eq!(sys.coin_start & 0x04, 0x04);
+        assert_eq!(sys.coin_start & 0x04, 0x00);
+        // Start2 press: bit 3 goes low
         sys.set_input(INPUT_START2, true);
-        assert_eq!(sys.coin_start & 0x08, 0x08);
+        assert_eq!(sys.coin_start & 0x08, 0x00);
+    }
+
+    #[test]
+    fn dip_switch_defaults() {
+        let sys = make_system();
+        // Default: 3 lives (bits 3-2 = 01), bonus 8000 (bits 1-0 = 00)
+        assert_eq!(sys.dip_switches, 0x04);
     }
 
     // -----------------------------------------------------------------------
