@@ -207,6 +207,53 @@ impl WilliamsBoard {
         self.cmos_ram.snapshot()
     }
 
+    // --- Debug accessors (side-effect-free) ---
+
+    /// Side-effect-free read from the main CPU address space.
+    /// Mirrors the Bus::read() memory map but skips PIA/blitter/watchdog side effects.
+    pub fn debug_read_main(&self, addr: u16) -> Option<u8> {
+        match addr {
+            0x0000..=0x8FFF => {
+                if self.rom_bank != 0 {
+                    Some(self.banked_rom[addr as usize])
+                } else {
+                    Some(self.video_ram[addr as usize])
+                }
+            }
+            0x9000..=0xBFFF => Some(self.video_ram[addr as usize]),
+            0xC000..=0xC00F => Some(self.palette_ram[(addr - 0xC000) as usize]),
+            0xC900 => Some(self.rom_bank),
+            0xCC00..=0xCFFF => Some(self.cmos_ram.read(addr - 0xCC00)),
+            0xD000..=0xFFFF => Some(self.program_rom[(addr - 0xD000) as usize]),
+            _ => None,
+        }
+    }
+
+    /// Side-effect-free read from the sound CPU address space.
+    pub fn debug_read_sound(&self, addr: u16) -> Option<u8> {
+        match addr {
+            0x0000..=0x00FF => Some(self.sound_ram[addr as usize]),
+            0xB000..=0xFFFF => Some(self.sound_rom[(addr & 0x0FFF) as usize]),
+            _ => None,
+        }
+    }
+
+    /// Write to the main CPU address space (for debug memory editor).
+    pub fn debug_write_main(&mut self, addr: u16, data: u8) {
+        match addr {
+            0x0000..=0xBFFF => self.video_ram[addr as usize] = data,
+            0xC000..=0xC00F => self.palette_ram[(addr - 0xC000) as usize] = data,
+            _ => {}
+        }
+    }
+
+    /// Write to the sound CPU address space (for debug memory editor).
+    pub fn debug_write_sound(&mut self, addr: u16, data: u8) {
+        if let 0x0000..=0x00FF = addr {
+            self.sound_ram[addr as usize] = data;
+        }
+    }
+
     // --- ROM loading ---
 
     /// Load program ROM from a byte slice at the given offset.
@@ -502,38 +549,27 @@ impl Bus for WilliamsBoard {
 
     fn read(&mut self, master: BusMaster, addr: u16) -> u8 {
         if master == BusMaster::Cpu(1) {
-            // Sound board memory map
-            return match addr {
-                0x0000..=0x00FF => self.sound_ram[addr as usize],
+            // Sound board: pure RAM/ROM read, then I/O with side effects
+            return self.debug_read_sound(addr).unwrap_or_else(|| match addr {
                 0x0400..=0x0403 => self.sound_pia.read((addr - 0x0400) as u8),
-                // 4KB ROM mirrored via incomplete address decoding
-                0xB000..=0xFFFF => self.sound_rom[(addr & 0x0FFF) as usize],
                 _ => 0xFF,
-            };
+            });
         }
 
-        // Main board memory map
-        match addr {
-            0x0000..=0x8FFF => {
-                // DmaVram reads bypass ROM banking — the blitter reads dest
-                // directly from VRAM for keepmask blending.
-                if master != BusMaster::DmaVram && self.rom_bank != 0 {
-                    self.banked_rom[addr as usize]
-                } else {
-                    self.video_ram[addr as usize]
-                }
-            }
-            0x9000..=0xBFFF => self.video_ram[addr as usize],
-            0xC000..=0xC00F => self.palette_ram[(addr - 0xC000) as usize],
+        // DmaVram reads bypass ROM banking — the blitter reads dest
+        // directly from VRAM for keepmask blending.
+        if master == BusMaster::DmaVram && addr <= 0x8FFF {
+            return self.video_ram[addr as usize];
+        }
+
+        // Main board: pure RAM/ROM read, then I/O with side effects
+        self.debug_read_main(addr).unwrap_or_else(|| match addr {
             0xC804..=0xC807 => self.widget_pia.read((addr - 0xC804) as u8),
             0xC80C..=0xC80F => self.rom_pia.read((addr - 0xC80C) as u8),
-            0xC900 => self.rom_bank,
             0xCA00..=0xCA07 => 0, // Blitter registers are write-only on real hardware
             0xCB00..=0xCBFF => self.current_scanline() & 0xFC, // Video counter read
-            0xCC00..=0xCFFF => self.cmos_ram.read(addr - 0xCC00),
-            0xD000..=0xFFFF => self.program_rom[(addr - 0xD000) as usize],
             _ => 0xFF,
-        }
+        })
     }
 
     fn write(&mut self, master: BusMaster, addr: u16, data: u8) {

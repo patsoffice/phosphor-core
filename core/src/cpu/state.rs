@@ -1,5 +1,7 @@
 //! CPU state snapshot types and traits
 
+use crate::core::debug::DebugRegister;
+
 /// Trait for CPU types that can provide state snapshots
 pub trait CpuStateTrait {
     type Snapshot;
@@ -20,6 +22,22 @@ pub struct M6809State {
     pub cc: u8,  // Condition codes
 }
 
+impl M6809State {
+    pub fn debug_registers(&self) -> Vec<DebugRegister> {
+        vec![
+            DebugRegister { name: "PC", value: self.pc as u64, width: 16 },
+            DebugRegister { name: "A", value: self.a as u64, width: 8 },
+            DebugRegister { name: "B", value: self.b as u64, width: 8 },
+            DebugRegister { name: "X", value: self.x as u64, width: 16 },
+            DebugRegister { name: "Y", value: self.y as u64, width: 16 },
+            DebugRegister { name: "U", value: self.u as u64, width: 16 },
+            DebugRegister { name: "S", value: self.s as u64, width: 16 },
+            DebugRegister { name: "DP", value: self.dp as u64, width: 8 },
+            DebugRegister { name: "CC", value: self.cc as u64, width: 8 },
+        ]
+    }
+}
+
 /// M6502 CPU state snapshot
 #[derive(Debug, Clone, PartialEq)]
 pub struct M6502State {
@@ -29,6 +47,19 @@ pub struct M6502State {
     pub pc: u16, // Program counter
     pub sp: u8,  // Stack pointer (0xFF based)
     pub p: u8,   // Status register (flags)
+}
+
+impl M6502State {
+    pub fn debug_registers(&self) -> Vec<DebugRegister> {
+        vec![
+            DebugRegister { name: "PC", value: self.pc as u64, width: 16 },
+            DebugRegister { name: "A", value: self.a as u64, width: 8 },
+            DebugRegister { name: "X", value: self.x as u64, width: 8 },
+            DebugRegister { name: "Y", value: self.y as u64, width: 8 },
+            DebugRegister { name: "SP", value: self.sp as u64, width: 8 },
+            DebugRegister { name: "P", value: self.p as u64, width: 8 },
+        ]
+    }
 }
 
 /// M6800 CPU state snapshot
@@ -42,6 +73,19 @@ pub struct M6800State {
     pub cc: u8,  // Condition codes
 }
 
+impl M6800State {
+    pub fn debug_registers(&self) -> Vec<DebugRegister> {
+        vec![
+            DebugRegister { name: "PC", value: self.pc as u64, width: 16 },
+            DebugRegister { name: "A", value: self.a as u64, width: 8 },
+            DebugRegister { name: "B", value: self.b as u64, width: 8 },
+            DebugRegister { name: "X", value: self.x as u64, width: 16 },
+            DebugRegister { name: "SP", value: self.sp as u64, width: 16 },
+            DebugRegister { name: "CC", value: self.cc as u64, width: 8 },
+        ]
+    }
+}
+
 /// I8035 (MCS-48) CPU state snapshot
 #[derive(Debug, Clone, PartialEq)]
 pub struct I8035State {
@@ -53,6 +97,19 @@ pub struct I8035State {
     pub dbbb: u8, // BUS port latch
     pub p1: u8,   // Port 1 output latch
     pub p2: u8,   // Port 2 output latch
+}
+
+impl I8035State {
+    pub fn debug_registers(&self) -> Vec<DebugRegister> {
+        vec![
+            DebugRegister { name: "PC", value: self.pc as u64, width: 16 },
+            DebugRegister { name: "A", value: self.a as u64, width: 8 },
+            DebugRegister { name: "PSW", value: self.psw as u64, width: 8 },
+            DebugRegister { name: "T", value: self.t as u64, width: 8 },
+            DebugRegister { name: "P1", value: self.p1 as u64, width: 8 },
+            DebugRegister { name: "P2", value: self.p2 as u64, width: 8 },
+        ]
+    }
 }
 
 /// Z80 CPU state snapshot
@@ -86,4 +143,21 @@ pub struct Z80State {
     pub memptr: u16, // Hidden WZ register
     pub p: bool,     // LD A,I/R tracker
     pub q: u8,       // Copy of F when flags modified, 0 otherwise
+}
+
+impl Z80State {
+    pub fn debug_registers(&self) -> Vec<DebugRegister> {
+        vec![
+            DebugRegister { name: "PC", value: self.pc as u64, width: 16 },
+            DebugRegister { name: "AF", value: ((self.a as u64) << 8) | self.f as u64, width: 16 },
+            DebugRegister { name: "BC", value: ((self.b as u64) << 8) | self.c as u64, width: 16 },
+            DebugRegister { name: "DE", value: ((self.d as u64) << 8) | self.e as u64, width: 16 },
+            DebugRegister { name: "HL", value: ((self.h as u64) << 8) | self.l as u64, width: 16 },
+            DebugRegister { name: "IX", value: self.ix as u64, width: 16 },
+            DebugRegister { name: "IY", value: self.iy as u64, width: 16 },
+            DebugRegister { name: "SP", value: self.sp as u64, width: 16 },
+            DebugRegister { name: "I", value: self.i as u64, width: 8 },
+            DebugRegister { name: "R", value: self.r as u64, width: 8 },
+        ]
+    }
 }
