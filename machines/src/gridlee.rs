@@ -482,37 +482,47 @@ impl GridleeSystem {
         let row_offset = screen_y * SCREEN_WIDTH as usize * 3;
 
         // Background: read VRAM row. Each byte = 2 pixels (upper nibble = left).
-        // VRAM address for this scanline: (scanline - VBEND) * 128
-        let vram_y = screen_y;
-        let vram_row_start = vram_y * 128;
+        if self.cocktail_flip {
+            // Flipped: reverse both X and Y (MAME: srcy = VBSTART-1-y, temp[xx] = vram[255-xx])
+            let src_y = (VBSTART as usize - 1 - scanline) - VBEND as usize;
+            let vram_row_start = src_y * 128;
+            for x_pair in 0..128 {
+                let vram_idx = vram_row_start + (127 - x_pair);
+                let vram_byte = if vram_idx < self.video_ram.len() {
+                    self.video_ram[vram_idx]
+                } else {
+                    0
+                };
+                // When flipped, right pixel goes left and vice versa
+                let left_idx = vram_byte & 0x0F;
+                let right_idx = (vram_byte >> 4) & 0x0F;
 
-        for x_pair in 0..128 {
-            let vram_idx = vram_row_start + x_pair;
-            let vram_byte = if vram_idx < self.video_ram.len() {
-                self.video_ram[vram_idx]
-            } else {
-                0
-            };
-            let left_idx = (vram_byte >> 4) & 0x0F;
-            let right_idx = vram_byte & 0x0F;
+                let left_color = self.resolve_color(palette_bank, left_idx + 16);
+                let right_color = self.resolve_color(palette_bank, right_idx + 16);
 
-            // Background uses palette indices 16-31
-            let left_color = self.resolve_color(palette_bank, left_idx + 16);
-            let right_color = self.resolve_color(palette_bank, right_idx + 16);
-
-            let px = x_pair * 2;
-            let off_l = row_offset + px * 3;
-            if off_l + 2 < self.scanline_buffer.len() {
-                self.scanline_buffer[off_l] = left_color.0;
-                self.scanline_buffer[off_l + 1] = left_color.1;
-                self.scanline_buffer[off_l + 2] = left_color.2;
+                let px = x_pair * 2;
+                self.write_pixel(row_offset, px, left_color);
+                self.write_pixel(row_offset, px + 1, right_color);
             }
+        } else {
+            // Normal: VRAM address = (scanline - VBEND) * 128
+            let vram_row_start = screen_y * 128;
+            for x_pair in 0..128 {
+                let vram_idx = vram_row_start + x_pair;
+                let vram_byte = if vram_idx < self.video_ram.len() {
+                    self.video_ram[vram_idx]
+                } else {
+                    0
+                };
+                let left_idx = (vram_byte >> 4) & 0x0F;
+                let right_idx = vram_byte & 0x0F;
 
-            let off_r = row_offset + (px + 1) * 3;
-            if off_r + 2 < self.scanline_buffer.len() {
-                self.scanline_buffer[off_r] = right_color.0;
-                self.scanline_buffer[off_r + 1] = right_color.1;
-                self.scanline_buffer[off_r + 2] = right_color.2;
+                let left_color = self.resolve_color(palette_bank, left_idx + 16);
+                let right_color = self.resolve_color(palette_bank, right_idx + 16);
+
+                let px = x_pair * 2;
+                self.write_pixel(row_offset, px, left_color);
+                self.write_pixel(row_offset, px + 1, right_color);
             }
         }
 
@@ -520,6 +530,11 @@ impl GridleeSystem {
         // Format: [image_num, unused, y_pos, x_pos]
         // Each sprite is 8 wide x 16 tall, 64 bytes in GFX ROM.
         // Y positions wrap at 256 (matching MAME's `(ypos + 1) & 255`).
+        // MAME clips sprites to ypos >= (16 + VBEND) = 32, preventing
+        // wrap-around artifacts on the top 16 visible scanlines.
+        if scanline < (16 + VBEND as usize) {
+            return;
+        }
         for i in 0..32 {
             let base = i * 4;
             let image_num = self.ram[base] as usize;
@@ -527,8 +542,15 @@ impl GridleeSystem {
             let sprite_y_start = (self.ram[base + 2] as u16 + 17 + VBEND as u16) as u8;
             let sprite_x = self.ram[base + 3] as usize;
 
+            // Cocktail flip: MAME uses ypos = 271 - ypos, currx ^ 0xFF
+            let (check_scanline, x_xor) = if self.cocktail_flip {
+                (271usize.wrapping_sub(scanline) as u8, 0xFF)
+            } else {
+                (scanline as u8, 0x00)
+            };
+
             // Which row of the sprite falls on this scanline? (wrapping subtraction)
-            let row_in_sprite = (scanline as u8).wrapping_sub(sprite_y_start);
+            let row_in_sprite = check_scanline.wrapping_sub(sprite_y_start);
             if row_in_sprite >= 16 {
                 continue;
             }
@@ -550,19 +572,25 @@ impl GridleeSystem {
                     if idx == 0 {
                         continue;
                     }
-                    let px = sprite_x + x_byte * 2 + dx;
+                    let px = (sprite_x + x_byte * 2 + dx) ^ x_xor;
                     if px >= SCREEN_WIDTH as usize {
                         continue;
                     }
                     let color = self.resolve_color(palette_bank, idx);
-                    let off = row_offset + px * 3;
-                    if off + 2 < self.scanline_buffer.len() {
-                        self.scanline_buffer[off] = color.0;
-                        self.scanline_buffer[off + 1] = color.1;
-                        self.scanline_buffer[off + 2] = color.2;
-                    }
+                    self.write_pixel(row_offset, px, color);
                 }
             }
+        }
+    }
+
+    /// Write a single RGB pixel to the scanline buffer.
+    #[inline]
+    fn write_pixel(&mut self, row_offset: usize, px: usize, color: (u8, u8, u8)) {
+        let off = row_offset + px * 3;
+        if off + 2 < self.scanline_buffer.len() {
+            self.scanline_buffer[off] = color.0;
+            self.scanline_buffer[off + 1] = color.1;
+            self.scanline_buffer[off + 2] = color.2;
         }
     }
 
@@ -1189,6 +1217,157 @@ mod tests {
         sys2.load_nvram(&saved);
         assert_eq!(sys2.nvram[0], 0x42);
         assert_eq!(sys2.nvram[255], 0xFF);
+    }
+
+    // -----------------------------------------------------------------------
+    // Sprite rendering
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn sprite_not_rendered_on_scanline_below_32() {
+        let mut sys = make_system();
+        // Place sprite at image 1, Y position that puts it at scanline 20
+        // sprite_y_start = (y_pos + 17 + 16) as u8
+        // We want sprite_y_start = 20, so y_pos = 20 - 33 = -13 → wraps to 243
+        sys.ram[0] = 1; // image
+        sys.ram[2] = 243; // y_pos → (243 + 33) & 0xFF = 20
+        sys.ram[3] = 10; // x_pos
+        // Put non-zero pixel data in GFX ROM for image 1
+        sys.gfx_rom[64] = 0x12; // left=1, right=2
+
+        // Build a simple palette so pixels would be visible
+        sys.palette_rgb[1] = (255, 0, 0);
+        sys.palette_rgb[2] = (0, 255, 0);
+
+        // Render scanline 20 (< 32 clip threshold)
+        sys.palette_bank_per_scanline[20] = 0;
+        sys.render_scanline(20);
+
+        // Sprite should NOT appear (clipped). Check pixel at x=10.
+        let screen_y = 20 - VBEND as usize;
+        let off = (screen_y * SCREEN_WIDTH as usize + 10) * 3;
+        // Should be background (black, since VRAM is zero → palette index 16)
+        // not sprite color (255,0,0)
+        assert_ne!(
+            (sys.scanline_buffer[off], sys.scanline_buffer[off + 1]),
+            (255, 0),
+            "Sprite should not render on scanline < 32"
+        );
+    }
+
+    #[test]
+    fn sprite_rendered_on_scanline_32() {
+        let mut sys = make_system();
+        // sprite_y_start = (y_pos + 33) as u8 = 32 → y_pos = 255 (wraps)
+        sys.ram[0] = 0; // image 0
+        sys.ram[2] = 255; // y_pos → (255 + 33) & 0xFF = 32
+        sys.ram[3] = 0; // x_pos = 0
+        // Non-zero pixel in image 0, row 0
+        sys.gfx_rom[0] = 0x30; // left pixel = 3, right pixel = 0
+
+        sys.palette_rgb[3] = (0, 0, 255);
+        sys.palette_bank_per_scanline[32] = 0;
+        sys.render_scanline(32);
+
+        // Sprite SHOULD appear at x=0 on scanline 32
+        let screen_y = 32 - VBEND as usize;
+        let off = (screen_y * SCREEN_WIDTH as usize) * 3;
+        assert_eq!(
+            (
+                sys.scanline_buffer[off],
+                sys.scanline_buffer[off + 1],
+                sys.scanline_buffer[off + 2]
+            ),
+            (0, 0, 255),
+            "Sprite should render on scanline 32"
+        );
+    }
+
+    #[test]
+    fn sprite_transparent_pixel_zero() {
+        let mut sys = make_system();
+        // Set up sprite at a visible scanline
+        sys.ram[0] = 0; // image 0
+        sys.ram[2] = 255; // y_pos → sprite_y_start = 32
+        sys.ram[3] = 0; // x_pos = 0
+        // Pixel data: left=0 (transparent), right=5
+        sys.gfx_rom[0] = 0x05;
+
+        sys.palette_rgb[5] = (100, 200, 50);
+        // Set background color (palette index 16) to something distinct
+        sys.palette_rgb[16] = (10, 20, 30);
+        sys.palette_bank_per_scanline[32] = 0;
+        sys.render_scanline(32);
+
+        let screen_y = 32 - VBEND as usize;
+        // x=0: should be background (transparent sprite pixel)
+        let off0 = (screen_y * SCREEN_WIDTH as usize) * 3;
+        assert_eq!(
+            (
+                sys.scanline_buffer[off0],
+                sys.scanline_buffer[off0 + 1],
+                sys.scanline_buffer[off0 + 2]
+            ),
+            (10, 20, 30),
+            "Sprite pixel 0 should be transparent (background shows through)"
+        );
+        // x=1: should be sprite color
+        let off1 = (screen_y * SCREEN_WIDTH as usize + 1) * 3;
+        assert_eq!(
+            (
+                sys.scanline_buffer[off1],
+                sys.scanline_buffer[off1 + 1],
+                sys.scanline_buffer[off1 + 2]
+            ),
+            (100, 200, 50),
+            "Sprite pixel 5 should render"
+        );
+    }
+
+    #[test]
+    fn cocktail_flip_reverses_background() {
+        let mut sys = make_system();
+        sys.cocktail_flip = true;
+
+        // Write a distinctive byte to VRAM at bottom-right of normal screen.
+        // Flipped: this should appear at top-left.
+        // Normal scanline 255 (screen_y=239) maps to VRAM row 239.
+        // Flipped scanline 16 reads from src_y = (256-1-16) - 16 = 223 (screen_y=223).
+        // Actually: flipped reads src_y = (VBSTART-1-scanline) - VBEND = (255-16) - 16 = 223
+        // VRAM row 223, reversed X. Byte 127 in that row (rightmost pair).
+        let src_row = 223;
+        let vram_offset = src_row * 128 + 127; // rightmost byte of row 223
+        sys.video_ram[vram_offset] = 0xAB; // left=0xA(10), right=0xB(11)
+        sys.palette_rgb[(10 + 16) as usize] = (111, 0, 0);
+        sys.palette_rgb[(11 + 16) as usize] = (0, 222, 0);
+        sys.palette_bank_per_scanline[16] = 0;
+
+        sys.render_scanline(16);
+
+        // When flipped, byte 127 becomes the leftmost pair (x_pair=0),
+        // and the nibbles swap: right nibble (0xB) becomes left pixel,
+        // left nibble (0xA) becomes right pixel.
+        let screen_y = 16 - VBEND as usize; // 0
+        let off0 = (screen_y * SCREEN_WIDTH as usize) * 3;
+        let off1 = (screen_y * SCREEN_WIDTH as usize + 1) * 3;
+        assert_eq!(
+            (
+                sys.scanline_buffer[off0],
+                sys.scanline_buffer[off0 + 1],
+                sys.scanline_buffer[off0 + 2]
+            ),
+            (0, 222, 0),
+            "Flipped: lower nibble (0xB) should be left pixel"
+        );
+        assert_eq!(
+            (
+                sys.scanline_buffer[off1],
+                sys.scanline_buffer[off1 + 1],
+                sys.scanline_buffer[off1 + 2]
+            ),
+            (111, 0, 0),
+            "Flipped: upper nibble (0xA) should be right pixel"
+        );
     }
 
     // -----------------------------------------------------------------------
