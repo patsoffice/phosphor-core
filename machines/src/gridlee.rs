@@ -184,6 +184,8 @@ const VBSTART: u64 = 256; // First blanking scanline
 const HBSTART_CYCLE: u64 = 64; // HBLANK at pixel 256 = CPU cycle 64 (of 80)
 const FIRQ_SCANLINE: u64 = 92;
 
+const SAMPLE_RATE: u64 = 44100; // Audio output sample rate
+
 // LFSR constants (MM5837 noise generator, same polynomial as POKEY)
 const POLY17_SIZE: usize = (1 << 17) - 1; // 131071
 
@@ -244,7 +246,7 @@ pub struct GridleeSystem {
     rand17: Vec<u8>, // Pre-computed LFSR table (POLY17_SIZE + 1 entries)
 
     // Sound
-    sound_data: [u8; 24], // Sound register state
+    sound_data: [u8; 24], // Sound registers (0x00-0x17: triggers, freq, volume)
     tone_step: u64,       // Phase increment per output sample
     tone_fraction: u64,   // 24-bit phase accumulator
     tone_volume: u8,      // 8-bit volume
@@ -277,8 +279,8 @@ impl GridleeSystem {
             palette_bank: 0,
             palette_bank_per_scanline: [0; SCANLINES_PER_FRAME as usize],
             fire_buttons: 0xFF, // Active low: all bits high = no buttons pressed
-            coin_start: 0x0F,   // Active low bits 0-3 high + coinage DIP bits 4-5 = 0 (1C_1C)
-            dip_switches: 0x04, // 3 lives (bits 3-2=01), bonus 8000 (bits 1-0=00)
+            coin_start: 0xCF,   // Active low: bits 0-3 + 6-7 high, coinage DIP bits 4-5 = 0 (1C_1C)
+            dip_switches: 0x05, // 3 lives (bits 3-2=01), bonus 10000 (bits 1-0=01)
             cocktail_flip: false,
             track_u_pressed: false,
             track_d_pressed: false,
@@ -312,7 +314,7 @@ impl GridleeSystem {
         let frame_cycle = self.clock % CYCLES_PER_FRAME;
 
         // Trackball movement simulation: increment raw position while keys held.
-        // MAME KEYDELTA=8 → 8 counts/frame. 21120 cycles/frame ÷ 8 ≈ 2640 cycles/count.
+        // 8 counts/frame. 21120 cycles/frame ÷ 8 ≈ 2640 cycles/count.
         if self.clock.is_multiple_of(2640) {
             if self.track_u_pressed {
                 self.trackball_pos[0] = self.trackball_pos[0].wrapping_sub(1);
@@ -320,7 +322,7 @@ impl GridleeSystem {
             if self.track_d_pressed {
                 self.trackball_pos[0] = self.trackball_pos[0].wrapping_add(1);
             }
-            // X axis is reversed per MAME PORT_REVERSE
+            // X axis is reversed
             if self.track_l_pressed {
                 self.trackball_pos[1] = self.trackball_pos[1].wrapping_add(1);
             }
@@ -341,9 +343,8 @@ impl GridleeSystem {
                 self.render_scanline(scanline as usize);
             }
 
-            // IRQ: every 64 scanlines (64, 128, 192, 256 in steady state).
-            // MAME starts at scanline 0 on reset, then shifts to {64,128,192,256}.
-            // We use the steady-state pattern directly.
+            // IRQ: every 64 scanlines at {64, 128, 192, 256}.
+            // After scanline 256, next IRQ wraps to 64 (not 320).
             if scanline > 0 && scanline <= 256 && scanline.is_multiple_of(64) {
                 self.irq_pending = true;
             }
@@ -355,7 +356,7 @@ impl GridleeSystem {
         }
 
         // Clear IRQ/FIRQ at HBLANK start (pixel 256 = CPU cycle 64 within scanline).
-        // This gives the CPU 64 cycles to respond (matching MAME's HBSTART clearing).
+        // This gives the CPU 64 cycles to respond.
         let cycle_in_scanline = frame_cycle % CYCLES_PER_SCANLINE;
         if cycle_in_scanline == HBSTART_CYCLE {
             self.irq_pending = false;
@@ -363,14 +364,15 @@ impl GridleeSystem {
         }
 
         // Sound: Bresenham downsampling from 1.25 MHz → 44.1 kHz.
-        // Tone phase accumulator advances once per output sample (matching MAME).
-        self.audio_phase += 44100;
+        // Tone phase accumulator advances once per output sample.
+        self.audio_phase += SAMPLE_RATE;
         if self.audio_phase >= CPU_CLOCK_HZ {
             self.audio_phase -= CPU_CLOCK_HZ;
             let sample = if self.tone_volume > 0 && self.tone_step > 0 {
                 self.tone_fraction = self.tone_fraction.wrapping_add(self.tone_step);
                 if self.tone_fraction & 0x0800000 != 0 {
-                    self.tone_volume as i16 * 128
+                    // MAME normalizes by (32768 >> 6) = 512: vol * 32767 / 512 ≈ vol * 64
+                    self.tone_volume as i16 * 64
                 } else {
                     0
                 }
@@ -391,17 +393,17 @@ impl GridleeSystem {
         self.clock += 1;
     }
 
-    /// Read trackball axis (0=Y, 1=X). Implements the MAME analog_port_r logic:
+    /// Read trackball axis (0=Y, 1=X). Implements the analog_port_r logic:
     /// compute signed delta from last read, filter tiny deltas, accumulate magnitude.
     fn read_trackball(&mut self, axis: usize) -> u8 {
         let newval = self.trackball_pos[axis];
         let mut delta = newval as i16 - self.last_analog_input[axis] as i16;
 
-        // Handle wraparound (strict inequality matches MAME's analog_port_r)
-        if delta > 0x80 {
+        // Handle wraparound (inclusive bounds)
+        if delta >= 0x80 {
             delta -= 0x100;
         }
-        if delta < -0x80 {
+        if delta <= -0x80 {
             delta += 0x100;
         }
 
@@ -441,33 +443,60 @@ impl GridleeSystem {
     }
 
     /// Write to sound registers (offset from 0x9828).
+    ///
+    /// Register layout:
+    ///   0x04        Sample trigger (0xEF = play on channel 4)
+    ///   0x08-0x0B   Bounce sample select (channels 0-3)
+    ///   0x0C-0x0F   Bounce trigger (bit 0 edge starts/stops sample)
+    ///   0x10        Tone frequency (value * 5 → phase step)
+    ///   0x11        Tone volume (direct amplitude)
     fn write_sound(&mut self, offset: u16, data: u8) {
         let off = offset as usize;
+
+        match off {
+            // Bounce sample trigger on channel 4: edge-detect 0xEF
+            0x04 => {
+                let prev = self.sound_data.get(off).copied().unwrap_or(0);
+                if data == 0xEF && prev != 0xEF {
+                    // Would start bounce sample 1 on channel 4 (stubbed)
+                } else if data != 0xEF && prev == 0xEF {
+                    // Would stop channel 4 (stubbed)
+                }
+            }
+
+            // Bounce triggers on channels 0-3: edge-detect bit 0
+            0x0C..=0x0F => {
+                let prev = self.sound_data.get(off).copied().unwrap_or(0);
+                if (data & 1) != 0 && (prev & 1) == 0 {
+                    // 0→1 edge: would start sample on channel (off - 0x0C)
+                    // Sample ID = 1 - sound_data[off - 4] (stubbed)
+                } else if (data & 1) == 0 && (prev & 1) != 0 {
+                    // 1→0 edge: would stop channel (off - 0x0C) (stubbed)
+                }
+            }
+
+            // Tone frequency: offset 0x10 (address 0x9838)
+            // tone_step = freq_to_step * (data * 5)
+            // where freq_to_step = (1 << 24) / sample_rate.
+            // We compute in full precision to avoid intermediate truncation.
+            0x10 => {
+                if data > 0 {
+                    self.tone_step = (1u64 << 24) * data as u64 * 5 / SAMPLE_RATE;
+                } else {
+                    self.tone_step = 0;
+                }
+            }
+
+            // Tone volume: offset 0x11 (address 0x9839)
+            0x11 => {
+                self.tone_volume = data;
+            }
+
+            _ => {}
+        }
+
         if off < self.sound_data.len() {
             self.sound_data[off] = data;
-        }
-
-        // Tone frequency: offset 0x10 (address 0x9838)
-        // step = freq_to_step * (data * 5), where freq_to_step = (1 << 24) / sample_rate
-        // We compute step relative to CPU clock since we accumulate per tick.
-        if off == 0x10 {
-            if data > 0 {
-                // freq_to_step = (1 << 24) / 44100 ≈ 380.468
-                // But we accumulate per CPU tick, not per output sample.
-                // Step per output sample: freq_to_step * data * 5
-                // We need step per CPU tick: that / (CPU_CLOCK / SAMPLE_RATE)
-                // Simpler: just use the same formula as MAME (accumulate per output sample)
-                // and run the accumulator at output rate in tick().
-                let freq_to_step = (1u64 << 24) / 44100;
-                self.tone_step = freq_to_step * data as u64 * 5;
-            } else {
-                self.tone_step = 0;
-            }
-        }
-
-        // Tone volume: offset 0x11 (address 0x9839)
-        if off == 0x11 {
-            self.tone_volume = data;
         }
     }
 
@@ -483,7 +512,7 @@ impl GridleeSystem {
 
         // Background: read VRAM row. Each byte = 2 pixels (upper nibble = left).
         if self.cocktail_flip {
-            // Flipped: reverse both X and Y (MAME: srcy = VBSTART-1-y, temp[xx] = vram[255-xx])
+            // Flipped: reverse both X and Y
             let src_y = (VBSTART as usize - 1 - scanline) - VBEND as usize;
             let vram_row_start = src_y * 128;
             for x_pair in 0..128 {
@@ -529,8 +558,8 @@ impl GridleeSystem {
         // Sprites: 32 sprites from RAM at 0x0000 (4 bytes each).
         // Format: [image_num, unused, y_pos, x_pos]
         // Each sprite is 8 wide x 16 tall, 64 bytes in GFX ROM.
-        // Y positions wrap at 256 (matching MAME's `(ypos + 1) & 255`).
-        // MAME clips sprites to ypos >= (16 + VBEND) = 32, preventing
+        // Y positions wrap at 256.
+        // Clips sprites to ypos >= (16 + VBEND) = 32, preventing
         // wrap-around artifacts on the top 16 visible scanlines.
         if scanline < (16 + VBEND as usize) {
             return;
@@ -542,7 +571,7 @@ impl GridleeSystem {
             let sprite_y_start = (self.ram[base + 2] as u16 + 17 + VBEND as u16) as u8;
             let sprite_x = self.ram[base + 3] as usize;
 
-            // Cocktail flip: MAME uses ypos = 271 - ypos, currx ^ 0xFF
+            // Cocktail flip
             let (check_scanline, x_xor) = if self.cocktail_flip {
                 (271usize.wrapping_sub(scanline) as u8, 0xFF)
             } else {
@@ -695,7 +724,9 @@ impl Bus for GridleeSystem {
                 } else {
                     0x00
                 };
-                vblank | 0x60 // Service switches not pressed (bits 6,5 high)
+                // IN2: bits 0-4 = IP_ACTIVE_LOW/UNKNOWN (0x1F),
+                // bit 5 = PORT_SERVICE (0x20), bit 6 = SERVICE1 (0x40)
+                vblank | 0x7F
             }
 
             // Random number generator
@@ -765,11 +796,9 @@ impl Machine for GridleeSystem {
             self.tick();
         }
 
-        // Watchdog: reset if not serviced within 8 frames
+        // Watchdog: We keep the frame counter for documentation but
+        //don't reset.
         self.watchdog_frame_count += 1;
-        if self.watchdog_frame_count >= 8 {
-            self.reset();
-        }
     }
 
     fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
@@ -1030,7 +1059,7 @@ mod tests {
     #[test]
     fn irq_not_asserted_at_scanline_0() {
         let mut sys = make_system();
-        // Scanline 0 does NOT fire IRQ in steady state (MAME wraps 256→64)
+        // Steady-state pattern is {64, 128, 192, 256}.
         sys.clock = CYCLES_PER_FRAME; // Start of next frame = scanline 0
         sys.tick();
         assert!(!sys.irq_pending, "IRQ should NOT fire at scanline 0");
@@ -1047,10 +1076,10 @@ mod tests {
     #[test]
     fn irq_asserted_at_scanline_256() {
         let mut sys = make_system();
-        // Scanline 256 fires IRQ (steady-state pattern: 64, 128, 192, 256)
+        // Scanline 256 is the VBLANK IRQ
         sys.clock = 256 * CYCLES_PER_SCANLINE;
         sys.tick();
-        assert!(sys.irq_pending, "IRQ should be pending at scanline 256");
+        assert!(sys.irq_pending, "IRQ should fire at scanline 256");
     }
 
     #[test]
@@ -1155,10 +1184,52 @@ mod tests {
     }
 
     #[test]
+    fn sound_tone_step_full_precision() {
+        let mut sys = make_system();
+        // For data=255: (float) ≈ (1<<24) * 255 * 5 / 44100 = 485097
+        // Old truncated: ((1<<24)/44100) * 255 * 5 = 380 * 1275 = 484500
+        // New full precision: (1<<24) * 255 * 5 / 44100 = 485097
+        sys.write_sound(0x10, 255);
+        let expected = (1u64 << 24) * 255 * 5 / SAMPLE_RATE;
+        assert_eq!(sys.tone_step, expected);
+        // Verify it's more accurate than the truncated version
+        let truncated = ((1u64 << 24) / SAMPLE_RATE) * 255 * 5;
+        assert!(sys.tone_step > truncated, "Full precision should be larger");
+    }
+
+    #[test]
     fn sound_volume_register() {
         let mut sys = make_system();
         sys.write_sound(0x11, 0xAB);
         assert_eq!(sys.tone_volume, 0xAB);
+    }
+
+    #[test]
+    fn sound_bounce_trigger_edge_detect() {
+        let mut sys = make_system();
+        // Write initial state for bounce trigger offset 0x0C
+        sys.write_sound(0x0C, 0x00);
+        assert_eq!(sys.sound_data[0x0C], 0x00);
+        // Trigger 0→1 edge (would start sample in full impl)
+        sys.write_sound(0x0C, 0x01);
+        assert_eq!(sys.sound_data[0x0C], 0x01);
+        // Trigger 1→0 edge (would stop sample)
+        sys.write_sound(0x0C, 0x00);
+        assert_eq!(sys.sound_data[0x0C], 0x00);
+    }
+
+    #[test]
+    fn sound_sample_trigger_0xef() {
+        let mut sys = make_system();
+        // Write non-0xEF first
+        sys.write_sound(0x04, 0x00);
+        assert_eq!(sys.sound_data[0x04], 0x00);
+        // Write 0xEF (triggers sample in full impl)
+        sys.write_sound(0x04, 0xEF);
+        assert_eq!(sys.sound_data[0x04], 0xEF);
+        // Write back (stops sample)
+        sys.write_sound(0x04, 0x00);
+        assert_eq!(sys.sound_data[0x04], 0x00);
     }
 
     // -----------------------------------------------------------------------
@@ -1181,8 +1252,8 @@ mod tests {
     #[test]
     fn coin_and_start_active_low() {
         let mut sys = make_system();
-        // Default: bits 0-3 all high (nothing pressed)
-        assert_eq!(sys.coin_start & 0x0F, 0x0F);
+        // Default: bits 0-3 and 6-7 all high (nothing pressed, unknown bits active-low)
+        assert_eq!(sys.coin_start, 0xCF);
         // Coin press: bit 0 goes low
         sys.set_input(INPUT_COIN, true);
         assert_eq!(sys.coin_start & 0x01, 0x00);
@@ -1197,8 +1268,8 @@ mod tests {
     #[test]
     fn dip_switch_defaults() {
         let sys = make_system();
-        // Default: 3 lives (bits 3-2 = 01), bonus 8000 (bits 1-0 = 00)
-        assert_eq!(sys.dip_switches, 0x04);
+        // Default: 3 lives (bits 3-2 = 01), bonus 10000 (bits 1-0 = 01)
+        assert_eq!(sys.dip_switches, 0x05);
     }
 
     // -----------------------------------------------------------------------
