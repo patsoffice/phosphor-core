@@ -1,0 +1,332 @@
+//! Binary save-state serialization framework.
+//!
+//! Provides [`StateWriter`] and [`StateReader`] for encoding/decoding machine
+//! state into a compact binary format with no external dependencies. All
+//! multi-byte values are stored in little-endian order so save files are
+//! portable across architectures. Each component that participates in save
+//! states implements the [`Saveable`] trait.
+
+/// Errors that can occur during save-state operations.
+#[derive(Debug)]
+pub enum SaveError {
+    /// Ran out of data while reading a field.
+    UnexpectedEnd,
+    /// Header magic, version, or structure is invalid.
+    InvalidFormat(String),
+    /// Save file was created by a different machine.
+    MachineMismatch { expected: String, found: String },
+}
+
+impl std::fmt::Display for SaveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SaveError::UnexpectedEnd => write!(f, "unexpected end of save data"),
+            SaveError::InvalidFormat(msg) => write!(f, "invalid format: {msg}"),
+            SaveError::MachineMismatch { expected, found } => {
+                write!(f, "machine mismatch: expected {expected}, found {found}")
+            }
+        }
+    }
+}
+
+// -- File format constants ---------------------------------------------------
+
+/// Magic bytes at the start of every save file.
+pub const SAVE_MAGIC: &[u8; 4] = b"PHOS";
+
+/// Current save-state format version.
+pub const SAVE_VERSION: u32 = 1;
+
+// -- Saveable trait ----------------------------------------------------------
+
+/// A component whose mutable state can be captured and restored.
+pub trait Saveable {
+    fn save_state(&self, w: &mut StateWriter);
+    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError>;
+}
+
+// -- StateWriter -------------------------------------------------------------
+
+/// Appends primitive values to an internal `Vec<u8>` in little-endian order.
+pub struct StateWriter {
+    data: Vec<u8>,
+}
+
+impl StateWriter {
+    pub fn new() -> Self {
+        Self {
+            data: Vec::with_capacity(64 * 1024),
+        }
+    }
+
+    pub fn write_u8(&mut self, v: u8) {
+        self.data.push(v);
+    }
+
+    pub fn write_u16_le(&mut self, v: u16) {
+        self.data.extend_from_slice(&v.to_le_bytes());
+    }
+
+    pub fn write_u32_le(&mut self, v: u32) {
+        self.data.extend_from_slice(&v.to_le_bytes());
+    }
+
+    pub fn write_u64_le(&mut self, v: u64) {
+        self.data.extend_from_slice(&v.to_le_bytes());
+    }
+
+    pub fn write_i64_le(&mut self, v: i64) {
+        self.data.extend_from_slice(&v.to_le_bytes());
+    }
+
+    pub fn write_f32_le(&mut self, v: f32) {
+        self.data.extend_from_slice(&v.to_le_bytes());
+    }
+
+    pub fn write_f64_le(&mut self, v: f64) {
+        self.data.extend_from_slice(&v.to_le_bytes());
+    }
+
+    pub fn write_bool(&mut self, v: bool) {
+        self.data.push(v as u8);
+    }
+
+    /// Write a length-prefixed byte slice (u32 LE length + data).
+    pub fn write_bytes(&mut self, bytes: &[u8]) {
+        self.write_u32_le(bytes.len() as u32);
+        self.data.extend_from_slice(bytes);
+    }
+
+    pub fn into_vec(self) -> Vec<u8> {
+        self.data
+    }
+}
+
+impl Default for StateWriter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// -- StateReader -------------------------------------------------------------
+
+/// Reads primitive values from a byte slice in little-endian order.
+#[derive(Debug)]
+pub struct StateReader<'a> {
+    data: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> StateReader<'a> {
+    pub fn new(data: &'a [u8]) -> Self {
+        Self { data, pos: 0 }
+    }
+
+    /// Read exactly `n` bytes, advancing the cursor.
+    fn take(&mut self, n: usize) -> Result<&'a [u8], SaveError> {
+        if self.pos + n > self.data.len() {
+            return Err(SaveError::UnexpectedEnd);
+        }
+        let slice = &self.data[self.pos..self.pos + n];
+        self.pos += n;
+        Ok(slice)
+    }
+
+    pub fn read_u8(&mut self) -> Result<u8, SaveError> {
+        Ok(self.take(1)?[0])
+    }
+
+    pub fn read_u16_le(&mut self) -> Result<u16, SaveError> {
+        let b = self.take(2)?;
+        Ok(u16::from_le_bytes([b[0], b[1]]))
+    }
+
+    pub fn read_u32_le(&mut self) -> Result<u32, SaveError> {
+        let b = self.take(4)?;
+        Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+
+    pub fn read_u64_le(&mut self) -> Result<u64, SaveError> {
+        let b = self.take(8)?;
+        Ok(u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+    }
+
+    pub fn read_i64_le(&mut self) -> Result<i64, SaveError> {
+        let b = self.take(8)?;
+        Ok(i64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+    }
+
+    pub fn read_f32_le(&mut self) -> Result<f32, SaveError> {
+        let b = self.take(4)?;
+        Ok(f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+
+    pub fn read_f64_le(&mut self) -> Result<f64, SaveError> {
+        let b = self.take(8)?;
+        Ok(f64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+    }
+
+    pub fn read_bool(&mut self) -> Result<bool, SaveError> {
+        Ok(self.read_u8()? != 0)
+    }
+
+    /// Read a length-prefixed byte blob into `buf`.
+    /// Returns an error if the encoded length does not match `buf.len()`.
+    pub fn read_bytes_into(&mut self, buf: &mut [u8]) -> Result<(), SaveError> {
+        let len = self.read_u32_le()? as usize;
+        if len != buf.len() {
+            return Err(SaveError::InvalidFormat(format!(
+                "expected {} bytes, got {len}",
+                buf.len()
+            )));
+        }
+        let slice = self.take(len)?;
+        buf.copy_from_slice(slice);
+        Ok(())
+    }
+
+    /// Read a length-prefixed byte blob, returning a borrowed slice.
+    pub fn read_bytes(&mut self) -> Result<&'a [u8], SaveError> {
+        let len = self.read_u32_le()? as usize;
+        self.take(len)
+    }
+}
+
+// -- Header helpers ----------------------------------------------------------
+
+/// Write the save-file header (magic + version + machine id).
+pub fn write_header(w: &mut StateWriter, machine_id: &str) {
+    w.data.extend_from_slice(SAVE_MAGIC);
+    w.write_u32_le(SAVE_VERSION);
+    let id_bytes = machine_id.as_bytes();
+    w.write_u32_le(id_bytes.len() as u32);
+    w.data.extend_from_slice(id_bytes);
+}
+
+/// Validate the header and return a reader positioned after it.
+pub fn read_header<'a>(data: &'a [u8], expected_id: &str) -> Result<StateReader<'a>, SaveError> {
+    let mut r = StateReader::new(data);
+
+    let magic = r.take(4)?;
+    if magic != SAVE_MAGIC {
+        return Err(SaveError::InvalidFormat("bad magic".into()));
+    }
+
+    let version = r.read_u32_le()?;
+    if version != SAVE_VERSION {
+        return Err(SaveError::InvalidFormat(format!(
+            "unsupported version {version}"
+        )));
+    }
+
+    let id_len = r.read_u32_le()? as usize;
+    let id_bytes = r.take(id_len)?;
+    let found_id = std::str::from_utf8(id_bytes)
+        .map_err(|_| SaveError::InvalidFormat("non-UTF8 machine id".into()))?;
+
+    if found_id != expected_id {
+        return Err(SaveError::MachineMismatch {
+            expected: expected_id.to_string(),
+            found: found_id.to_string(),
+        });
+    }
+
+    Ok(r)
+}
+
+// -- Tests -------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn writer_reader_round_trip() {
+        let mut w = StateWriter::new();
+        w.write_u8(0xAB);
+        w.write_u16_le(0x1234);
+        w.write_u32_le(0xDEAD_BEEF);
+        w.write_u64_le(0x0102_0304_0506_0708);
+        w.write_i64_le(-42);
+        w.write_f32_le(std::f32::consts::PI);
+        w.write_f64_le(std::f64::consts::E);
+        w.write_bool(true);
+        w.write_bool(false);
+        w.write_bytes(&[1, 2, 3, 4, 5]);
+
+        let data = w.into_vec();
+        let mut r = StateReader::new(&data);
+
+        assert_eq!(r.read_u8().unwrap(), 0xAB);
+        assert_eq!(r.read_u16_le().unwrap(), 0x1234);
+        assert_eq!(r.read_u32_le().unwrap(), 0xDEAD_BEEF);
+        assert_eq!(r.read_u64_le().unwrap(), 0x0102_0304_0506_0708);
+        assert_eq!(r.read_i64_le().unwrap(), -42);
+        assert!((r.read_f32_le().unwrap() - std::f32::consts::PI).abs() < f32::EPSILON);
+        assert!((r.read_f64_le().unwrap() - std::f64::consts::E).abs() < f64::EPSILON);
+        assert!(r.read_bool().unwrap());
+        assert!(!r.read_bool().unwrap());
+
+        let blob = r.read_bytes().unwrap();
+        assert_eq!(blob, &[1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn read_bytes_into_round_trip() {
+        let mut w = StateWriter::new();
+        let src = [0xCA, 0xFE, 0xBA, 0xBE];
+        w.write_bytes(&src);
+
+        let data = w.into_vec();
+        let mut r = StateReader::new(&data);
+        let mut dst = [0u8; 4];
+        r.read_bytes_into(&mut dst).unwrap();
+        assert_eq!(dst, src);
+    }
+
+    #[test]
+    fn read_bytes_into_length_mismatch() {
+        let mut w = StateWriter::new();
+        w.write_bytes(&[1, 2, 3]);
+
+        let data = w.into_vec();
+        let mut r = StateReader::new(&data);
+        let mut dst = [0u8; 5];
+        assert!(r.read_bytes_into(&mut dst).is_err());
+    }
+
+    #[test]
+    fn reader_unexpected_end() {
+        let mut r = StateReader::new(&[0x01]);
+        assert!(r.read_u8().is_ok());
+        assert!(matches!(r.read_u8(), Err(SaveError::UnexpectedEnd)));
+    }
+
+    #[test]
+    fn header_round_trip() {
+        let mut w = StateWriter::new();
+        write_header(&mut w, "joust");
+        w.write_u8(0xFF);
+
+        let data = w.into_vec();
+        let mut r = read_header(&data, "joust").unwrap();
+        assert_eq!(r.read_u8().unwrap(), 0xFF);
+    }
+
+    #[test]
+    fn header_machine_mismatch() {
+        let mut w = StateWriter::new();
+        write_header(&mut w, "joust");
+        let data = w.into_vec();
+
+        let err = read_header(&data, "pacman").unwrap_err();
+        assert!(matches!(err, SaveError::MachineMismatch { .. }));
+    }
+
+    #[test]
+    fn header_bad_magic() {
+        let data = b"BAD!\x01\x00\x00\x00\x05\x00\x00\x00joust";
+        let err = read_header(data, "joust").unwrap_err();
+        assert!(matches!(err, SaveError::InvalidFormat(_)));
+    }
+}

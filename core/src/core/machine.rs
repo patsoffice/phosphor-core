@@ -6,6 +6,8 @@ pub struct InputButton {
     pub name: &'static str,
 }
 
+use super::save_state::SaveError;
+
 /// Machine-agnostic interface for emulated systems.
 ///
 /// Each machine (Joust, Robotron, etc.) implements this trait to provide
@@ -66,5 +68,22 @@ pub trait Machine {
     /// Used by the frontend for real-time frame throttling.
     fn frame_rate_hz(&self) -> f64 {
         60.0
+    }
+
+    /// Short identifier for this machine type (e.g., "joust", "pacman").
+    /// Used to validate save files against the correct machine.
+    fn machine_id(&self) -> &str {
+        ""
+    }
+
+    /// Capture complete machine state for later restoration.
+    /// Returns `None` if this machine does not support save states.
+    fn save_state(&self) -> Option<Vec<u8>> {
+        None
+    }
+
+    /// Restore machine state from a previous `save_state()` snapshot.
+    fn load_state(&mut self, _data: &[u8]) -> Result<(), SaveError> {
+        Err(SaveError::InvalidFormat("save states not supported".into()))
     }
 }
