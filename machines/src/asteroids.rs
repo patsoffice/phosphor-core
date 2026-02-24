@@ -1,8 +1,8 @@
 use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::machine::{InputButton, Machine};
 use phosphor_core::core::{Bus, BusMaster};
-use phosphor_core::cpu::m6502::M6502;
 use phosphor_core::cpu::Cpu;
+use phosphor_core::cpu::m6502::M6502;
 use phosphor_core::device::dvg::{Dvg, VectorLine};
 
 use crate::registry::MachineEntry;
@@ -40,14 +40,12 @@ static PROGRAM_ROM: RomRegion = RomRegion {
 /// Vector ROM: 2KB at CPU address 0x5000–0x57FF.
 static VECTOR_ROM: RomRegion = RomRegion {
     size: 0x0800,
-    entries: &[
-        RomEntry {
-            name: "035127-02.np3",
-            size: 0x0800,
-            offset: 0x0000,
-            crc32: &[0x8b71fd9e],
-        },
-    ],
+    entries: &[RomEntry {
+        name: "035127-02.np3",
+        size: 0x0800,
+        offset: 0x0000,
+        crc32: &[0x8b71fd9e],
+    }],
 };
 
 // ---------------------------------------------------------------------------

@@ -358,7 +358,7 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 - [x] Move SimpleSystem components to separate crate
 - [x] Cycle-accurate timing validation (M6809: 266K tests vs elmerucr/MC6809, M6800: 192K tests vs mame4all)
 - [x] Reset vector fetch from 0xFFFE/0xFFFF
-- [ ] Instruction disassembler
+- [x] Instruction disassembler (I8035; common `Disassemble` trait, 116 tests)
 - [ ] Save state support
 
 ### Phase 3: Additional CPUs

@@ -269,9 +269,8 @@ impl Dvg {
         //   bit 0: dvy[11]
         //   bit 1: ~dvx[11]
         //   bit 2: dvx[11]
-        let offset = (((dvy & 0x800) >> 11)
-            | (((dvx & 0x800) ^ 0x800) >> 10)
-            | ((dvx & 0x800) >> 9)) as u8;
+        let offset =
+            (((dvy & 0x800) >> 11) | (((dvx & 0x800) ^ 0x800) >> 10) | ((dvx & 0x800) >> 9)) as u8;
         let scale = (self.scale.wrapping_add(offset)) & 0xF;
 
         // After scale extraction, mask to keep only the direction/magnitude bits.
@@ -517,9 +516,9 @@ mod tests {
             0xA000 | 512, // LABS: y=512
             0x9000 | 512, // LABS: intensity=9 (sets scale=9), x=512
             // VCTR op=0 (scale offset 0): dy=0, dx=100, intensity=15
-            0x0000,       // word0: op=0, dy=0
-            0xF064,       // word1: intensity=15, dx=100
-            0xB000,       // HALT
+            0x0000, // word0: op=0, dy=0
+            0xF064, // word1: intensity=15, dx=100
+            0xB000, // HALT
         ]);
         let mut dvg = Dvg::new();
         dvg.go();
@@ -537,7 +536,7 @@ mod tests {
         // VCTR with intensity 0 should not produce visible lines.
         let vmem = build_vmem(&[
             0xA000 | 512, // LABS: y=512
-            512, // LABS: intensity=0, x=512
+            512,          // LABS: intensity=0, x=512
             0x0000,       // VCTR word0: op=0, dy=0
             0x0064,       // VCTR word1: intensity=0, dx=100
             0xB000,       // HALT
@@ -560,7 +559,7 @@ mod tests {
         // dvx_hi=1 (bits 11:8 = 0x100), dvy_hi=0, intensity=15
         let vmem = build_vmem(&[
             0xA000 | 512, // LABS: y=512
-            512, // LABS: intensity=0, x=512
+            512,          // LABS: intensity=0, x=512
             0xF0F1,       // SVEC: dvy_hi=0, intensity=15, dvx_hi=1
             0xB000,       // HALT
         ]);
@@ -570,7 +569,10 @@ mod tests {
 
         let list = dvg.take_display_list();
         let visible: Vec<_> = list.iter().filter(|l| l.intensity > 0).collect();
-        assert!(!visible.is_empty(), "expected at least one visible line from SVEC");
+        assert!(
+            !visible.is_empty(),
+            "expected at least one visible line from SVEC"
+        );
     }
 
     #[test]
@@ -653,19 +655,15 @@ mod tests {
             0xA000 | 512, // LABS: y=512
             0x9000 | 600, // LABS: intensity=9 (sets scale=9), x=600
             // VCTR op=0: dy=0, dx=0x464 (bit 10 set = negative, magnitude 100)
-            0x0000,       // word0: op=0, dy=0
-            0xF464,       // word1: intensity=15, dx=0x464
-            0xB000,       // HALT
+            0x0000, // word0: op=0, dy=0
+            0xF464, // word1: intensity=15, dx=0x464
+            0xB000, // HALT
         ]);
         let mut dvg = Dvg::new();
         dvg.go();
         dvg.execute(&vmem);
 
         // Beam should have moved left (X decreased).
-        assert!(
-            dvg.xpos < 600,
-            "expected X to decrease, got {}",
-            dvg.xpos
-        );
+        assert!(dvg.xpos < 600, "expected X to decrease, got {}", dvg.xpos);
     }
 }

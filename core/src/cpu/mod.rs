@@ -13,6 +13,10 @@ pub trait Cpu: BusMasterComponent + CpuStateTrait {
     fn is_sleeping(&self) -> bool;
 }
 
+// Disassembly support
+pub mod disasm;
+pub use disasm::{Disassemble, DisassembledInstruction};
+
 // Re-export state types
 pub mod state;
 pub use state::{CpuStateTrait, I8035State, M6502State, M6800State, M6809State, Z80State};
