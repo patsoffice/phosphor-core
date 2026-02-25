@@ -1,4 +1,4 @@
-use phosphor_core::core::debug::{DebugRegister, Debuggable};
+use phosphor_core::core::debug::{BusDebug, DebugRegister};
 use phosphor_core::core::machine::Machine;
 
 /// Execution modes for the debug interface.
@@ -34,11 +34,18 @@ impl DebugState {
         }
     }
 
-    /// Refresh cached state from the Debuggable interface.
-    pub fn refresh(&mut self, dbg: &mut dyn Debuggable) {
-        self.cpu_count = dbg.debug_cpu_count();
-        self.cpu_name = dbg.debug_cpu_name().to_string();
-        self.registers = dbg.debug_registers();
+    /// Refresh cached state from the BusDebug interface.
+    pub fn refresh(&mut self, bus: &dyn BusDebug) {
+        let cpus = bus.cpus();
+        self.cpu_count = cpus.len();
+        if let Some((name, cpu)) = cpus.get(self.selected_cpu) {
+            self.cpu_name = name.to_string();
+            self.registers = cpu.debug_registers();
+        } else if let Some((name, cpu)) = cpus.first() {
+            self.selected_cpu = 0;
+            self.cpu_name = name.to_string();
+            self.registers = cpu.debug_registers();
+        }
     }
 }
 
@@ -53,36 +60,36 @@ pub fn execute_frame(machine: &mut dyn Machine, state: &mut DebugState) -> bool 
     match state.run_mode {
         RunMode::Running => {
             machine.run_frame();
-            if let Some(dbg) = machine.as_debuggable() {
-                state.refresh(dbg);
+            if let Some(bus) = machine.debug_bus() {
+                state.refresh(bus);
             }
             true
         }
         RunMode::Paused => {
-            if let Some(dbg) = machine.as_debuggable() {
-                state.refresh(dbg);
+            if let Some(bus) = machine.debug_bus() {
+                state.refresh(bus);
             }
             false
         }
         RunMode::StepInstruction => {
-            if let Some(dbg) = machine.as_debuggable() {
-                loop {
-                    let at_boundary = dbg.debug_tick();
-                    state.cycle_count += 1;
-                    if at_boundary {
-                        break;
-                    }
+            loop {
+                let boundaries = machine.debug_tick();
+                state.cycle_count += 1;
+                if (boundaries >> state.selected_cpu) & 1 != 0 {
+                    break;
                 }
-                state.refresh(dbg);
+            }
+            if let Some(bus) = machine.debug_bus() {
+                state.refresh(bus);
             }
             state.run_mode = RunMode::Paused;
             false
         }
         RunMode::StepCycle => {
-            if let Some(dbg) = machine.as_debuggable() {
-                dbg.debug_tick();
-                state.cycle_count += 1;
-                state.refresh(dbg);
+            machine.debug_tick();
+            state.cycle_count += 1;
+            if let Some(bus) = machine.debug_bus() {
+                state.refresh(bus);
             }
             state.run_mode = RunMode::Paused;
             false

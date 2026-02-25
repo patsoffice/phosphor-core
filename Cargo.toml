@@ -1,4 +1,4 @@
 [workspace]
-members = ["core", "machines", "cpu-validation", "frontend"]
+members = ["core", "macros", "machines", "cpu-validation", "frontend"]
 default-members = ["core", "machines", "frontend"]
 resolver = "2"

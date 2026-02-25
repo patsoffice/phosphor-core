@@ -14,7 +14,7 @@ pub struct AnalogInput {
     pub name: &'static str,
 }
 
-use super::debug::Debuggable;
+use super::debug::BusDebug;
 use super::save_state::SaveError;
 
 /// Machine-agnostic interface for emulated systems.
@@ -108,11 +108,19 @@ pub trait Machine {
         Err(SaveError::InvalidFormat("save states not supported".into()))
     }
 
-    /// Access the debug interface, if this machine supports it.
-    ///
-    /// Machines that implement `Debuggable` override this to return `Some(self)`.
-    /// The frontend uses this to enable the debug panel.
-    fn as_debuggable(&mut self) -> Option<&mut dyn Debuggable> {
+    /// Access bus debug capabilities (shared ref — reads, device/CPU discovery).
+    fn debug_bus(&self) -> Option<&dyn BusDebug> {
         None
+    }
+
+    /// Access bus debug capabilities (mutable ref — writes).
+    fn debug_bus_mut(&mut self) -> Option<&mut dyn BusDebug> {
+        None
+    }
+
+    /// Advance one cycle. Returns bitmask of CPUs at instruction boundaries.
+    /// Bit 0 = CPU 0, bit 1 = CPU 1, etc.
+    fn debug_tick(&mut self) -> u32 {
+        0
     }
 }

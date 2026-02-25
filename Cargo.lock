@@ -632,6 +632,16 @@ version = "0.1.0"
 dependencies = [
  "inventory",
  "phosphor-core",
+ "phosphor-macros",
+]
+
+[[package]]
+name = "phosphor-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

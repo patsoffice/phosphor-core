@@ -1,10 +1,8 @@
 use phosphor_core::core::bus::InterruptState;
-use phosphor_core::core::debug::{DebugDisassembly, DebugRegister, Debuggable};
 use phosphor_core::core::machine::{InputButton, Machine};
 use phosphor_core::core::save_state::{self, SaveError, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::state::{M6800State, M6809State};
-use phosphor_core::cpu::{CpuStateTrait, Disassemble};
 
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
@@ -181,9 +179,6 @@ pub struct JoustSystem {
     p1_controls: u8, // bits 0-2: left, right, flap (mux B input)
     p2_controls: u8, // bits 0-2: left, right, flap (mux A input)
     start_bits: u8,  // bit 4: P2 Start, bit 5: P1 Start
-
-    // Debug: which CPU is selected for inspection (0 = main M6809, 1 = sound M6800)
-    debug_cpu_index: usize,
 }
 
 impl JoustSystem {
@@ -193,7 +188,6 @@ impl JoustSystem {
             p1_controls: 0,
             p2_controls: 0,
             start_bits: 0,
-            debug_cpu_index: 0,
         }
     }
 
@@ -430,100 +424,6 @@ impl Machine for JoustSystem {
         self.p2_controls = r.read_u8()?;
         self.start_bits = r.read_u8()?;
         Ok(())
-    }
-
-    fn as_debuggable(&mut self) -> Option<&mut dyn Debuggable> {
-        Some(self)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Debuggable — interactive debugging support (delegates to WilliamsBoard)
-// ---------------------------------------------------------------------------
-
-impl Debuggable for JoustSystem {
-    fn debug_tick(&mut self) -> bool {
-        self.update_widget_mux();
-        self.board.tick();
-        if self.debug_cpu_index == 0 {
-            self.board.cpu.at_instruction_boundary()
-        } else {
-            self.board.sound_cpu.at_instruction_boundary()
-        }
-    }
-
-    fn debug_pc(&self) -> u16 {
-        if self.debug_cpu_index == 0 {
-            self.board.cpu.pc
-        } else {
-            self.board.sound_cpu.pc
-        }
-    }
-
-    fn debug_registers(&self) -> Vec<DebugRegister> {
-        if self.debug_cpu_index == 0 {
-            self.board.cpu.snapshot().debug_registers()
-        } else {
-            self.board.sound_cpu.snapshot().debug_registers()
-        }
-    }
-
-    fn debug_read(&self, addr: u16) -> Option<u8> {
-        if self.debug_cpu_index == 0 {
-            self.board.debug_read_main(addr)
-        } else {
-            self.board.debug_read_sound(addr)
-        }
-    }
-
-    fn debug_write(&mut self, addr: u16, data: u8) {
-        if self.debug_cpu_index == 0 {
-            self.board.debug_write_main(addr, data);
-        } else {
-            self.board.debug_write_sound(addr, data);
-        }
-    }
-
-    fn debug_disassemble(&self, addr: u16, count: usize) -> Vec<DebugDisassembly> {
-        let mut results = Vec::with_capacity(count);
-        let mut pc = addr;
-        for _ in 0..count {
-            let mut buf = [0u8; 6];
-            for (i, b) in buf.iter_mut().enumerate() {
-                *b = self.debug_read(pc.wrapping_add(i as u16)).unwrap_or(0);
-            }
-            let inst = if self.debug_cpu_index == 0 {
-                phosphor_core::cpu::M6809::disassemble(pc, &buf)
-            } else {
-                phosphor_core::cpu::M6800::disassemble(pc, &buf)
-            };
-            results.push(DebugDisassembly {
-                addr: pc,
-                bytes: buf[..inst.byte_len as usize].to_vec(),
-                text: format!("{inst}"),
-                byte_len: inst.byte_len,
-            });
-            pc = pc.wrapping_add(inst.byte_len as u16);
-        }
-        results
-    }
-
-    fn debug_cpu_count(&self) -> usize {
-        2
-    }
-
-    fn debug_select_cpu(&mut self, index: usize) {
-        if index < 2 {
-            self.debug_cpu_index = index;
-        }
-    }
-
-    fn debug_cpu_name(&self) -> &str {
-        if self.debug_cpu_index == 0 {
-            "M6809 Main"
-        } else {
-            "M6800 Sound"
-        }
     }
 }
 

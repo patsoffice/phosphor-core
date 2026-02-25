@@ -101,13 +101,11 @@ pub fn run(
     }
 
     // Debug state
-    let has_debug = machine.as_debuggable().is_some();
+    let has_debug = machine.debug_bus().is_some();
     let mut debug_state = DebugState::new();
-    if let Some(dbg) = machine.as_debuggable() {
-        debug_state.cpu_count = dbg.debug_cpu_count();
-        debug_state.cpu_name = dbg.debug_cpu_name().to_string();
+    if let Some(bus) = machine.debug_bus() {
+        debug_state.refresh(bus);
     }
-    let mut prev_selected_cpu: usize = 0;
 
     'main: loop {
         // Poll all pending SDL events, translate to machine input
@@ -134,8 +132,8 @@ pub fn run(
                         if debug_state.active {
                             video.resize_window(width * scale + 240, height * scale);
                             debug_state.run_mode = RunMode::Paused;
-                            if let Some(dbg) = machine.as_debuggable() {
-                                debug_state.refresh(dbg);
+                            if let Some(bus) = machine.debug_bus() {
+                                debug_state.refresh(bus);
                             }
                         } else {
                             video.resize_window(width * scale, height * scale);
@@ -332,15 +330,6 @@ pub fn run(
 
                 _ => {}
             }
-        }
-
-        // Sync CPU selection if changed via debug panel
-        if debug_state.selected_cpu != prev_selected_cpu {
-            if let Some(dbg) = machine.as_debuggable() {
-                dbg.debug_select_cpu(debug_state.selected_cpu);
-                debug_state.refresh(dbg);
-            }
-            prev_selected_cpu = debug_state.selected_cpu;
         }
 
         // Execute based on debug state
