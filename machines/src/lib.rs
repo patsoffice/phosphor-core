@@ -1,4 +1,5 @@
 pub mod asteroids;
+pub mod ccastles;
 pub mod dkong;
 pub mod gridlee;
 pub mod joust;
@@ -14,6 +15,7 @@ pub mod simplez80;
 pub mod williams;
 
 pub use asteroids::AsteroidsSystem;
+pub use ccastles::CrystalCastlesSystem;
 pub use dkong::DkongSystem;
 pub use gridlee::GridleeSystem;
 pub use joust::JoustSystem;
