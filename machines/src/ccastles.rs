@@ -1,4 +1,5 @@
 use phosphor_core::core::bus::InterruptState;
+use phosphor_core::core::debug::BusDebug;
 use phosphor_core::core::machine::{AnalogInput, InputButton, Machine};
 use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
@@ -6,6 +7,7 @@ use phosphor_core::cpu::m6502::M6502;
 use phosphor_core::cpu::state::M6502State;
 use phosphor_core::cpu::{Cpu, CpuStateTrait};
 use phosphor_core::device::pokey::Pokey;
+use phosphor_macros::BusDebug;
 
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
@@ -257,9 +259,13 @@ const WEIGHT_4K7: u16 = 144;
 ///   0x9F80-0x9FBF  Palette RAM (32 entries, 3-bit RGB inverted)
 ///   0xA000-0xDFFF  Banked program ROM (16KB, 2 banks)
 ///   0xE000-0xFFFF  Fixed program ROM (8KB)
+#[derive(BusDebug)]
 pub struct CrystalCastlesSystem {
+    #[debug_cpu("M6502", read = "memory_read", write = "memory_write")]
     cpu: M6502,
+    #[debug_device("POKEY 1")]
     pokey1: Pokey,
+    #[debug_device("POKEY 2")]
     pokey2: Pokey,
 
     // Memory
@@ -407,6 +413,35 @@ impl CrystalCastlesSystem {
 
     pub fn get_cpu_state(&self) -> M6502State {
         self.cpu.snapshot()
+    }
+
+    /// Side-effect-free read from the CPU address space (for debugger).
+    /// Returns RAM, ROM, and NVRAM; None for I/O and POKEY registers.
+    fn memory_read(&self, addr: u16) -> Option<u8> {
+        match addr {
+            0x0000..=0x7FFF => Some(self.videoram[addr as usize]),
+            0x8000..=0x8DFF => Some(self.sram[(addr - 0x8000) as usize]),
+            0x8E00..=0x8FFF => Some(self.spriteram[(addr - 0x8E00) as usize]),
+            0x9000..=0x93FF => Some(self.nvram[(addr & 0xFF) as usize]),
+            0xA000..=0xDFFF => {
+                let bank_base = if self.outlatch0 & 0x80 != 0 { 0x6000 } else { 0x0000 };
+                Some(self.rom[bank_base + (addr - 0xA000) as usize])
+            }
+            0xE000..=0xFFFF => Some(self.rom[0x4000 + (addr - 0xE000) as usize]),
+            _ => None,
+        }
+    }
+
+    /// Write to the CPU address space (for debug memory editor).
+    /// Only writes to writable RAM regions; ignores I/O and ROM.
+    fn memory_write(&mut self, addr: u16, data: u8) {
+        match addr {
+            0x0000..=0x7FFF => self.videoram[addr as usize] = data,
+            0x8000..=0x8DFF => self.sram[(addr - 0x8000) as usize] = data,
+            0x8E00..=0x8FFF => self.spriteram[(addr - 0x8E00) as usize] = data,
+            0x9000..=0x93FF => self.nvram[(addr & 0xFF) as usize] = data,
+            _ => {}
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -931,7 +966,7 @@ impl Bus for CrystalCastlesSystem {
 }
 
 // ---------------------------------------------------------------------------
-// Machine trait (minimal — rendering/audio fleshed out in later steps)
+// Machine trait
 // ---------------------------------------------------------------------------
 
 impl Machine for CrystalCastlesSystem {
@@ -1044,6 +1079,27 @@ impl Machine for CrystalCastlesSystem {
 
     fn frame_rate_hz(&self) -> f64 {
         1_250_000.0 / CYCLES_PER_FRAME as f64
+    }
+
+    fn cycles_per_frame(&self) -> u64 {
+        CYCLES_PER_FRAME
+    }
+
+    fn debug_bus(&self) -> Option<&dyn BusDebug> {
+        Some(self)
+    }
+
+    fn debug_bus_mut(&mut self) -> Option<&mut dyn BusDebug> {
+        Some(self)
+    }
+
+    fn debug_tick(&mut self) -> u32 {
+        self.tick();
+        if self.cpu.at_instruction_boundary() {
+            1
+        } else {
+            0
+        }
     }
 
     fn machine_id(&self) -> &str {
