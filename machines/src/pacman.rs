@@ -1,4 +1,5 @@
 use phosphor_core::core::bus::InterruptState;
+use phosphor_core::core::debug::BusDebug;
 use phosphor_core::core::machine::{InputButton, Machine};
 use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
@@ -6,6 +7,7 @@ use phosphor_core::cpu::state::Z80State;
 use phosphor_core::cpu::z80::Z80;
 use phosphor_core::cpu::{Cpu, CpuStateTrait};
 use phosphor_core::device::namco_wsg::NamcoWsg;
+use phosphor_macros::BusDebug;
 
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
@@ -190,7 +192,9 @@ const B_WEIGHTS: [f64; 2] = [470.0, 220.0];
 /// Hardware: Zilog Z80 @ 3.072 MHz, Namco WSG 3-voice wavetable sound.
 /// Video: 36×28 tile playfield + 8 sprites, 2bpp, PROM-based palette.
 /// Screen: 288×224 displayed rotated 90° CCW on vertical monitor.
+#[derive(BusDebug)]
 pub struct PacmanSystem {
+    #[debug_cpu("Z80", read = "memory_read", write = "memory_write")]
     cpu: Z80,
 
     // Memory
@@ -201,6 +205,7 @@ pub struct PacmanSystem {
     sprite_coords: [u8; 0x10], // 0x5060-0x506F: sprite X/Y positions
 
     // Sound
+    #[debug_device("NamcoWSG")]
     wsg: NamcoWsg,
 
     // GFX ROM
@@ -595,6 +600,29 @@ impl PacmanSystem {
             }
         }
     }
+
+    /// Side-effect-free read from the CPU address space (for debugger).
+    fn memory_read(&self, addr: u16) -> Option<u8> {
+        let addr = addr & 0x7FFF;
+        match addr {
+            0x0000..=0x3FFF => Some(self.rom[addr as usize]),
+            0x4000..=0x43FF => Some(self.video_ram[(addr - 0x4000) as usize]),
+            0x4400..=0x47FF => Some(self.color_ram[(addr - 0x4400) as usize]),
+            0x4C00..=0x4FFF => Some(self.ram[(addr - 0x4C00) as usize]),
+            _ => None,
+        }
+    }
+
+    /// Write to the CPU address space (for debug memory editor).
+    fn memory_write(&mut self, addr: u16, data: u8) {
+        let addr = addr & 0x7FFF;
+        match addr {
+            0x4000..=0x43FF => self.video_ram[(addr - 0x4000) as usize] = data,
+            0x4400..=0x47FF => self.color_ram[(addr - 0x4400) as usize] = data,
+            0x4C00..=0x4FFF => self.ram[(addr - 0x4C00) as usize] = data,
+            _ => {}
+        }
+    }
 }
 
 impl Default for PacmanSystem {
@@ -810,6 +838,27 @@ impl Machine for PacmanSystem {
 
     fn frame_rate_hz(&self) -> f64 {
         CPU_CLOCK_HZ as f64 / CYCLES_PER_FRAME as f64
+    }
+
+    fn cycles_per_frame(&self) -> u64 {
+        CYCLES_PER_FRAME
+    }
+
+    fn debug_bus(&self) -> Option<&dyn BusDebug> {
+        Some(self)
+    }
+
+    fn debug_bus_mut(&mut self) -> Option<&mut dyn BusDebug> {
+        Some(self)
+    }
+
+    fn debug_tick(&mut self) -> u32 {
+        self.tick();
+        if self.cpu.at_instruction_boundary() {
+            1
+        } else {
+            0
+        }
     }
 
     fn machine_id(&self) -> &str {
