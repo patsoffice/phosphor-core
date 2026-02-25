@@ -1,8 +1,6 @@
-use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::machine::{InputButton, Machine};
 use phosphor_core::core::save_state::{self, SaveError, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
-use phosphor_core::cpu::state::{M6800State, M6809State};
 
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
@@ -196,7 +194,7 @@ const ROBOTRON_INPUT_MAP: &[InputButton] = &[
 /// fire stick split across Port A bits 6-7 (up/down) and Port B bits 0-1 (left/right).
 /// No LS157 mux — all inputs directly wired.
 pub struct RobotronSystem {
-    pub(crate) board: WilliamsBoard,
+    pub board: WilliamsBoard,
 
     // Direct-wired input state
     widget_port_a: u8, // bits 0-3: move, bit 4: P1 Start, bit 5: P2 Start, bits 6-7: fire up/down
@@ -210,20 +208,6 @@ impl RobotronSystem {
             widget_port_a: 0,
             widget_port_b: 0,
         }
-    }
-
-    // --- Delegation accessors (preserve public API for tests) ---
-
-    pub fn load_program_rom(&mut self, offset: usize, data: &[u8]) {
-        self.board.load_program_rom(offset, data);
-    }
-
-    pub fn load_banked_rom(&mut self, offset: usize, data: &[u8]) {
-        self.board.load_banked_rom(offset, data);
-    }
-
-    pub fn load_sound_rom(&mut self, offset: usize, data: &[u8]) {
-        self.board.load_sound_rom(offset, data);
     }
 
     /// Load program ROM from a RomSet using the Robotron ROM mapping.
@@ -240,50 +224,6 @@ impl RobotronSystem {
             &ROBOTRON_PROGRAM_ROM,
             &ROBOTRON_SOUND_ROM,
         )
-    }
-
-    pub fn get_cpu_state(&self) -> M6809State {
-        self.board.get_cpu_state()
-    }
-
-    pub fn get_sound_cpu_state(&self) -> M6800State {
-        self.board.get_sound_cpu_state()
-    }
-
-    pub fn read_video_ram(&self, addr: usize) -> u8 {
-        self.board.read_video_ram(addr)
-    }
-
-    pub fn write_video_ram(&mut self, addr: usize, data: u8) {
-        self.board.write_video_ram(addr, data);
-    }
-
-    pub fn read_palette(&self, index: usize) -> u8 {
-        self.board.read_palette(index)
-    }
-
-    pub fn rom_bank(&self) -> u8 {
-        self.board.rom_bank()
-    }
-
-    pub fn clock(&self) -> u64 {
-        self.board.clock()
-    }
-
-    pub fn load_cmos(&mut self, data: &[u8]) {
-        self.board.load_cmos(data);
-    }
-
-    pub fn save_cmos(&self) -> &[u8; 1024] {
-        self.board.save_cmos()
-    }
-
-    pub fn tick(&mut self) {
-        self.board.tick();
-    }
-
-    pub fn watchdog_counter(&self) -> u32 {
-        self.board.watchdog_counter
     }
 }
 
@@ -305,17 +245,7 @@ impl Bus for RobotronSystem {
         self.board.read(master, addr)
     }
 
-    fn write(&mut self, master: BusMaster, addr: u16, data: u8) {
-        self.board.write(master, addr, data);
-    }
-
-    fn is_halted_for(&self, master: BusMaster) -> bool {
-        self.board.is_halted_for(master)
-    }
-
-    fn check_interrupts(&self, target: BusMaster) -> InterruptState {
-        self.board.check_interrupts(target)
-    }
+    williams::impl_williams_bus_common!();
 }
 
 // ---------------------------------------------------------------------------
@@ -323,19 +253,14 @@ impl Bus for RobotronSystem {
 // ---------------------------------------------------------------------------
 
 impl Machine for RobotronSystem {
-    fn display_size(&self) -> (u32, u32) {
-        (williams::DISPLAY_WIDTH, williams::DISPLAY_HEIGHT)
-    }
+    williams::impl_williams_machine_common!();
+    williams::impl_williams_debug!();
 
     fn run_frame(&mut self) {
         // Update PIA inputs before running the frame
         self.board.widget_pia.set_port_a_input(self.widget_port_a);
         self.board.widget_pia.set_port_b_input(self.widget_port_b);
         self.board.run_frame();
-    }
-
-    fn render_frame(&self, buffer: &mut [u8]) {
-        self.board.render_frame(buffer);
     }
 
     fn set_input(&mut self, button: u8, pressed: bool) {
@@ -378,25 +303,11 @@ impl Machine for RobotronSystem {
         self.widget_port_b = 0;
     }
 
-    fn save_nvram(&self) -> Option<&[u8]> {
-        Some(self.board.save_cmos())
-    }
-
-    fn load_nvram(&mut self, data: &[u8]) {
-        self.board.load_cmos(data);
-    }
-
-    fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
-        self.board.fill_audio(buffer)
-    }
-
-    fn audio_sample_rate(&self) -> u32 {
-        44100
-    }
-
-    fn frame_rate_hz(&self) -> f64 {
-        // 1 MHz CPU clock / (260 scanlines × 64 cycles/scanline) = 60.096 Hz
-        1_000_000.0 / williams::CYCLES_PER_FRAME as f64
+    fn debug_tick(&mut self) -> u32 {
+        self.board.widget_pia.set_port_a_input(self.widget_port_a);
+        self.board.widget_pia.set_port_b_input(self.widget_port_b);
+        self.board.tick();
+        self.board.debug_tick_boundaries()
     }
 
     fn machine_id(&self) -> &str {

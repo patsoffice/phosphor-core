@@ -35,8 +35,8 @@ fn test_render_frame_correct_size() {
 fn test_render_frame_uses_palette() {
     let mut sys = JoustSystem::new();
     // Park both CPUs in BRA * loops so they don't corrupt VRAM during the frame
-    sys.write_video_ram(0, 0x20); // BRA opcode (main CPU at PC=0)
-    sys.write_video_ram(1, 0xFE); // offset -2
+    sys.board.write_video_ram(0, 0x20); // BRA opcode (main CPU at PC=0)
+    sys.board.write_video_ram(1, 0xFE); // offset -2
     sys.write(BusMaster::Cpu(1), 0x0000, 0x20); // sound CPU BRA *
     sys.write(BusMaster::Cpu(1), 0x0001, 0xFE);
 
@@ -46,7 +46,7 @@ fn test_render_frame_uses_palette() {
     // Screen pixel (0,0) maps to VRAM at byte_column=3, row=7 (crop offset 6,7).
     // pixel_x=6 is even, so the upper nibble is used.
     // VRAM address = 3 * 256 + 7 = 0x0307
-    sys.write_video_ram(0x0307, 0x50);
+    sys.board.write_video_ram(0x0307, 0x50);
 
     // Run a full frame so render_scanline populates the scanline buffer
     sys.run_frame();
@@ -66,8 +66,8 @@ fn test_render_frame_uses_palette() {
 fn test_render_frame_two_pixels_per_byte() {
     let mut sys = JoustSystem::new();
     // Park both CPUs in BRA * loops so they don't corrupt VRAM during the frame
-    sys.write_video_ram(0, 0x20);
-    sys.write_video_ram(1, 0xFE);
+    sys.board.write_video_ram(0, 0x20);
+    sys.board.write_video_ram(1, 0xFE);
     sys.write(BusMaster::Cpu(1), 0x0000, 0x20);
     sys.write(BusMaster::Cpu(1), 0x0001, 0xFE);
 
@@ -79,7 +79,7 @@ fn test_render_frame_two_pixels_per_byte() {
     // Screen pixels (0,0) and (1,0) share the same VRAM byte at byte_column=3, row=7.
     // pixel_x=6 (even) reads upper nibble, pixel_x=7 (odd) reads lower nibble.
     // Write 0x39 → upper nibble=3 (palette 3), lower nibble=9 (palette 9).
-    sys.write_video_ram(0x0307, 0x39);
+    sys.board.write_video_ram(0x0307, 0x39);
 
     // Run a full frame so render_scanline populates the scanline buffer
     sys.run_frame();
@@ -215,17 +215,17 @@ fn test_input_muxing() {
 #[test]
 fn test_video_ram_read_write() {
     let mut sys = JoustSystem::new();
-    sys.write_video_ram(0x1234, 0xAB);
-    assert_eq!(sys.read_video_ram(0x1234), 0xAB);
+    sys.board.write_video_ram(0x1234, 0xAB);
+    assert_eq!(sys.board.read_video_ram(0x1234), 0xAB);
 }
 
 #[test]
 fn test_video_ram_full_range() {
     let mut sys = JoustSystem::new();
-    sys.write_video_ram(0x0000, 0x11);
-    sys.write_video_ram(0xBFFF, 0x22);
-    assert_eq!(sys.read_video_ram(0x0000), 0x11);
-    assert_eq!(sys.read_video_ram(0xBFFF), 0x22);
+    sys.board.write_video_ram(0x0000, 0x11);
+    sys.board.write_video_ram(0xBFFF, 0x22);
+    assert_eq!(sys.board.read_video_ram(0x0000), 0x11);
+    assert_eq!(sys.board.read_video_ram(0xBFFF), 0x22);
 }
 
 #[test]
@@ -233,7 +233,7 @@ fn test_video_ram_via_bus() {
     let mut sys = JoustSystem::new();
     sys.write(BusMaster::Cpu(0), 0x1234, 0xCD);
     assert_eq!(sys.read(BusMaster::Cpu(0), 0x1234), 0xCD);
-    assert_eq!(sys.read_video_ram(0x1234), 0xCD);
+    assert_eq!(sys.board.read_video_ram(0x1234), 0xCD);
 }
 
 #[test]
@@ -243,8 +243,8 @@ fn test_palette_ram_read_write() {
     sys.write(BusMaster::Cpu(0), 0xC00F, 0xBB);
     assert_eq!(sys.read(BusMaster::Cpu(0), 0xC000), 0xAA);
     assert_eq!(sys.read(BusMaster::Cpu(0), 0xC00F), 0xBB);
-    assert_eq!(sys.read_palette(0), 0xAA);
-    assert_eq!(sys.read_palette(15), 0xBB);
+    assert_eq!(sys.board.read_palette(0), 0xAA);
+    assert_eq!(sys.board.read_palette(15), 0xBB);
 }
 
 #[test]
@@ -259,7 +259,7 @@ fn test_cmos_ram_read_write() {
 #[test]
 fn test_rom_write_protection() {
     let mut sys = JoustSystem::new();
-    sys.load_program_rom(0, &[0xAA; 0x3000]);
+    sys.board.load_program_rom(0, &[0xAA; 0x3000]);
     // Write to ROM area should be ignored
     sys.write(BusMaster::Cpu(0), 0xD000, 0x55);
     assert_eq!(sys.read(BusMaster::Cpu(0), 0xD000), 0xAA);
@@ -333,17 +333,17 @@ fn test_blitter_registers_accessible() {
 fn test_blitter_halts_cpu() {
     let mut sys = JoustSystem::new();
     // Set up an infinite loop at 0xD000: BRA * (2 bytes)
-    sys.load_program_rom(0, &[0x20, 0xFE]); // BRA *
-    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]); // Reset vector -> 0xD000
+    sys.board.load_program_rom(0, &[0x20, 0xFE]); // BRA *
+    sys.board.load_program_rom(0x2FFE, &[0xD0, 0x00]); // Reset vector -> 0xD000
     sys.reset();
 
     // Run enough cycles for the CPU to settle into the BRA loop
     for _ in 0..20 {
-        sys.tick();
+        sys.board.tick();
     }
 
     // Record CPU PC — it should be at the BRA instruction
-    let pc_before = sys.get_cpu_state().pc;
+    let pc_before = sys.board.get_cpu_state().pc;
 
     // Trigger a large blit: 8x8 solid fill so the blitter runs for 64+ DMA cycles.
     // Write data registers first, then $CA00 (control) last to trigger.
@@ -357,8 +357,8 @@ fn test_blitter_halts_cpu() {
 
     // The blitter should now be active. Tick once and verify the CPU PC
     // did NOT advance (blitter halts the CPU via is_halted_for).
-    sys.tick();
-    let pc_during_blit = sys.get_cpu_state().pc;
+    sys.board.tick();
+    let pc_during_blit = sys.board.get_cpu_state().pc;
     assert_eq!(
         pc_before, pc_during_blit,
         "CPU PC should not advance while blitter is active"
@@ -366,11 +366,11 @@ fn test_blitter_halts_cpu() {
 
     // Run enough cycles to complete the blit (8*8 = 64 DMA cycles)
     for _ in 0..100 {
-        sys.tick();
+        sys.board.tick();
     }
 
     // After blit completes, CPU should resume and PC should be back in the loop
-    let pc_after = sys.get_cpu_state().pc;
+    let pc_after = sys.board.get_cpu_state().pc;
     assert!(
         (0xD000..=0xD002).contains(&pc_after),
         "CPU should resume executing after blit completes, PC=0x{:04X}",
@@ -383,8 +383,8 @@ fn test_blitter_writes_to_video_ram() {
     let mut sys = JoustSystem::new();
 
     // Write source data in video RAM at address 0x1000
-    sys.write_video_ram(0x1000, 0xAB);
-    sys.write_video_ram(0x1001, 0xCD);
+    sys.board.write_video_ram(0x1000, 0xAB);
+    sys.board.write_video_ram(0x1001, 0xCD);
 
     // Configure blitter for a 2-byte copy (1 row, width=1).
     // Write data registers first, then $CA00 last to trigger.
@@ -399,12 +399,12 @@ fn test_blitter_writes_to_video_ram() {
 
     // Run enough DMA cycles to complete
     for _ in 0..10 {
-        sys.tick();
+        sys.board.tick();
     }
 
     // Verify destination
-    assert_eq!(sys.read_video_ram(0x2000), 0xAB);
-    assert_eq!(sys.read_video_ram(0x2001), 0xCD);
+    assert_eq!(sys.board.read_video_ram(0x2000), 0xAB);
+    assert_eq!(sys.board.read_video_ram(0x2001), 0xCD);
 }
 
 // =================================================================
@@ -415,16 +415,16 @@ fn test_blitter_writes_to_video_ram() {
 fn test_no_irq_when_pia_disabled() {
     let mut sys = JoustSystem::new();
     // Load a simple infinite loop
-    sys.load_program_rom(0, &[0x20, 0xFE]); // BRA *
-    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.board.load_program_rom(0, &[0x20, 0xFE]); // BRA *
+    sys.board.load_program_rom(0x2FFE, &[0xD0, 0x00]);
     sys.reset();
 
     // PIA CB1 interrupt not enabled by default, so no IRQ after VBLANK
     for _ in 0..200 {
-        sys.tick();
+        sys.board.tick();
     }
     // CPU should still be running the loop, not stuck in an IRQ handler
-    let state = sys.get_cpu_state();
+    let state = sys.board.get_cpu_state();
     // PC should be in the loop at 0xD000
     assert!(state.pc >= 0xD000 && state.pc <= 0xD002);
 }
@@ -436,17 +436,17 @@ fn test_no_irq_when_pia_disabled() {
 #[test]
 fn test_reset_loads_vector_from_rom() {
     let mut sys = JoustSystem::new();
-    sys.load_program_rom(0x2FFE, &[0xD1, 0x00]);
+    sys.board.load_program_rom(0x2FFE, &[0xD1, 0x00]);
     sys.reset();
-    assert_eq!(sys.get_cpu_state().pc, 0xD100);
+    assert_eq!(sys.board.get_cpu_state().pc, 0xD100);
 }
 
 #[test]
 fn test_reset_masks_interrupts() {
     let mut sys = JoustSystem::new();
-    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.board.load_program_rom(0x2FFE, &[0xD0, 0x00]);
     sys.reset();
-    let state = sys.get_cpu_state();
+    let state = sys.board.get_cpu_state();
     assert_ne!(state.cc & (CcFlag::I as u8), 0);
     assert_ne!(state.cc & (CcFlag::F as u8), 0);
 }
@@ -454,19 +454,19 @@ fn test_reset_masks_interrupts() {
 #[test]
 fn test_reset_preserves_cmos() {
     let mut sys = JoustSystem::new();
-    sys.load_cmos(&[0x42; 1024]);
-    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.board.load_cmos(&[0x42; 1024]);
+    sys.board.load_program_rom(0x2FFE, &[0xD0, 0x00]);
     sys.reset();
-    assert_eq!(sys.save_cmos()[0], 0x42);
+    assert_eq!(sys.board.save_cmos()[0], 0x42);
 }
 
 #[test]
 fn test_reset_preserves_video_ram() {
     let mut sys = JoustSystem::new();
-    sys.write_video_ram(0x0100, 0xAB);
-    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.board.write_video_ram(0x0100, 0xAB);
+    sys.board.load_program_rom(0x2FFE, &[0xD0, 0x00]);
     sys.reset();
-    assert_eq!(sys.read_video_ram(0x0100), 0xAB);
+    assert_eq!(sys.board.read_video_ram(0x0100), 0xAB);
 }
 
 // =================================================================
@@ -477,8 +477,8 @@ fn test_reset_preserves_video_ram() {
 fn test_cmos_load_save_roundtrip() {
     let mut sys = JoustSystem::new();
     let data = [0xAB; 1024];
-    sys.load_cmos(&data);
-    assert_eq!(sys.save_cmos(), &data);
+    sys.board.load_cmos(&data);
+    assert_eq!(sys.board.save_cmos(), &data);
 }
 
 // =================================================================
@@ -488,7 +488,7 @@ fn test_cmos_load_save_roundtrip() {
 #[test]
 fn test_load_program_rom_slice() {
     let mut sys = JoustSystem::new();
-    sys.load_program_rom(0, &[0x12, 0x34]);
+    sys.board.load_program_rom(0, &[0x12, 0x34]);
     assert_eq!(sys.read(BusMaster::Cpu(0), 0xD000), 0x12);
     assert_eq!(sys.read(BusMaster::Cpu(0), 0xD001), 0x34);
 }
@@ -507,7 +507,7 @@ fn test_load_rom_set_by_name_fallback() {
     ]);
     let rom_data = JOUST_PROGRAM_ROM.load_skip_checksums(&rom_set).unwrap();
     let mut sys = JoustSystem::new();
-    sys.load_program_rom(0, &rom_data);
+    sys.board.load_program_rom(0, &rom_data);
 
     // Verify ROM contents at start of each region
     assert_eq!(sys.read(BusMaster::Cpu(0), 0xD000), 0x11);
@@ -523,7 +523,7 @@ fn test_load_rom_set_by_name_fallback() {
 fn test_rom_bank_select() {
     let mut sys = JoustSystem::new();
     sys.write(BusMaster::Cpu(0), 0xC900, 0x03);
-    assert_eq!(sys.rom_bank(), 0x03);
+    assert_eq!(sys.board.rom_bank(), 0x03);
     assert_eq!(sys.read(BusMaster::Cpu(0), 0xC900), 0x03);
 }
 
@@ -534,19 +534,19 @@ fn test_rom_bank_select() {
 #[test]
 fn test_bank_switch_disabled_reads_video_ram() {
     let mut sys = JoustSystem::new();
-    sys.load_banked_rom(0x1000, &[0xAA]);
-    sys.write_video_ram(0x1000, 0xBB);
+    sys.board.load_banked_rom(0x1000, &[0xAA]);
+    sys.board.write_video_ram(0x1000, 0xBB);
 
     // Bank 0 (default): reads should return video RAM
-    assert_eq!(sys.rom_bank(), 0);
+    assert_eq!(sys.board.rom_bank(), 0);
     assert_eq!(sys.read(BusMaster::Cpu(0), 0x1000), 0xBB);
 }
 
 #[test]
 fn test_bank_switch_enabled_reads_banked_rom() {
     let mut sys = JoustSystem::new();
-    sys.load_banked_rom(0x1000, &[0xAA]);
-    sys.write_video_ram(0x1000, 0xBB);
+    sys.board.load_banked_rom(0x1000, &[0xAA]);
+    sys.board.write_video_ram(0x1000, 0xBB);
 
     // Enable ROM bank
     sys.write(BusMaster::Cpu(0), 0xC900, 0x01);
@@ -556,14 +556,14 @@ fn test_bank_switch_enabled_reads_banked_rom() {
 #[test]
 fn test_bank_switch_writes_always_to_video_ram() {
     let mut sys = JoustSystem::new();
-    sys.load_banked_rom(0x2000, &[0xAA]);
+    sys.board.load_banked_rom(0x2000, &[0xAA]);
 
     // Enable ROM bank and write through it
     sys.write(BusMaster::Cpu(0), 0xC900, 0x01);
     sys.write(BusMaster::Cpu(0), 0x2000, 0xCC);
 
     // Video RAM should have the written value
-    assert_eq!(sys.read_video_ram(0x2000), 0xCC);
+    assert_eq!(sys.board.read_video_ram(0x2000), 0xCC);
 
     // Disable bank: read should return the written video RAM value
     sys.write(BusMaster::Cpu(0), 0xC900, 0x00);
@@ -577,8 +577,8 @@ fn test_bank_switch_writes_always_to_video_ram() {
 #[test]
 fn test_upper_video_ram_unaffected_by_bank() {
     let mut sys = JoustSystem::new();
-    sys.write_video_ram(0x9000, 0x55);
-    sys.write_video_ram(0xBFFF, 0x66);
+    sys.board.write_video_ram(0x9000, 0x55);
+    sys.board.write_video_ram(0xBFFF, 0x66);
 
     // Enable ROM bank
     sys.write(BusMaster::Cpu(0), 0xC900, 0x01);
@@ -591,9 +591,9 @@ fn test_upper_video_ram_unaffected_by_bank() {
 #[test]
 fn test_bank_switch_boundary_addresses() {
     let mut sys = JoustSystem::new();
-    sys.load_banked_rom(0x8FFF, &[0xDD]);
-    sys.write_video_ram(0x8FFF, 0xEE);
-    sys.write_video_ram(0x9000, 0xFF);
+    sys.board.load_banked_rom(0x8FFF, &[0xDD]);
+    sys.board.write_video_ram(0x8FFF, 0xEE);
+    sys.board.write_video_ram(0x9000, 0xFF);
 
     sys.write(BusMaster::Cpu(0), 0xC900, 0x01);
 
@@ -606,8 +606,8 @@ fn test_bank_switch_boundary_addresses() {
 #[test]
 fn test_bank_switch_address_zero() {
     let mut sys = JoustSystem::new();
-    sys.load_banked_rom(0, &[0x42]);
-    sys.write_video_ram(0, 0x99);
+    sys.board.load_banked_rom(0, &[0x42]);
+    sys.board.write_video_ram(0, 0x99);
 
     sys.write(BusMaster::Cpu(0), 0xC900, 0x01);
     assert_eq!(sys.read(BusMaster::Cpu(0), 0x0000), 0x42);
@@ -619,8 +619,8 @@ fn test_bank_switch_address_zero() {
 #[test]
 fn test_bank_switch_toggle() {
     let mut sys = JoustSystem::new();
-    sys.load_banked_rom(0x4000, &[0x11]);
-    sys.write_video_ram(0x4000, 0x22);
+    sys.board.load_banked_rom(0x4000, &[0x11]);
+    sys.board.write_video_ram(0x4000, 0x22);
 
     // Off -> On -> Off -> On
     assert_eq!(sys.read(BusMaster::Cpu(0), 0x4000), 0x22);
@@ -636,11 +636,11 @@ fn test_bank_switch_toggle() {
 fn test_blitter_reads_banked_rom() {
     let mut sys = JoustSystem::new();
     // Put source data in video RAM
-    sys.write_video_ram(0x1000, 0xAB);
-    sys.write_video_ram(0x1001, 0xCD);
+    sys.board.write_video_ram(0x1000, 0xAB);
+    sys.board.write_video_ram(0x1001, 0xCD);
 
     // Load different data into banked ROM at same address
-    sys.load_banked_rom(0x1000, &[0x11, 0x22]);
+    sys.board.load_banked_rom(0x1000, &[0x11, 0x22]);
 
     // Enable ROM bank — blitter shares the CPU's bus, so it sees ROM overlay
     sys.write(BusMaster::Cpu(0), 0xC900, 0x01);
@@ -657,26 +657,26 @@ fn test_blitter_reads_banked_rom() {
 
     // Run DMA cycles
     for _ in 0..10 {
-        sys.tick();
+        sys.board.tick();
     }
 
     // Blitter should have read from banked ROM (0x11, 0x22), not video RAM (0xAB, 0xCD)
-    assert_eq!(sys.read_video_ram(0x9000), 0x11);
-    assert_eq!(sys.read_video_ram(0x9001), 0x22);
+    assert_eq!(sys.board.read_video_ram(0x9000), 0x11);
+    assert_eq!(sys.board.read_video_ram(0x9001), 0x22);
 }
 
 #[test]
 fn test_blitter_reads_video_ram_when_bank_disabled() {
     let mut sys = JoustSystem::new();
     // Put source data in video RAM
-    sys.write_video_ram(0x1000, 0xAB);
-    sys.write_video_ram(0x1001, 0xCD);
+    sys.board.write_video_ram(0x1000, 0xAB);
+    sys.board.write_video_ram(0x1001, 0xCD);
 
     // Load different data into banked ROM at same address
-    sys.load_banked_rom(0x1000, &[0x11, 0x22]);
+    sys.board.load_banked_rom(0x1000, &[0x11, 0x22]);
 
     // Bank disabled (default) — blitter reads from video RAM
-    assert_eq!(sys.rom_bank(), 0);
+    assert_eq!(sys.board.rom_bank(), 0);
 
     // Configure blitter to copy from 0x1000 to 0x9000 (2 bytes).
     // Write data registers first, then $CA00 last to trigger.
@@ -690,12 +690,12 @@ fn test_blitter_reads_video_ram_when_bank_disabled() {
 
     // Run DMA cycles
     for _ in 0..10 {
-        sys.tick();
+        sys.board.tick();
     }
 
     // Blitter should have read from video RAM (0xAB, 0xCD)
-    assert_eq!(sys.read_video_ram(0x9000), 0xAB);
-    assert_eq!(sys.read_video_ram(0x9001), 0xCD);
+    assert_eq!(sys.board.read_video_ram(0x9000), 0xAB);
+    assert_eq!(sys.board.read_video_ram(0x9001), 0xCD);
 }
 
 /// Verify blitter dest reads bypass ROM banking for keepmask blending.
@@ -711,13 +711,13 @@ fn test_blitter_dest_read_bypasses_rom_banking() {
     let mut sys = JoustSystem::new();
 
     // Set up VRAM at dest address 0x2000 with known content
-    sys.write_video_ram(0x2000, 0xEE);
+    sys.board.write_video_ram(0x2000, 0xEE);
 
     // Put different data in banked ROM at same address
-    sys.load_banked_rom(0x2000, &[0x77]);
+    sys.board.load_banked_rom(0x2000, &[0x77]);
 
     // Source data in upper VRAM (never banked)
-    sys.write_video_ram(0x9000, 0x0F); // upper nibble = 0 (transparent), lower = 0xF
+    sys.board.write_video_ram(0x9000, 0x0F); // upper nibble = 0 (transparent), lower = 0xF
 
     // Enable ROM banking
     sys.write(BusMaster::Cpu(0), 0xC900, 0x01);
@@ -736,7 +736,7 @@ fn test_blitter_dest_read_bypasses_rom_banking() {
 
     // Run DMA cycles
     for _ in 0..10 {
-        sys.tick();
+        sys.board.tick();
     }
 
     // Result should blend with VRAM (0xEE), not ROM (0x77):
@@ -744,14 +744,14 @@ fn test_blitter_dest_read_bypasses_rom_banking() {
     // Lower nibble: non-zero → write source _F
     // Expected: 0xEF (VRAM upper + source lower)
     // Bug would produce: 0x7F (ROM upper + source lower)
-    assert_eq!(sys.read_video_ram(0x2000), 0xEF);
+    assert_eq!(sys.board.read_video_ram(0x2000), 0xEF);
 }
 
 #[test]
 fn test_cpu_reads_banked_rom() {
     let mut sys = JoustSystem::new();
     // Place known value in banked ROM at address 0x1000
-    sys.load_banked_rom(0x1000, &[0x42]);
+    sys.board.load_banked_rom(0x1000, &[0x42]);
 
     // Program at 0xD000:
     //   LDA #$01       -- enable ROM bank
@@ -759,7 +759,7 @@ fn test_cpu_reads_banked_rom() {
     //   LDB $1000      -- read from banked ROM
     //   STB $9100      -- store to upper video RAM (always accessible)
     //   BRA *
-    sys.load_program_rom(
+    sys.board.load_program_rom(
         0,
         &[
             0x86, 0x01, // LDA #$01
@@ -769,29 +769,29 @@ fn test_cpu_reads_banked_rom() {
             0x20, 0xFE, // BRA *
         ],
     );
-    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.board.load_program_rom(0x2FFE, &[0xD0, 0x00]);
     sys.reset();
 
     for _ in 0..60 {
-        sys.tick();
+        sys.board.tick();
     }
 
-    assert_eq!(sys.read_video_ram(0x9100), 0x42);
-    assert_eq!(sys.rom_bank(), 0x01);
+    assert_eq!(sys.board.read_video_ram(0x9100), 0x42);
+    assert_eq!(sys.board.rom_bank(), 0x01);
 }
 
 #[test]
 fn test_reset_clears_bank_preserves_rom() {
     let mut sys = JoustSystem::new();
-    sys.load_banked_rom(0x0000, &[0xAA]);
+    sys.board.load_banked_rom(0x0000, &[0xAA]);
     sys.write(BusMaster::Cpu(0), 0xC900, 0x01);
-    assert_eq!(sys.rom_bank(), 0x01);
+    assert_eq!(sys.board.rom_bank(), 0x01);
 
-    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.board.load_program_rom(0x2FFE, &[0xD0, 0x00]);
     sys.reset();
 
     // Bank register should be 0 after reset
-    assert_eq!(sys.rom_bank(), 0x00);
+    assert_eq!(sys.board.rom_bank(), 0x00);
 
     // Banked ROM data should be preserved
     sys.write(BusMaster::Cpu(0), 0xC900, 0x01);
@@ -804,7 +804,7 @@ fn test_load_banked_rom_all_chips() {
     // Load each 4KB chip with a distinct byte
     for i in 0..9u8 {
         let offset = i as usize * 0x1000;
-        sys.load_banked_rom(offset, &[i + 1; 0x1000]);
+        sys.board.load_banked_rom(offset, &[i + 1; 0x1000]);
     }
 
     sys.write(BusMaster::Cpu(0), 0xC900, 0x01);
@@ -824,8 +824,8 @@ fn test_load_banked_rom_all_chips() {
 #[test]
 fn test_video_counter_read() {
     let mut sys = JoustSystem::new();
-    sys.load_program_rom(0, &[0x20, 0xFE]); // BRA *
-    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.board.load_program_rom(0, &[0x20, 0xFE]); // BRA *
+    sys.board.load_program_rom(0x2FFE, &[0xD0, 0x00]);
     sys.reset();
 
     // At cycle 0, scanline = 0, video counter = 0 & 0xFC = 0
@@ -834,7 +834,7 @@ fn test_video_counter_read() {
 
     // Advance past first scanline boundary (64 cycles)
     for _ in 0..64 {
-        sys.tick();
+        sys.board.tick();
     }
     // At cycle 64, scanline = 1, video counter = 1 & 0xFC = 0
     let val = sys.read(BusMaster::Cpu(0), 0xCB00);
@@ -842,7 +842,7 @@ fn test_video_counter_read() {
 
     // Advance to scanline 4 (cycle 256)
     for _ in 0..192 {
-        sys.tick();
+        sys.board.tick();
     }
     let val = sys.read(BusMaster::Cpu(0), 0xCB42); // Any address in 0xCB00-0xCBFF works
     assert_eq!(val, 0x04);
@@ -853,25 +853,25 @@ fn test_watchdog_reset_on_write() {
     let mut sys = JoustSystem::new();
     // Advance watchdog counter
     for _ in 0..100 {
-        sys.tick();
+        sys.board.tick();
     }
     // Writing 0x39 to 0xCBFF resets watchdog (MAME: williams_m.cpp:251)
     sys.write(BusMaster::Cpu(0), 0xCBFF, 0x39);
-    assert_eq!(sys.watchdog_counter(), 0);
+    assert_eq!(sys.board.watchdog_counter, 0);
 }
 
 #[test]
 fn test_watchdog_ignores_non_0x39() {
     let mut sys = JoustSystem::new();
     for _ in 0..100 {
-        sys.tick();
+        sys.board.tick();
     }
-    let before = sys.watchdog_counter();
+    let before = sys.board.watchdog_counter;
     // Writing any value other than 0x39 does NOT reset watchdog
     sys.write(BusMaster::Cpu(0), 0xCBFF, 0x00);
-    assert_eq!(sys.watchdog_counter(), before);
+    assert_eq!(sys.board.watchdog_counter, before);
     sys.write(BusMaster::Cpu(0), 0xCBFF, 0xFF);
-    assert_eq!(sys.watchdog_counter(), before);
+    assert_eq!(sys.board.watchdog_counter, before);
 }
 
 // =================================================================
@@ -881,7 +881,7 @@ fn test_watchdog_ignores_non_0x39() {
 #[test]
 fn test_execute_simple_program() {
     let mut sys = JoustSystem::new();
-    sys.load_program_rom(
+    sys.board.load_program_rom(
         0,
         &[
             0x86, 0x42, // LDA #$42
@@ -891,16 +891,16 @@ fn test_execute_simple_program() {
             0x20, 0xFE, // BRA *
         ],
     );
-    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.board.load_program_rom(0x2FFE, &[0xD0, 0x00]);
     sys.reset();
 
     for _ in 0..50 {
-        sys.tick();
+        sys.board.tick();
     }
 
-    assert_eq!(sys.read_video_ram(0x0100), 0x42);
-    assert_eq!(sys.read_video_ram(0x0101), 0x42);
-    let state = sys.get_cpu_state();
+    assert_eq!(sys.board.read_video_ram(0x0100), 0x42);
+    assert_eq!(sys.board.read_video_ram(0x0101), 0x42);
+    let state = sys.board.get_cpu_state();
     assert_eq!(state.a, 0x42);
     assert_eq!(state.b, 0x42);
 }
@@ -909,7 +909,7 @@ fn test_execute_simple_program() {
 fn test_execute_palette_write_program() {
     let mut sys = JoustSystem::new();
     // Program that writes 0xE3 to palette entry 0 (address 0xC000)
-    sys.load_program_rom(
+    sys.board.load_program_rom(
         0,
         &[
             0x86, 0xE3, // LDA #$E3
@@ -917,21 +917,21 @@ fn test_execute_palette_write_program() {
             0x20, 0xFE, // BRA *
         ],
     );
-    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.board.load_program_rom(0x2FFE, &[0xD0, 0x00]);
     sys.reset();
 
     for _ in 0..30 {
-        sys.tick();
+        sys.board.tick();
     }
 
-    assert_eq!(sys.read_palette(0), 0xE3);
+    assert_eq!(sys.board.read_palette(0), 0xE3);
 }
 
 #[test]
 fn test_execute_cmos_write_program() {
     let mut sys = JoustSystem::new();
     // Program that writes 0x99 to CMOS at 0xCC00
-    sys.load_program_rom(
+    sys.board.load_program_rom(
         0,
         &[
             0x86, 0x99, // LDA #$99
@@ -939,21 +939,21 @@ fn test_execute_cmos_write_program() {
             0x20, 0xFE, // BRA *
         ],
     );
-    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.board.load_program_rom(0x2FFE, &[0xD0, 0x00]);
     sys.reset();
 
     for _ in 0..30 {
-        sys.tick();
+        sys.board.tick();
     }
 
-    assert_eq!(sys.save_cmos()[0], 0xF9);
+    assert_eq!(sys.board.save_cmos()[0], 0xF9);
 }
 
 #[test]
 fn test_execute_rom_bank_program() {
     let mut sys = JoustSystem::new();
     // Program that writes 0x03 to ROM bank select at 0xC900
-    sys.load_program_rom(
+    sys.board.load_program_rom(
         0,
         &[
             0x86, 0x03, // LDA #$03
@@ -961,35 +961,35 @@ fn test_execute_rom_bank_program() {
             0x20, 0xFE, // BRA *
         ],
     );
-    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.board.load_program_rom(0x2FFE, &[0xD0, 0x00]);
     sys.reset();
 
     for _ in 0..30 {
-        sys.tick();
+        sys.board.tick();
     }
 
-    assert_eq!(sys.rom_bank(), 0x03);
+    assert_eq!(sys.board.rom_bank(), 0x03);
 }
 
 #[test]
 fn test_clock_advances() {
     let mut sys = JoustSystem::new();
-    sys.load_program_rom(0, &[0x20, 0xFE]); // BRA *
-    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.board.load_program_rom(0, &[0x20, 0xFE]); // BRA *
+    sys.board.load_program_rom(0x2FFE, &[0xD0, 0x00]);
     sys.reset();
 
-    assert_eq!(sys.clock(), 0);
+    assert_eq!(sys.board.clock(), 0);
     for _ in 0..100 {
-        sys.tick();
+        sys.board.tick();
     }
-    assert_eq!(sys.clock(), 100);
+    assert_eq!(sys.board.clock(), 100);
 }
 
 #[test]
 fn test_default_impl() {
     let sys = JoustSystem::default();
     assert_eq!(sys.display_size(), (292, 240));
-    assert_eq!(sys.clock(), 0);
+    assert_eq!(sys.board.clock(), 0);
 }
 
 // =================================================================
@@ -1000,19 +1000,19 @@ fn test_default_impl() {
 fn test_sound_cpu_reset_loads_vector() {
     let mut sys = JoustSystem::new();
     // Reset vector at 0xFFFE-0xFFFF in sound ROM (offset 0x0FFE-0x0FFF)
-    sys.load_sound_rom(0x0FFE, &[0xF0, 0x80]); // Reset vector = 0xF080
-    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.board.load_sound_rom(0x0FFE, &[0xF0, 0x80]); // Reset vector = 0xF080
+    sys.board.load_program_rom(0x2FFE, &[0xD0, 0x00]);
     sys.reset();
-    assert_eq!(sys.get_sound_cpu_state().pc, 0xF080);
+    assert_eq!(sys.board.get_sound_cpu_state().pc, 0xF080);
 }
 
 #[test]
 fn test_sound_cpu_reset_masks_interrupts() {
     let mut sys = JoustSystem::new();
-    sys.load_sound_rom(0x0FFE, &[0xF0, 0x00]);
-    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.board.load_sound_rom(0x0FFE, &[0xF0, 0x00]);
+    sys.board.load_program_rom(0x2FFE, &[0xD0, 0x00]);
     sys.reset();
-    let state = sys.get_sound_cpu_state();
+    let state = sys.board.get_sound_cpu_state();
     assert_ne!(state.cc & (CcFlag::I as u8), 0);
     assert_ne!(state.cc & (CcFlag::F as u8), 0);
 }
@@ -1021,7 +1021,7 @@ fn test_sound_cpu_reset_masks_interrupts() {
 fn test_sound_cpu_executes_independently() {
     let mut sys = JoustSystem::new();
     // Sound ROM at 0xF000: LDA #$42, STA $0010, BRA *
-    sys.load_sound_rom(
+    sys.board.load_sound_rom(
         0,
         &[
             0x86, 0x42, // LDA #$42
@@ -1029,19 +1029,19 @@ fn test_sound_cpu_executes_independently() {
             0x20, 0xFE, // BRA *
         ],
     );
-    sys.load_sound_rom(0x0FFE, &[0xF0, 0x00]); // Reset vector -> 0xF000
+    sys.board.load_sound_rom(0x0FFE, &[0xF0, 0x00]); // Reset vector -> 0xF000
     // Main CPU: BRA *
-    sys.load_program_rom(0, &[0x20, 0xFE]);
-    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.board.load_program_rom(0, &[0x20, 0xFE]);
+    sys.board.load_program_rom(0x2FFE, &[0xD0, 0x00]);
     sys.reset();
 
     for _ in 0..50 {
-        sys.tick();
+        sys.board.tick();
     }
 
     // Sound CPU should have written 0x42 to sound RAM at 0x0010
     assert_eq!(sys.read(BusMaster::Cpu(1), 0x0010), 0x42);
-    assert_eq!(sys.get_sound_cpu_state().a, 0x42);
+    assert_eq!(sys.board.get_sound_cpu_state().a, 0x42);
 }
 
 #[test]
@@ -1060,7 +1060,7 @@ fn test_sound_ram_isolated_from_main_cpu() {
 #[test]
 fn test_sound_rom_readable() {
     let mut sys = JoustSystem::new();
-    sys.load_sound_rom(0, &[0xDE, 0xAD]);
+    sys.board.load_sound_rom(0, &[0xDE, 0xAD]);
     assert_eq!(sys.read(BusMaster::Cpu(1), 0xF000), 0xDE);
     assert_eq!(sys.read(BusMaster::Cpu(1), 0xF001), 0xAD);
 }
@@ -1068,7 +1068,7 @@ fn test_sound_rom_readable() {
 #[test]
 fn test_sound_rom_mirrored_at_0xb000() {
     let mut sys = JoustSystem::new();
-    sys.load_sound_rom(0, &[0xDE, 0xAD]);
+    sys.board.load_sound_rom(0, &[0xDE, 0xAD]);
     // 4KB ROM mirrored via incomplete address decoding at 0xB000, 0xC000, 0xD000, 0xE000
     assert_eq!(sys.read(BusMaster::Cpu(1), 0xB000), 0xDE);
     assert_eq!(sys.read(BusMaster::Cpu(1), 0xB001), 0xAD);
@@ -1080,7 +1080,7 @@ fn test_sound_rom_mirrored_at_0xb000() {
 #[test]
 fn test_sound_rom_write_protection() {
     let mut sys = JoustSystem::new();
-    sys.load_sound_rom(0, &[0x42]);
+    sys.board.load_sound_rom(0, &[0x42]);
     sys.write(BusMaster::Cpu(1), 0xF000, 0xFF);
     assert_eq!(sys.read(BusMaster::Cpu(1), 0xF000), 0x42);
 }
@@ -1117,7 +1117,7 @@ fn test_sound_command_propagation() {
     sys.write(BusMaster::Cpu(0), 0xC80E, 0x42);
 
     // Tick once to propagate
-    sys.tick();
+    sys.board.tick();
 
     // Sound PIA Port B should have the command with high bits pulled up (| 0xC0)
     let command = sys.read(BusMaster::Cpu(1), 0x0402);
@@ -1129,7 +1129,7 @@ fn test_sound_cpu_not_halted_during_blit() {
     let mut sys = JoustSystem::new();
 
     // Sound ROM: LDA #$42, STA $0050, BRA *
-    sys.load_sound_rom(
+    sys.board.load_sound_rom(
         0,
         &[
             0x86, 0x42, // LDA #$42
@@ -1137,10 +1137,10 @@ fn test_sound_cpu_not_halted_during_blit() {
             0x20, 0xFE, // BRA *
         ],
     );
-    sys.load_sound_rom(0x0FFE, &[0xF0, 0x00]);
+    sys.board.load_sound_rom(0x0FFE, &[0xF0, 0x00]);
     // Main CPU: BRA *
-    sys.load_program_rom(0, &[0x20, 0xFE]);
-    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.board.load_program_rom(0, &[0x20, 0xFE]);
+    sys.board.load_program_rom(0x2FFE, &[0xD0, 0x00]);
     sys.reset();
 
     // Trigger a large blit to halt main CPU
@@ -1153,7 +1153,7 @@ fn test_sound_cpu_not_halted_during_blit() {
 
     // Tick during blit — sound CPU should still execute
     for _ in 0..50 {
-        sys.tick();
+        sys.board.tick();
     }
 
     assert_eq!(sys.read(BusMaster::Cpu(1), 0x0050), 0x42);
@@ -1166,8 +1166,8 @@ fn test_sound_cpu_not_halted_during_blit() {
 #[test]
 fn test_scanline_va11_signal() {
     let mut sys = JoustSystem::new();
-    sys.load_program_rom(0, &[0x20, 0xFE]); // BRA *
-    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.board.load_program_rom(0, &[0x20, 0xFE]); // BRA *
+    sys.board.load_program_rom(0x2FFE, &[0xD0, 0x00]);
     sys.reset();
 
     // Enable ROM PIA CB1 interrupt: set CRB bit 0 = 1 (interrupt enable)
@@ -1178,7 +1178,7 @@ fn test_scanline_va11_signal() {
     // Advance past scanline 32 boundary: clock must reach 32*64 = 2048.
     // tick() checks clock at entry, so the (N+1)th call processes clock=N.
     for _ in 0..2049 {
-        sys.tick();
+        sys.board.tick();
     }
     // At scanline 32: VA11 = (32 & 0x20) != 0 = true → CB1 goes high (rising edge)
     // ROM PIA irq_b1 should be set → CRB bit 7 high
@@ -1193,8 +1193,8 @@ fn test_scanline_va11_signal() {
 #[test]
 fn test_scanline_count240_signal() {
     let mut sys = JoustSystem::new();
-    sys.load_program_rom(0, &[0x20, 0xFE]); // BRA *
-    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.board.load_program_rom(0, &[0x20, 0xFE]); // BRA *
+    sys.board.load_program_rom(0x2FFE, &[0xD0, 0x00]);
     sys.reset();
 
     // Enable ROM PIA CA1 interrupt: set CRA bit 0 = 1, bit 1 = 1 (rising edge), bit 2 = 1
@@ -1203,7 +1203,7 @@ fn test_scanline_count240_signal() {
 
     // Advance past scanline 240 boundary: clock must reach 240*64 = 15360.
     for _ in 0..15361 {
-        sys.tick();
+        sys.board.tick();
     }
     // count240 should have asserted CA1 at scanline 240 → CRA bit 7 high
     let cra = sys.read(BusMaster::Cpu(0), 0xC80D);

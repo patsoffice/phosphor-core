@@ -194,8 +194,8 @@ fn test_coin_wiring() {
 #[test]
 fn test_video_ram_read_write() {
     let mut sys = RobotronSystem::new();
-    sys.write_video_ram(0x1234, 0xAB);
-    assert_eq!(sys.read_video_ram(0x1234), 0xAB);
+    sys.board.write_video_ram(0x1234, 0xAB);
+    assert_eq!(sys.board.read_video_ram(0x1234), 0xAB);
 }
 
 #[test]
@@ -203,7 +203,7 @@ fn test_video_ram_via_bus() {
     let mut sys = RobotronSystem::new();
     sys.write(BusMaster::Cpu(0), 0x1234, 0xCD);
     assert_eq!(sys.read(BusMaster::Cpu(0), 0x1234), 0xCD);
-    assert_eq!(sys.read_video_ram(0x1234), 0xCD);
+    assert_eq!(sys.board.read_video_ram(0x1234), 0xCD);
 }
 
 #[test]
@@ -211,14 +211,14 @@ fn test_palette_ram_read_write() {
     let mut sys = RobotronSystem::new();
     sys.write(BusMaster::Cpu(0), 0xC000, 0xAA);
     sys.write(BusMaster::Cpu(0), 0xC00F, 0xBB);
-    assert_eq!(sys.read_palette(0), 0xAA);
-    assert_eq!(sys.read_palette(15), 0xBB);
+    assert_eq!(sys.board.read_palette(0), 0xAA);
+    assert_eq!(sys.board.read_palette(15), 0xBB);
 }
 
 #[test]
 fn test_rom_write_protection() {
     let mut sys = RobotronSystem::new();
-    sys.load_program_rom(0, &[0xAA; 0x3000]);
+    sys.board.load_program_rom(0, &[0xAA; 0x3000]);
     sys.write(BusMaster::Cpu(0), 0xD000, 0x55);
     assert_eq!(sys.read(BusMaster::Cpu(0), 0xD000), 0xAA);
 }
@@ -238,14 +238,14 @@ fn test_unmapped_returns_ff() {
 fn test_rom_bank_select() {
     let mut sys = RobotronSystem::new();
     sys.write(BusMaster::Cpu(0), 0xC900, 0x03);
-    assert_eq!(sys.rom_bank(), 0x03);
+    assert_eq!(sys.board.rom_bank(), 0x03);
 }
 
 #[test]
 fn test_bank_switch_enabled_reads_banked_rom() {
     let mut sys = RobotronSystem::new();
-    sys.load_banked_rom(0x1000, &[0xAA]);
-    sys.write_video_ram(0x1000, 0xBB);
+    sys.board.load_banked_rom(0x1000, &[0xAA]);
+    sys.board.write_video_ram(0x1000, 0xBB);
 
     sys.write(BusMaster::Cpu(0), 0xC900, 0x01);
     assert_eq!(sys.read(BusMaster::Cpu(0), 0x1000), 0xAA);
@@ -254,10 +254,10 @@ fn test_bank_switch_enabled_reads_banked_rom() {
 #[test]
 fn test_bank_switch_disabled_reads_video_ram() {
     let mut sys = RobotronSystem::new();
-    sys.load_banked_rom(0x1000, &[0xAA]);
-    sys.write_video_ram(0x1000, 0xBB);
+    sys.board.load_banked_rom(0x1000, &[0xAA]);
+    sys.board.write_video_ram(0x1000, 0xBB);
 
-    assert_eq!(sys.rom_bank(), 0);
+    assert_eq!(sys.board.rom_bank(), 0);
     assert_eq!(sys.read(BusMaster::Cpu(0), 0x1000), 0xBB);
 }
 
@@ -269,8 +269,8 @@ fn test_bank_switch_disabled_reads_video_ram() {
 fn test_blitter_writes_to_video_ram() {
     let mut sys = RobotronSystem::new();
 
-    sys.write_video_ram(0x1000, 0xAB);
-    sys.write_video_ram(0x1001, 0xCD);
+    sys.board.write_video_ram(0x1000, 0xAB);
+    sys.board.write_video_ram(0x1001, 0xCD);
 
     // Configure blitter for a 2-byte copy
     sys.write(BusMaster::Cpu(0), 0xCA02, 0x10); // src_hi
@@ -282,11 +282,11 @@ fn test_blitter_writes_to_video_ram() {
     sys.write(BusMaster::Cpu(0), 0xCA00, 0x00); // control: triggers blit
 
     for _ in 0..10 {
-        sys.tick();
+        sys.board.tick();
     }
 
-    assert_eq!(sys.read_video_ram(0x2000), 0xAB);
-    assert_eq!(sys.read_video_ram(0x2001), 0xCD);
+    assert_eq!(sys.board.read_video_ram(0x2000), 0xAB);
+    assert_eq!(sys.board.read_video_ram(0x2001), 0xCD);
 }
 
 // =================================================================
@@ -296,17 +296,17 @@ fn test_blitter_writes_to_video_ram() {
 #[test]
 fn test_reset_loads_vector_from_rom() {
     let mut sys = RobotronSystem::new();
-    sys.load_program_rom(0x2FFE, &[0xD1, 0x00]);
+    sys.board.load_program_rom(0x2FFE, &[0xD1, 0x00]);
     sys.reset();
-    assert_eq!(sys.get_cpu_state().pc, 0xD100);
+    assert_eq!(sys.board.get_cpu_state().pc, 0xD100);
 }
 
 #[test]
 fn test_reset_masks_interrupts() {
     let mut sys = RobotronSystem::new();
-    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.board.load_program_rom(0x2FFE, &[0xD0, 0x00]);
     sys.reset();
-    let state = sys.get_cpu_state();
+    let state = sys.board.get_cpu_state();
     assert_ne!(state.cc & (CcFlag::I as u8), 0);
     assert_ne!(state.cc & (CcFlag::F as u8), 0);
 }
@@ -326,7 +326,7 @@ fn test_reset_clears_input_state() {
     sys.set_input(INPUT_MOVE_UP, true);
     sys.set_input(INPUT_FIRE_LEFT, true);
 
-    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.board.load_program_rom(0x2FFE, &[0xD0, 0x00]);
     sys.reset();
 
     // After reset, PIAs are re-initialized so we need to configure again
@@ -348,17 +348,17 @@ fn test_reset_clears_input_state() {
 #[test]
 fn test_sound_cpu_reset_loads_vector() {
     let mut sys = RobotronSystem::new();
-    sys.load_sound_rom(0x0FFE, &[0xF0, 0x80]);
-    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.board.load_sound_rom(0x0FFE, &[0xF0, 0x80]);
+    sys.board.load_program_rom(0x2FFE, &[0xD0, 0x00]);
     sys.reset();
-    assert_eq!(sys.get_sound_cpu_state().pc, 0xF080);
+    assert_eq!(sys.board.get_sound_cpu_state().pc, 0xF080);
 }
 
 #[test]
 fn test_sound_cpu_executes_independently() {
     let mut sys = RobotronSystem::new();
     // Sound ROM at 0xF000: LDA #$42, STA $0010, BRA *
-    sys.load_sound_rom(
+    sys.board.load_sound_rom(
         0,
         &[
             0x86, 0x42, // LDA #$42
@@ -366,13 +366,13 @@ fn test_sound_cpu_executes_independently() {
             0x20, 0xFE, // BRA *
         ],
     );
-    sys.load_sound_rom(0x0FFE, &[0xF0, 0x00]);
-    sys.load_program_rom(0, &[0x20, 0xFE]); // BRA *
-    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.board.load_sound_rom(0x0FFE, &[0xF0, 0x00]);
+    sys.board.load_program_rom(0, &[0x20, 0xFE]); // BRA *
+    sys.board.load_program_rom(0x2FFE, &[0xD0, 0x00]);
     sys.reset();
 
     for _ in 0..50 {
-        sys.tick();
+        sys.board.tick();
     }
 
     assert_eq!(sys.read(BusMaster::Cpu(1), 0x0010), 0x42);
@@ -386,21 +386,21 @@ fn test_sound_cpu_executes_independently() {
 fn test_watchdog_reset_on_write() {
     let mut sys = RobotronSystem::new();
     for _ in 0..100 {
-        sys.tick();
+        sys.board.tick();
     }
     sys.write(BusMaster::Cpu(0), 0xCBFF, 0x39);
-    assert_eq!(sys.watchdog_counter(), 0);
+    assert_eq!(sys.board.watchdog_counter, 0);
 }
 
 #[test]
 fn test_watchdog_ignores_non_0x39() {
     let mut sys = RobotronSystem::new();
     for _ in 0..100 {
-        sys.tick();
+        sys.board.tick();
     }
-    let before = sys.watchdog_counter();
+    let before = sys.board.watchdog_counter;
     sys.write(BusMaster::Cpu(0), 0xCBFF, 0x00);
-    assert_eq!(sys.watchdog_counter(), before);
+    assert_eq!(sys.board.watchdog_counter, before);
 }
 
 // =================================================================
@@ -410,7 +410,7 @@ fn test_watchdog_ignores_non_0x39() {
 #[test]
 fn test_execute_simple_program() {
     let mut sys = RobotronSystem::new();
-    sys.load_program_rom(
+    sys.board.load_program_rom(
         0,
         &[
             0x86, 0x42, // LDA #$42
@@ -420,16 +420,16 @@ fn test_execute_simple_program() {
             0x20, 0xFE, // BRA *
         ],
     );
-    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.board.load_program_rom(0x2FFE, &[0xD0, 0x00]);
     sys.reset();
 
     for _ in 0..50 {
-        sys.tick();
+        sys.board.tick();
     }
 
-    assert_eq!(sys.read_video_ram(0x0100), 0x42);
-    assert_eq!(sys.read_video_ram(0x0101), 0x42);
-    let state = sys.get_cpu_state();
+    assert_eq!(sys.board.read_video_ram(0x0100), 0x42);
+    assert_eq!(sys.board.read_video_ram(0x0101), 0x42);
+    let state = sys.board.get_cpu_state();
     assert_eq!(state.a, 0x42);
     assert_eq!(state.b, 0x42);
 }
@@ -437,22 +437,22 @@ fn test_execute_simple_program() {
 #[test]
 fn test_clock_advances() {
     let mut sys = RobotronSystem::new();
-    sys.load_program_rom(0, &[0x20, 0xFE]); // BRA *
-    sys.load_program_rom(0x2FFE, &[0xD0, 0x00]);
+    sys.board.load_program_rom(0, &[0x20, 0xFE]); // BRA *
+    sys.board.load_program_rom(0x2FFE, &[0xD0, 0x00]);
     sys.reset();
 
-    assert_eq!(sys.clock(), 0);
+    assert_eq!(sys.board.clock(), 0);
     for _ in 0..100 {
-        sys.tick();
+        sys.board.tick();
     }
-    assert_eq!(sys.clock(), 100);
+    assert_eq!(sys.board.clock(), 100);
 }
 
 #[test]
 fn test_default_impl() {
     let sys = RobotronSystem::default();
     assert_eq!(sys.display_size(), (292, 240));
-    assert_eq!(sys.clock(), 0);
+    assert_eq!(sys.board.clock(), 0);
 }
 
 // =================================================================
