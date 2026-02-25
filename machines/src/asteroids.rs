@@ -1,10 +1,12 @@
 use phosphor_core::core::bus::InterruptState;
+use phosphor_core::core::debug::BusDebug;
 use phosphor_core::core::machine::{InputButton, Machine};
 use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::Cpu;
 use phosphor_core::cpu::m6502::M6502;
 use phosphor_core::device::dvg::{Dvg, VectorLine};
+use phosphor_macros::BusDebug;
 
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
@@ -141,8 +143,11 @@ const DISPLAY_HEIGHT: u32 = 1024;
 ///   0x4000–0x47FF  Vector RAM (2 KB, shared CPU/DVG)
 ///   0x5000–0x57FF  Vector ROM (2 KB)
 ///   0x6800–0x7FFF  Program ROM (6 KB)
+#[derive(BusDebug)]
 pub struct AsteroidsSystem {
+    #[debug_cpu("M6502", read = "memory_read", write = "memory_write")]
     cpu: M6502,
+    #[debug_device("DVG")]
     dvg: Dvg,
 
     // Memory
@@ -234,6 +239,33 @@ impl AsteroidsSystem {
         self.dvg.execute(&vmem);
         self.display_list = self.dvg.take_display_list();
     }
+
+    // --- Memory accessors (side-effect-free, used by Bus::read and BusDebug) ---
+
+    /// Side-effect-free read from the CPU address space.
+    /// Returns RAM, vector RAM, vector ROM, and program ROM; None for I/O.
+    fn memory_read(&self, addr: u16) -> Option<u8> {
+        let addr = addr & 0x7FFF;
+        match addr {
+            0x0000..=0x03FF => Some(self.ram[addr as usize]),
+            0x0400..=0x07FF => Some(self.ram[(addr - 0x0400) as usize]),
+            0x4000..=0x47FF => Some(self.vector_ram[(addr - 0x4000) as usize]),
+            0x5000..=0x57FF => Some(self.vector_rom[(addr - 0x5000) as usize]),
+            0x6800..=0x7FFF => Some(self.program_rom[(addr - 0x6800) as usize]),
+            _ => None,
+        }
+    }
+
+    /// Write to the CPU address space (for debug memory editor).
+    fn memory_write(&mut self, addr: u16, data: u8) {
+        let addr = addr & 0x7FFF;
+        match addr {
+            0x0000..=0x03FF => self.ram[addr as usize] = data,
+            0x0400..=0x07FF => self.ram[(addr - 0x0400) as usize] = data,
+            0x4000..=0x47FF => self.vector_ram[(addr - 0x4000) as usize] = data,
+            _ => {}
+        }
+    }
 }
 
 impl Default for AsteroidsSystem {
@@ -255,14 +287,15 @@ impl Bus for AsteroidsSystem {
     }
 
     fn read(&mut self, _master: BusMaster, addr: u16) -> u8 {
-        // 15-bit address bus (MAME: map.global_mask(0x7fff))
+        // 15-bit address bus
         let addr = addr & 0x7FFF;
 
-        match addr {
-            // RAM: 0x0000–0x03FF (with mirror at 0x0400–0x07FF per MAME bankrw)
-            0x0000..=0x03FF => self.ram[addr as usize],
-            0x0400..=0x07FF => self.ram[(addr - 0x0400) as usize],
+        // Pure memory read (RAM, vector RAM/ROM, program ROM)
+        if let Some(val) = self.memory_read(addr) {
+            return val;
+        }
 
+        match addr {
             // IN0: 0x2000–0x2007 — 74LS251 8:1 multiplexer.
             // A0–A2 select which input bit to read; the selected bit appears on D7.
             // The 6502 tests it via BIT (N flag = D7).
@@ -308,15 +341,6 @@ impl Bus for AsteroidsSystem {
                 let bit7 = (self.dip_switches >> (offset * 2 + 1)) & 1;
                 bit0 | (bit7 << 7)
             }
-
-            // Vector RAM: 0x4000–0x47FF
-            0x4000..=0x47FF => self.vector_ram[(addr - 0x4000) as usize],
-
-            // Vector ROM: 0x5000–0x57FF
-            0x5000..=0x57FF => self.vector_rom[(addr - 0x5000) as usize],
-
-            // Program ROM: 0x6800–0x7FFF
-            0x6800..=0x7FFF => self.program_rom[(addr - 0x6800) as usize],
 
             _ => 0,
         }
@@ -470,6 +494,23 @@ impl Machine for AsteroidsSystem {
         self.watchdog_frame_count = r.read_u8()?;
         self.display_list.clear();
         Ok(())
+    }
+
+    fn debug_bus(&self) -> Option<&dyn BusDebug> {
+        Some(self)
+    }
+
+    fn debug_bus_mut(&mut self) -> Option<&mut dyn BusDebug> {
+        Some(self)
+    }
+
+    fn debug_tick(&mut self) -> u32 {
+        self.tick();
+        if self.cpu.at_instruction_boundary() {
+            1
+        } else {
+            0
+        }
     }
 }
 
