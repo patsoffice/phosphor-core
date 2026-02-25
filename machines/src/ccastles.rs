@@ -317,9 +317,10 @@ pub struct CrystalCastlesSystem {
     watchdog_frame_count: u8,
 
     // Rendering
+    vblank_end: u8,              // First visible scanline (from sync PROM, typically 24)
     scanline_buffer: Vec<u8>,    // 256 × 232 × 3 = 177,408 bytes (RGB24)
     scanline_buffer_valid: bool,
-    sprite_buffer: Vec<u8>,      // 256 × 256 temporary sprite layer (4bpp index)
+    sprite_buffer: Vec<u8>,      // 256 × 256 temporary sprite layer (5-bit index)
 
     audio_buffer: Vec<i16>,
 }
@@ -365,6 +366,7 @@ impl CrystalCastlesSystem {
             clock: 0,
             watchdog_frame_count: 0,
 
+            vblank_end: 24,
             scanline_buffer: vec![0u8; 256 * 232 * 3],
             scanline_buffer_valid: false,
             sprite_buffer: vec![0u8; 256 * 256],
@@ -394,6 +396,11 @@ impl CrystalCastlesSystem {
 
         let pri = CCASTLES_PRI_PROM.load(rom_set)?;
         self.pri_prom.copy_from_slice(&pri);
+
+        // Compute first visible scanline from sync PROM (bit 0 = VBLANK)
+        self.vblank_end = (0..=255u8)
+            .find(|&i| self.sync_prom[i as usize] & 1 == 0)
+            .unwrap_or(24);
 
         Ok(())
     }
@@ -548,7 +555,151 @@ impl CrystalCastlesSystem {
     }
 
     // -----------------------------------------------------------------------
-    // Tick (placeholder — will be fleshed out in step 7)
+    // Sprite rendering
+    // -----------------------------------------------------------------------
+
+    /// Extract a single 3bpp pixel from the GFX ROM.
+    ///
+    /// GFX layout (from MAME gfx_layout):
+    ///   8×16 pixels, 3 bitplanes, 32 bytes/sprite, 256 sprites total.
+    ///   Plane 0 (MSB): first-half ROM, high nibble (bit offset +4)
+    ///   Plane 1:       second-half ROM, low nibble  (bit offset +RGN_FRAC(1,2))
+    ///   Plane 2 (LSB): second-half ROM, high nibble (bit offset +RGN_FRAC(1,2)+4)
+    ///   X offsets: { 0,1,2,3, 8,9,10,11 } — 4 pixels per byte
+    ///   Y offsets: { 0*16, 1*16, ..., 15*16 } — 2 bytes per row
+    ///
+    /// Returns 0-7 where 7 is the transparent pen.
+    fn get_sprite_pixel(&self, which: u8, row: u8, col: u8) -> u8 {
+        let base = (which as usize) * 32 + (row as usize) * 2;
+        let byte_idx = (col / 4) as usize;
+        let bit = (col % 4) as usize;
+
+        // Plane 0 (MSB): first-half ROM, high nibble
+        let p0 = (self.gfx_rom[base + byte_idx] >> (4 + bit)) & 1;
+        // Plane 1: second-half ROM, low nibble
+        let p1 = (self.gfx_rom[0x2000 + base + byte_idx] >> bit) & 1;
+        // Plane 2 (LSB): second-half ROM, high nibble
+        let p2 = (self.gfx_rom[0x2000 + base + byte_idx] >> (4 + bit)) & 1;
+
+        (p0 << 2) | (p1 << 1) | p2
+    }
+
+    /// Render all sprites from the active MOB buffer into the sprite buffer.
+    ///
+    /// Called once per frame at VBLANK start. The sprite buffer is a 256×256
+    /// array of 5-bit pixel indices (color_base | pixel_value), with 0x0F
+    /// meaning transparent (no sprite).
+    ///
+    /// Sprite RAM format (4 bytes per sprite, 40 sprites max):
+    ///   [offs+0] = sprite code (which, 0-255)
+    ///   [offs+1] = Y position (displayed at 256 - 16 - value)
+    ///   [offs+2] = bit 7: color group (0 or 1, selects palette 0-7 or 8-15)
+    ///   [offs+3] = X position
+    fn render_sprites_to_buffer(&mut self) {
+        self.sprite_buffer.fill(0x0F);
+
+        // Select active MOB buffer (outlatch1 bit 7: BUF1/BUF2)
+        let buf_offset: usize = if self.outlatch1 & 0x80 != 0 { 0x100 } else { 0x00 };
+        let flip = self.outlatch1 & 0x10 != 0;
+
+        // 40 sprites: 160 bytes / 4 bytes per sprite
+        for offs in (0..160).step_by(4) {
+            let which = self.spriteram[buf_offset + offs];
+            let sy = 256u16.wrapping_sub(16).wrapping_sub(self.spriteram[buf_offset + offs + 1] as u16);
+            let color_base = (self.spriteram[buf_offset + offs + 2] >> 7) * 8;
+            let sx = self.spriteram[buf_offset + offs + 3] as u16;
+
+            for row in 0..16u8 {
+                for col in 0..8u8 {
+                    let r = if flip { 15 - row } else { row };
+                    let c = if flip { 7 - col } else { col };
+                    let pixel = self.get_sprite_pixel(which, r, c);
+                    if pixel == 7 {
+                        continue; // transparent pen
+                    }
+
+                    let dy = sy.wrapping_add(row as u16) & 0xFF;
+                    let dx = sx.wrapping_add(col as u16) & 0xFF;
+                    self.sprite_buffer[(dy as usize) * 256 + (dx as usize)] =
+                        color_base | pixel;
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Per-scanline compositing
+    // -----------------------------------------------------------------------
+
+    /// Render one hardware scanline to the RGB24 output buffer.
+    ///
+    /// Composites the scrolled 4bpp bitmap with the sprite layer using the
+    /// priority PROM to select between them and assign the final 5-bit
+    /// palette index (0-31).
+    ///
+    /// Priority PROM inputs (from MAME):
+    ///   Bit 6 = /CRAM (always 1)
+    ///   Bits 4-2 = MV2,MV1,MV0 (sprite pixel value bits 2,1,0)
+    ///   Bit 1 = MPI (sprite color group: mopix bit 3)
+    ///   Bit 0 = BIT3 (bitmap pixel bit 3)
+    /// Priority PROM outputs:
+    ///   Bit 1 = select sprite (1) or bitmap (0)
+    ///   Bit 0 = set bit 4 of final palette index (upper/lower 16 colors)
+    fn render_scanline_to_buffer(&mut self, hw_scanline: u8) {
+        // Skip VBLANK scanlines
+        if self.sync_prom[hw_scanline as usize] & 1 != 0 {
+            return;
+        }
+
+        let screen_y = (hw_scanline - self.vblank_end) as usize;
+        if screen_y >= 232 {
+            return;
+        }
+
+        let flip: u8 = if self.outlatch1 & 0x10 != 0 { 0xFF } else { 0x00 };
+        let vscroll_val = if flip != 0 { 0u8 } else { self.vscroll };
+
+        // Effective Y into the bitmap, with scroll and flip
+        let mut effy = (hw_scanline
+            .wrapping_sub(self.vblank_end)
+            .wrapping_add(vscroll_val)
+            ^ flip) as usize;
+        if effy < self.vblank_end as usize {
+            effy = self.vblank_end as usize;
+        }
+
+        let src_base = effy * 128;
+        let row_offset = screen_y * 256 * 3;
+
+        for x in 0..256usize {
+            let effx = self.hscroll.wrapping_add((x as u8) ^ flip) as usize;
+
+            // Read 4bpp bitmap pixel (2 pixels per byte: low nibble = even, high = odd)
+            let pix = (self.videoram[src_base + effx / 2] >> ((effx & 1) * 4)) & 0x0F;
+
+            // Read sprite pixel from sprite buffer (screen-space, not scrolled)
+            let mopix = self.sprite_buffer[hw_scanline as usize * 256 + x];
+
+            // Priority PROM lookup
+            let prindex: u8 =
+                0x40 | ((mopix & 7) << 2) | ((mopix & 8) >> 2) | ((pix & 8) >> 3);
+            let prvalue = self.pri_prom[prindex as usize];
+
+            // Bit 1: select sprite or bitmap as source
+            let base_pix = if prvalue & 2 != 0 { mopix } else { pix };
+            // Bit 0: set bit 4 of final palette index
+            let final_pix = (base_pix & 0x0F) | ((prvalue & 1) << 4);
+
+            let (r, g, b) = self.palette_rgb[final_pix as usize];
+            let pixel_offset = row_offset + x * 3;
+            self.scanline_buffer[pixel_offset] = r;
+            self.scanline_buffer[pixel_offset + 1] = g;
+            self.scanline_buffer[pixel_offset + 2] = b;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Tick
     // -----------------------------------------------------------------------
 
     pub fn tick(&mut self) {
@@ -583,10 +734,12 @@ impl CrystalCastlesSystem {
             }
         }
 
-        // Per-scanline: IRQ generation from sync PROM rising edges on bit 3
+        // Per-scanline processing: IRQ generation, VBLANK, and rendering
         let frame_cycle = self.clock % CYCLES_PER_FRAME;
         if frame_cycle.is_multiple_of(CYCLES_PER_SCANLINE) {
             let scanline = (frame_cycle / CYCLES_PER_SCANLINE) as u8;
+
+            // IRQ generation from sync PROM rising edges on bit 3
             let prev = if scanline == 0 { 255 } else { scanline - 1 };
             if (self.sync_prom[prev as usize] & 8) == 0
                 && (self.sync_prom[scanline as usize] & 8) != 0
@@ -594,6 +747,14 @@ impl CrystalCastlesSystem {
             {
                 self.irq_state = true;
             }
+
+            // Render sprites once at VBLANK start (scanline 0)
+            if scanline == 0 {
+                self.render_sprites_to_buffer();
+            }
+
+            // Render visible scanlines (composites bitmap + sprites)
+            self.render_scanline_to_buffer(scanline);
         }
 
         // Update VBLANK bit in IN0 (bit 5, active-high from sync PROM bit 0)
@@ -916,6 +1077,7 @@ impl Machine for CrystalCastlesSystem {
         w.write_bool(self.irq_state);
         w.write_u64_le(self.clock);
         w.write_u8(self.watchdog_frame_count);
+        w.write_u8(self.dip_switches);
         Some(w.into_vec())
     }
 
@@ -945,6 +1107,7 @@ impl Machine for CrystalCastlesSystem {
         self.irq_state = r.read_bool()?;
         self.clock = r.read_u64_le()?;
         self.watchdog_frame_count = r.read_u8()?;
+        self.dip_switches = r.read_u8()?;
         // Recompute derived state
         for i in 0..32 {
             self.update_palette_entry(i);
@@ -1003,6 +1166,7 @@ mod tests {
         sys.irq_state = true;
         sys.clock = 50_000;
         sys.watchdog_frame_count = 3;
+        sys.dip_switches = 0x55;
 
         let data = sys.save_state().expect("save_state should return Some");
         let cpu_snap = sys.cpu.snapshot();
@@ -1025,6 +1189,7 @@ mod tests {
         assert!(sys2.irq_state);
         assert_eq!(sys2.clock, 50_000);
         assert_eq!(sys2.watchdog_frame_count, 3);
+        assert_eq!(sys2.dip_switches, 0x55);
     }
 
     #[test]
@@ -1132,5 +1297,129 @@ mod tests {
     fn analog_map_returns_two_axes() {
         let sys = CrystalCastlesSystem::new();
         assert_eq!(sys.analog_map().len(), 2);
+    }
+
+    #[test]
+    fn sprite_pixel_extraction() {
+        let mut sys = CrystalCastlesSystem::new();
+        // Set up GFX ROM for sprite 0, row 0:
+        // First-half ROM byte 0: high nibble has plane 0 bits
+        // Second-half ROM byte 0: low nibble has plane 1, high nibble has plane 2
+        //
+        // Sprite 0, row 0, byte 0 in first half (offset 0x0000):
+        //   Bits 7-4 (plane 0, pixels 0-3): let's set 0xA0 = 1010_xxxx
+        //   Plane 0 pixel 0 (bit 4) = 0, pixel 1 (bit 5) = 1, pixel 2 (bit 6) = 0, pixel 3 (bit 7) = 1
+        sys.gfx_rom[0x0000] = 0xA0; // first half, sprite 0, row 0, byte 0
+
+        // Second-half ROM byte 0 (offset 0x2000):
+        //   Bits 3-0 (plane 1, pixels 0-3): 0x05 = xxxx_0101
+        //   Bits 7-4 (plane 2, pixels 0-3): 0x30 = 0011_xxxx
+        sys.gfx_rom[0x2000] = 0x35; // 0011_0101
+
+        // gfx_rom[0] = 0xA0 = 1010_0000, gfx_rom[0x2000] = 0x35 = 0011_0101
+        // Pixel 0: p0=(0xA0>>4)&1=0, p1=(0x35>>0)&1=1, p2=(0x35>>4)&1=1 → 0b011 = 3
+        assert_eq!(sys.get_sprite_pixel(0, 0, 0), 3);
+        // Pixel 1: p0=(0xA0>>5)&1=1, p1=(0x35>>1)&1=0, p2=(0x35>>5)&1=1 → 0b101 = 5
+        assert_eq!(sys.get_sprite_pixel(0, 0, 1), 5);
+        // Pixel 2: p0=(0xA0>>6)&1=0, p1=(0x35>>2)&1=1, p2=(0x35>>6)&1=0 → 0b010 = 2
+        assert_eq!(sys.get_sprite_pixel(0, 0, 2), 2);
+        // Pixel 3: p0=(0xA0>>7)&1=1, p1=(0x35>>3)&1=0, p2=(0x35>>7)&1=0 → 0b100 = 4
+        assert_eq!(sys.get_sprite_pixel(0, 0, 3), 4);
+    }
+
+    #[test]
+    fn sprite_transparent_pixel_not_drawn() {
+        let mut sys = CrystalCastlesSystem::new();
+        // Set all GFX ROM to produce pixel value 7 (transparent pen):
+        // p0=1, p1=1, p2=1 → 7
+        // Plane 0 (first half, high nibble): all 1s → 0xF0
+        // Plane 1 (second half, low nibble): all 1s → 0x0F
+        // Plane 2 (second half, high nibble): all 1s → 0xF0
+        sys.gfx_rom[0..0x2000].fill(0xF0);
+        sys.gfx_rom[0x2000..0x4000].fill(0xFF); // 0x0F | 0xF0
+
+        // Place sprite 0 at position (100, 100)
+        sys.spriteram[0] = 0; // sprite code
+        sys.spriteram[1] = (256 - 16 - 100) as u8; // Y = 100
+        sys.spriteram[2] = 0; // color group 0
+        sys.spriteram[3] = 100; // X = 100
+
+        sys.render_sprites_to_buffer();
+
+        // All transparent → sprite buffer should remain 0x0F everywhere
+        assert_eq!(sys.sprite_buffer[100 * 256 + 100], 0x0F);
+        assert_eq!(sys.sprite_buffer[100 * 256 + 107], 0x0F);
+    }
+
+    #[test]
+    fn sprite_renders_to_buffer() {
+        let mut sys = CrystalCastlesSystem::new();
+        // Set GFX ROM so sprite 1, row 0, pixel 0 produces value 5 (not transparent):
+        // p0=1, p1=0, p2=1 → 0b101 = 5
+        // First half: sprite 1 starts at byte 32. Row 0, byte 0 = offset 32.
+        //   Plane 0 bit for pixel 0 is bit 4 → set bit 4 = 0x10
+        sys.gfx_rom[32] = 0x10;
+        // Second half: offset 0x2000 + 32 = 0x2020.
+        //   Plane 1 bit for pixel 0 is bit 0 → clear
+        //   Plane 2 bit for pixel 0 is bit 4 → set bit 4 = 0x10
+        sys.gfx_rom[0x2020] = 0x10;
+
+        // Place sprite with code 1 at (50, 200)
+        sys.spriteram[0] = 1; // sprite code
+        sys.spriteram[1] = (256u16.wrapping_sub(16).wrapping_sub(200)) as u8; // Y
+        sys.spriteram[2] = 0x80; // color group 1 → color_base = 8
+        sys.spriteram[3] = 50; // X
+
+        sys.render_sprites_to_buffer();
+
+        // Sprite pixel 0 of row 0 should be at (50, 200): color_base(8) | 5 = 13
+        assert_eq!(sys.sprite_buffer[200 * 256 + 50], 13);
+    }
+
+    #[test]
+    fn scanline_compositing_renders_bitmap() {
+        let mut sys = CrystalCastlesSystem::new();
+        // Set sync PROM: scanlines 0-23 = VBLANK (bit 0 set), 24-255 = visible
+        sys.sync_prom[..24].fill(0x01);
+        sys.sync_prom[24..].fill(0x00);
+        sys.vblank_end = 24;
+
+        // Set palette entry 5 to a known color
+        sys.palette_ram[5] = 0x00; // all zeros → inverted = all 1s → white
+        sys.update_palette_entry(5);
+        assert_eq!(sys.palette_rgb[5], (255, 255, 255));
+
+        // Write bitmap pixel value 5 at effective Y=24, X=0
+        // videoram[24 * 128 + 0] low nibble = 5
+        sys.videoram[24 * 128] = 0x05;
+
+        // Sprite buffer clear (transparent)
+        sys.sprite_buffer.fill(0x0F);
+
+        // Set a priority PROM that selects bitmap (bit 1 = 0) and no bit 4 (bit 0 = 0)
+        // For transparent sprite (mopix=0x0F): prindex = 0x40 | (7<<2) | (8>>2) | (5>>3)
+        //   = 0x40 | 0x1C | 0x02 | 0x01 = 0x5F
+        sys.pri_prom[0x5F] = 0x00; // select bitmap, no bit 4
+
+        // Render scanline 24 (first visible)
+        sys.render_scanline_to_buffer(24);
+
+        // Screen Y = 24 - 24 = 0. Pixel 0 should be white.
+        assert_eq!(sys.scanline_buffer[0], 255); // R
+        assert_eq!(sys.scanline_buffer[1], 255); // G
+        assert_eq!(sys.scanline_buffer[2], 255); // B
+    }
+
+    #[test]
+    fn scanline_skips_vblank() {
+        let mut sys = CrystalCastlesSystem::new();
+        sys.sync_prom[10] = 0x01; // VBLANK active
+
+        // Fill scanline buffer with a known pattern
+        sys.scanline_buffer.fill(0xAA);
+
+        // Rendering a VBLANK scanline should not modify the buffer
+        sys.render_scanline_to_buffer(10);
+        assert_eq!(sys.scanline_buffer[0], 0xAA);
     }
 }
