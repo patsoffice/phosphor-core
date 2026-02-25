@@ -118,6 +118,11 @@ pub trait Machine {
         None
     }
 
+    /// Number of clock ticks per frame (used by debug UI for cycle counting in run mode).
+    fn cycles_per_frame(&self) -> u64 {
+        0
+    }
+
     /// Advance one cycle. Returns bitmask of CPUs at instruction boundaries.
     /// Bit 0 = CPU 0, bit 1 = CPU 1, etc.
     fn debug_tick(&mut self) -> u32 {

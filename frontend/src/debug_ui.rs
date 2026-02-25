@@ -10,14 +10,25 @@ pub enum RunMode {
     StepCycle,
 }
 
+/// Cached register snapshot for one CPU.
+pub struct CpuPanel {
+    pub name: String,
+    pub registers: Vec<DebugRegister>,
+}
+
+/// Cached register snapshot for one peripheral device.
+pub struct DevicePanel {
+    pub name: String,
+    pub registers: Vec<DebugRegister>,
+}
+
 /// Persistent state for the debug UI across frames.
 pub struct DebugState {
     pub active: bool,
     pub run_mode: RunMode,
-    pub registers: Vec<DebugRegister>,
-    pub selected_cpu: usize,
-    pub cpu_count: usize,
-    pub cpu_name: String,
+    pub cpu_panels: Vec<CpuPanel>,
+    pub device_panels: Vec<DevicePanel>,
+    pub step_cpu: usize,
     pub cycle_count: u64,
 }
 
@@ -26,25 +37,41 @@ impl DebugState {
         Self {
             active: false,
             run_mode: RunMode::Running,
-            registers: Vec::new(),
-            selected_cpu: 0,
-            cpu_count: 1,
-            cpu_name: String::from("CPU"),
+            cpu_panels: Vec::new(),
+            device_panels: Vec::new(),
+            step_cpu: 0,
             cycle_count: 0,
         }
     }
 
     /// Refresh cached state from the BusDebug interface.
     pub fn refresh(&mut self, bus: &dyn BusDebug) {
+        // Collect CPU names for filtering devices
         let cpus = bus.cpus();
-        self.cpu_count = cpus.len();
-        if let Some((name, cpu)) = cpus.get(self.selected_cpu) {
-            self.cpu_name = name.to_string();
-            self.registers = cpu.debug_registers();
-        } else if let Some((name, cpu)) = cpus.first() {
-            self.selected_cpu = 0;
-            self.cpu_name = name.to_string();
-            self.registers = cpu.debug_registers();
+        let cpu_names: Vec<&str> = cpus.iter().map(|(name, _)| *name).collect();
+
+        self.cpu_panels = cpus
+            .iter()
+            .map(|(name, cpu)| CpuPanel {
+                name: name.to_string(),
+                registers: cpu.debug_registers(),
+            })
+            .collect();
+
+        // Device panels exclude CPUs (they're already shown in cpu_panels)
+        self.device_panels = bus
+            .devices()
+            .iter()
+            .filter(|(name, _)| !cpu_names.contains(name))
+            .map(|(name, dev)| DevicePanel {
+                name: name.to_string(),
+                registers: dev.debug_registers(),
+            })
+            .collect();
+
+        // Clamp step_cpu to valid range
+        if self.step_cpu >= self.cpu_panels.len() && !self.cpu_panels.is_empty() {
+            self.step_cpu = 0;
         }
     }
 }
@@ -59,7 +86,15 @@ pub fn execute_frame(machine: &mut dyn Machine, state: &mut DebugState) -> bool 
 
     match state.run_mode {
         RunMode::Running => {
-            machine.run_frame();
+            let cpf = machine.cycles_per_frame();
+            if cpf > 0 {
+                for _ in 0..cpf {
+                    machine.debug_tick();
+                    state.cycle_count += 1;
+                }
+            } else {
+                machine.run_frame();
+            }
             if let Some(bus) = machine.debug_bus() {
                 state.refresh(bus);
             }
@@ -75,7 +110,7 @@ pub fn execute_frame(machine: &mut dyn Machine, state: &mut DebugState) -> bool 
             loop {
                 let boundaries = machine.debug_tick();
                 state.cycle_count += 1;
-                if (boundaries >> state.selected_cpu) & 1 != 0 {
+                if (boundaries >> state.step_cpu) & 1 != 0 {
                     break;
                 }
             }
@@ -97,6 +132,25 @@ pub fn execute_frame(machine: &mut dyn Machine, state: &mut DebugState) -> bool 
     }
 }
 
+/// Draw a register grid for a set of debug registers.
+fn draw_register_grid(ui: &mut egui::Ui, id: &str, registers: &[DebugRegister]) {
+    egui::Grid::new(id)
+        .num_columns(2)
+        .striped(true)
+        .show(ui, |ui| {
+            for reg in registers {
+                ui.label(egui::RichText::new(reg.name).monospace());
+                let value_text = match reg.width {
+                    8 => format!("${:02X}", reg.value),
+                    16 => format!("${:04X}", reg.value),
+                    _ => format!("${:X}", reg.value),
+                };
+                ui.label(egui::RichText::new(value_text).monospace());
+                ui.end_row();
+            }
+        });
+}
+
 /// Build the debug UI layout. Called as the closure argument to Video::present_with_debug().
 pub fn draw_debug_ui(
     ctx: &egui::Context,
@@ -109,75 +163,75 @@ pub fn draw_debug_ui(
         .default_width(220.0)
         .resizable(true)
         .show(ctx, |ui| {
-            // CPU selector (multi-CPU machines)
-            if state.cpu_count > 1 {
-                ui.horizontal(|ui| {
-                    for i in 0..state.cpu_count {
-                        let label = if i == state.selected_cpu {
-                            egui::RichText::new(&state.cpu_name).strong()
-                        } else {
-                            egui::RichText::new(format!("CPU {i}"))
-                        };
-                        if ui
-                            .selectable_label(state.selected_cpu == i, label)
-                            .clicked()
-                        {
-                            state.selected_cpu = i;
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                // CPU panels (collapsible, default open)
+                for (i, panel) in state.cpu_panels.iter().enumerate() {
+                    let id = egui::Id::new(format!("cpu_{i}"));
+                    egui::CollapsingHeader::new(
+                        egui::RichText::new(&panel.name).monospace().strong(),
+                    )
+                    .id_salt(id)
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        draw_register_grid(ui, &format!("cpu_regs_{i}"), &panel.registers);
+                    });
+                }
+
+                // Step-CPU target (only for multi-CPU machines)
+                if state.cpu_panels.len() > 1 {
+                    ui.separator();
+                    ui.label("Step target:");
+                    ui.horizontal(|ui| {
+                        for (i, panel) in state.cpu_panels.iter().enumerate() {
+                            ui.radio_value(&mut state.step_cpu, i, &panel.name);
                         }
-                    }
-                });
-                ui.separator();
-            } else {
-                ui.label(egui::RichText::new(&state.cpu_name).monospace().strong());
-                ui.separator();
-            }
+                    });
+                }
 
-            // Registers
-            egui::Grid::new("register_grid")
-                .num_columns(2)
-                .striped(true)
-                .show(ui, |ui| {
-                    for reg in &state.registers {
-                        ui.label(egui::RichText::new(reg.name).monospace());
-                        let value_text = match reg.width {
-                            8 => format!("${:02X}", reg.value),
-                            16 => format!("${:04X}", reg.value),
-                            _ => format!("${:X}", reg.value),
-                        };
-                        ui.label(egui::RichText::new(value_text).monospace());
-                        ui.end_row();
+                ui.separator();
+                ui.label(format!("Cycles: {}", state.cycle_count));
+                ui.separator();
+
+                // Step controls
+                let is_paused = state.run_mode == RunMode::Paused;
+
+                ui.horizontal(|ui| {
+                    if state.run_mode == RunMode::Running {
+                        if ui.button("Pause").clicked() {
+                            state.run_mode = RunMode::Paused;
+                        }
+                    } else if ui.button("Continue (F4)").clicked() {
+                        state.run_mode = RunMode::Running;
                     }
                 });
 
-            ui.separator();
-            ui.label(format!("Cycles: {}", state.cycle_count));
-            ui.separator();
-
-            // Step controls
-            let is_paused = state.run_mode == RunMode::Paused;
-
-            ui.horizontal(|ui| {
-                if state.run_mode == RunMode::Running {
-                    if ui.button("Pause").clicked() {
-                        state.run_mode = RunMode::Paused;
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(is_paused, egui::Button::new("Step Instr (F2)"))
+                        .clicked()
+                    {
+                        state.run_mode = RunMode::StepInstruction;
                     }
-                } else if ui.button("Continue (F4)").clicked() {
-                    state.run_mode = RunMode::Running;
-                }
-            });
+                    if ui
+                        .add_enabled(is_paused, egui::Button::new("Step Cycle (F3)"))
+                        .clicked()
+                    {
+                        state.run_mode = RunMode::StepCycle;
+                    }
+                });
 
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(is_paused, egui::Button::new("Step Instr (F2)"))
-                    .clicked()
-                {
-                    state.run_mode = RunMode::StepInstruction;
-                }
-                if ui
-                    .add_enabled(is_paused, egui::Button::new("Step Cycle (F3)"))
-                    .clicked()
-                {
-                    state.run_mode = RunMode::StepCycle;
+                // Device panels (collapsible, default closed)
+                if !state.device_panels.is_empty() {
+                    ui.separator();
+                    for (i, panel) in state.device_panels.iter().enumerate() {
+                        let id = egui::Id::new(format!("dev_{i}"));
+                        egui::CollapsingHeader::new(egui::RichText::new(&panel.name).monospace())
+                            .id_salt(id)
+                            .default_open(false)
+                            .show(ui, |ui| {
+                                draw_register_grid(ui, &format!("dev_regs_{i}"), &panel.registers);
+                            });
+                    }
                 }
             });
         });

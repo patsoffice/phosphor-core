@@ -15,6 +15,7 @@ pub fn run(
     controller_map: &ControllerMap,
     scale: u32,
     save_path: &Path,
+    start_in_debug: bool,
 ) {
     // Enable controller backends before SDL init — needed for Xbox on macOS
     sdl2::hint::set("SDL_JOYSTICK_HIDAPI", "1");
@@ -105,6 +106,11 @@ pub fn run(
     let mut debug_state = DebugState::new();
     if let Some(bus) = machine.debug_bus() {
         debug_state.refresh(bus);
+    }
+    if start_in_debug && has_debug {
+        debug_state.active = true;
+        debug_state.run_mode = RunMode::Paused;
+        video.resize_window(width * scale + 240, height * scale);
     }
 
     'main: loop {

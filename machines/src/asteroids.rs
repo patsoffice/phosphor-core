@@ -460,6 +460,10 @@ impl Machine for AsteroidsSystem {
         60.0
     }
 
+    fn cycles_per_frame(&self) -> u64 {
+        CYCLES_PER_FRAME
+    }
+
     fn machine_id(&self) -> &str {
         "asteroids"
     }

@@ -117,6 +117,10 @@ macro_rules! impl_williams_machine_common {
         fn frame_rate_hz(&self) -> f64 {
             1_000_000.0 / crate::williams::CYCLES_PER_FRAME as f64
         }
+
+        fn cycles_per_frame(&self) -> u64 {
+            crate::williams::CYCLES_PER_FRAME
+        }
     };
 }
 

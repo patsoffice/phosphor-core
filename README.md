@@ -42,25 +42,35 @@ cargo run --package phosphor-frontend -- joust /path/to/joust.zip --scale 3
 
 # Extracted ROM directory (backward compatible)
 cargo run --package phosphor-frontend -- joust /path/to/extracted/roms --scale 3
+
+# Start with debug panel open (paused at first instruction)
+cargo run --package phosphor-frontend -- joust /path/to/roms --scale 3 --debug
 ```
 
 ROMs are matched by CRC32 checksum, so any MAME ROM naming convention works. All three Joust label variants are supported: Green (parent), Yellow, and Red.
 
 **Controls:**
 
-| Key              | Action         |
-| ---------------- | -------------- |
-| Arrow Left/Right | P1 Move        |
-| Space            | P1 Flap        |
-| 1                | P1 Start       |
-| A/D              | P2 Move        |
-| W                | P2 Flap        |
-| 2                | P2 Start       |
-| 5                | Insert Coin    |
-| F5               | Reset Machine  |
-| F9               | Toggle Throttle|
-| F10              | Toggle FPS     |
-| Escape           | Quit           |
+| Key              | Action              |
+| ---------------- | ----------------    |
+| Arrow Left/Right | P1 Move             |
+| Space            | P1 Flap             |
+| 1                | P1 Start            |
+| A/D              | P2 Move             |
+| W                | P2 Flap             |
+| 2                | P2 Start            |
+| 5                | Insert Coin         |
+| F1               | Toggle Debug Panel  |
+| F2               | Step Instruction    |
+| F3               | Step Cycle          |
+| F4               | Continue (Resume)   |
+| F5               | Reset Machine       |
+| F6               | Quick Save          |
+| F7               | Quick Load          |
+| F9               | Toggle Throttle     |
+| F10              | Toggle FPS          |
+| F11              | Toggle Mouse Grab   |
+| Escape           | Quit                |
 
 > `.cargo/config.toml` sets the Homebrew library path for aarch64-apple-darwin automatically, so no manual `LIBRARY_PATH` is needed.
 
@@ -68,7 +78,7 @@ ROMs are matched by CRC32 checksum, so any MAME ROM naming convention works. All
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| **Core Framework** | Complete | Bus trait, Machine trait, component system, arbitration |
+| **Core Framework** | Complete | Bus trait, Machine trait, component system, arbitration, debug traits |
 | **M6809 CPU** | Complete | 285 opcodes, cycle-accurate, all addressing modes. [Details](core/src/cpu/m6809/README.md) |
 | **M6800 CPU** | Complete | 192 opcodes, cycle-accurate, all addressing modes. [Details](core/src/cpu/m6800/README.md) |
 | **M6502 CPU** | Complete | 151 opcodes, cycle-accurate with bus-level traces. [Details](core/src/cpu/m6502/README.md) |
@@ -91,10 +101,11 @@ This project uses a **workspace structure** to separate reusable components from
 
 Contains all reusable components — zero external dependencies:
 
-- CPU implementations (M6800, M6809, M6502, Z80)
+- CPU implementations (M6800, M6809, M6502, Z80, I8035)
 - Bus and component abstractions
 - Machine trait (frontend-agnostic display/input/render interface)
-- Peripheral devices (MC6821 PIA, Williams SC1 blitter, CMOS RAM)
+- Debug traits (Debuggable, DebugCpu, BusDebug) for interactive inspection
+- Peripheral devices (MC6821 PIA, Williams SC1 blitter, CMOS RAM, MC1408 DAC, DVG)
 
 ### Machines Crate (`phosphor-machines`)
 
@@ -108,15 +119,20 @@ Complete system implementations that wire core components together:
 - **RobotronSystem** — Williams twin-stick arcade (M6809 + blitter + PIAs)
 - Simple6502System, Simple6800System, Simple6809System, SimpleZ80System (test harnesses)
 
+### Macros Crate (`phosphor-macros`)
+
+Proc macro crate providing `#[derive(BusDebug)]` — auto-generates bus-level debug discovery from struct annotations (`#[debug_cpu(...)]`, `#[debug_device(...)]`).
+
 ### Frontend Crate (`phosphor-frontend`)
 
-SDL2-based windowed frontend — external dependencies: SDL2, zip:
+SDL2 + egui windowed frontend — external dependencies: SDL2, zip, egui:
 
 - **Machine-agnostic** — operates entirely through the `Machine` trait, no hardware-specific knowledge
 - **ROM path resolution** — loads from MAME ZIP files, rompath directories, or extracted loose files
 - SDL2 window with GPU-scaled texture rendering (VSync frame timing)
-- Keyboard input mapping built automatically from `Machine::input_map()`
-- Adding a new machine requires only a new match arm in `main.rs`
+- **Debug panel** (F1 or `--debug`) — egui side panel showing all CPU and device registers, step/cycle/continue controls
+- Keyboard and game controller input mapping built automatically from `Machine::input_map()`
+- Quick save/load (F6/F7), FPS overlay (F10), mouse grab for trackball games (F11)
 
 ### CPU Validation Crate (`phosphor-cpu-validation`)
 
@@ -151,6 +167,7 @@ phosphor-core/
 │   │   ├── core/                   # Core abstractions (complete)
 │   │   │   ├── bus.rs              # Bus trait, BusMaster, InterruptState
 │   │   │   ├── component.rs        # Component traits
+│   │   │   ├── debug.rs            # Debuggable, DebugCpu, BusDebug traits
 │   │   │   ├── machine.rs          # Machine trait, InputButton (frontend interface)
 │   │   │   └── mod.rs              # Module exports
 │   │   ├── cpu/                    # CPU implementations
@@ -165,6 +182,8 @@ phosphor-core/
 │   │       ├── pia6820.rs          # MC6821 PIA (full: registers, interrupts, edge detection)
 │   │       ├── williams_blitter.rs # Williams SC1 DMA blitter (copy/fill/shift/mask)
 │   │       ├── cmos_ram.rs         # 1KB battery-backed CMOS RAM
+│   │       ├── dac.rs              # MC1408 8-bit DAC
+│   │       ├── dvg.rs              # Atari Digital Vector Generator
 │   │       └── mod.rs              # Module exports
 │   └── tests/                      # Integration tests
 │       ├── common/mod.rs           # TestBus harness
@@ -175,18 +194,26 @@ phosphor-core/
 │       ├── pia6820_test.rs         # MC6821 PIA tests
 │       ├── williams_blitter_test.rs # Blitter tests
 │       └── z80_*_test.rs           # Z80 tests (241 tests across 11 files)
+├── macros/                         # phosphor-macros crate (proc macros)
+│   ├── Cargo.toml
+│   └── src/
+│       └── lib.rs                  # #[derive(BusDebug)] proc macro
 ├── machines/                       # phosphor-machines crate
 │   ├── Cargo.toml
 │   ├── src/
 │   │   ├── lib.rs                  # Exports system types
-│   │   ├── joust.rs                # Joust arcade board (Williams 2nd-gen)
+│   │   ├── williams.rs             # Shared Williams gen-1 board (M6809 + M6800 + PIAs + blitter)
+│   │   ├── joust.rs                # Joust arcade board (Williams gen-1)
+│   │   ├── robotron.rs             # Robotron 2084 arcade board (Williams gen-1)
+│   │   ├── asteroids.rs            # Asteroids (Atari: M6502 + DVG vector display)
 │   │   ├── rom_loader.rs           # ROM loading with CRC32 matching, multi-variant support
 │   │   ├── simple6800.rs           # M6800 + RAM/ROM
 │   │   ├── simple6809.rs           # M6809 + RAM/ROM
 │   │   ├── simple6502.rs           # M6502 + flat memory
 │   │   └── simplez80.rs            # Z80 + flat memory
 │   └── tests/
-│       └── joust_test.rs           # Joust system integration tests (39 tests)
+│       ├── joust_test.rs           # Joust system integration tests (39 tests)
+│       └── robotron_test.rs        # Robotron system integration tests
 ├── cpu-validation/                 # phosphor-cpu-validation crate
 │   ├── Cargo.toml                  # Deps: phosphor-core, serde, rand
 │   ├── README_6809.md              # M6809 cross-validation details
@@ -210,14 +237,17 @@ phosphor-core/
 │       ├── i8035/                  # Generated I8035 test vectors
 │       ├── 65x02/                  # Git submodule: SingleStepTests/65x02
 │       └── z80/                    # Git submodule: SingleStepTests/z80
-├── frontend/                       # phosphor-frontend crate (SDL2 frontend)
-│   ├── Cargo.toml                  # Deps: phosphor-core, phosphor-machines, sdl2, zip
+├── frontend/                       # phosphor-frontend crate (SDL2 + egui frontend)
+│   ├── Cargo.toml                  # Deps: phosphor-core, phosphor-machines, sdl2, zip, egui
 │   └── src/
 │       ├── main.rs                 # CLI args, machine selection, ROM loading
 │       ├── rom_path.rs             # ROM path resolution (ZIP, rompath, directory)
 │       ├── emulator.rs             # Main loop: tick, render, input, frame timing
-│       ├── video.rs                # SDL window/texture setup, framebuffer blit
-│       └── input.rs                # Keyboard → Machine::set_input() mapping
+│       ├── debug_ui.rs             # egui debug panel: CPU/device registers, step controls
+│       ├── video.rs                # SDL window/texture setup, framebuffer blit, egui integration
+│       ├── input.rs                # Keyboard/controller → Machine::set_input() mapping
+│       ├── audio.rs                # SDL audio callback with ring buffer
+│       └── overlay.rs              # FPS overlay rendering
 └── cross-validation/               # C++ reference validation
     ├── Makefile
     ├── validate_m6809.cpp          # M6809 harness using elmerucr/MC6809
@@ -359,7 +389,7 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 - [x] Cycle-accurate timing validation (M6809: 266K tests vs elmerucr/MC6809, M6800: 192K tests vs mame4all)
 - [x] Reset vector fetch from 0xFFFE/0xFFFF
 - [x] Instruction disassembler (I8035, M6800, M6502, M6809, Z80; common `Disassemble` trait)
-- [ ] Save state support
+- [x] Save state support (quick save/load with F6/F7)
 
 ### Phase 3: Additional CPUs
 
@@ -390,9 +420,8 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 
 - [x] SDL2 frontend (renders any Machine impl, keyboard input, VSync timing)
 - [x] Joypad, mouse and trackball input
-- [ ] Debugger with breakpoints and step execution
-- [ ] Memory viewer/editor
-- [ ] Disassembly viewer
+- [x] Debug panel with CPU/device register inspection and step execution (F1 toggle, `--debug` flag)
+- [ ] Debugger: breakpoints, memory viewer/editor, disassembly viewer
 - [ ] Performance profiler
 
 ### Phase 6: More Games
