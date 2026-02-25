@@ -1,4 +1,5 @@
 use phosphor_core::core::bus::InterruptState;
+use phosphor_core::core::debug::BusDebug;
 use phosphor_core::core::machine::{AnalogInput, InputButton, Machine};
 use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
@@ -6,6 +7,7 @@ use phosphor_core::cpu::m6502::M6502;
 use phosphor_core::cpu::state::M6502State;
 use phosphor_core::cpu::{Cpu, CpuStateTrait};
 use phosphor_core::device::pokey::Pokey;
+use phosphor_macros::BusDebug;
 
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
@@ -163,8 +165,11 @@ const CYCLES_PER_FRAME: u64 = SCANLINES_PER_FRAME * CYCLES_PER_SCANLINE;
 ///   0x4D00         Write: IRQ acknowledge
 ///   0x5000-0x7FFF  Program ROM (12KB)
 ///   0xF800-0xFFFF  ROM mirror (vectors)
+#[derive(BusDebug)]
 pub struct MissileCommandSystem {
+    #[debug_cpu("M6502", read = "memory_read", write = "memory_write")]
     cpu: M6502,
+    #[debug_device("POKEY")]
     pokey: Pokey,
 
     // Memory
@@ -604,6 +609,25 @@ impl MissileCommandSystem {
             self.scanline_buffer[pixel_offset + 2] = b;
         }
     }
+
+    /// Side-effect-free read from the CPU address space (for debugger).
+    /// Returns RAM and ROM; None for POKEY/I/O (avoids MADSEL side effects).
+    fn memory_read(&self, addr: u16) -> Option<u8> {
+        let addr = addr & 0x7FFF;
+        match addr {
+            0x0000..=0x3FFF => Some(self.ram[addr as usize]),
+            0x5000..=0x7FFF => Some(self.rom[(addr - 0x5000) as usize]),
+            _ => None,
+        }
+    }
+
+    /// Write to the CPU address space (for debug memory editor).
+    fn memory_write(&mut self, addr: u16, data: u8) {
+        let addr = addr & 0x7FFF;
+        if let 0x0000..=0x3FFF = addr {
+            self.ram[addr as usize] = data;
+        }
+    }
 }
 
 impl Default for MissileCommandSystem {
@@ -835,6 +859,27 @@ impl Machine for MissileCommandSystem {
     fn frame_rate_hz(&self) -> f64 {
         // 1.25 MHz CPU clock / (256 scanlines * 80 cycles/scanline) = 61.035 Hz
         1_250_000.0 / CYCLES_PER_FRAME as f64
+    }
+
+    fn cycles_per_frame(&self) -> u64 {
+        CYCLES_PER_FRAME
+    }
+
+    fn debug_bus(&self) -> Option<&dyn BusDebug> {
+        Some(self)
+    }
+
+    fn debug_bus_mut(&mut self) -> Option<&mut dyn BusDebug> {
+        Some(self)
+    }
+
+    fn debug_tick(&mut self) -> u32 {
+        self.tick();
+        if self.cpu.at_instruction_boundary() {
+            1
+        } else {
+            0
+        }
     }
 
     fn machine_id(&self) -> &str {
