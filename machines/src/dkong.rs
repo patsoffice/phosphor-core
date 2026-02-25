@@ -1,4 +1,5 @@
 use phosphor_core::core::bus::InterruptState;
+use phosphor_core::core::debug::BusDebug;
 use phosphor_core::core::machine::{InputButton, Machine};
 use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
@@ -8,6 +9,7 @@ use phosphor_core::cpu::z80::Z80;
 use phosphor_core::device::dac::Mc1408Dac;
 use phosphor_core::device::dkong_discrete::DkongDiscrete;
 use phosphor_core::device::i8257::I8257;
+use phosphor_macros::BusDebug;
 
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
@@ -255,11 +257,14 @@ const SCREEN_HEIGHT: u32 = NATIVE_WIDTH as u32; // 256
 /// Video: 32×32 tile playfield + 16×16 sprites, 2bpp, PROM palette.
 /// Audio: I8035 DAC + discrete circuits (walk, jump, stomp effects).
 /// Screen: 256×240 displayed rotated 90° CCW on vertical monitor.
+#[derive(BusDebug)]
 pub struct DkongSystem {
     // Main CPU (Z80 @ 3.072 MHz)
+    #[debug_cpu("Z80 Main", read = "main_memory_read", write = "main_memory_write")]
     cpu: Z80,
 
     // Sound CPU (I8035 @ 6 MHz / 15 = 400 kHz machine cycles)
+    #[debug_cpu("I8035 Sound", read = "sound_memory_read", write = "sound_memory_write")]
     sound_cpu: I8035,
 
     // Main CPU memory
@@ -301,12 +306,14 @@ pub struct DkongSystem {
     palette_bank: u8,
 
     // DMA controller (i8257)
+    #[debug_device("DMA")]
     dma: I8257,
 
     // Sound CPU interface
     sound_irq_pending: bool,
 
     // Audio output
+    #[debug_device("DAC")]
     dac: Mc1408Dac,
     audio_buffer: Vec<i16>,
     sample_accum: i64,
@@ -319,6 +326,7 @@ pub struct DkongSystem {
     vblank_nmi_pending: bool,
 
     // Discrete sound effects (walk, jump, stomp)
+    #[debug_device("Discrete")]
     discrete: DkongDiscrete,
 }
 
@@ -632,6 +640,34 @@ impl DkongSystem {
         }
 
         self.clock += 1;
+    }
+
+    fn main_memory_read(&self, addr: u16) -> Option<u8> {
+        match addr {
+            0x0000..=0x3FFF => Some(self.rom[addr as usize]),
+            0x6000..=0x6BFF => Some(self.ram[(addr - 0x6000) as usize]),
+            0x7000..=0x73FF => Some(self.sprite_ram[(addr - 0x7000) as usize]),
+            0x7400..=0x77FF => Some(self.video_ram[(addr - 0x7400) as usize]),
+            _ => None, // DMA, I/O ports — skip to avoid side effects
+        }
+    }
+
+    fn main_memory_write(&mut self, addr: u16, data: u8) {
+        match addr {
+            0x6000..=0x6BFF => self.ram[(addr - 0x6000) as usize] = data,
+            0x7000..=0x73FF => self.sprite_ram[(addr - 0x7000) as usize] = data,
+            0x7400..=0x77FF => self.video_ram[(addr - 0x7400) as usize] = data,
+            _ => {}
+        }
+    }
+
+    fn sound_memory_read(&self, addr: u16) -> Option<u8> {
+        let addr12 = (addr & 0x0FFF) as usize;
+        Some(self.sound_rom[addr12])
+    }
+
+    fn sound_memory_write(&mut self, _addr: u16, _data: u8) {
+        // I8035 has no writable external program memory
     }
 }
 
@@ -1037,6 +1073,30 @@ impl Machine for DkongSystem {
         self.vblank_nmi_pending = r.read_bool()?;
         self.audio_buffer.clear();
         Ok(())
+    }
+
+    fn cycles_per_frame(&self) -> u64 {
+        CYCLES_PER_FRAME
+    }
+
+    fn debug_bus(&self) -> Option<&dyn BusDebug> {
+        Some(self)
+    }
+
+    fn debug_bus_mut(&mut self) -> Option<&mut dyn BusDebug> {
+        Some(self)
+    }
+
+    fn debug_tick(&mut self) -> u32 {
+        self.tick();
+        let mut result = 0;
+        if self.cpu.at_instruction_boundary() {
+            result |= 1;
+        }
+        if self.sound_cpu.at_instruction_boundary() {
+            result |= 2;
+        }
+        result
     }
 }
 
