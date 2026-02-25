@@ -1,10 +1,12 @@
 use phosphor_core::core::bus::InterruptState;
+use phosphor_core::core::debug::BusDebug;
 use phosphor_core::core::machine::{AnalogInput, InputButton, Machine};
 use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::m6809::M6809;
 use phosphor_core::cpu::state::M6809State;
 use phosphor_core::cpu::{Cpu, CpuStateTrait};
+use phosphor_macros::BusDebug;
 
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
@@ -228,7 +230,9 @@ const POLY17_SIZE: usize = (1 << 17) - 1; // 131071
 ///   0x9828-0x993F  Sound registers
 ///   0x9C00-0x9CFF  NVRAM (256 bytes)
 ///   0xA000-0xFFFF  Program ROM (24KB)
+#[derive(BusDebug)]
 pub struct GridleeSystem {
+    #[debug_cpu("M6809", read = "memory_read", write = "memory_write")]
     cpu: M6809,
 
     // Memory
@@ -691,6 +695,25 @@ impl GridleeSystem {
     pub fn get_cpu_state(&self) -> M6809State {
         self.cpu.snapshot()
     }
+
+    fn memory_read(&self, addr: u16) -> Option<u8> {
+        match addr {
+            0x0000..=0x07FF => Some(self.ram[addr as usize]),
+            0x0800..=0x7FFF => Some(self.video_ram[(addr - 0x0800) as usize]),
+            0x9C00..=0x9CFF => Some(self.nvram[(addr - 0x9C00) as usize]),
+            0xA000..=0xFFFF => Some(self.program_rom[(addr - 0xA000) as usize]),
+            _ => None, // I/O, trackball, RNG — skip to avoid side effects
+        }
+    }
+
+    fn memory_write(&mut self, addr: u16, data: u8) {
+        match addr {
+            0x0000..=0x07FF => self.ram[addr as usize] = data,
+            0x0800..=0x7FFF => self.video_ram[(addr - 0x0800) as usize] = data,
+            0x9C00..=0x9CFF => self.nvram[(addr - 0x9C00) as usize] = data,
+            _ => {}
+        }
+    }
 }
 
 impl Default for GridleeSystem {
@@ -997,6 +1020,27 @@ impl Machine for GridleeSystem {
         self.audio_buffer.clear();
         Ok(())
     }
+
+    fn cycles_per_frame(&self) -> u64 {
+        CYCLES_PER_FRAME
+    }
+
+    fn debug_bus(&self) -> Option<&dyn BusDebug> {
+        Some(self)
+    }
+
+    fn debug_bus_mut(&mut self) -> Option<&mut dyn BusDebug> {
+        Some(self)
+    }
+
+    fn debug_tick(&mut self) -> u32 {
+        self.tick();
+        if self.cpu.at_instruction_boundary() {
+            1
+        } else {
+            0
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1093,36 +1137,36 @@ mod tests {
     #[test]
     fn ram_read_write_roundtrip() {
         let mut sys = make_system();
-        sys.write(BusMaster::Cpu(0), 0x0042, 0xAB);
-        assert_eq!(sys.read(BusMaster::Cpu(0), 0x0042), 0xAB);
+        Bus::write(&mut sys, BusMaster::Cpu(0), 0x0042, 0xAB);
+        assert_eq!(Bus::read(&mut sys, BusMaster::Cpu(0), 0x0042), 0xAB);
     }
 
     #[test]
     fn vram_read_write_roundtrip() {
         let mut sys = make_system();
-        sys.write(BusMaster::Cpu(0), 0x0800, 0xCD);
-        assert_eq!(sys.read(BusMaster::Cpu(0), 0x0800), 0xCD);
+        Bus::write(&mut sys, BusMaster::Cpu(0), 0x0800, 0xCD);
+        assert_eq!(Bus::read(&mut sys, BusMaster::Cpu(0), 0x0800), 0xCD);
     }
 
     #[test]
     fn nvram_read_write_roundtrip() {
         let mut sys = make_system();
-        sys.write(BusMaster::Cpu(0), 0x9C42, 0x77);
-        assert_eq!(sys.read(BusMaster::Cpu(0), 0x9C42), 0x77);
+        Bus::write(&mut sys, BusMaster::Cpu(0), 0x9C42, 0x77);
+        assert_eq!(Bus::read(&mut sys, BusMaster::Cpu(0), 0x9C42), 0x77);
     }
 
     #[test]
     fn rom_write_ignored() {
         let mut sys = make_system();
         sys.program_rom[0] = 0xAA;
-        sys.write(BusMaster::Cpu(0), 0xA000, 0x55);
-        assert_eq!(sys.read(BusMaster::Cpu(0), 0xA000), 0xAA);
+        Bus::write(&mut sys, BusMaster::Cpu(0), 0xA000, 0x55);
+        assert_eq!(Bus::read(&mut sys, BusMaster::Cpu(0), 0xA000), 0xAA);
     }
 
     #[test]
     fn unmapped_reads_return_ff() {
         let mut sys = make_system();
-        assert_eq!(sys.read(BusMaster::Cpu(0), 0x8000), 0xFF);
+        assert_eq!(Bus::read(&mut sys, BusMaster::Cpu(0), 0x8000), 0xFF);
     }
 
     // -----------------------------------------------------------------------
@@ -1134,7 +1178,7 @@ mod tests {
         let mut sys = make_system();
         // Scanline 0 (< VBEND=16): in VBLANK
         sys.clock = 0;
-        let status = sys.read(BusMaster::Cpu(0), 0x9700);
+        let status = Bus::read(&mut sys, BusMaster::Cpu(0), 0x9700);
         assert_ne!(status & 0x80, 0, "VBLANK should be active at scanline 0");
     }
 
@@ -1143,7 +1187,7 @@ mod tests {
         let mut sys = make_system();
         // Scanline 128 (within VBEND..VBSTART): active display
         sys.clock = 128 * CYCLES_PER_SCANLINE;
-        let status = sys.read(BusMaster::Cpu(0), 0x9700);
+        let status = Bus::read(&mut sys, BusMaster::Cpu(0), 0x9700);
         assert_eq!(
             status & 0x80,
             0,
@@ -1156,7 +1200,7 @@ mod tests {
         let mut sys = make_system();
         // Scanline 256 (>= VBSTART): in VBLANK
         sys.clock = 256 * CYCLES_PER_SCANLINE;
-        let status = sys.read(BusMaster::Cpu(0), 0x9700);
+        let status = Bus::read(&mut sys, BusMaster::Cpu(0), 0x9700);
         assert_ne!(status & 0x80, 0, "VBLANK should be active at scanline 256");
     }
 
@@ -1220,7 +1264,7 @@ mod tests {
         let mut sys = make_system();
         sys.watchdog_frame_count = 7;
         // Write to watchdog resets counter
-        sys.write(BusMaster::Cpu(0), 0x9380, 0x00);
+        Bus::write(&mut sys, BusMaster::Cpu(0), 0x9380, 0x00);
         assert_eq!(sys.watchdog_frame_count, 0);
     }
 
@@ -1231,7 +1275,7 @@ mod tests {
     #[test]
     fn palette_bank_select_masks_to_6_bits() {
         let mut sys = make_system();
-        sys.write(BusMaster::Cpu(0), 0x9200, 0xFF);
+        Bus::write(&mut sys, BusMaster::Cpu(0), 0x9200, 0xFF);
         assert_eq!(sys.palette_bank, 0x3F);
     }
 
@@ -1557,9 +1601,9 @@ mod tests {
     fn latch_cocktail_flip() {
         let mut sys = make_system();
         // Q7 (bit 7 select) = address bits 6:4 = 0b111, so addr = 0x9070
-        sys.write(BusMaster::Cpu(0), 0x9070, 0x01);
+        Bus::write(&mut sys, BusMaster::Cpu(0), 0x9070, 0x01);
         assert!(sys.cocktail_flip);
-        sys.write(BusMaster::Cpu(0), 0x9070, 0x00);
+        Bus::write(&mut sys, BusMaster::Cpu(0), 0x9070, 0x00);
         assert!(!sys.cocktail_flip);
     }
 
