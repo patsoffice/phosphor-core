@@ -26,6 +26,18 @@ impl Mc1408Dac {
     }
 }
 
+use crate::core::debug::{DebugRegister, Debuggable};
+
+impl Debuggable for Mc1408Dac {
+    fn debug_registers(&self) -> Vec<DebugRegister> {
+        vec![DebugRegister {
+            name: "VALUE",
+            value: self.value as u64,
+            width: 8,
+        }]
+    }
+}
+
 use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
 
 impl Saveable for Mc1408Dac {

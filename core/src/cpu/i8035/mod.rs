@@ -755,6 +755,29 @@ impl I8035 {
     }
 }
 
+use crate::core::debug::{DebugCpu, DebugRegister, Debuggable};
+use crate::cpu::disasm::DisassembledInstruction;
+
+impl Debuggable for I8035 {
+    fn debug_registers(&self) -> Vec<DebugRegister> {
+        self.snapshot().debug_registers()
+    }
+}
+
+impl DebugCpu for I8035 {
+    fn debug_pc(&self) -> u16 {
+        self.pc
+    }
+
+    fn debug_at_instruction_boundary(&self) -> bool {
+        self.at_instruction_boundary()
+    }
+
+    fn debug_disassemble(&self, addr: u16, bytes: &[u8]) -> DisassembledInstruction {
+        <Self as crate::cpu::Disassemble>::disassemble(addr, bytes)
+    }
+}
+
 impl Saveable for I8035 {
     fn save_state(&self, w: &mut StateWriter) {
         // Registers

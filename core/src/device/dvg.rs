@@ -66,6 +66,45 @@ pub struct Dvg {
     display_list: Vec<VectorLine>,
 }
 
+use crate::core::debug::{DebugRegister, Debuggable};
+
+impl Debuggable for Dvg {
+    fn debug_registers(&self) -> Vec<DebugRegister> {
+        vec![
+            DebugRegister {
+                name: "PC",
+                value: self.pc as u64,
+                width: 16,
+            },
+            DebugRegister {
+                name: "X",
+                value: self.xpos as u64,
+                width: 16,
+            },
+            DebugRegister {
+                name: "Y",
+                value: self.ypos as u64,
+                width: 16,
+            },
+            DebugRegister {
+                name: "SCALE",
+                value: self.scale as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "INTEN",
+                value: self.intensity as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "HALT",
+                value: self.halted as u64,
+                width: 8,
+            },
+        ]
+    }
+}
+
 impl Dvg {
     pub fn new() -> Self {
         Self {

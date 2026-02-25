@@ -306,6 +306,55 @@ impl Default for Pia6820 {
     }
 }
 
+use crate::core::debug::{DebugRegister, Debuggable};
+
+impl Debuggable for Pia6820 {
+    fn debug_registers(&self) -> Vec<DebugRegister> {
+        vec![
+            DebugRegister {
+                name: "ORA",
+                value: self.output_a as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "DDRA",
+                value: self.ddr_a as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "CRA",
+                value: self.ctrl_a as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "IN_A",
+                value: self.input_a as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "ORB",
+                value: self.output_b as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "DDRB",
+                value: self.ddr_b as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "CRB",
+                value: self.ctrl_b as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "IN_B",
+                value: self.input_b as u64,
+                width: 8,
+            },
+        ]
+    }
+}
+
 use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
 
 impl Saveable for Pia6820 {

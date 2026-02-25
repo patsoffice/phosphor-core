@@ -113,6 +113,50 @@ pub struct WilliamsBlitter {
     shift_reg: u8,  // previous raw source byte for shift mode
 }
 
+use crate::core::debug::{DebugRegister, Debuggable};
+
+impl Debuggable for WilliamsBlitter {
+    fn debug_registers(&self) -> Vec<DebugRegister> {
+        vec![
+            DebugRegister {
+                name: "CTRL",
+                value: self.control as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "SOLID",
+                value: self.solid_color as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "SRC",
+                value: self.src_addr as u64,
+                width: 16,
+            },
+            DebugRegister {
+                name: "DST",
+                value: self.dst_addr as u64,
+                width: 16,
+            },
+            DebugRegister {
+                name: "W",
+                value: self.width as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "H",
+                value: self.height as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "ACT",
+                value: self.active as u64,
+                width: 8,
+            },
+        ]
+    }
+}
+
 // Control byte bit positions (from MAME williamsblitter.h)
 const CTRL_SRC_STRIDE_256: u8 = 0x01; // Bit 0
 const CTRL_DST_STRIDE_256: u8 = 0x02; // Bit 1
