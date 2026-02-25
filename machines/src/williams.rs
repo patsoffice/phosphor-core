@@ -9,6 +9,7 @@ use phosphor_core::device::cmos_ram::CmosRam;
 use phosphor_core::device::dac::Mc1408Dac;
 use phosphor_core::device::pia6820::Pia6820;
 use phosphor_core::device::williams_blitter::WilliamsBlitter;
+use phosphor_macros::BusDebug;
 
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
 
@@ -87,9 +88,16 @@ pub(crate) fn set_bit(reg: &mut u8, bit: u8, pressed: bool) {
 ///
 /// Game-specific machines (Joust, Robotron, etc.) compose this struct and
 /// provide their own ROM definitions and input wiring.
+#[derive(BusDebug)]
 pub struct WilliamsBoard {
     // CPUs
+    #[debug_cpu("M6809 Main", read = "main_memory_read", write = "main_memory_write")]
     pub(crate) cpu: M6809,
+    #[debug_cpu(
+        "M6800 Sound",
+        read = "sound_memory_read",
+        write = "sound_memory_write"
+    )]
     pub(crate) sound_cpu: M6800,
 
     // Memory regions
@@ -100,8 +108,11 @@ pub struct WilliamsBoard {
     pub(crate) program_rom: [u8; 0x3000], // 0xD000-0xFFFF: 12KB program ROM
 
     // Peripheral devices
+    #[debug_device("Widget PIA")]
     pub(crate) widget_pia: Pia6820, // 0xC804-0xC807: player inputs
-    pub(crate) rom_pia: Pia6820,    // 0xC80C-0xC80F: ROM bank, video timing
+    #[debug_device("ROM PIA")]
+    pub(crate) rom_pia: Pia6820, // 0xC80C-0xC80F: ROM bank, video timing
+    #[debug_device("Blitter")]
     pub(crate) blitter: WilliamsBlitter, // 0xCA00-0xCA07: DMA blitter
 
     // I/O registers
@@ -109,10 +120,12 @@ pub struct WilliamsBoard {
 
     // Sound board (M6808 stand-in for M6802)
     pub(crate) sound_ram: [u8; 256], // 0x0000-0x00FF: 256 bytes RAM
-    pub(crate) sound_pia: Pia6820,   // 0x0400-0x0403: Sound PIA
+    #[debug_device("Sound PIA")]
+    pub(crate) sound_pia: Pia6820, // 0x0400-0x0403: Sound PIA
     pub(crate) sound_rom: [u8; 0x1000], // 0xF000-0xFFFF: 4KB sound ROM
 
     // Audio output
+    #[debug_device("DAC")]
     pub(crate) dac: Mc1408Dac,
     pub(crate) audio_buffer: Vec<i16>,
     pub(crate) sample_accum: i64,
@@ -207,11 +220,11 @@ impl WilliamsBoard {
         self.cmos_ram.snapshot()
     }
 
-    // --- Debug accessors (side-effect-free) ---
+    // --- Memory accessors (side-effect-free, used by Bus::read and BusDebug) ---
 
     /// Side-effect-free read from the main CPU address space.
     /// Mirrors the Bus::read() memory map but skips PIA/blitter/watchdog side effects.
-    pub fn debug_read_main(&self, addr: u16) -> Option<u8> {
+    pub fn main_memory_read(&self, addr: u16) -> Option<u8> {
         match addr {
             0x0000..=0x8FFF => {
                 if self.rom_bank != 0 {
@@ -230,7 +243,7 @@ impl WilliamsBoard {
     }
 
     /// Side-effect-free read from the sound CPU address space.
-    pub fn debug_read_sound(&self, addr: u16) -> Option<u8> {
+    pub fn sound_memory_read(&self, addr: u16) -> Option<u8> {
         match addr {
             0x0000..=0x00FF => Some(self.sound_ram[addr as usize]),
             0xB000..=0xFFFF => Some(self.sound_rom[(addr & 0x0FFF) as usize]),
@@ -239,7 +252,7 @@ impl WilliamsBoard {
     }
 
     /// Write to the main CPU address space (for debug memory editor).
-    pub fn debug_write_main(&mut self, addr: u16, data: u8) {
+    pub fn main_memory_write(&mut self, addr: u16, data: u8) {
         match addr {
             0x0000..=0xBFFF => self.video_ram[addr as usize] = data,
             0xC000..=0xC00F => self.palette_ram[(addr - 0xC000) as usize] = data,
@@ -248,7 +261,7 @@ impl WilliamsBoard {
     }
 
     /// Write to the sound CPU address space (for debug memory editor).
-    pub fn debug_write_sound(&mut self, addr: u16, data: u8) {
+    pub fn sound_memory_write(&mut self, addr: u16, data: u8) {
         if let 0x0000..=0x00FF = addr {
             self.sound_ram[addr as usize] = data;
         }
@@ -455,6 +468,21 @@ impl WilliamsBoard {
         }
     }
 
+    // --- Debug helpers ---
+
+    /// Returns a bitmask of CPUs at instruction boundaries.
+    /// Bit 0 = main CPU (M6809), bit 1 = sound CPU (M6800).
+    pub fn debug_tick_boundaries(&self) -> u32 {
+        let mut result = 0;
+        if self.cpu.at_instruction_boundary() {
+            result |= 1;
+        }
+        if self.sound_cpu.at_instruction_boundary() {
+            result |= 2;
+        }
+        result
+    }
+
     // --- Machine trait helpers (called by game wrappers) ---
 
     /// Run one frame's worth of cycles. Game wrappers that need per-tick
@@ -550,7 +578,7 @@ impl Bus for WilliamsBoard {
     fn read(&mut self, master: BusMaster, addr: u16) -> u8 {
         if master == BusMaster::Cpu(1) {
             // Sound board: pure RAM/ROM read, then I/O with side effects
-            return self.debug_read_sound(addr).unwrap_or_else(|| match addr {
+            return self.sound_memory_read(addr).unwrap_or_else(|| match addr {
                 0x0400..=0x0403 => self.sound_pia.read((addr - 0x0400) as u8),
                 _ => 0xFF,
             });
@@ -563,7 +591,7 @@ impl Bus for WilliamsBoard {
         }
 
         // Main board: pure RAM/ROM read, then I/O with side effects
-        self.debug_read_main(addr).unwrap_or_else(|| match addr {
+        self.main_memory_read(addr).unwrap_or_else(|| match addr {
             0xC804..=0xC807 => self.widget_pia.read((addr - 0xC804) as u8),
             0xC80C..=0xC80F => self.rom_pia.read((addr - 0xC80C) as u8),
             0xCA00..=0xCA07 => 0, // Blitter registers are write-only on real hardware
