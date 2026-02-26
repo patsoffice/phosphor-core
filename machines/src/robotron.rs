@@ -301,6 +301,7 @@ impl InputReceiver for RobotronSystem {
 
 impl MachineDebug for RobotronSystem {
     williams::impl_williams_debug!();
+    williams::impl_williams_watchpoints!();
 
     fn debug_tick(&mut self) -> u32 {
         self.board.widget_pia.set_port_a_input(self.widget_port_a);

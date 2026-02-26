@@ -301,6 +301,7 @@ impl InputReceiver for JoustSystem {
 
 impl MachineDebug for JoustSystem {
     williams::impl_williams_debug!();
+    williams::impl_williams_watchpoints!();
 
     fn debug_tick(&mut self) -> u32 {
         self.update_widget_mux();

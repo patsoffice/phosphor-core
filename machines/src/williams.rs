@@ -1,6 +1,7 @@
 use phosphor_core::audio::AudioResampler;
 use phosphor_core::bus_split;
 use phosphor_core::core::bus::InterruptState;
+use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
 use phosphor_core::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::m6800::M6800;
@@ -14,6 +15,29 @@ use phosphor_core::device::williams_blitter::WilliamsBlitter;
 use phosphor_macros::BusDebug;
 
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
+
+// ---------------------------------------------------------------------------
+// Memory map region IDs (machine-specific constants for page table dispatch)
+// ---------------------------------------------------------------------------
+
+/// Main CPU (M6809) address space region IDs.
+pub(crate) mod main_region {
+    pub const VIDEO_RAM: u8 = 1; // 0x0000-0xBFFF (48KB, banked ROM overlay at 0x0000-0x8FFF)
+    pub const PALETTE: u8 = 2; // 0xC000-0xC00F (16-color palette)
+    pub const IO_PIA: u8 = 3; // 0xC800-0xC8FF (Widget PIA + ROM PIA)
+    pub const IO_BANK: u8 = 4; // 0xC900-0xC9FF (ROM bank select register)
+    pub const IO_BLITTER: u8 = 5; // 0xCA00-0xCAFF (SC1 blitter registers)
+    pub const IO_VIDEO: u8 = 6; // 0xCB00-0xCBFF (video counter + watchdog)
+    pub const CMOS: u8 = 7; // 0xCC00-0xCFFF (1KB battery-backed CMOS)
+    pub const PROGRAM_ROM: u8 = 8; // 0xD000-0xFFFF (12KB program ROM)
+}
+
+/// Sound CPU (M6800) address space region IDs.
+pub(crate) mod sound_region {
+    pub const RAM: u8 = 1; // 0x0000-0x00FF (256 bytes)
+    pub const IO_PIA: u8 = 2; // 0x0400-0x04FF (Sound PIA)
+    pub const ROM: u8 = 3; // 0xB000-0xFFFF (4KB mirrored)
+}
 
 // ---------------------------------------------------------------------------
 // Williams gen-1 hardware constants
@@ -123,6 +147,65 @@ macro_rules! impl_williams_debug {
     };
 }
 
+/// Implements watchpoint methods for `MachineDebug` on Williams gen-1 games.
+///
+/// Delegates to `board.main_map` (cpu_index 0) and `board.sound_map` (cpu_index 1).
+/// The implementing type must have a `board: WilliamsBoard` field.
+macro_rules! impl_williams_watchpoints {
+    () => {
+        fn take_watchpoint_hit(
+            &mut self,
+        ) -> Option<phosphor_core::core::memory_map::WatchpointHit> {
+            self.board
+                .main_map
+                .take_hit()
+                .or_else(|| self.board.sound_map.take_hit())
+        }
+
+        fn set_watchpoint(
+            &mut self,
+            cpu_index: usize,
+            addr: u16,
+            kind: phosphor_core::core::memory_map::WatchpointKind,
+        ) {
+            match cpu_index {
+                0 => self.board.main_map.set_watchpoint(addr, kind),
+                1 => self.board.sound_map.set_watchpoint(addr, kind),
+                _ => {}
+            }
+        }
+
+        fn clear_watchpoint(
+            &mut self,
+            cpu_index: usize,
+            addr: u16,
+            kind: phosphor_core::core::memory_map::WatchpointKind,
+        ) {
+            match cpu_index {
+                0 => self.board.main_map.clear_watchpoint(addr, kind),
+                1 => self.board.sound_map.clear_watchpoint(addr, kind),
+                _ => {}
+            }
+        }
+
+        fn clear_all_watchpoints(&mut self) {
+            self.board.main_map.clear_all_watchpoints();
+            self.board.sound_map.clear_all_watchpoints();
+        }
+
+        fn memory_map(
+            &self,
+            cpu_index: usize,
+        ) -> Option<&phosphor_core::core::memory_map::MemoryMap> {
+            match cpu_index {
+                0 => Some(&self.board.main_map),
+                1 => Some(&self.board.sound_map),
+                _ => None,
+            }
+        }
+    };
+}
+
 /// Implements remaining `Machine` methods shared across Williams gen-1 games:
 /// save_nvram, load_nvram, frame_rate_hz.
 ///
@@ -169,6 +252,7 @@ pub(crate) use impl_williams_bus_common;
 pub(crate) use impl_williams_debug;
 pub(crate) use impl_williams_machine_common;
 pub(crate) use impl_williams_renderable;
+pub(crate) use impl_williams_watchpoints;
 
 // ---------------------------------------------------------------------------
 // WilliamsBoard
@@ -223,6 +307,10 @@ pub struct WilliamsBoard {
     pub(crate) dac: Mc1408Dac,
     pub(crate) resampler: AudioResampler,
 
+    // Memory maps (page-table dispatch + watchpoints)
+    pub(crate) main_map: MemoryMap,
+    pub(crate) sound_map: MemoryMap,
+
     // System state
     pub watchdog_counter: u32,
     pub(crate) clock: u64,
@@ -253,11 +341,40 @@ impl WilliamsBoard {
             sound_rom: [0; 0x1000],
             dac: Mc1408Dac::new(),
             resampler: AudioResampler::new(1_000_000, 44_100),
+            main_map: Self::build_main_map(),
+            sound_map: Self::build_sound_map(),
             watchdog_counter: 0,
             clock: 0,
             rom_pia_input: 0,
             scanline_buffer: vec![0u8; DISPLAY_WIDTH as usize * DISPLAY_HEIGHT as usize * 3],
         }
+    }
+
+    fn build_main_map() -> MemoryMap {
+        use main_region::*;
+        let mut map = MemoryMap::new();
+        map.region(VIDEO_RAM, "Video RAM", 0x0000, 0xC000, AccessKind::ReadWrite)
+            .region(PALETTE, "Palette", 0xC000, 0x100, AccessKind::ReadWrite)
+            .region(IO_PIA, "PIAs", 0xC800, 0x100, AccessKind::Io)
+            .region(IO_BANK, "ROM Bank", 0xC900, 0x100, AccessKind::Io)
+            .region(IO_BLITTER, "Blitter", 0xCA00, 0x100, AccessKind::Io)
+            .region(IO_VIDEO, "Video Counter", 0xCB00, 0x100, AccessKind::Io)
+            .region(CMOS, "CMOS RAM", 0xCC00, 0x400, AccessKind::ReadWrite)
+            .region(PROGRAM_ROM, "Program ROM", 0xD000, 0x3000, AccessKind::ReadOnly);
+        map
+    }
+
+    fn build_sound_map() -> MemoryMap {
+        use sound_region::*;
+        let mut map = MemoryMap::new();
+        map.region(RAM, "Sound RAM", 0x0000, 0x100, AccessKind::ReadWrite)
+            .region(IO_PIA, "Sound PIA", 0x0400, 0x100, AccessKind::Io)
+            .region(ROM, "Sound ROM", 0xF000, 0x1000, AccessKind::ReadOnly)
+            .mirror(0xB000, 0xF000, 0x1000)
+            .mirror(0xC000, 0xF000, 0x1000)
+            .mirror(0xD000, 0xF000, 0x1000)
+            .mirror(0xE000, 0xF000, 0x1000);
+        map
     }
 
     // --- Accessors ---
@@ -311,46 +428,49 @@ impl WilliamsBoard {
     // --- Memory accessors (side-effect-free, used by Bus::read and BusDebug) ---
 
     /// Side-effect-free read from the main CPU address space.
-    /// Mirrors the Bus::read() memory map but skips PIA/blitter/watchdog side effects.
+    /// Uses region_id dispatch but skips PIA/blitter/watchdog side effects.
     pub fn main_memory_read(&self, addr: u16) -> Option<u8> {
-        match addr {
-            0x0000..=0x8FFF => {
-                if self.rom_bank != 0 {
+        match self.main_map.page(addr).region_id {
+            main_region::VIDEO_RAM => {
+                if self.rom_bank != 0 && addr <= 0x8FFF {
                     Some(self.banked_rom[addr as usize])
                 } else {
                     Some(self.video_ram[addr as usize])
                 }
             }
-            0x9000..=0xBFFF => Some(self.video_ram[addr as usize]),
-            0xC000..=0xC00F => Some(self.palette_ram[(addr - 0xC000) as usize]),
-            0xC900 => Some(self.rom_bank),
-            0xCC00..=0xCFFF => Some(self.cmos_ram.read(addr - 0xCC00)),
-            0xD000..=0xFFFF => Some(self.program_rom[(addr - 0xD000) as usize]),
-            _ => None,
+            main_region::PALETTE if addr <= 0xC00F => {
+                Some(self.palette_ram[(addr & 0x0F) as usize])
+            }
+            main_region::IO_BANK => Some(self.rom_bank),
+            main_region::CMOS => Some(self.cmos_ram.read(addr - 0xCC00)),
+            main_region::PROGRAM_ROM => Some(self.program_rom[(addr - 0xD000) as usize]),
+            _ => None, // I/O with side effects or unmapped
         }
     }
 
     /// Side-effect-free read from the sound CPU address space.
     pub fn sound_memory_read(&self, addr: u16) -> Option<u8> {
-        match addr {
-            0x0000..=0x00FF => Some(self.sound_ram[addr as usize]),
-            0xB000..=0xFFFF => Some(self.sound_rom[(addr & 0x0FFF) as usize]),
+        match self.sound_map.page(addr).region_id {
+            sound_region::RAM => Some(self.sound_ram[addr as usize]),
+            sound_region::ROM => Some(self.sound_rom[(addr & 0x0FFF) as usize]),
             _ => None,
         }
     }
 
     /// Write to the main CPU address space (for debug memory editor).
     pub fn main_memory_write(&mut self, addr: u16, data: u8) {
-        match addr {
-            0x0000..=0xBFFF => self.video_ram[addr as usize] = data,
-            0xC000..=0xC00F => self.palette_ram[(addr - 0xC000) as usize] = data,
+        match self.main_map.page(addr).region_id {
+            main_region::VIDEO_RAM => self.video_ram[addr as usize] = data,
+            main_region::PALETTE if addr <= 0xC00F => {
+                self.palette_ram[(addr & 0x0F) as usize] = data
+            }
             _ => {}
         }
     }
 
     /// Write to the sound CPU address space (for debug memory editor).
     pub fn sound_memory_write(&mut self, addr: u16, data: u8) {
-        if let 0x0000..=0x00FF = addr {
+        if self.sound_map.page(addr).region_id == sound_region::RAM {
             self.sound_ram[addr as usize] = data;
         }
     }
@@ -636,11 +756,21 @@ impl Bus for WilliamsBoard {
 
     fn read(&mut self, master: BusMaster, addr: u16) -> u8 {
         if master == BusMaster::Cpu(1) {
-            // Sound board: pure RAM/ROM read, then I/O with side effects
-            return self.sound_memory_read(addr).unwrap_or_else(|| match addr {
-                0x0400..=0x0403 => self.sound_pia.read((addr - 0x0400) as u8),
+            // Sound board
+            let data = match self.sound_map.page(addr).region_id {
+                sound_region::RAM => self.sound_ram[addr as usize],
+                sound_region::IO_PIA => {
+                    if (0x0400..=0x0403).contains(&addr) {
+                        self.sound_pia.read((addr - 0x0400) as u8)
+                    } else {
+                        0xFF
+                    }
+                }
+                sound_region::ROM => self.sound_rom[(addr & 0x0FFF) as usize],
                 _ => 0xFF,
-            });
+            };
+            self.sound_map.check_read_watch(addr, data);
+            return data;
         }
 
         // DmaVram reads bypass ROM banking — the blitter reads dest
@@ -649,44 +779,83 @@ impl Bus for WilliamsBoard {
             return self.video_ram[addr as usize];
         }
 
-        // Main board: pure RAM/ROM read, then I/O with side effects
-        self.main_memory_read(addr).unwrap_or_else(|| match addr {
-            0xC804..=0xC807 => self.widget_pia.read((addr - 0xC804) as u8),
-            0xC80C..=0xC80F => self.rom_pia.read((addr - 0xC80C) as u8),
-            0xCA00..=0xCA07 => 0, // Blitter registers are write-only on real hardware
-            0xCB00..=0xCBFF => self.current_scanline() & 0xFC, // Video counter read
+        // Main board
+        let data = match self.main_map.page(addr).region_id {
+            main_region::VIDEO_RAM => {
+                if self.rom_bank != 0 && addr <= 0x8FFF {
+                    self.banked_rom[addr as usize]
+                } else {
+                    self.video_ram[addr as usize]
+                }
+            }
+            main_region::PALETTE => {
+                if addr <= 0xC00F {
+                    self.palette_ram[(addr & 0x0F) as usize]
+                } else {
+                    0xFF
+                }
+            }
+            main_region::IO_PIA => match addr {
+                0xC804..=0xC807 => self.widget_pia.read((addr - 0xC804) as u8),
+                0xC80C..=0xC80F => self.rom_pia.read((addr - 0xC80C) as u8),
+                _ => 0xFF,
+            },
+            main_region::IO_BANK => self.rom_bank,
+            main_region::IO_BLITTER => 0, // write-only on real hardware
+            main_region::IO_VIDEO => self.current_scanline() & 0xFC,
+            main_region::CMOS => self.cmos_ram.read(addr - 0xCC00),
+            main_region::PROGRAM_ROM => self.program_rom[(addr - 0xD000) as usize],
             _ => 0xFF,
-        })
+        };
+        self.main_map.check_read_watch(addr, data);
+        data
     }
 
     fn write(&mut self, master: BusMaster, addr: u16, data: u8) {
         if master == BusMaster::Cpu(1) {
-            // Sound board memory map
-            return match addr {
-                0x0000..=0x00FF => self.sound_ram[addr as usize] = data,
-                0x0400..=0x0403 => self.sound_pia.write((addr - 0x0400) as u8, data),
-                _ => { /* ROM or unmapped: ignored */ }
-            };
+            // Sound board
+            match self.sound_map.page(addr).region_id {
+                sound_region::RAM => self.sound_ram[addr as usize] = data,
+                sound_region::IO_PIA => {
+                    if (0x0400..=0x0403).contains(&addr) {
+                        self.sound_pia.write((addr - 0x0400) as u8, data);
+                    }
+                }
+                _ => {} // ROM or unmapped: ignored
+            }
+            self.sound_map.check_write_watch(addr, data);
+            return;
         }
 
-        // Main board memory map
-        match addr {
-            0x0000..=0xBFFF => self.video_ram[addr as usize] = data,
-            0xC000..=0xC00F => self.palette_ram[(addr - 0xC000) as usize] = data,
-            0xC804..=0xC807 => self.widget_pia.write((addr - 0xC804) as u8, data),
-            0xC80C..=0xC80F => self.rom_pia.write((addr - 0xC80C) as u8, data),
-            0xC900 => self.rom_bank = data,
-            0xCA00..=0xCA07 => self.blitter.write_register((addr - 0xCA00) as u8, data),
-            0xCBFF => {
-                if data == 0x39 {
+        // Main board
+        match self.main_map.page(addr).region_id {
+            main_region::VIDEO_RAM => self.video_ram[addr as usize] = data,
+            main_region::PALETTE => {
+                if addr <= 0xC00F {
+                    self.palette_ram[(addr & 0x0F) as usize] = data;
+                }
+            }
+            main_region::IO_PIA => match addr {
+                0xC804..=0xC807 => self.widget_pia.write((addr - 0xC804) as u8, data),
+                0xC80C..=0xC80F => self.rom_pia.write((addr - 0xC80C) as u8, data),
+                _ => {}
+            },
+            main_region::IO_BANK => self.rom_bank = data,
+            main_region::IO_BLITTER => {
+                if (0xCA00..=0xCA07).contains(&addr) {
+                    self.blitter.write_register((addr - 0xCA00) as u8, data);
+                }
+            }
+            main_region::IO_VIDEO => {
+                if addr == 0xCBFF && data == 0x39 {
                     self.watchdog_counter = 0;
                 }
             }
             // Only lower 4 bits valid on Williams 5114/6514 SRAM
-            0xCC00..=0xCFFF => self.cmos_ram.write(addr - 0xCC00, data | 0xF0),
-            0xD000..=0xFFFF => { /* ROM: ignored */ }
-            _ => { /* Unmapped: ignored */ }
+            main_region::CMOS => self.cmos_ram.write(addr - 0xCC00, data | 0xF0),
+            _ => {} // ROM or unmapped: ignored
         }
+        self.main_map.check_write_watch(addr, data);
     }
 
     fn is_halted_for(&self, master: BusMaster) -> bool {
