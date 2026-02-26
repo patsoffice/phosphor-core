@@ -269,22 +269,22 @@ pub struct CrystalCastlesSystem {
     pokey2: Pokey,
 
     // Memory
-    videoram: [u8; 0x8000],   // 0x0000-0x7FFF: 32KB video/work RAM
-    sram: [u8; 0x0E00],       // 0x8000-0x8DFF: 3.5KB static RAM
-    spriteram: [u8; 0x200],   // 0x8E00-0x8FFF: MOB buffers 1 & 2
-    nvram: [u8; 0x100],       // 0x9000-0x90FF: 256-byte NVRAM (two X2212)
-    rom: [u8; 0xA000],        // 40KB program ROM (5 × 8KB)
-    gfx_rom: [u8; 0x4000],    // 16KB sprite graphics
-    sync_prom: [u8; 0x100],   // VBLANK/IRQ timing
-    wp_prom: [u8; 0x100],     // Write-protect
-    pri_prom: [u8; 0x100],    // Priority compositing
+    videoram: [u8; 0x8000], // 0x0000-0x7FFF: 32KB video/work RAM
+    sram: [u8; 0x0E00],     // 0x8000-0x8DFF: 3.5KB static RAM
+    spriteram: [u8; 0x200], // 0x8E00-0x8FFF: MOB buffers 1 & 2
+    nvram: [u8; 0x100],     // 0x9000-0x90FF: 256-byte NVRAM (two X2212)
+    rom: [u8; 0xA000],      // 40KB program ROM (5 × 8KB)
+    gfx_rom: [u8; 0x4000],  // 16KB sprite graphics
+    sync_prom: [u8; 0x100], // VBLANK/IRQ timing
+    wp_prom: [u8; 0x100],   // Write-protect
+    pri_prom: [u8; 0x100],  // Priority compositing
 
     // Video state
-    bitmode_addr: [u8; 2],            // X,Y auto-increment latches
+    bitmode_addr: [u8; 2], // X,Y auto-increment latches
     hscroll: u8,
     vscroll: u8,
-    palette_ram: [u8; 32],            // Color RAM (32 entries)
-    palette_rgb: [(u8, u8, u8); 32],  // Pre-computed RGB24
+    palette_ram: [u8; 64],           // Color RAM (64 addresses, 32 pens)
+    palette_rgb: [(u8, u8, u8); 32], // Pre-computed RGB24
 
     // Output latches (LS259)
     // Latch 0 (8N) at 0x9E80: bit 0 = data & 1
@@ -306,8 +306,8 @@ pub struct CrystalCastlesSystem {
     //   Bit 3: Tilt         Bit 4: Self-test     Bit 5: VBLANK (active-high)
     //   Bit 6: Jump Left    Bit 7: Jump Right
     in0: u8,
-    dip_switches: u8,       // Read via POKEY2 ALLPOT (0x9A08)
-    trackball: [u8; 4],     // LETA0-3 (8-bit counters: Y1, X1, Y2, X2)
+    dip_switches: u8,   // Read via POKEY2 ALLPOT (0x9A08)
+    trackball: [u8; 4], // LETA0-3 (8-bit counters: Y1, X1, Y2, X2)
     trackball_l_pressed: bool,
     trackball_r_pressed: bool,
     trackball_u_pressed: bool,
@@ -323,10 +323,10 @@ pub struct CrystalCastlesSystem {
     watchdog_frame_count: u8,
 
     // Rendering
-    vblank_end: u8,              // First visible scanline (from sync PROM, typically 24)
-    scanline_buffer: Vec<u8>,    // 256 × 232 × 3 = 177,408 bytes (RGB24)
+    vblank_end: u8,           // First visible scanline (from sync PROM, typically 24)
+    scanline_buffer: Vec<u8>, // 256 × 232 × 3 = 177,408 bytes (RGB24)
     scanline_buffer_valid: bool,
-    sprite_buffer: Vec<u8>,      // 256 × 256 temporary sprite layer (5-bit index)
+    sprite_buffer: Vec<u8>, // 256 × 256 temporary sprite layer (5-bit index)
 
     audio_buffer: Vec<i16>,
 }
@@ -351,7 +351,7 @@ impl CrystalCastlesSystem {
             bitmode_addr: [0; 2],
             hscroll: 0,
             vscroll: 0,
-            palette_ram: [0; 32],
+            palette_ram: [0; 64],
             palette_rgb: [(0, 0, 0); 32],
 
             outlatch0: 0,
@@ -424,7 +424,11 @@ impl CrystalCastlesSystem {
             0x8E00..=0x8FFF => Some(self.spriteram[(addr - 0x8E00) as usize]),
             0x9000..=0x93FF => Some(self.nvram[(addr & 0xFF) as usize]),
             0xA000..=0xDFFF => {
-                let bank_base = if self.outlatch0 & 0x80 != 0 { 0x6000 } else { 0x0000 };
+                let bank_base = if self.outlatch0 & 0x80 != 0 {
+                    0x6000
+                } else {
+                    0x0000
+                };
                 Some(self.rom[bank_base + (addr - 0xA000) as usize])
             }
             0xE000..=0xFFFF => Some(self.rom[0x4000 + (addr - 0xE000) as usize]),
@@ -474,12 +478,10 @@ impl CrystalCastlesSystem {
         // Write to the appropriate nibbles of two adjacent VRAM bytes
         if dest_addr < 0x8000 {
             if wpbits & 1 == 0 {
-                self.videoram[dest_addr] =
-                    (self.videoram[dest_addr] & 0xF0) | (data & 0x0F);
+                self.videoram[dest_addr] = (self.videoram[dest_addr] & 0xF0) | (data & 0x0F);
             }
             if wpbits & 2 == 0 {
-                self.videoram[dest_addr] =
-                    (self.videoram[dest_addr] & 0x0F) | (data & 0xF0);
+                self.videoram[dest_addr] = (self.videoram[dest_addr] & 0x0F) | (data & 0xF0);
             }
             if dest_addr + 1 < 0x8000 {
                 if wpbits & 4 == 0 {
@@ -526,8 +528,7 @@ impl CrystalCastlesSystem {
     /// Address comes from the auto-increment latches. The appropriate nibble
     /// is shifted into the upper 4 bits; lower 4 bits are undriven (0xF).
     fn bitmode_r(&mut self) -> u8 {
-        let addr =
-            ((self.bitmode_addr[1] as u16) << 7) | ((self.bitmode_addr[0] as u16) >> 1);
+        let addr = ((self.bitmode_addr[1] as u16) << 7) | ((self.bitmode_addr[0] as u16) >> 1);
         let shift = (!self.bitmode_addr[0] & 1) * 4;
         let result = self.videoram[addr as usize] << shift;
 
@@ -539,8 +540,7 @@ impl CrystalCastlesSystem {
     /// Upper 4 bits of data are the pixel value, replicated to lower 4 bits.
     /// Writes go through the WP PROM with the low 2 X bits as PIXB/PIXA.
     fn bitmode_w(&mut self, data: u8) {
-        let addr =
-            ((self.bitmode_addr[1] as u16) << 7) | ((self.bitmode_addr[0] as u16) >> 1);
+        let addr = ((self.bitmode_addr[1] as u16) << 7) | ((self.bitmode_addr[0] as u16) >> 1);
         let data = (data & 0xF0) | (data >> 4);
 
         self.write_vram(addr, data, 1, self.bitmode_addr[0] & 3);
@@ -561,13 +561,14 @@ impl CrystalCastlesSystem {
     /// Recompute one RGB24 palette entry from palette RAM.
     ///
     /// Color format (from MAME):
-    ///   R = ((data >> 6) & 3) | ((index & 0x20) >> 3)  → 3-bit inverted
-    ///   B = (data >> 3) & 7                              → 3-bit inverted
-    ///   G = data & 7                                     → 3-bit inverted
+    ///   R = ((data >> 6) & 3) | ((offset & 0x20) >> 3)  → 3-bit inverted
+    ///   B = (data >> 3) & 7                               → 3-bit inverted
+    ///   G = data & 7                                      → 3-bit inverted
+    /// The 6-bit offset (0-63) provides the red MSB via bit 5.
     /// Weighted by 22K/10K/4.7K resistor network with 1K pulldown.
-    fn update_palette_entry(&mut self, index: usize) {
-        let data = self.palette_ram[index];
-        let r_raw = ((data & 0xC0) >> 6) | (((index as u8) & 0x20) >> 3);
+    fn update_palette_entry(&mut self, offset: usize) {
+        let data = self.palette_ram[offset];
+        let r_raw = ((data & 0xC0) >> 6) | (((offset as u8) & 0x20) >> 3);
         let b_raw = (data & 0x38) >> 3;
         let g_raw = data & 0x07;
 
@@ -586,7 +587,7 @@ impl CrystalCastlesSystem {
             + WEIGHT_10K * ((b_inv >> 1) & 1) as u16
             + WEIGHT_4K7 * ((b_inv >> 2) & 1) as u16) as u8;
 
-        self.palette_rgb[index] = (r, g, b);
+        self.palette_rgb[offset & 0x1F] = (r, g, b);
     }
 
     // -----------------------------------------------------------------------
@@ -597,24 +598,28 @@ impl CrystalCastlesSystem {
     ///
     /// GFX layout (from MAME gfx_layout):
     ///   8×16 pixels, 3 bitplanes, 32 bytes/sprite, 256 sprites total.
-    ///   Plane 0 (MSB): first-half ROM, high nibble (bit offset +4)
-    ///   Plane 1:       second-half ROM, low nibble  (bit offset +RGN_FRAC(1,2))
-    ///   Plane 2 (LSB): second-half ROM, high nibble (bit offset +RGN_FRAC(1,2)+4)
-    ///   X offsets: { 0,1,2,3, 8,9,10,11 } — 4 pixels per byte
+    ///   Plane offsets: { 4, RGN_FRAC(1,2)+0, RGN_FRAC(1,2)+4 }
+    ///   X offsets: { 0,1,2,3, 8,9,10,11 } — 4 pixels per byte, MSB-first
     ///   Y offsets: { 0*16, 1*16, ..., 15*16 } — 2 bytes per row
+    ///
+    /// MAME readbit uses MSB-first: src[bitnum/8] & (0x80 >> (bitnum%8))
+    /// For column c (0-3), the bit position within a nibble is (3 - c).
+    ///   Plane 0 (MSB): first-half ROM, LOW nibble  (plane offset +4)
+    ///   Plane 1:       second-half ROM, HIGH nibble (plane offset +RGN_FRAC(1,2))
+    ///   Plane 2 (LSB): second-half ROM, LOW nibble  (plane offset +RGN_FRAC(1,2)+4)
     ///
     /// Returns 0-7 where 7 is the transparent pen.
     fn get_sprite_pixel(&self, which: u8, row: u8, col: u8) -> u8 {
         let base = (which as usize) * 32 + (row as usize) * 2;
         let byte_idx = (col / 4) as usize;
-        let bit = (col % 4) as usize;
+        let bit = (3 - col % 4) as usize; // MSB-first within nibble
 
-        // Plane 0 (MSB): first-half ROM, high nibble
-        let p0 = (self.gfx_rom[base + byte_idx] >> (4 + bit)) & 1;
-        // Plane 1: second-half ROM, low nibble
-        let p1 = (self.gfx_rom[0x2000 + base + byte_idx] >> bit) & 1;
-        // Plane 2 (LSB): second-half ROM, high nibble
-        let p2 = (self.gfx_rom[0x2000 + base + byte_idx] >> (4 + bit)) & 1;
+        // Plane 0 (MSB): first-half ROM, low nibble
+        let p0 = (self.gfx_rom[base + byte_idx] >> bit) & 1;
+        // Plane 1: second-half ROM, high nibble
+        let p1 = (self.gfx_rom[0x2000 + base + byte_idx] >> (4 + bit)) & 1;
+        // Plane 2 (LSB): second-half ROM, low nibble
+        let p2 = (self.gfx_rom[0x2000 + base + byte_idx] >> bit) & 1;
 
         (p0 << 2) | (p1 << 1) | p2
     }
@@ -634,13 +639,19 @@ impl CrystalCastlesSystem {
         self.sprite_buffer.fill(0x0F);
 
         // Select active MOB buffer (outlatch1 bit 7: BUF1/BUF2)
-        let buf_offset: usize = if self.outlatch1 & 0x80 != 0 { 0x100 } else { 0x00 };
+        let buf_offset: usize = if self.outlatch1 & 0x80 != 0 {
+            0x100
+        } else {
+            0x00
+        };
         let flip = self.outlatch1 & 0x10 != 0;
 
         // 40 sprites: 160 bytes / 4 bytes per sprite
         for offs in (0..160).step_by(4) {
             let which = self.spriteram[buf_offset + offs];
-            let sy = 256u16.wrapping_sub(16).wrapping_sub(self.spriteram[buf_offset + offs + 1] as u16);
+            let sy = 256u16
+                .wrapping_sub(16)
+                .wrapping_sub(self.spriteram[buf_offset + offs + 1] as u16);
             let color_base = (self.spriteram[buf_offset + offs + 2] >> 7) * 8;
             let sx = self.spriteram[buf_offset + offs + 3] as u16;
 
@@ -655,8 +666,7 @@ impl CrystalCastlesSystem {
 
                     let dy = sy.wrapping_add(row as u16) & 0xFF;
                     let dx = sx.wrapping_add(col as u16) & 0xFF;
-                    self.sprite_buffer[(dy as usize) * 256 + (dx as usize)] =
-                        color_base | pixel;
+                    self.sprite_buffer[(dy as usize) * 256 + (dx as usize)] = color_base | pixel;
                 }
             }
         }
@@ -691,7 +701,11 @@ impl CrystalCastlesSystem {
             return;
         }
 
-        let flip: u8 = if self.outlatch1 & 0x10 != 0 { 0xFF } else { 0x00 };
+        let flip: u8 = if self.outlatch1 & 0x10 != 0 {
+            0xFF
+        } else {
+            0x00
+        };
         let vscroll_val = if flip != 0 { 0u8 } else { self.vscroll };
 
         // Effective Y into the bitmap, with scroll and flip
@@ -716,8 +730,7 @@ impl CrystalCastlesSystem {
             let mopix = self.sprite_buffer[hw_scanline as usize * 256 + x];
 
             // Priority PROM lookup
-            let prindex: u8 =
-                0x40 | ((mopix & 7) << 2) | ((mopix & 8) >> 2) | ((pix & 8) >> 3);
+            let prindex: u8 = 0x40 | ((mopix & 7) << 2) | ((mopix & 8) >> 2) | ((pix & 8) >> 3);
             let prvalue = self.pri_prom[prindex as usize];
 
             // Bit 1: select sprite or bitmap as source
@@ -941,11 +954,12 @@ impl Bus for CrystalCastlesSystem {
                 }
             }
 
-            // Palette RAM (0x9F80-0x9FFF, 32 entries mirrored)
+            // Palette RAM (0x9F80-0x9FFF, 64 addresses → 32 pens)
+            // Address bit 5 provides the red channel MSB.
             0x9F80..=0x9FFF => {
-                let index = (addr & 0x1F) as usize;
-                self.palette_ram[index] = data;
-                self.update_palette_entry(index);
+                let offset = (addr & 0x3F) as usize;
+                self.palette_ram[offset] = data;
+                self.update_palette_entry(offset);
             }
 
             // ROM area — writes ignored
@@ -1164,8 +1178,9 @@ impl Machine for CrystalCastlesSystem {
         self.clock = r.read_u64_le()?;
         self.watchdog_frame_count = r.read_u8()?;
         self.dip_switches = r.read_u8()?;
-        // Recompute derived state
-        for i in 0..32 {
+        // Recompute derived state — process all 64 palette offsets so the
+        // last-written value for each pen (including red MSB from bit 5) wins.
+        for i in 0..64 {
             self.update_palette_entry(i);
         }
         self.scanline_buffer_valid = false;
@@ -1344,7 +1359,11 @@ mod tests {
         // Default: all active-low bits set (released)
         assert_eq!(sys.in0 & 0x02, 0x02, "Coin L should be released");
         sys.set_input(INPUT_COIN_L, true);
-        assert_eq!(sys.in0 & 0x02, 0x00, "Coin L should be pressed (active-low)");
+        assert_eq!(
+            sys.in0 & 0x02,
+            0x00,
+            "Coin L should be pressed (active-low)"
+        );
         sys.set_input(INPUT_COIN_L, false);
         assert_eq!(sys.in0 & 0x02, 0x02, "Coin L should be released again");
     }
@@ -1359,28 +1378,26 @@ mod tests {
     fn sprite_pixel_extraction() {
         let mut sys = CrystalCastlesSystem::new();
         // Set up GFX ROM for sprite 0, row 0:
-        // First-half ROM byte 0: high nibble has plane 0 bits
-        // Second-half ROM byte 0: low nibble has plane 1, high nibble has plane 2
+        // MAME uses MSB-first bit ordering: bit position = 3 - (col % 4)
+        //   Plane 0 (MSB): first-half ROM, LOW nibble (bits 3-0)
+        //   Plane 1:       second-half ROM, HIGH nibble (bits 7-4)
+        //   Plane 2 (LSB): second-half ROM, LOW nibble (bits 3-0)
         //
-        // Sprite 0, row 0, byte 0 in first half (offset 0x0000):
-        //   Bits 7-4 (plane 0, pixels 0-3): let's set 0xA0 = 1010_xxxx
-        //   Plane 0 pixel 0 (bit 4) = 0, pixel 1 (bit 5) = 1, pixel 2 (bit 6) = 0, pixel 3 (bit 7) = 1
-        sys.gfx_rom[0x0000] = 0xA0; // first half, sprite 0, row 0, byte 0
+        // gfx_rom[0] = 0x0B = 0000_1011 → low nibble bits 3,2,1,0 = 1,0,1,1
+        // gfx_rom[0x2000] = 0xD6 = 1101_0110
+        //   high nibble bits 7,6,5,4 = 1,1,0,1
+        //   low nibble bits 3,2,1,0 = 0,1,1,0
+        sys.gfx_rom[0x0000] = 0x0B;
+        sys.gfx_rom[0x2000] = 0xD6;
 
-        // Second-half ROM byte 0 (offset 0x2000):
-        //   Bits 3-0 (plane 1, pixels 0-3): 0x05 = xxxx_0101
-        //   Bits 7-4 (plane 2, pixels 0-3): 0x30 = 0011_xxxx
-        sys.gfx_rom[0x2000] = 0x35; // 0011_0101
-
-        // gfx_rom[0] = 0xA0 = 1010_0000, gfx_rom[0x2000] = 0x35 = 0011_0101
-        // Pixel 0: p0=(0xA0>>4)&1=0, p1=(0x35>>0)&1=1, p2=(0x35>>4)&1=1 → 0b011 = 3
-        assert_eq!(sys.get_sprite_pixel(0, 0, 0), 3);
-        // Pixel 1: p0=(0xA0>>5)&1=1, p1=(0x35>>1)&1=0, p2=(0x35>>5)&1=1 → 0b101 = 5
-        assert_eq!(sys.get_sprite_pixel(0, 0, 1), 5);
-        // Pixel 2: p0=(0xA0>>6)&1=0, p1=(0x35>>2)&1=1, p2=(0x35>>6)&1=0 → 0b010 = 2
-        assert_eq!(sys.get_sprite_pixel(0, 0, 2), 2);
-        // Pixel 3: p0=(0xA0>>7)&1=1, p1=(0x35>>3)&1=0, p2=(0x35>>7)&1=0 → 0b100 = 4
-        assert_eq!(sys.get_sprite_pixel(0, 0, 3), 4);
+        // Pixel 0 (bit=3): p0=bit3(0x0B)=1, p1=bit7(0xD6)=1, p2=bit3(0xD6)=0 → 0b110 = 6
+        assert_eq!(sys.get_sprite_pixel(0, 0, 0), 6);
+        // Pixel 1 (bit=2): p0=bit2(0x0B)=0, p1=bit6(0xD6)=1, p2=bit2(0xD6)=1 → 0b011 = 3
+        assert_eq!(sys.get_sprite_pixel(0, 0, 1), 3);
+        // Pixel 2 (bit=1): p0=bit1(0x0B)=1, p1=bit5(0xD6)=0, p2=bit1(0xD6)=1 → 0b101 = 5
+        assert_eq!(sys.get_sprite_pixel(0, 0, 2), 5);
+        // Pixel 3 (bit=0): p0=bit0(0x0B)=1, p1=bit4(0xD6)=1, p2=bit0(0xD6)=0 → 0b110 = 6
+        assert_eq!(sys.get_sprite_pixel(0, 0, 3), 6);
     }
 
     #[test]
@@ -1388,11 +1405,11 @@ mod tests {
         let mut sys = CrystalCastlesSystem::new();
         // Set all GFX ROM to produce pixel value 7 (transparent pen):
         // p0=1, p1=1, p2=1 → 7
-        // Plane 0 (first half, high nibble): all 1s → 0xF0
-        // Plane 1 (second half, low nibble): all 1s → 0x0F
-        // Plane 2 (second half, high nibble): all 1s → 0xF0
-        sys.gfx_rom[0..0x2000].fill(0xF0);
-        sys.gfx_rom[0x2000..0x4000].fill(0xFF); // 0x0F | 0xF0
+        // Plane 0 (first half, low nibble): all 1s → 0x0F
+        // Plane 1 (second half, high nibble): all 1s → 0xF0
+        // Plane 2 (second half, low nibble): all 1s → 0x0F
+        sys.gfx_rom[0..0x2000].fill(0x0F);
+        sys.gfx_rom[0x2000..0x4000].fill(0xFF); // 0xF0 | 0x0F
 
         // Place sprite 0 at position (100, 100)
         sys.spriteram[0] = 0; // sprite code
@@ -1412,13 +1429,14 @@ mod tests {
         let mut sys = CrystalCastlesSystem::new();
         // Set GFX ROM so sprite 1, row 0, pixel 0 produces value 5 (not transparent):
         // p0=1, p1=0, p2=1 → 0b101 = 5
+        // Pixel 0 uses bit position 3 (MSB-first: 3 - 0%4 = 3).
         // First half: sprite 1 starts at byte 32. Row 0, byte 0 = offset 32.
-        //   Plane 0 bit for pixel 0 is bit 4 → set bit 4 = 0x10
-        sys.gfx_rom[32] = 0x10;
+        //   Plane 0 (low nibble) bit 3 → set bit 3 = 0x08
+        sys.gfx_rom[32] = 0x08;
         // Second half: offset 0x2000 + 32 = 0x2020.
-        //   Plane 1 bit for pixel 0 is bit 0 → clear
-        //   Plane 2 bit for pixel 0 is bit 4 → set bit 4 = 0x10
-        sys.gfx_rom[0x2020] = 0x10;
+        //   Plane 1 (high nibble) bit 7 → clear (want p1=0)
+        //   Plane 2 (low nibble) bit 3 → set bit 3 = 0x08
+        sys.gfx_rom[0x2020] = 0x08;
 
         // Place sprite with code 1 at (50, 200)
         sys.spriteram[0] = 1; // sprite code

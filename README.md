@@ -91,6 +91,7 @@ ROMs are matched by CRC32 checksum, so any MAME ROM naming convention works. All
 | **Machine Trait** | Complete | Frontend-agnostic interface: display, input, render, reset |
 | **Atari DVG** | Complete | Digital Vector Generator: 8 opcodes, 7497 BRM drawing, hardware clipping |
 | **CPU Validation** | Complete | M6809: 266K vectors (100%), M6800: 192K vectors (99.998%), M6502: 1.51M vectors (100%), Z80: 1.60M vectors (100%) |
+| **Crystal Castles System** | Complete | Atari arcade: M6502 + 2×POKEY + bitmap video + sprites + trackball |
 | **Test Suite** | Complete | 1401 tests across core, devices, and machine integration |
 
 ## Workspace Architecture
@@ -114,6 +115,7 @@ Complete system implementations that wire core components together:
 - **AsteroidsSystem** — Atari vector arcade (M6502 + DVG + 1024×1024 vector display)
 - **DkongSystem** — Nintendo arcade (Z80 + I8035 + I8257 DMA + tile/sprite video)
 - **JoustSystem** — Williams arcade board (M6809 + 48KB video RAM + two PIAs + blitter + CMOS + 12KB ROM)
+- **CrystalCastlesSystem** — Atari arcade (M6502 + 2×POKEY + bitmap video + sprites + trackball)
 - **MissileCommandSystem** — Atari raster arcade (M6502 + POKEY + bitmap video)
 - **PacmanSystem** — Namco arcade (Z80 + WSG + tile/sprite video)
 - **RobotronSystem** — Williams twin-stick arcade (M6809 + blitter + PIAs)
@@ -206,6 +208,7 @@ phosphor-core/
 │   │   ├── joust.rs                # Joust arcade board (Williams gen-1)
 │   │   ├── robotron.rs             # Robotron 2084 arcade board (Williams gen-1)
 │   │   ├── asteroids.rs            # Asteroids (Atari: M6502 + DVG vector display)
+│   │   ├── ccastles.rs             # Crystal Castles (Atari: M6502 + 2×POKEY + bitmap + sprites)
 │   │   ├── rom_loader.rs           # ROM loading with CRC32 matching, multi-variant support
 │   │   ├── simple6800.rs           # M6800 + RAM/ROM
 │   │   ├── simple6809.rs           # M6809 + RAM/ROM
@@ -434,7 +437,7 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 - [x] Gridlee (Videa: M6809 + bitmap video + trackball — freely distributable ROMs)
 - [ ] Dig Dug (Namco: 3×Z80 + WSG + 06xx/51xx)
 - [ ] Galaga (Namco: 3×Z80 + WSG + 06xx/51xx/54xx + starfield)
-- [ ] Crystal Castles (Atari: M6502 + POKEY + bitmap video + trackball)
+- [x] Crystal Castles (Atari: M6502 + 2×POKEY + bitmap video + sprites + trackball)
 - [ ] Tempest (Atari: M6502 + 2×POKEY + AVG + math box)
 - [ ] Star Wars (Atari: 2×M6809 + 4×POKEY + TMS5220 + AVG + math box)
 
