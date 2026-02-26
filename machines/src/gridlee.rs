@@ -4,6 +4,7 @@ use phosphor_core::core::debug::BusDebug;
 use phosphor_core::core::machine::{
     AnalogInput, AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
 };
+use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
 use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
 use phosphor_core::core::{Bus, BusMaster, ClockDivider};
 use phosphor_core::cpu::m6809::M6809;
@@ -13,6 +14,14 @@ use phosphor_macros::BusDebug;
 
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
+
+mod region {
+    pub const RAM: u8 = 1;
+    pub const VIDEORAM: u8 = 2;
+    pub const IO: u8 = 3;
+    pub const NVRAM: u8 = 4;
+    pub const ROM: u8 = 5;
+}
 
 // ---------------------------------------------------------------------------
 // Gridlee ROM definitions
@@ -235,16 +244,13 @@ const POLY17_SIZE: usize = (1 << 17) - 1; // 131071
 ///   0xA000-0xFFFF  Program ROM (24KB)
 #[derive(BusDebug)]
 pub struct GridleeSystem {
-    #[debug_cpu("M6809", read = "memory_read", write = "memory_write")]
+    #[debug_cpu("M6809")]
     cpu: M6809,
 
-    // Memory
-    ram: [u8; 0x0800], // 0x0000-0x07FF: work RAM (first 128 bytes = sprite RAM)
-    video_ram: [u8; 0x7800], // 0x0800-0x7FFF: 30KB video RAM
-    program_rom: [u8; 0x6000], // 0xA000-0xFFFF: 24KB program ROM
-    nvram: [u8; 256],  // 0x9C00-0x9CFF: battery-backed
+    #[debug_map(cpu = 0)]
+    map: MemoryMap,
 
-    // Graphics ROMs
+    // Graphics ROMs (not CPU-addressable)
     gfx_rom: [u8; 0x4000], // 16KB sprite graphics
 
     // Palette: pre-computed from 3x2KB PROMs (2048 entries, RGB)
@@ -295,10 +301,7 @@ impl GridleeSystem {
     pub fn new() -> Self {
         Self {
             cpu: M6809::new(),
-            ram: [0; 0x0800],
-            video_ram: [0; 0x7800],
-            program_rom: [0; 0x6000],
-            nvram: [0; 256],
+            map: Self::build_map(),
             gfx_rom: [0; 0x4000],
             palette_rgb: [(0, 0, 0); 2048],
             palette_bank: 0,
@@ -328,6 +331,17 @@ impl GridleeSystem {
             watchdog_frame_count: 0,
             scanline_buffer: vec![0u8; SCREEN_WIDTH as usize * SCREEN_HEIGHT as usize * 3],
         }
+    }
+
+    fn build_map() -> MemoryMap {
+        use region::*;
+        let mut map = MemoryMap::new();
+        map.region(RAM, "RAM", 0x0000, 0x0800, AccessKind::ReadWrite)
+            .region(VIDEORAM, "Video RAM", 0x0800, 0x7800, AccessKind::ReadWrite)
+            .region(IO, "I/O", 0x9000, 0x0C00, AccessKind::Io)
+            .region(NVRAM, "NVRAM", 0x9C00, 0x0100, AccessKind::ReadWrite)
+            .region(ROM, "Program ROM", 0xA000, 0x6000, AccessKind::ReadOnly);
+        map
     }
 
     /// Current scanline (0-263).
@@ -538,8 +552,8 @@ impl GridleeSystem {
             let vram_row_start = src_y * 128;
             for x_pair in 0..128 {
                 let vram_idx = vram_row_start + (127 - x_pair);
-                let vram_byte = if vram_idx < self.video_ram.len() {
-                    self.video_ram[vram_idx]
+                let vram_byte = if vram_idx < self.map.region_data(region::VIDEORAM).len() {
+                    self.map.region_data(region::VIDEORAM)[vram_idx]
                 } else {
                     0
                 };
@@ -559,8 +573,8 @@ impl GridleeSystem {
             let vram_row_start = screen_y * 128;
             for x_pair in 0..128 {
                 let vram_idx = vram_row_start + x_pair;
-                let vram_byte = if vram_idx < self.video_ram.len() {
-                    self.video_ram[vram_idx]
+                let vram_byte = if vram_idx < self.map.region_data(region::VIDEORAM).len() {
+                    self.map.region_data(region::VIDEORAM)[vram_idx]
                 } else {
                     0
                 };
@@ -587,10 +601,11 @@ impl GridleeSystem {
         }
         for i in 0..32 {
             let base = i * 4;
-            let image_num = self.ram[base] as usize;
+            let ram = self.map.region_data(region::RAM);
+            let image_num = ram[base] as usize;
             // Start Y = sprite_ram[2] + 17 + VBEND, wrapped to 8 bits
-            let sprite_y_start = (self.ram[base + 2] as u16 + 17 + VBEND as u16) as u8;
-            let sprite_x = self.ram[base + 3] as usize;
+            let sprite_y_start = (ram[base + 2] as u16 + 17 + VBEND as u16) as u8;
+            let sprite_x = ram[base + 3] as usize;
 
             // Cocktail flip
             let (check_scanline, x_xor) = if self.cocktail_flip {
@@ -678,7 +693,7 @@ impl GridleeSystem {
 
     pub fn load_rom_set(&mut self, rom_set: &RomSet) -> Result<(), RomLoadError> {
         let program_data = GRIDLEE_PROGRAM_ROM.load(rom_set)?;
-        self.program_rom.copy_from_slice(&program_data);
+        self.map.load_region(region::ROM, &program_data);
 
         let gfx_data = GRIDLEE_GFX_ROM.load(rom_set)?;
         self.gfx_rom.copy_from_slice(&gfx_data);
@@ -693,25 +708,6 @@ impl GridleeSystem {
 
     pub fn get_cpu_state(&self) -> M6809State {
         self.cpu.snapshot()
-    }
-
-    fn memory_read(&self, addr: u16) -> Option<u8> {
-        match addr {
-            0x0000..=0x07FF => Some(self.ram[addr as usize]),
-            0x0800..=0x7FFF => Some(self.video_ram[(addr - 0x0800) as usize]),
-            0x9C00..=0x9CFF => Some(self.nvram[(addr - 0x9C00) as usize]),
-            0xA000..=0xFFFF => Some(self.program_rom[(addr - 0xA000) as usize]),
-            _ => None, // I/O, trackball, RNG — skip to avoid side effects
-        }
-    }
-
-    fn memory_write(&mut self, addr: u16, data: u8) {
-        match addr {
-            0x0000..=0x07FF => self.ram[addr as usize] = data,
-            0x0800..=0x7FFF => self.video_ram[(addr - 0x0800) as usize] = data,
-            0x9C00..=0x9CFF => self.nvram[(addr - 0x9C00) as usize] = data,
-            _ => {}
-        }
     }
 }
 
@@ -734,81 +730,54 @@ impl Bus for GridleeSystem {
     }
 
     fn read(&mut self, _master: BusMaster, addr: u16) -> u8 {
-        match addr {
-            // RAM: sprite RAM (0x0000-0x007F) + work RAM (0x0080-0x07FF)
-            0x0000..=0x07FF => self.ram[addr as usize],
-
-            // Video RAM (packed 2 pixels/byte)
-            0x0800..=0x7FFF => self.video_ram[(addr - 0x0800) as usize],
-
-            // Trackball Y
-            0x9500 => self.read_trackball(0),
-
-            // Trackball X
-            0x9501 => self.read_trackball(1),
-
-            // Fire buttons: bit 0 = P1, bit 1 = P2
-            0x9502 => self.fire_buttons,
-
-            // Coin/Start: bits 0-3 = switches, bits 4-5 = coinage DIP
-            0x9503 => self.coin_start,
-
-            // DIP switches
-            0x9600 => self.dip_switches,
-
-            // Status: bit 7 = VBLANK, bits 6-5 = service (normally high)
-            0x9700 => {
-                let scanline = self.current_scanline();
-                let vblank = if !(VBEND..VBSTART).contains(&scanline) {
-                    0x80
-                } else {
-                    0x00
-                };
-                // IN2: bits 0-4 = IP_ACTIVE_LOW/UNKNOWN (0x1F),
-                // bit 5 = PORT_SERVICE (0x20), bit 6 = SERVICE1 (0x40)
-                vblank | 0x7F
+        let data = match self.map.page(addr).region_id {
+            region::RAM | region::VIDEORAM | region::NVRAM | region::ROM => {
+                self.map.read_backing(addr)
             }
 
-            // Random number generator
-            0x9820 => self.read_rng(),
-
-            // NVRAM
-            0x9C00..=0x9CFF => self.nvram[(addr - 0x9C00) as usize],
-
-            // Program ROM
-            0xA000..=0xFFFF => self.program_rom[(addr - 0xA000) as usize],
+            region::IO => match addr {
+                0x9500 => self.read_trackball(0),
+                0x9501 => self.read_trackball(1),
+                0x9502 => self.fire_buttons,
+                0x9503 => self.coin_start,
+                0x9600 => self.dip_switches,
+                0x9700 => {
+                    let scanline = self.current_scanline();
+                    let vblank = if !(VBEND..VBSTART).contains(&scanline) {
+                        0x80
+                    } else {
+                        0x00
+                    };
+                    vblank | 0x7F
+                }
+                0x9820 => self.read_rng(),
+                _ => 0xFF,
+            },
 
             _ => 0xFF,
-        }
+        };
+
+        self.map.check_read_watch(addr, data);
+        data
     }
 
     fn write(&mut self, _master: BusMaster, addr: u16, data: u8) {
-        match addr {
-            // RAM
-            0x0000..=0x07FF => self.ram[addr as usize] = data,
+        self.map.check_write_watch(addr, data);
 
-            // Video RAM
-            0x0800..=0x7FFF => self.video_ram[(addr - 0x0800) as usize] = data,
+        match self.map.page(addr).region_id {
+            region::RAM | region::VIDEORAM | region::NVRAM => {
+                self.map.write_backing(addr, data);
+            }
 
-            // LS259 latch: address bits 6-4 select output bit
-            0x9000..=0x907F => self.write_latch(addr, data),
+            region::IO => match addr {
+                0x9000..=0x907F => self.write_latch(addr, data),
+                0x9200 => self.palette_bank = data & 0x3F,
+                0x9380 => self.watchdog_frame_count = 0,
+                0x9828..=0x993F => self.write_sound(addr - 0x9828, data),
+                _ => {}
+            },
 
-            // Palette bank select
-            0x9200 => self.palette_bank = data & 0x3F,
-
-            // Watchdog reset
-            0x9380 => self.watchdog_frame_count = 0,
-
-            // Sound registers (base 0x9828)
-            0x9828..=0x993F => self.write_sound(addr - 0x9828, data),
-
-            // NVRAM
-            0x9C00..=0x9CFF => self.nvram[(addr - 0x9C00) as usize] = data,
-
-            // ROM: writes ignored
-            0xA000..=0xFFFF => {}
-
-            _ => {}
+            _ => {} // ROM and unmapped: writes ignored
         }
     }
 
@@ -967,12 +936,13 @@ impl Machine for GridleeSystem {
     }
 
     fn save_nvram(&self) -> Option<&[u8]> {
-        Some(&self.nvram)
+        Some(self.map.region_data(region::NVRAM))
     }
 
     fn load_nvram(&mut self, data: &[u8]) {
-        let len = data.len().min(256);
-        self.nvram[..len].copy_from_slice(&data[..len]);
+        let nvram = self.map.region_data_mut(region::NVRAM);
+        let len = data.len().min(nvram.len());
+        nvram[..len].copy_from_slice(&data[..len]);
     }
 
     fn frame_rate_hz(&self) -> f64 {
@@ -987,9 +957,9 @@ impl Machine for GridleeSystem {
         let mut w = StateWriter::new();
         save_state::write_header(&mut w, self.machine_id());
         self.cpu.save_state(&mut w);
-        w.write_bytes(&self.ram);
-        w.write_bytes(&self.video_ram);
-        w.write_bytes(&self.nvram);
+        w.write_bytes(self.map.region_data(region::RAM));
+        w.write_bytes(self.map.region_data(region::VIDEORAM));
+        w.write_bytes(self.map.region_data(region::NVRAM));
         w.write_u8(self.palette_bank);
         w.write_bytes(&self.palette_bank_per_scanline);
         w.write_u8(self.fire_buttons);
@@ -1018,9 +988,9 @@ impl Machine for GridleeSystem {
     fn load_state(&mut self, data: &[u8]) -> Result<(), SaveError> {
         let mut r = save_state::read_header(data, self.machine_id())?;
         self.cpu.load_state(&mut r)?;
-        r.read_bytes_into(&mut self.ram)?;
-        r.read_bytes_into(&mut self.video_ram)?;
-        r.read_bytes_into(&mut self.nvram)?;
+        r.read_bytes_into(self.map.region_data_mut(region::RAM))?;
+        r.read_bytes_into(self.map.region_data_mut(region::VIDEORAM))?;
+        r.read_bytes_into(self.map.region_data_mut(region::NVRAM))?;
         self.palette_bank = r.read_u8()?;
         r.read_bytes_into(&mut self.palette_bank_per_scanline)?;
         self.fire_buttons = r.read_u8()?;
@@ -1162,7 +1132,7 @@ mod tests {
     #[test]
     fn rom_write_ignored() {
         let mut sys = make_system();
-        sys.program_rom[0] = 0xAA;
+        sys.map.region_data_mut(region::ROM)[0] = 0xAA;
         Bus::write(&mut sys, BusMaster::Cpu(0), 0xA000, 0x55);
         assert_eq!(Bus::read(&mut sys, BusMaster::Cpu(0), 0xA000), 0xAA);
     }
@@ -1435,15 +1405,15 @@ mod tests {
     #[test]
     fn nvram_save_load_roundtrip() {
         let mut sys = make_system();
-        sys.nvram[0] = 0x42;
-        sys.nvram[255] = 0xFF;
+        sys.map.region_data_mut(region::NVRAM)[0] = 0x42;
+        sys.map.region_data_mut(region::NVRAM)[255] = 0xFF;
         let saved = sys.save_nvram().unwrap().to_vec();
         assert_eq!(saved.len(), 256);
 
         let mut sys2 = make_system();
         sys2.load_nvram(&saved);
-        assert_eq!(sys2.nvram[0], 0x42);
-        assert_eq!(sys2.nvram[255], 0xFF);
+        assert_eq!(sys2.map.region_data_mut(region::NVRAM)[0], 0x42);
+        assert_eq!(sys2.map.region_data_mut(region::NVRAM)[255], 0xFF);
     }
 
     // -----------------------------------------------------------------------
@@ -1456,9 +1426,9 @@ mod tests {
         // Place sprite at image 1, Y position that puts it at scanline 20
         // sprite_y_start = (y_pos + 17 + 16) as u8
         // We want sprite_y_start = 20, so y_pos = 20 - 33 = -13 → wraps to 243
-        sys.ram[0] = 1; // image
-        sys.ram[2] = 243; // y_pos → (243 + 33) & 0xFF = 20
-        sys.ram[3] = 10; // x_pos
+        sys.map.region_data_mut(region::RAM)[0] = 1; // image
+        sys.map.region_data_mut(region::RAM)[2] = 243; // y_pos → (243 + 33) & 0xFF = 20
+        sys.map.region_data_mut(region::RAM)[3] = 10; // x_pos
         // Put non-zero pixel data in GFX ROM for image 1
         sys.gfx_rom[64] = 0x12; // left=1, right=2
 
@@ -1486,9 +1456,9 @@ mod tests {
     fn sprite_rendered_on_scanline_32() {
         let mut sys = make_system();
         // sprite_y_start = (y_pos + 33) as u8 = 32 → y_pos = 255 (wraps)
-        sys.ram[0] = 0; // image 0
-        sys.ram[2] = 255; // y_pos → (255 + 33) & 0xFF = 32
-        sys.ram[3] = 0; // x_pos = 0
+        sys.map.region_data_mut(region::RAM)[0] = 0; // image 0
+        sys.map.region_data_mut(region::RAM)[2] = 255; // y_pos → (255 + 33) & 0xFF = 32
+        sys.map.region_data_mut(region::RAM)[3] = 0; // x_pos = 0
         // Non-zero pixel in image 0, row 0
         sys.gfx_rom[0] = 0x30; // left pixel = 3, right pixel = 0
 
@@ -1514,9 +1484,9 @@ mod tests {
     fn sprite_transparent_pixel_zero() {
         let mut sys = make_system();
         // Set up sprite at a visible scanline
-        sys.ram[0] = 0; // image 0
-        sys.ram[2] = 255; // y_pos → sprite_y_start = 32
-        sys.ram[3] = 0; // x_pos = 0
+        sys.map.region_data_mut(region::RAM)[0] = 0; // image 0
+        sys.map.region_data_mut(region::RAM)[2] = 255; // y_pos → sprite_y_start = 32
+        sys.map.region_data_mut(region::RAM)[3] = 0; // x_pos = 0
         // Pixel data: left=0 (transparent), right=5
         sys.gfx_rom[0] = 0x05;
 
@@ -1564,7 +1534,7 @@ mod tests {
         // VRAM row 223, reversed X. Byte 127 in that row (rightmost pair).
         let src_row = 223;
         let vram_offset = src_row * 128 + 127; // rightmost byte of row 223
-        sys.video_ram[vram_offset] = 0xAB; // left=0xA(10), right=0xB(11)
+        sys.map.region_data_mut(region::VIDEORAM)[vram_offset] = 0xAB; // left=0xA(10), right=0xB(11)
         sys.palette_rgb[(10 + 16) as usize] = (111, 0, 0);
         sys.palette_rgb[(11 + 16) as usize] = (0, 222, 0);
         sys.palette_bank_per_scanline[16] = 0;
@@ -1634,9 +1604,9 @@ mod tests {
         let mut sys = make_system();
 
         // Set known state
-        sys.ram[0x100] = 0xAA;
-        sys.video_ram[0x200] = 0xBB;
-        sys.nvram[50] = 0xCC;
+        sys.map.region_data_mut(region::RAM)[0x100] = 0xAA;
+        sys.map.region_data_mut(region::VIDEORAM)[0x200] = 0xBB;
+        sys.map.region_data_mut(region::NVRAM)[50] = 0xCC;
         sys.palette_bank = 0x1F;
         sys.fire_buttons = 0xFE;
         sys.coin_start = 0xCE;
@@ -1663,7 +1633,7 @@ mod tests {
 
         // Mutate everything
         let mut sys2 = make_system();
-        sys2.ram[0x100] = 0xFF;
+        sys2.map.region_data_mut(region::RAM)[0x100] = 0xFF;
         sys2.clock = 999;
 
         // Load
@@ -1671,9 +1641,9 @@ mod tests {
 
         // Verify
         assert_eq!(sys2.cpu.snapshot(), cpu_snap);
-        assert_eq!(sys2.ram[0x100], 0xAA);
-        assert_eq!(sys2.video_ram[0x200], 0xBB);
-        assert_eq!(sys2.nvram[50], 0xCC);
+        assert_eq!(sys2.map.region_data_mut(region::RAM)[0x100], 0xAA);
+        assert_eq!(sys2.map.region_data_mut(region::VIDEORAM)[0x200], 0xBB);
+        assert_eq!(sys2.map.region_data_mut(region::NVRAM)[50], 0xCC);
         assert_eq!(sys2.palette_bank, 0x1F);
         assert_eq!(sys2.fire_buttons, 0xFE);
         assert_eq!(sys2.coin_start, 0xCE);
@@ -1712,7 +1682,7 @@ mod tests {
     #[test]
     fn save_does_not_include_rom() {
         let mut sys = make_system();
-        sys.program_rom[0] = 0xDE;
+        sys.map.region_data_mut(region::ROM)[0] = 0xDE;
         sys.gfx_rom[0] = 0xAD;
 
         let data = sys.save_state().unwrap();
@@ -1720,7 +1690,7 @@ mod tests {
         let mut sys2 = make_system();
         sys2.load_state(&data).unwrap();
 
-        assert_eq!(sys2.program_rom[0], 0x00);
+        assert_eq!(sys2.map.region_data_mut(region::ROM)[0], 0x00);
         assert_eq!(sys2.gfx_rom[0], 0x00);
     }
 
