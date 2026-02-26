@@ -4,6 +4,7 @@ use phosphor_core::core::debug::BusDebug;
 use phosphor_core::core::machine::{
     AnalogInput, AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
 };
+use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
 use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::m6502::M6502;
@@ -16,6 +17,17 @@ use phosphor_macros::BusDebug;
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
 use crate::set_bit_active_low;
+
+mod region {
+    pub const VIDEORAM: u8 = 1;
+    pub const SRAM: u8 = 2;
+    pub const SPRITERAM: u8 = 3;
+    pub const NVRAM: u8 = 4;
+    pub const IO: u8 = 5;
+    pub const ROM_BANK0: u8 = 6;
+    pub const ROM_BANK1: u8 = 7;
+    pub const ROM_FIXED: u8 = 8;
+}
 
 // ---------------------------------------------------------------------------
 // Crystal Castles ROM definitions
@@ -266,20 +278,17 @@ const WEIGHT_4K7: u16 = 144;
 ///   0xE000-0xFFFF  Fixed program ROM (8KB)
 #[derive(BusDebug)]
 pub struct CrystalCastlesSystem {
-    #[debug_cpu("M6502", read = "memory_read", write = "memory_write")]
+    #[debug_cpu("M6502")]
     cpu: M6502,
     #[debug_device("POKEY 1")]
     pokey1: Pokey,
     #[debug_device("POKEY 2")]
     pokey2: Pokey,
 
-    // Memory
-    videoram: [u8; 0x8000], // 0x0000-0x7FFF: 32KB video/work RAM
-    sram: [u8; 0x0E00],     // 0x8000-0x8DFF: 3.5KB static RAM
-    spriteram: [u8; 0x200], // 0x8E00-0x8FFF: MOB buffers 1 & 2
-    nvram: [u8; 0x100],     // 0x9000-0x90FF: 256-byte NVRAM (two X2212)
-    rom: [u8; 0xA000],      // 40KB program ROM (5 × 8KB)
-    gfx_rom: [u8; 0x4000],  // 16KB sprite graphics
+    #[debug_map(cpu = 0)]
+    map: MemoryMap,
+
+    gfx_rom: [u8; 0x4000],  // 16KB sprite graphics (not CPU-addressable)
     sync_prom: [u8; 0x100], // VBLANK/IRQ timing
     wp_prom: [u8; 0x100],   // Write-protect
     pri_prom: [u8; 0x100],  // Priority compositing
@@ -337,17 +346,51 @@ pub struct CrystalCastlesSystem {
 }
 
 impl CrystalCastlesSystem {
+    fn build_map() -> MemoryMap {
+        use region::*;
+        let mut map = MemoryMap::new();
+        map.region(VIDEORAM, "Video RAM", 0x0000, 0x8000, AccessKind::ReadWrite)
+            .region(SRAM, "SRAM", 0x8000, 0x0E00, AccessKind::ReadWrite)
+            .region(
+                SPRITERAM,
+                "Sprite RAM",
+                0x8E00,
+                0x0200,
+                AccessKind::ReadWrite,
+            )
+            .region(NVRAM, "NVRAM", 0x9000, 0x0100, AccessKind::ReadWrite)
+            .mirror(0x9100, 0x9000, 0x0100)
+            .mirror(0x9200, 0x9000, 0x0100)
+            .mirror(0x9300, 0x9000, 0x0100)
+            .region(IO, "I/O", 0x9400, 0x0C00, AccessKind::Io)
+            .region(
+                ROM_BANK0,
+                "ROM Bank 0",
+                0xA000,
+                0x4000,
+                AccessKind::ReadOnly,
+            )
+            .backing_region(ROM_BANK1, "ROM Bank 1", 0x4000)
+            .region(ROM_FIXED, "Fixed ROM", 0xE000, 0x2000, AccessKind::ReadOnly);
+        map
+    }
+
+    fn update_rom_bank(&mut self) {
+        let id = if self.outlatch0.bit(7) {
+            region::ROM_BANK1
+        } else {
+            region::ROM_BANK0
+        };
+        self.map.remap_pages(0xA0, 0x40, id, 0);
+    }
+
     pub fn new() -> Self {
         Self {
             cpu: M6502::new(),
             pokey1: Pokey::with_clock(1_250_000, 44100),
             pokey2: Pokey::with_clock(1_250_000, 44100),
 
-            videoram: [0; 0x8000],
-            sram: [0; 0x0E00],
-            spriteram: [0; 0x200],
-            nvram: [0; 0x100],
-            rom: [0; 0xA000],
+            map: Self::build_map(),
             gfx_rom: [0; 0x4000],
             sync_prom: [0; 0x100],
             wp_prom: [0; 0x100],
@@ -394,7 +437,12 @@ impl CrystalCastlesSystem {
 
     pub fn load_rom_set(&mut self, rom_set: &RomSet) -> Result<(), RomLoadError> {
         let program = CCASTLES_PROGRAM_ROM.load(rom_set)?;
-        self.rom.copy_from_slice(&program);
+        self.map
+            .load_region(region::ROM_BANK0, &program[0x0000..0x4000]);
+        self.map
+            .load_region(region::ROM_FIXED, &program[0x4000..0x6000]);
+        self.map
+            .load_region(region::ROM_BANK1, &program[0x6000..0xA000]);
 
         let gfx = CCASTLES_GFX_ROM.load(rom_set)?;
         self.gfx_rom.copy_from_slice(&gfx);
@@ -418,39 +466,6 @@ impl CrystalCastlesSystem {
 
     pub fn get_cpu_state(&self) -> M6502State {
         self.cpu.snapshot()
-    }
-
-    /// Side-effect-free read from the CPU address space (for debugger).
-    /// Returns RAM, ROM, and NVRAM; None for I/O and POKEY registers.
-    fn memory_read(&self, addr: u16) -> Option<u8> {
-        match addr {
-            0x0000..=0x7FFF => Some(self.videoram[addr as usize]),
-            0x8000..=0x8DFF => Some(self.sram[(addr - 0x8000) as usize]),
-            0x8E00..=0x8FFF => Some(self.spriteram[(addr - 0x8E00) as usize]),
-            0x9000..=0x93FF => Some(self.nvram[(addr & 0xFF) as usize]),
-            0xA000..=0xDFFF => {
-                let bank_base = if self.outlatch0.bit(7) {
-                    0x6000
-                } else {
-                    0x0000
-                };
-                Some(self.rom[bank_base + (addr - 0xA000) as usize])
-            }
-            0xE000..=0xFFFF => Some(self.rom[0x4000 + (addr - 0xE000) as usize]),
-            _ => None,
-        }
-    }
-
-    /// Write to the CPU address space (for debug memory editor).
-    /// Only writes to writable RAM regions; ignores I/O and ROM.
-    fn memory_write(&mut self, addr: u16, data: u8) {
-        match addr {
-            0x0000..=0x7FFF => self.videoram[addr as usize] = data,
-            0x8000..=0x8DFF => self.sram[(addr - 0x8000) as usize] = data,
-            0x8E00..=0x8FFF => self.spriteram[(addr - 0x8E00) as usize] = data,
-            0x9000..=0x93FF => self.nvram[(addr & 0xFF) as usize] = data,
-            _ => {}
-        }
     }
 
     // -----------------------------------------------------------------------
@@ -482,20 +497,19 @@ impl CrystalCastlesSystem {
 
         // Write to the appropriate nibbles of two adjacent VRAM bytes
         if dest_addr < 0x8000 {
+            let vram = self.map.region_data_mut(region::VIDEORAM);
             if wpbits & 1 == 0 {
-                self.videoram[dest_addr] = (self.videoram[dest_addr] & 0xF0) | (data & 0x0F);
+                vram[dest_addr] = (vram[dest_addr] & 0xF0) | (data & 0x0F);
             }
             if wpbits & 2 == 0 {
-                self.videoram[dest_addr] = (self.videoram[dest_addr] & 0x0F) | (data & 0xF0);
+                vram[dest_addr] = (vram[dest_addr] & 0x0F) | (data & 0xF0);
             }
             if dest_addr + 1 < 0x8000 {
                 if wpbits & 4 == 0 {
-                    self.videoram[dest_addr + 1] =
-                        (self.videoram[dest_addr + 1] & 0xF0) | (data & 0x0F);
+                    vram[dest_addr + 1] = (vram[dest_addr + 1] & 0xF0) | (data & 0x0F);
                 }
                 if wpbits & 8 == 0 {
-                    self.videoram[dest_addr + 1] =
-                        (self.videoram[dest_addr + 1] & 0x0F) | (data & 0xF0);
+                    vram[dest_addr + 1] = (vram[dest_addr + 1] & 0x0F) | (data & 0xF0);
                 }
             }
         }
@@ -535,7 +549,7 @@ impl CrystalCastlesSystem {
     fn bitmode_r(&mut self) -> u8 {
         let addr = ((self.bitmode_addr[1] as u16) << 7) | ((self.bitmode_addr[0] as u16) >> 1);
         let shift = (!self.bitmode_addr[0] & 1) * 4;
-        let result = self.videoram[addr as usize] << shift;
+        let result = self.map.region_data(region::VIDEORAM)[addr as usize] << shift;
 
         self.bitmode_autoinc();
         result | 0x0F
@@ -646,15 +660,16 @@ impl CrystalCastlesSystem {
         // Select active MOB buffer (outlatch1 bit 7: BUF1/BUF2)
         let buf_offset: usize = if self.outlatch1.bit(7) { 0x100 } else { 0x00 };
         let flip = self.outlatch1.bit(4);
+        let sprites = self.map.region_data(region::SPRITERAM);
 
         // 40 sprites: 160 bytes / 4 bytes per sprite
         for offs in (0..160).step_by(4) {
-            let which = self.spriteram[buf_offset + offs];
+            let which = sprites[buf_offset + offs];
             let sy = 256u16
                 .wrapping_sub(16)
-                .wrapping_sub(self.spriteram[buf_offset + offs + 1] as u16);
-            let color_base = (self.spriteram[buf_offset + offs + 2] >> 7) * 8;
-            let sx = self.spriteram[buf_offset + offs + 3] as u16;
+                .wrapping_sub(sprites[buf_offset + offs + 1] as u16);
+            let color_base = (sprites[buf_offset + offs + 2] >> 7) * 8;
+            let sx = sprites[buf_offset + offs + 3] as u16;
 
             for row in 0..16u8 {
                 for col in 0..8u8 {
@@ -721,7 +736,8 @@ impl CrystalCastlesSystem {
             let effx = self.hscroll.wrapping_add((x as u8) ^ flip) as usize;
 
             // Read 4bpp bitmap pixel (2 pixels per byte: low nibble = even, high = odd)
-            let pix = (self.videoram[src_base + effx / 2] >> ((effx & 1) * 4)) & 0x0F;
+            let vram = self.map.region_data(region::VIDEORAM);
+            let pix = (vram[src_base + effx / 2] >> ((effx & 1) * 4)) & 0x0F;
 
             // Read sprite pixel from sprite buffer (screen-space, not scrolled)
             let mopix = self.sprite_buffer[hw_scanline as usize * 256 + x];
@@ -842,113 +858,97 @@ impl Bus for CrystalCastlesSystem {
     }
 
     fn read(&mut self, _master: BusMaster, addr: u16) -> u8 {
-        match addr {
-            // Video RAM reads (plain RAM access, no PROM gating on reads)
-            0x0000..=0x0001 => self.videoram[addr as usize],
-            // Bitmode data read
-            0x0002 => self.bitmode_r(),
-            // Video RAM (continued)
-            0x0003..=0x7FFF => self.videoram[addr as usize],
-
-            // Static RAM
-            0x8000..=0x8DFF => self.sram[(addr - 0x8000) as usize],
-            // Sprite RAM (MOB buffers)
-            0x8E00..=0x8FFF => self.spriteram[(addr - 0x8E00) as usize],
-
-            // NVRAM (mirrored: 0x9000-0x93FF)
-            0x9000..=0x93FF => self.nvram[(addr & 0xFF) as usize],
-
-            // Trackball LETA0-3 (mirrored: 0x9400-0x95FF)
-            0x9400..=0x95FF => self.trackball[(addr & 0x03) as usize],
-
-            // IN0 — digital inputs + VBLANK (0x9600-0x97FF)
-            0x9600..=0x97FF => self.in0,
-
-            // POKEY 1 (mirrored: 0x9800-0x99FF)
-            0x9800..=0x99FF => self.pokey1.read((addr & 0x0F) as u8),
-
-            // POKEY 2 (mirrored: 0x9A00-0x9BFF)
-            // ALLPOT (offset 0x08) is wired to DIP switches
-            0x9A00..=0x9BFF => {
-                let offset = (addr & 0x0F) as u8;
-                if offset == 0x08 {
-                    self.dip_switches
+        let data = match self.map.page(addr).region_id {
+            region::VIDEORAM => {
+                if addr == 0x0002 {
+                    self.bitmode_r()
                 } else {
-                    self.pokey2.read(offset)
+                    self.map.read_backing(addr)
                 }
             }
 
-            // Banked program ROM (16KB, bank selected by outlatch0 bit 7)
-            0xA000..=0xDFFF => {
-                let bank_base = if self.outlatch0.bit(7) {
-                    0x6000usize // Bank 1
-                } else {
-                    0x0000usize // Bank 0
-                };
-                self.rom[bank_base + (addr - 0xA000) as usize]
-            }
+            region::SRAM
+            | region::SPRITERAM
+            | region::NVRAM
+            | region::ROM_BANK0
+            | region::ROM_BANK1
+            | region::ROM_FIXED => self.map.read_backing(addr),
 
-            // Fixed program ROM (8KB)
-            0xE000..=0xFFFF => self.rom[0x4000 + (addr - 0xE000) as usize],
+            region::IO => match addr {
+                // Trackball LETA0-3 (mirrored: 0x9400-0x95FF)
+                0x9400..=0x95FF => self.trackball[(addr & 0x03) as usize],
+                // IN0 — digital inputs + VBLANK (0x9600-0x97FF)
+                0x9600..=0x97FF => self.in0,
+                // POKEY 1 (mirrored: 0x9800-0x99FF)
+                0x9800..=0x99FF => self.pokey1.read((addr & 0x0F) as u8),
+                // POKEY 2 (mirrored: 0x9A00-0x9BFF)
+                // ALLPOT (offset 0x08) is wired to DIP switches
+                0x9A00..=0x9BFF => {
+                    let offset = (addr & 0x0F) as u8;
+                    if offset == 0x08 {
+                        self.dip_switches
+                    } else {
+                        self.pokey2.read(offset)
+                    }
+                }
+                _ => 0xFF,
+            },
 
             _ => 0xFF,
-        }
+        };
+
+        self.map.check_read_watch(addr, data);
+        data
     }
 
     fn write(&mut self, _master: BusMaster, addr: u16, data: u8) {
-        match addr {
-            // Bitmode address latches (write-through to VRAM + set latch)
-            0x0000..=0x0001 => self.bitmode_addr_w(addr as u8, data),
-            // Bitmode data write
-            0x0002 => self.bitmode_w(data),
-            // Video RAM (through write-protect PROM)
-            0x0003..=0x7FFF => self.write_vram(addr, data, 0, 0),
+        self.map.check_write_watch(addr, data);
 
-            // Static RAM
-            0x8000..=0x8DFF => self.sram[(addr - 0x8000) as usize] = data,
-            // Sprite RAM
-            0x8E00..=0x8FFF => self.spriteram[(addr - 0x8E00) as usize] = data,
+        match self.map.page(addr).region_id {
+            region::VIDEORAM => match addr {
+                0x0000..=0x0001 => self.bitmode_addr_w(addr as u8, data),
+                0x0002 => self.bitmode_w(data),
+                _ => self.write_vram(addr, data, 0, 0),
+            },
 
-            // NVRAM (mirrored: 0x9000-0x93FF)
-            0x9000..=0x93FF => self.nvram[(addr & 0xFF) as usize] = data,
-
-            // POKEY 1 (mirrored: 0x9800-0x99FF)
-            0x9800..=0x99FF => self.pokey1.write((addr & 0x0F) as u8, data),
-            // POKEY 2 (mirrored: 0x9A00-0x9BFF)
-            0x9A00..=0x9BFF => self.pokey2.write((addr & 0x0F) as u8, data),
-
-            // NVRAM recall (0x9C00-0x9C7F) — loads NVRAM from backup; no-op for us
-            0x9C00..=0x9C7F => {}
-            // H scroll (0x9C80-0x9CFF)
-            0x9C80..=0x9CFF => self.hscroll = data,
-            // V scroll (0x9D00-0x9D7F)
-            0x9D00..=0x9D7F => self.vscroll = data,
-            // IRQ acknowledge (0x9D80-0x9DFF)
-            0x9D80..=0x9DFF => self.irq_state = false,
-            // Watchdog reset (0x9E00-0x9E7F)
-            0x9E00..=0x9E7F => self.watchdog_frame_count = 0,
-
-            // Output latch 0 (0x9E80-0x9EFF): bit = addr & 7, value = data & 1
-            0x9E80..=0x9EFF => {
-                self.outlatch0.write((addr & 7) as u8, data & 1 != 0);
+            region::SRAM | region::SPRITERAM | region::NVRAM => {
+                self.map.write_backing(addr, data);
             }
 
-            // Output latch 1 / video control (0x9F00-0x9F7F):
-            // bit = addr & 7, value = (data >> 3) & 1 (only D3 matters)
-            0x9F00..=0x9F7F => {
-                self.outlatch1.write((addr & 7) as u8, data & 0x08 != 0);
-            }
-
-            // Palette RAM (0x9F80-0x9FFF, 64 addresses → 32 pens)
-            // Address bit 5 provides the red channel MSB.
-            0x9F80..=0x9FFF => {
-                let offset = (addr & 0x3F) as usize;
-                self.palette_ram[offset] = data;
-                self.update_palette_entry(offset);
-            }
-
-            // ROM area — writes ignored
-            0xA000..=0xFFFF => {}
+            region::IO => match addr {
+                // POKEY 1 (mirrored: 0x9800-0x99FF)
+                0x9800..=0x99FF => self.pokey1.write((addr & 0x0F) as u8, data),
+                // POKEY 2 (mirrored: 0x9A00-0x9BFF)
+                0x9A00..=0x9BFF => self.pokey2.write((addr & 0x0F) as u8, data),
+                // NVRAM recall (no-op)
+                0x9C00..=0x9C7F => {}
+                // H scroll
+                0x9C80..=0x9CFF => self.hscroll = data,
+                // V scroll
+                0x9D00..=0x9D7F => self.vscroll = data,
+                // IRQ acknowledge
+                0x9D80..=0x9DFF => self.irq_state = false,
+                // Watchdog reset
+                0x9E00..=0x9E7F => self.watchdog_frame_count = 0,
+                // Output latch 0: bit = addr & 7, value = data & 1
+                0x9E80..=0x9EFF => {
+                    self.outlatch0.write((addr & 7) as u8, data & 1 != 0);
+                    if addr & 7 == 7 {
+                        self.update_rom_bank();
+                    }
+                }
+                // Output latch 1: bit = addr & 7, value = (data >> 3) & 1
+                0x9F00..=0x9F7F => {
+                    self.outlatch1.write((addr & 7) as u8, data & 0x08 != 0);
+                }
+                // Palette RAM (64 addresses → 32 pens)
+                0x9F80..=0x9FFF => {
+                    let offset = (addr & 0x3F) as usize;
+                    self.palette_ram[offset] = data;
+                    self.update_palette_entry(offset);
+                }
+                _ => {}
+            },
 
             _ => {}
         }
@@ -1080,6 +1080,7 @@ impl Machine for CrystalCastlesSystem {
         self.watchdog_frame_count = 0;
         self.outlatch0.reset();
         self.outlatch1.reset();
+        self.update_rom_bank();
         self.bitmode_addr = [0; 2];
         self.hscroll = 0;
         self.vscroll = 0;
@@ -1095,12 +1096,13 @@ impl Machine for CrystalCastlesSystem {
     }
 
     fn save_nvram(&self) -> Option<&[u8]> {
-        Some(&self.nvram)
+        Some(self.map.region_data(region::NVRAM))
     }
 
     fn load_nvram(&mut self, data: &[u8]) {
-        let len = data.len().min(self.nvram.len());
-        self.nvram[..len].copy_from_slice(&data[..len]);
+        let nvram = self.map.region_data_mut(region::NVRAM);
+        let len = data.len().min(nvram.len());
+        nvram[..len].copy_from_slice(&data[..len]);
     }
 
     fn frame_rate_hz(&self) -> f64 {
@@ -1117,10 +1119,10 @@ impl Machine for CrystalCastlesSystem {
         self.cpu.save_state(&mut w);
         self.pokey1.save_state(&mut w);
         self.pokey2.save_state(&mut w);
-        w.write_bytes(&self.videoram);
-        w.write_bytes(&self.sram);
-        w.write_bytes(&self.spriteram);
-        w.write_bytes(&self.nvram);
+        w.write_bytes(self.map.region_data(region::VIDEORAM));
+        w.write_bytes(self.map.region_data(region::SRAM));
+        w.write_bytes(self.map.region_data(region::SPRITERAM));
+        w.write_bytes(self.map.region_data(region::NVRAM));
         w.write_bytes(&self.bitmode_addr);
         w.write_u8(self.hscroll);
         w.write_u8(self.vscroll);
@@ -1147,10 +1149,10 @@ impl Machine for CrystalCastlesSystem {
         self.cpu.load_state(&mut r)?;
         self.pokey1.load_state(&mut r)?;
         self.pokey2.load_state(&mut r)?;
-        r.read_bytes_into(&mut self.videoram)?;
-        r.read_bytes_into(&mut self.sram)?;
-        r.read_bytes_into(&mut self.spriteram)?;
-        r.read_bytes_into(&mut self.nvram)?;
+        r.read_bytes_into(self.map.region_data_mut(region::VIDEORAM))?;
+        r.read_bytes_into(self.map.region_data_mut(region::SRAM))?;
+        r.read_bytes_into(self.map.region_data_mut(region::SPRITERAM))?;
+        r.read_bytes_into(self.map.region_data_mut(region::NVRAM))?;
         r.read_bytes_into(&mut self.bitmode_addr)?;
         self.hscroll = r.read_u8()?;
         self.vscroll = r.read_u8()?;
@@ -1174,6 +1176,7 @@ impl Machine for CrystalCastlesSystem {
         for i in 0..64 {
             self.update_palette_entry(i);
         }
+        self.update_rom_bank();
         self.scanline_buffer_valid = false;
         self.audio_buffer.clear();
         Ok(())
@@ -1205,10 +1208,10 @@ mod tests {
     #[test]
     fn save_load_round_trip() {
         let mut sys = CrystalCastlesSystem::new();
-        sys.videoram[0x1000] = 0xAB;
-        sys.sram[0x100] = 0xCD;
-        sys.spriteram[0x10] = 0xEF;
-        sys.nvram[0x20] = 0x42;
+        sys.map.region_data_mut(region::VIDEORAM)[0x1000] = 0xAB;
+        sys.map.region_data_mut(region::SRAM)[0x100] = 0xCD;
+        sys.map.region_data_mut(region::SPRITERAM)[0x10] = 0xEF;
+        sys.map.region_data_mut(region::NVRAM)[0x20] = 0x42;
         sys.hscroll = 0x80;
         sys.vscroll = 0x40;
         // Set outlatch0 to 0x80 (bit 7) via latch API
@@ -1232,10 +1235,10 @@ mod tests {
         sys2.load_state(&data).unwrap();
 
         assert_eq!(sys2.cpu.snapshot(), cpu_snap);
-        assert_eq!(sys2.videoram[0x1000], 0xAB);
-        assert_eq!(sys2.sram[0x100], 0xCD);
-        assert_eq!(sys2.spriteram[0x10], 0xEF);
-        assert_eq!(sys2.nvram[0x20], 0x42);
+        assert_eq!(sys2.map.region_data(region::VIDEORAM)[0x1000], 0xAB);
+        assert_eq!(sys2.map.region_data(region::SRAM)[0x100], 0xCD);
+        assert_eq!(sys2.map.region_data(region::SPRITERAM)[0x10], 0xEF);
+        assert_eq!(sys2.map.region_data(region::NVRAM)[0x20], 0x42);
         assert_eq!(sys2.hscroll, 0x80);
         assert_eq!(sys2.vscroll, 0x40);
         assert_eq!(sys2.outlatch0.value(), 0x80);
@@ -1253,31 +1256,33 @@ mod tests {
     fn rom_banking_selects_correct_bank() {
         let mut sys = CrystalCastlesSystem::new();
         // Fill bank 0 low with 0xAA, bank 1 low with 0xBB
-        sys.rom[0x0000..0x2000].fill(0xAA);
-        sys.rom[0x6000..0x8000].fill(0xBB);
+        sys.map.region_data_mut(region::ROM_BANK0)[..0x2000].fill(0xAA);
+        sys.map.region_data_mut(region::ROM_BANK1)[..0x2000].fill(0xBB);
 
         // Bank 0 (default, outlatch0 bit 7 = 0)
         sys.outlatch0.reset();
+        sys.update_rom_bank();
         assert_eq!(
             Bus::read(&mut sys, BusMaster::Cpu(0), 0xA000),
             0xAA,
-            "Bank 0 should read from rom[0x0000]"
+            "Bank 0 should read from ROM_BANK0"
         );
 
         // Bank 1 (outlatch0 bit 7 = 1)
         sys.outlatch0.write(7, true);
+        sys.update_rom_bank();
         assert_eq!(
             Bus::read(&mut sys, BusMaster::Cpu(0), 0xA000),
             0xBB,
-            "Bank 1 should read from rom[0x6000]"
+            "Bank 1 should read from ROM_BANK1"
         );
     }
 
     #[test]
     fn fixed_rom_always_accessible() {
         let mut sys = CrystalCastlesSystem::new();
-        sys.rom[0x4000] = 0xDE;
-        sys.rom[0x5FFF] = 0xAD;
+        sys.map.region_data_mut(region::ROM_FIXED)[0x0000] = 0xDE;
+        sys.map.region_data_mut(region::ROM_FIXED)[0x1FFF] = 0xAD;
 
         assert_eq!(Bus::read(&mut sys, BusMaster::Cpu(0), 0xE000), 0xDE);
         assert_eq!(Bus::read(&mut sys, BusMaster::Cpu(0), 0xFFFF), 0xAD);
@@ -1398,10 +1403,11 @@ mod tests {
         sys.gfx_rom[0x2000..0x4000].fill(0xFF); // 0xF0 | 0x0F
 
         // Place sprite 0 at position (100, 100)
-        sys.spriteram[0] = 0; // sprite code
-        sys.spriteram[1] = (256 - 16 - 100) as u8; // Y = 100
-        sys.spriteram[2] = 0; // color group 0
-        sys.spriteram[3] = 100; // X = 100
+        let sprites = sys.map.region_data_mut(region::SPRITERAM);
+        sprites[0] = 0; // sprite code
+        sprites[1] = (256 - 16 - 100) as u8; // Y = 100
+        sprites[2] = 0; // color group 0
+        sprites[3] = 100; // X = 100
 
         sys.render_sprites_to_buffer();
 
@@ -1425,10 +1431,11 @@ mod tests {
         sys.gfx_rom[0x2020] = 0x08;
 
         // Place sprite with code 1 at (50, 200)
-        sys.spriteram[0] = 1; // sprite code
-        sys.spriteram[1] = (256u16.wrapping_sub(16).wrapping_sub(200)) as u8; // Y
-        sys.spriteram[2] = 0x80; // color group 1 → color_base = 8
-        sys.spriteram[3] = 50; // X
+        let sprites = sys.map.region_data_mut(region::SPRITERAM);
+        sprites[0] = 1; // sprite code
+        sprites[1] = (256u16.wrapping_sub(16).wrapping_sub(200)) as u8; // Y
+        sprites[2] = 0x80; // color group 1 → color_base = 8
+        sprites[3] = 50; // X
 
         sys.render_sprites_to_buffer();
 
@@ -1451,7 +1458,7 @@ mod tests {
 
         // Write bitmap pixel value 5 at effective Y=24, X=0
         // videoram[24 * 128 + 0] low nibble = 5
-        sys.videoram[24 * 128] = 0x05;
+        sys.map.region_data_mut(region::VIDEORAM)[24 * 128] = 0x05;
 
         // Sprite buffer clear (transparent)
         sys.sprite_buffer.fill(0x0F);
