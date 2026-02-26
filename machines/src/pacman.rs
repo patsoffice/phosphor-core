@@ -4,6 +4,7 @@ use phosphor_core::core::debug::BusDebug;
 use phosphor_core::core::machine::{
     AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
 };
+use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
 use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::state::Z80State;
@@ -16,6 +17,14 @@ use phosphor_macros::BusDebug;
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
 use crate::set_bit_active_low;
+
+mod region {
+    pub const ROM: u8 = 1;
+    pub const VIDEORAM: u8 = 2;
+    pub const COLORRAM: u8 = 3;
+    pub const RAM: u8 = 4;
+    pub const IO: u8 = 5;
+}
 
 // ---------------------------------------------------------------------------
 // Pac-Man ROM definitions ("pacman" Midway set)
@@ -199,15 +208,13 @@ const B_WEIGHTS: [f64; 2] = [470.0, 220.0];
 /// Screen: 288×224 displayed rotated 90° CCW on vertical monitor.
 #[derive(BusDebug)]
 pub struct PacmanSystem {
-    #[debug_cpu("Z80", read = "memory_read", write = "memory_write")]
+    #[debug_cpu("Z80")]
     cpu: Z80,
 
-    // Memory
-    rom: [u8; 0x4000],         // 0x0000-0x3FFF: 16KB program ROM
-    video_ram: [u8; 0x400],    // 0x4000-0x43FF: tile codes
-    color_ram: [u8; 0x400],    // 0x4400-0x47FF: tile attributes
-    ram: [u8; 0x400],          // 0x4C00-0x4FFF: work RAM + sprite attrs
-    sprite_coords: [u8; 0x10], // 0x5060-0x506F: sprite X/Y positions
+    #[debug_map(cpu = 0)]
+    map: MemoryMap,
+
+    sprite_coords: [u8; 0x10], // 0x5060-0x506F: sprite X/Y positions (write-only from bus)
 
     // Sound
     #[debug_device("NamcoWSG")]
@@ -251,10 +258,7 @@ impl PacmanSystem {
     pub fn new() -> Self {
         Self {
             cpu: Z80::new(),
-            rom: [0; 0x4000],
-            video_ram: [0; 0x400],
-            color_ram: [0; 0x400],
-            ram: [0; 0x400],
+            map: Self::build_map(),
             sprite_coords: [0; 0x10],
             wsg: NamcoWsg::new(CPU_CLOCK_HZ),
             tile_cache: gfx::GfxCache::new(256, 8, 8),
@@ -275,6 +279,17 @@ impl PacmanSystem {
             clock: 0,
             watchdog_counter: 0,
         }
+    }
+
+    fn build_map() -> MemoryMap {
+        use region::*;
+        let mut map = MemoryMap::new();
+        map.region(ROM, "Program ROM", 0x0000, 0x4000, AccessKind::ReadOnly)
+            .region(VIDEORAM, "Video RAM", 0x4000, 0x0400, AccessKind::ReadWrite)
+            .region(COLORRAM, "Color RAM", 0x4400, 0x0400, AccessKind::ReadWrite)
+            .region(RAM, "RAM", 0x4C00, 0x0400, AccessKind::ReadWrite)
+            .region(IO, "I/O", 0x5000, 0x0100, AccessKind::Io);
+        map
     }
 
     /// Pre-compute the 32-entry RGB palette from the palette PROM using
@@ -347,7 +362,7 @@ impl PacmanSystem {
         rom_set: &crate::rom_loader::RomSet,
     ) -> Result<(), crate::rom_loader::RomLoadError> {
         let rom_data = PACMAN_PROGRAM_ROM.load(rom_set)?;
-        self.rom.copy_from_slice(&rom_data);
+        self.map.load_region(region::ROM, &rom_data);
 
         let gfx_data = PACMAN_GFX_ROM.load(rom_set)?;
         self.tile_cache = gfx::decode::decode_pacman_tiles(&gfx_data, 0x0000, 256);
@@ -394,8 +409,8 @@ impl PacmanSystem {
         let row_offset = scanline * 288 * 3;
 
         // Split borrows: immutable refs for closures, mutable ref for buffer
-        let video_ram = &self.video_ram;
-        let color_ram = &self.color_ram;
+        let video_ram = self.map.region_data(region::VIDEORAM);
+        let color_ram = self.map.region_data(region::COLORRAM);
         let color_lut_prom = &self.color_lut_prom;
         let palette_rgb = &self.palette_rgb;
         let tile_cache = &self.tile_cache;
@@ -450,7 +465,7 @@ impl PacmanSystem {
         );
 
         // Sprites: draw in priority order (7→3, then 2→0 with +1 Y offset)
-        let ram = &self.ram;
+        let ram = self.map.region_data(region::RAM);
         let sprite_coords = &self.sprite_coords;
         let y = scanline as i32;
 
@@ -512,29 +527,6 @@ impl PacmanSystem {
             }
         }
     }
-
-    /// Side-effect-free read from the CPU address space (for debugger).
-    fn memory_read(&self, addr: u16) -> Option<u8> {
-        let addr = addr & 0x7FFF;
-        match addr {
-            0x0000..=0x3FFF => Some(self.rom[addr as usize]),
-            0x4000..=0x43FF => Some(self.video_ram[(addr - 0x4000) as usize]),
-            0x4400..=0x47FF => Some(self.color_ram[(addr - 0x4400) as usize]),
-            0x4C00..=0x4FFF => Some(self.ram[(addr - 0x4C00) as usize]),
-            _ => None,
-        }
-    }
-
-    /// Write to the CPU address space (for debug memory editor).
-    fn memory_write(&mut self, addr: u16, data: u8) {
-        let addr = addr & 0x7FFF;
-        match addr {
-            0x4000..=0x43FF => self.video_ram[(addr - 0x4000) as usize] = data,
-            0x4400..=0x47FF => self.color_ram[(addr - 0x4400) as usize] = data,
-            0x4C00..=0x4FFF => self.ram[(addr - 0x4C00) as usize] = data,
-            _ => {}
-        }
-    }
 }
 
 impl Default for PacmanSystem {
@@ -551,80 +543,74 @@ impl Bus for PacmanSystem {
         // A15 not connected: 0x8000-0xFFFF mirrors 0x0000-0x7FFF
         let addr = addr & 0x7FFF;
 
-        match addr {
-            // Program ROM
-            0x0000..=0x3FFF => self.rom[addr as usize],
+        let data = match self.map.page(addr).region_id {
+            region::ROM | region::VIDEORAM | region::COLORRAM | region::RAM => {
+                self.map.read_backing(addr)
+            }
 
-            // Video RAM
-            0x4000..=0x43FF => self.video_ram[(addr - 0x4000) as usize],
+            region::IO => match addr {
+                0x5000..=0x503F => self.in0,
+                0x5040..=0x507F => self.in1,
+                0x5080..=0x50BF => self.dip_switches,
+                _ => 0xFF,
+            },
 
-            // Color RAM
-            0x4400..=0x47FF => self.color_ram[(addr - 0x4400) as usize],
+            _ => {
+                // Bus float at 0x4800-0x4BFF (no device responds)
+                if (0x4800..0x4C00).contains(&addr) {
+                    0xBF
+                } else {
+                    0xFF
+                }
+            }
+        };
 
-            // Bus float (no device responds — Pac-Man has a bug that writes here)
-            0x4800..=0x4BFF => 0xBF,
-
-            // Work RAM (includes sprite attribute RAM at 0x4FF0-0x4FFF)
-            0x4C00..=0x4FFF => self.ram[(addr - 0x4C00) as usize],
-
-            // IN0: P1 joystick + coins (active-low)
-            0x5000..=0x503F => self.in0,
-
-            // IN1: P2 joystick + start buttons + cabinet (active-low)
-            0x5040..=0x507F => self.in1,
-
-            // DSW1: DIP switches
-            0x5080..=0x50BF => self.dip_switches,
-
-            // DSW2 (unused on standard Pac-Man)
-            0x50C0..=0x50FF => 0xFF,
-
-            _ => 0xFF,
-        }
+        self.map.check_read_watch(addr, data);
+        data
     }
 
     fn write(&mut self, _master: BusMaster, addr: u16, data: u8) {
         let addr = addr & 0x7FFF;
+        self.map.check_write_watch(addr, data);
 
-        match addr {
-            // Video RAM
-            0x4000..=0x43FF => self.video_ram[(addr - 0x4000) as usize] = data,
-
-            // Color RAM
-            0x4400..=0x47FF => self.color_ram[(addr - 0x4400) as usize] = data,
-
-            // Work RAM (includes sprite attribute RAM)
-            0x4C00..=0x4FFF => self.ram[(addr - 0x4C00) as usize] = data,
-
-            // 74LS259 addressable latch: address bits 0-2 select output, data bit 0 is value
-            0x5000..=0x5007 => {
-                let bit = (addr & 7) as u8;
-                let value = (data & 1) != 0;
-                match bit {
-                    0 => {
-                        self.irq_enabled = value;
-                        if !value {
-                            self.vblank_irq_pending = false;
-                        }
-                    }
-                    1 => {
-                        self.sound_enabled = value;
-                        self.wsg.set_sound_enabled(value);
-                    }
-                    3 => self.flip_screen = value,
-                    // 2: unused, 4-5: LEDs (not connected), 6: coin lockout, 7: coin counter
-                    _ => {}
-                }
+        match self.map.page(addr).region_id {
+            region::VIDEORAM | region::COLORRAM | region::RAM => {
+                self.map.write_backing(addr, data);
             }
 
-            // Namco WSG sound registers (32 nibble registers)
-            0x5040..=0x505F => self.wsg.write((addr - 0x5040) as u8, data),
+            region::IO => match addr {
+                // 74LS259 addressable latch: address bits 0-2 select output, data bit 0 is value
+                0x5000..=0x5007 => {
+                    let bit = (addr & 7) as u8;
+                    let value = (data & 1) != 0;
+                    match bit {
+                        0 => {
+                            self.irq_enabled = value;
+                            if !value {
+                                self.vblank_irq_pending = false;
+                            }
+                        }
+                        1 => {
+                            self.sound_enabled = value;
+                            self.wsg.set_sound_enabled(value);
+                        }
+                        3 => self.flip_screen = value,
+                        // 2: unused, 4-5: LEDs (not connected), 6: coin lockout, 7: coin counter
+                        _ => {}
+                    }
+                }
 
-            // Sprite coordinates
-            0x5060..=0x506F => self.sprite_coords[(addr - 0x5060) as usize] = data,
+                // Namco WSG sound registers (32 nibble registers)
+                0x5040..=0x505F => self.wsg.write((addr - 0x5040) as u8, data),
 
-            // Watchdog reset
-            0x50C0..=0x50FF => self.watchdog_counter = 0,
+                // Sprite coordinates
+                0x5060..=0x506F => self.sprite_coords[(addr - 0x5060) as usize] = data,
+
+                // Watchdog reset
+                0x50C0..=0x50FF => self.watchdog_counter = 0,
+
+                _ => {}
+            },
 
             _ => { /* ROM or unmapped: ignored */ }
         }
@@ -757,9 +743,9 @@ impl Machine for PacmanSystem {
         self.watchdog_counter = 0;
         self.in0 = 0xFF;
         self.in1 = 0xFF;
-        self.video_ram = [0; 0x400];
-        self.color_ram = [0; 0x400];
-        self.ram = [0; 0x400];
+        self.map.region_data_mut(region::VIDEORAM).fill(0);
+        self.map.region_data_mut(region::COLORRAM).fill(0);
+        self.map.region_data_mut(region::RAM).fill(0);
         self.sprite_coords = [0; 0x10];
         self.scanline_buffer.fill(0);
         // ROM, GFX, PROMs, and palette_rgb are NOT cleared (loaded from ROM set)
@@ -781,9 +767,9 @@ impl Machine for PacmanSystem {
         let mut w = StateWriter::new();
         save_state::write_header(&mut w, self.machine_id());
         self.cpu.save_state(&mut w);
-        w.write_bytes(&self.video_ram);
-        w.write_bytes(&self.color_ram);
-        w.write_bytes(&self.ram);
+        w.write_bytes(self.map.region_data(region::VIDEORAM));
+        w.write_bytes(self.map.region_data(region::COLORRAM));
+        w.write_bytes(self.map.region_data(region::RAM));
         w.write_bytes(&self.sprite_coords);
         self.wsg.save_state(&mut w);
         w.write_u8(self.in0);
@@ -801,9 +787,9 @@ impl Machine for PacmanSystem {
     fn load_state(&mut self, data: &[u8]) -> Result<(), SaveError> {
         let mut r = save_state::read_header(data, self.machine_id())?;
         self.cpu.load_state(&mut r)?;
-        r.read_bytes_into(&mut self.video_ram)?;
-        r.read_bytes_into(&mut self.color_ram)?;
-        r.read_bytes_into(&mut self.ram)?;
+        r.read_bytes_into(self.map.region_data_mut(region::VIDEORAM))?;
+        r.read_bytes_into(self.map.region_data_mut(region::COLORRAM))?;
+        r.read_bytes_into(self.map.region_data_mut(region::RAM))?;
         r.read_bytes_into(&mut self.sprite_coords)?;
         self.wsg.load_state(&mut r)?;
         self.in0 = r.read_u8()?;
@@ -865,9 +851,9 @@ mod tests {
         let mut sys = PacmanSystem::new();
 
         // Set known state
-        sys.video_ram[0x100] = 0xAA;
-        sys.color_ram[0x200] = 0xBB;
-        sys.ram[0x300] = 0xCC;
+        sys.map.region_data_mut(region::VIDEORAM)[0x100] = 0xAA;
+        sys.map.region_data_mut(region::COLORRAM)[0x200] = 0xBB;
+        sys.map.region_data_mut(region::RAM)[0x300] = 0xCC;
         sys.sprite_coords[5] = 0xDD;
         sys.in0 = 0xEE;
         sys.in1 = 0x77;
@@ -885,7 +871,7 @@ mod tests {
 
         // Mutate everything
         let mut sys2 = PacmanSystem::new();
-        sys2.video_ram[0x100] = 0xFF;
+        sys2.map.region_data_mut(region::VIDEORAM)[0x100] = 0xFF;
         sys2.in0 = 0x00;
         sys2.clock = 999;
 
@@ -896,9 +882,9 @@ mod tests {
         assert_eq!(sys2.cpu.snapshot(), cpu_snap);
 
         // Verify memory
-        assert_eq!(sys2.video_ram[0x100], 0xAA);
-        assert_eq!(sys2.color_ram[0x200], 0xBB);
-        assert_eq!(sys2.ram[0x300], 0xCC);
+        assert_eq!(sys2.map.region_data(region::VIDEORAM)[0x100], 0xAA);
+        assert_eq!(sys2.map.region_data(region::COLORRAM)[0x200], 0xBB);
+        assert_eq!(sys2.map.region_data(region::RAM)[0x300], 0xCC);
         assert_eq!(sys2.sprite_coords[5], 0xDD);
 
         // Verify I/O and control state
@@ -931,7 +917,7 @@ mod tests {
     #[test]
     fn save_does_not_include_rom() {
         let mut sys = PacmanSystem::new();
-        sys.rom[0] = 0xDE;
+        sys.map.region_data_mut(region::ROM)[0] = 0xDE;
         sys.tile_cache.set_pixel(0, 0, 0, 3);
 
         let data = sys.save_state().unwrap();
@@ -941,7 +927,7 @@ mod tests {
         sys2.load_state(&data).unwrap();
 
         // ROMs and GFX caches should remain at their default, not overwritten
-        assert_eq!(sys2.rom[0], 0x00);
+        assert_eq!(sys2.map.region_data(region::ROM)[0], 0x00);
         assert_eq!(sys2.tile_cache.pixel(0, 0, 0), 0);
     }
 }
