@@ -4,6 +4,7 @@ use phosphor_core::core::debug::BusDebug;
 use phosphor_core::core::machine::{
     AnalogInput, AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
 };
+use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
 use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::m6502::M6502;
@@ -15,6 +16,12 @@ use phosphor_macros::BusDebug;
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
 use crate::set_bit_active_low;
+
+mod region {
+    pub const RAM: u8 = 1;
+    pub const IO: u8 = 2;
+    pub const ROM: u8 = 3;
+}
 
 // ---------------------------------------------------------------------------
 // Missile Command ROM definitions
@@ -171,14 +178,13 @@ const CYCLES_PER_FRAME: u64 = SCANLINES_PER_FRAME * CYCLES_PER_SCANLINE;
 ///   0xF800-0xFFFF  ROM mirror (vectors)
 #[derive(BusDebug)]
 pub struct MissileCommandSystem {
-    #[debug_cpu("M6502", read = "memory_read", write = "memory_write")]
+    #[debug_cpu("M6502")]
     cpu: M6502,
     #[debug_device("POKEY")]
     pokey: Pokey,
 
-    // Memory
-    ram: [u8; 0x4000], // 16KB Video/Work RAM
-    rom: [u8; 0x3000], // 12KB Program ROM
+    #[debug_map(cpu = 0)]
+    map: MemoryMap,
 
     // I/O registers
     // IN0 at 0x4800 (active-low switches, directly stored active-low: 1=released, 0=pressed)
@@ -242,8 +248,7 @@ impl MissileCommandSystem {
         Self {
             cpu: M6502::new(),
             pokey: Pokey::with_clock(1_250_000, 44100),
-            ram: [0; 0x4000],
-            rom: [0; 0x3000],
+            map: Self::build_map(),
             in0: 0xFF,          // All buttons released (active-low: 1 = not pressed)
             in1: 0x67, // Fire buttons released (bits 0-2 = 1), test/tilt released (bits 5-6 = 1), VBLANK off
             dip_switches: 0x00, // Default DIP: 1 coin/1 play, English, standard options
@@ -267,6 +272,16 @@ impl MissileCommandSystem {
             scanline_buffer_valid: false,
             audio_buffer: Vec::with_capacity(1024),
         }
+    }
+
+    fn build_map() -> MemoryMap {
+        use region::*;
+        let mut map = MemoryMap::new();
+        map.region(RAM, "RAM", 0x0000, 0x4000, AccessKind::ReadWrite)
+            .region(IO, "I/O", 0x4000, 0x1000, AccessKind::Io)
+            .region(ROM, "Program ROM", 0x5000, 0x3000, AccessKind::ReadOnly)
+            .mirror(0xF800, 0x7800, 0x0800);
+        map
     }
 
     /// Current scanline (V counter), 0-255.
@@ -369,7 +384,7 @@ impl MissileCommandSystem {
         rom_set: &crate::rom_loader::RomSet,
     ) -> Result<(), crate::rom_loader::RomLoadError> {
         let rom_data = MISSILE_COMMAND_ROM.load(rom_set)?;
-        self.rom.copy_from_slice(&rom_data);
+        self.map.load_region(region::ROM, &rom_data);
         Ok(())
     }
 
@@ -378,16 +393,14 @@ impl MissileCommandSystem {
     }
 
     pub fn read_ram(&self, addr: usize) -> u8 {
-        if addr < self.ram.len() {
-            self.ram[addr]
-        } else {
-            0
-        }
+        let ram = self.map.region_data(region::RAM);
+        if addr < ram.len() { ram[addr] } else { 0 }
     }
 
     pub fn write_ram(&mut self, addr: usize, data: u8) {
-        if addr < self.ram.len() {
-            self.ram[addr] = data;
+        let ram = self.map.region_data_mut(region::RAM);
+        if addr < ram.len() {
+            ram[addr] = data;
         }
     }
 
@@ -426,8 +439,9 @@ impl MissileCommandSystem {
         let vramdata = DATA_LOOKUP[(data >> 6) as usize];
         let vrammask = !(0x11u8 << pixel);
 
-        if vramaddr < 0x4000 {
-            self.ram[vramaddr] = (self.ram[vramaddr] & vrammask) | (vramdata & !vrammask);
+        let ram = self.map.region_data_mut(region::RAM);
+        if vramaddr < ram.len() {
+            ram[vramaddr] = (ram[vramaddr] & vrammask) | (vramdata & !vrammask);
         }
 
         // 3rd color bit write (MUSHROOM region): offset & 0xE000 == 0xE000
@@ -437,8 +451,9 @@ impl MissileCommandSystem {
             let bit3_data: u8 = if data & 0x20 != 0 { 0xFF } else { 0x00 };
             let bit3_mask = !(1u8 << (offset & 7));
 
-            if bit3_addr < 0x4000 {
-                self.ram[bit3_addr] = (self.ram[bit3_addr] & bit3_mask) | (bit3_data & !bit3_mask);
+            let ram = self.map.region_data_mut(region::RAM);
+            if bit3_addr < ram.len() {
+                ram[bit3_addr] = (ram[bit3_addr] & bit3_mask) | (bit3_data & !bit3_mask);
             }
             self.stall_cycles += 1;
         }
@@ -449,8 +464,9 @@ impl MissileCommandSystem {
     fn vram_madsel_read(&mut self, offset: u16) -> u8 {
         let vramaddr = (offset >> 2) as usize;
         let vrammask = 0x11u8 << (offset & 3);
-        let vramdata = if vramaddr < 0x4000 {
-            self.ram[vramaddr] & vrammask
+        let ram = self.map.region_data(region::RAM);
+        let vramdata = if vramaddr < ram.len() {
+            ram[vramaddr] & vrammask
         } else {
             0
         };
@@ -468,8 +484,9 @@ impl MissileCommandSystem {
         if (offset & 0xE000) == 0xE000 {
             let bit3_addr = Self::get_bit3_addr(offset) as usize;
             let bit3_mask = 1u8 << (offset & 7);
-            let bit3_data = if bit3_addr < 0x4000 {
-                self.ram[bit3_addr] & bit3_mask
+            let ram = self.map.region_data(region::RAM);
+            let bit3_data = if bit3_addr < ram.len() {
+                ram[bit3_addr] & bit3_mask
             } else {
                 0
             };
@@ -508,7 +525,7 @@ impl MissileCommandSystem {
             );
         }
 
-        let ram = &self.ram;
+        let ram = self.map.region_data(region::RAM);
 
         for screen_y in 0..h {
             let effy = screen_y + 25;
@@ -581,12 +598,14 @@ impl MissileCommandSystem {
 
         let row_offset = screen_y * 256 * 3;
 
+        let ram = self.map.region_data(region::RAM);
+
         for screen_x in 0..256 {
             let byte_offset = src_base + screen_x / 4;
             let pixel_in_byte = screen_x & 3;
 
-            let byte = if byte_offset < 0x4000 {
-                self.ram[byte_offset]
+            let byte = if byte_offset < ram.len() {
+                ram[byte_offset]
             } else {
                 0
             };
@@ -598,8 +617,8 @@ impl MissileCommandSystem {
             // Add 3rd color bit for bottom scanlines (effy >= 224)
             if let Some(base) = bit3_base {
                 let bit3_offset = base + (screen_x / 8) * 2;
-                if bit3_offset < 0x4000 {
-                    color_idx |= (self.ram[bit3_offset] >> (screen_x & 7)) & 1;
+                if bit3_offset < ram.len() {
+                    color_idx |= (ram[bit3_offset] >> (screen_x & 7)) & 1;
                 }
             }
 
@@ -609,25 +628,6 @@ impl MissileCommandSystem {
             self.scanline_buffer[pixel_offset] = r;
             self.scanline_buffer[pixel_offset + 1] = g;
             self.scanline_buffer[pixel_offset + 2] = b;
-        }
-    }
-
-    /// Side-effect-free read from the CPU address space (for debugger).
-    /// Returns RAM and ROM; None for POKEY/I/O (avoids MADSEL side effects).
-    fn memory_read(&self, addr: u16) -> Option<u8> {
-        let addr = addr & 0x7FFF;
-        match addr {
-            0x0000..=0x3FFF => Some(self.ram[addr as usize]),
-            0x5000..=0x7FFF => Some(self.rom[(addr - 0x5000) as usize]),
-            _ => None,
-        }
-    }
-
-    /// Write to the CPU address space (for debug memory editor).
-    fn memory_write(&mut self, addr: u16, data: u8) {
-        let addr = addr & 0x7FFF;
-        if let 0x0000..=0x3FFF = addr {
-            self.ram[addr as usize] = data;
         }
     }
 }
@@ -656,33 +656,22 @@ impl Bus for MissileCommandSystem {
         // The 6502 vectors at 0xFFFC map through: 0xFFFC & 0x7FFF = 0x7FFC → ROM.
         let addr = addr & 0x7FFF;
 
-        let data = match addr {
-            // Video/Work RAM: 0x0000-0x3FFF
-            0x0000..=0x3FFF => self.ram[addr as usize],
+        let data = match self.map.page(addr).region_id {
+            region::RAM | region::ROM => self.map.read_backing(addr),
 
-            // POKEY: 0x4000-0x400F (mirrored across 0x4000-0x47FF)
-            0x4000..=0x47FF => self.pokey.read((addr & 0x0F) as u8),
-
-            // IN0/Trackball: 0x4800-0x48FF
-            // When CTRLD=0: read switch inputs (IN0, active-low)
-            // When CTRLD=1: read trackball (low nibble = horiz, high nibble = vert)
-            0x4800..=0x48FF => {
-                if self.ctrld {
-                    (self.trackball_y << 4) | (self.trackball_x & 0x0F)
-                } else {
-                    self.in0
+            region::IO => match addr {
+                0x4000..=0x47FF => self.pokey.read((addr & 0x0F) as u8),
+                0x4800..=0x48FF => {
+                    if self.ctrld {
+                        (self.trackball_y << 4) | (self.trackball_x & 0x0F)
+                    } else {
+                        self.in0
+                    }
                 }
-            }
-
-            // IN1: 0x4900-0x49FF
-            // Fire buttons, VBLANK, self-test, SLAM, trackball direction
-            0x4900..=0x49FF => self.in1,
-
-            // DIP switches (pricing): 0x4A00-0x4AFF
-            0x4A00..=0x4AFF => self.dip_switches,
-
-            // Program ROM: 0x5000-0x7FFF
-            0x5000..=0x7FFF => self.rom[(addr - 0x5000) as usize],
+                0x4900..=0x49FF => self.in1,
+                0x4A00..=0x4AFF => self.dip_switches,
+                _ => 0xFF,
+            },
 
             _ => 0xFF,
         };
@@ -694,6 +683,7 @@ impl Bus for MissileCommandSystem {
             self.madsel_lastcycles = self.cpu_cycles;
         }
 
+        self.map.check_read_watch(addr, data);
         data
     }
 
@@ -706,40 +696,29 @@ impl Bus for MissileCommandSystem {
 
         // 15-bit address bus masking
         let addr = addr & 0x7FFF;
+        self.map.check_write_watch(addr, data);
 
-        match addr {
-            // Video/Work RAM: 0x0000-0x3FFF
-            0x0000..=0x3FFF => self.ram[addr as usize] = data,
+        match self.map.page(addr).region_id {
+            region::RAM => self.map.write_backing(addr, data),
 
-            // POKEY: 0x4000-0x400F (mirrored across 0x4000-0x47FF)
-            0x4000..=0x47FF => self.pokey.write((addr & 0x0F) as u8, data),
+            region::IO => match addr {
+                0x4000..=0x47FF => self.pokey.write((addr & 0x0F) as u8, data),
+                0x4800..=0x48FF => {
+                    self.ctrld = (data & 1) != 0;
+                }
+                0x4B00..=0x4BFF => {
+                    self.palette[(addr & 0x07) as usize] = data;
+                }
+                0x4C00..=0x4CFF => {
+                    self.watchdog_frame_count = 0;
+                }
+                0x4D00..=0x4DFF => {
+                    self.irq_state = false;
+                }
+                _ => {}
+            },
 
-            // Output latch: 0x4800-0x48FF
-            //   Bit 0: CTRLD (0 = read switches, 1 = read trackball)
-            //   Bit 1: 1P Start LED
-            //   Bit 2: 2P Start LED
-            //   Bit 3-5: Coin counters
-            //   Bit 6: Screen flip
-            0x4800..=0x48FF => {
-                self.ctrld = (data & 1) != 0;
-            }
-
-            // Color RAM: 0x4B00-0x4B07 (mirrored across 0x4B00-0x4BFF)
-            0x4B00..=0x4BFF => {
-                self.palette[(addr & 0x07) as usize] = data;
-            }
-
-            // Watchdog reset: 0x4C00-0x4CFF (8-VBLANK timeout)
-            0x4C00..=0x4CFF => {
-                self.watchdog_frame_count = 0;
-            }
-
-            // IRQ acknowledge: 0x4D00-0x4DFF
-            0x4D00..=0x4DFF => {
-                self.irq_state = false;
-            }
-
-            _ => {}
+            _ => {} // ROM and unmapped: writes ignored
         }
     }
 
@@ -894,7 +873,7 @@ impl Machine for MissileCommandSystem {
         save_state::write_header(&mut w, self.machine_id());
         self.cpu.save_state(&mut w);
         self.pokey.save_state(&mut w);
-        w.write_bytes(&self.ram);
+        w.write_bytes(self.map.region_data(region::RAM));
         w.write_u8(self.in0);
         w.write_u8(self.in1);
         w.write_bool(self.ctrld);
@@ -920,7 +899,7 @@ impl Machine for MissileCommandSystem {
         let mut r = save_state::read_header(data, self.machine_id())?;
         self.cpu.load_state(&mut r)?;
         self.pokey.load_state(&mut r)?;
-        r.read_bytes_into(&mut self.ram)?;
+        r.read_bytes_into(self.map.region_data_mut(region::RAM))?;
         self.in0 = r.read_u8()?;
         self.in1 = r.read_u8()?;
         self.ctrld = r.read_bool()?;
@@ -972,7 +951,7 @@ mod tests {
         let mut sys = MissileCommandSystem::new();
 
         // Set known state
-        sys.ram[0x100] = 0xAA;
+        sys.map.region_data_mut(region::RAM)[0x100] = 0xAA;
         sys.in0 = 0xEE;
         sys.in1 = 0x77;
         sys.ctrld = true;
@@ -996,7 +975,7 @@ mod tests {
 
         // Mutate everything
         let mut sys2 = MissileCommandSystem::new();
-        sys2.ram[0x100] = 0xFF;
+        sys2.map.region_data_mut(region::RAM)[0x100] = 0xFF;
         sys2.clock = 999;
 
         // Load
@@ -1004,7 +983,7 @@ mod tests {
 
         // Verify
         assert_eq!(sys2.cpu.snapshot(), cpu_snap);
-        assert_eq!(sys2.ram[0x100], 0xAA);
+        assert_eq!(sys2.map.region_data_mut(region::RAM)[0x100], 0xAA);
         assert_eq!(sys2.in0, 0xEE);
         assert_eq!(sys2.in1, 0x77);
         assert!(sys2.ctrld);
@@ -1041,14 +1020,14 @@ mod tests {
     #[test]
     fn save_does_not_include_rom() {
         let mut sys = MissileCommandSystem::new();
-        sys.rom[0] = 0xDE;
+        sys.map.region_data_mut(region::ROM)[0] = 0xDE;
 
         let data = sys.save_state().unwrap();
 
         let mut sys2 = MissileCommandSystem::new();
         sys2.load_state(&data).unwrap();
 
-        assert_eq!(sys2.rom[0], 0x00);
+        assert_eq!(sys2.map.region_data_mut(region::ROM)[0], 0x00);
     }
 
     #[test]
