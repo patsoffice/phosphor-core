@@ -31,13 +31,16 @@
 //! | 0xE000–0xEFFF | R   | IRQ acknowledge/clear            |
 //! | 0xF000–0xFFFF | R   | DIP switches                     |
 
-use phosphor_core::audio::AudioResampler;
-use phosphor_core::bus_split;
-use phosphor_core::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
-use phosphor_core::core::{Bus, BusMaster};
-use phosphor_core::cpu::Cpu;
-use phosphor_core::cpu::z80::Z80;
-use phosphor_core::device::Ay8910;
+use crate::audio::AudioResampler;
+use crate::bus_split;
+use crate::core::debug::{DebugRegister, Debuggable};
+use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
+use crate::core::{Bus, BusMaster};
+use crate::cpu::Cpu;
+use crate::cpu::z80::Z80;
+use crate::device::Ay8910;
+
+use super::Device;
 
 /// SSIO CPU clock: 16 MHz / 8 = 2 MHz.
 const SSIO_CLOCK_HZ: u64 = 2_000_000;
@@ -355,8 +358,8 @@ impl Bus for SsioBoard {
         false
     }
 
-    fn check_interrupts(&self, _target: BusMaster) -> phosphor_core::core::bus::InterruptState {
-        phosphor_core::core::bus::InterruptState {
+    fn check_interrupts(&self, _target: BusMaster) -> crate::core::bus::InterruptState {
+        crate::core::bus::InterruptState {
             nmi: false,
             irq: self.irq_pending,
             firq: false,
@@ -366,11 +369,8 @@ impl Bus for SsioBoard {
 }
 
 // ---------------------------------------------------------------------------
-// Device trait (for MCR board integration)
+// Device trait
 // ---------------------------------------------------------------------------
-
-use phosphor_core::core::debug::{DebugRegister, Debuggable};
-use phosphor_core::device::Device;
 
 impl Device for SsioBoard {
     fn name(&self) -> &'static str {

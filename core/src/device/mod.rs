@@ -40,6 +40,7 @@ pub mod namco_wsg;
 pub mod output_latch;
 pub mod pia6820;
 pub mod pokey;
+pub mod ssio;
 pub mod williams_blitter;
 pub mod z80ctc;
 
@@ -53,5 +54,6 @@ pub use namco_wsg::NamcoWsg;
 pub use output_latch::OutputLatch;
 pub use pia6820::Pia6820;
 pub use pokey::Pokey;
+pub use ssio::SsioBoard;
 pub use williams_blitter::WilliamsBlitter;
 pub use z80ctc::Z80Ctc;

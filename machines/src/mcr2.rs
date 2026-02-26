@@ -8,7 +8,7 @@ use phosphor_core::device::Z80Ctc;
 use phosphor_core::gfx;
 use phosphor_macros::BusDebug;
 
-use crate::ssio::SsioBoard;
+use phosphor_core::device::SsioBoard;
 
 pub(crate) mod region {
     pub const ROM: u8 = 1;
