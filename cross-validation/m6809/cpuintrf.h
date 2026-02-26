@@ -1,4 +1,4 @@
-// MAME cpuintrf.h shim for standalone mame4all I8039 cross-validation.
+// MAME cpuintrf.h shim for standalone mame4all M6809 cross-validation.
 // Provides CPU interface stubs and constants.
 
 #ifndef CPUINTRF_H
@@ -7,7 +7,6 @@
 #include "osd_cpu.h"
 
 // --- CPU interface stubs ---
-#define change_pc(pc)                ((void)0)
 #define change_pc16(pc)              ((void)0)
 #define CLEAR_LINE                   0
 #define ASSERT_LINE                  1
@@ -24,23 +23,13 @@
 #define CPU_INFO_REG_LAYOUT 100
 #define CPU_INFO_WIN_LAYOUT 101
 
-// --- State save stubs (from state.h) ---
-#define state_save_register_UINT8(mod, inst, name, ptr, cnt)   ((void)0)
-#define state_save_register_UINT16(mod, inst, name, ptr, cnt)  ((void)0)
-#define state_save_register_INT32(mod, inst, name, ptr, cnt)   ((void)0)
-#define state_save_register_int(mod, inst, name, ptr)          ((void)0)
-#define state_save_register_func_postload(fn)                  ((void)0)
-
 // --- Logging stubs ---
 #define logerror(...)                ((void)0)
 
+// --- CPU variant selection ---
+#define HAS_HD6309  0
+
 // --- Misc stubs ---
 #define cpu_getactivecpu()           0
-
-// --- CPU variant selection ---
-// Only compile the I8035 variant (thin wrapper around I8039)
-#define HAS_I8035   1
-#define HAS_I8048   0
-#define HAS_N7751   0
 
 #endif // CPUINTRF_H

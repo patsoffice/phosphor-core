@@ -1,5 +1,5 @@
-// Cross-validation harness for phosphor-core M6800 CPU
-// Links mame4all M6800 as an independent reference emulator
+// Cross-validation harness for phosphor-core M6809 CPU
+// Links mame4all M6809 as an independent reference emulator
 // and validates against phosphor-generated JSON test vectors.
 
 #include <cstdint>
@@ -10,13 +10,13 @@
 #include <string>
 #include <vector>
 
-#include "mame4all/examples/mame4all/src/cpu/m6800/m6800.h"
+#include "mame4all/examples/mame4all/src/cpu/m6809/m6809.h"
 #include "include/nlohmann/json.hpp"
 
 using json = nlohmann::json;
 
-// Flat 64KB memory used by the mame4all M6800 shim
-uint8_t m6800_flat_memory[0x10000];
+// Flat 64KB memory used by the mame4all M6809 shim
+uint8_t m6809_flat_memory[0x10000];
 
 struct Failure {
     std::string test_name;
@@ -25,12 +25,12 @@ struct Failure {
 
 int main(int argc, char *argv[]) {
     if (argc < 2) {
-        fprintf(stderr, "Usage: validate_m6800 <test.json> [test2.json ...]\n");
+        fprintf(stderr, "Usage: validate_m6809_mame <test.json> [test2.json ...]\n");
         return 1;
     }
 
     // Initialize CPU once
-    m6800_reset(nullptr);
+    m6809_reset(nullptr);
 
     int total_tests = 0;
     int total_passed = 0;
@@ -60,7 +60,7 @@ int main(int argc, char *argv[]) {
             std::string first_error;
 
             // Reset CPU fully and clear memory to avoid stale state
-            memset(m6800_flat_memory, 0, sizeof(m6800_flat_memory));
+            memset(m6809_flat_memory, 0, sizeof(m6809_flat_memory));
 
             // Load initial state
             auto &init = tc["initial"];
@@ -69,26 +69,27 @@ int main(int argc, char *argv[]) {
             for (auto &ram_entry : init["ram"]) {
                 uint16_t addr = ram_entry[0].get<uint16_t>();
                 uint8_t val = ram_entry[1].get<uint8_t>();
-                m6800_flat_memory[addr] = val;
+                m6809_flat_memory[addr] = val;
             }
 
-            // Reset CPU: clears wai_state, irq_state, extra_cycles, sets
-            // insn/cycles tables. PC will be loaded from 0xFFFE (which is
-            // whatever is in memory), but we override it below.
-            m6800_reset(nullptr);
+            // Reset CPU: clears interrupt state, loads PC from reset vector
+            // at 0xFFFE. We override PC and all registers below.
+            m6809_reset(nullptr);
 
-            // Set registers via mame4all API (overrides reset vector PC)
-            m6800_set_reg(M6800_PC, init["pc"].get<uint16_t>());
-            m6800_set_reg(M6800_S, init["sp"].get<uint16_t>());
-            m6800_set_reg(M6800_A, init["a"].get<uint8_t>());
-            m6800_set_reg(M6800_B, init["b"].get<uint8_t>());
-            m6800_set_reg(M6800_X, init["x"].get<uint16_t>());
-            m6800_set_reg(M6800_CC, init["cc"].get<uint8_t>());
+            // Set registers via mame4all API
+            m6809_set_reg(M6809_PC, init["pc"].get<uint16_t>());
+            m6809_set_reg(M6809_S,  init["s"].get<uint16_t>());
+            m6809_set_reg(M6809_U,  init["u"].get<uint16_t>());
+            m6809_set_reg(M6809_A,  init["a"].get<uint8_t>());
+            m6809_set_reg(M6809_B,  init["b"].get<uint8_t>());
+            m6809_set_reg(M6809_DP, init["dp"].get<uint8_t>());
+            m6809_set_reg(M6809_X,  init["x"].get<uint16_t>());
+            m6809_set_reg(M6809_Y,  init["y"].get<uint16_t>());
+            m6809_set_reg(M6809_CC, init["cc"].get<uint8_t>());
 
             // Execute exactly one instruction: budget of 1 cycle ensures the
-            // do-while loop exits after one instruction (min 2 cycles),
-            // returning actual cycles consumed as (1 - m6800_ICount).
-            int cycles_consumed = m6800_execute(1);
+            // loop exits after one instruction, returning actual cycles consumed.
+            int cycles_consumed = m6809_execute(1);
 
             // Check final state
             auto &fin = tc["final"];
@@ -103,22 +104,21 @@ int main(int argc, char *argv[]) {
                 }
             };
 
-            check_reg("pc", m6800_get_reg(M6800_PC), fin["pc"].get<uint16_t>());
-            check_reg("a", m6800_get_reg(M6800_A), fin["a"].get<uint8_t>());
-            check_reg("b", m6800_get_reg(M6800_B), fin["b"].get<uint8_t>());
-            check_reg("x", m6800_get_reg(M6800_X), fin["x"].get<uint16_t>());
-            check_reg("sp", m6800_get_reg(M6800_S), fin["sp"].get<uint16_t>());
-
-            // Compare CC with mask 0x3F (bits 6-7 are undefined on real 6800)
-            unsigned cc_got = m6800_get_reg(M6800_CC) & 0x3F;
-            unsigned cc_exp = fin["cc"].get<uint8_t>() & 0x3F;
-            check_reg("cc", cc_got, cc_exp);
+            check_reg("pc", m6809_get_reg(M6809_PC), fin["pc"].get<uint16_t>());
+            check_reg("a",  m6809_get_reg(M6809_A),  fin["a"].get<uint8_t>());
+            check_reg("b",  m6809_get_reg(M6809_B),  fin["b"].get<uint8_t>());
+            check_reg("dp", m6809_get_reg(M6809_DP), fin["dp"].get<uint8_t>());
+            check_reg("x",  m6809_get_reg(M6809_X),  fin["x"].get<uint16_t>());
+            check_reg("y",  m6809_get_reg(M6809_Y),  fin["y"].get<uint16_t>());
+            check_reg("u",  m6809_get_reg(M6809_U),  fin["u"].get<uint16_t>());
+            check_reg("s",  m6809_get_reg(M6809_S),  fin["s"].get<uint16_t>());
+            check_reg("cc", m6809_get_reg(M6809_CC), fin["cc"].get<uint8_t>());
 
             // Check memory
             for (auto &ram_entry : fin["ram"]) {
                 uint16_t addr = ram_entry[0].get<uint16_t>();
                 uint8_t expected = ram_entry[1].get<uint8_t>();
-                uint8_t got = m6800_flat_memory[addr];
+                uint8_t got = m6809_flat_memory[addr];
                 if (got != expected && passed) {
                     passed = false;
                     char buf[256];

@@ -7,3 +7,7 @@
 [submodule "cpu-validation/test_data/z80"]
 	path = cpu-validation/test_data/z80
 	url = https://github.com/SingleStepTests/z80.git
+[submodule "cross-validation/mame4all"]
+	path = cross-validation/mame4all
+	url = https://github.com/ValveSoftware/steamlink-sdk.git
+	ignore = dirty

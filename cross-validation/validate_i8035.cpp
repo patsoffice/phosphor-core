@@ -12,7 +12,8 @@
 #include <string>
 #include <vector>
 
-#include "i8039/i8039.h"
+#include "i8039/cpuintrf.h"
+#include "mame4all/examples/mame4all/src/cpu/i8039/i8039.h"
 #include "include/nlohmann/json.hpp"
 
 using json = nlohmann::json;

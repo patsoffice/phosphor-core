@@ -1,4 +1,4 @@
-// MAME osd_cpu.h shim for standalone mame4all I8039 cross-validation.
+// MAME osd_cpu.h shim for standalone mame4all M6809 cross-validation.
 // Provides type aliases and the PAIR union that the mame4all code expects.
 
 #ifndef OSD_CPU_H

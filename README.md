@@ -140,21 +140,21 @@ SDL2 + egui windowed frontend — external dependencies: SDL2, zip, egui:
 
 [SingleStepTests](https://github.com/SingleStepTests/65x02)-style test infrastructure for validating CPU implementations against randomized test vectors with cycle-by-cycle bus traces. Cross-validates against independent reference emulators to catch flag, timing, and behavioral bugs.
 
-- **M6809** — 266 opcodes, 266,000 test vectors, cross-validated against [elmerucr/MC6809](https://github.com/elmerucr/MC6809). See [cpu-validation/README_6809.md](cpu-validation/README_6809.md).
-- **M6800** — 192 opcodes, 192,000 test vectors, cross-validated against [mame4all](https://github.com/mamedev/mame) M6800. See [cpu-validation/README_6800.md](cpu-validation/README_6800.md).
+- **M6809** — 266 opcodes, 266,000 test vectors, cross-validated against [elmerucr/MC6809](https://github.com/elmerucr/MC6809) and [mame4all](https://github.com/ValveSoftware/steamlink-sdk/tree/master/examples/mame4all) M6809. See [cpu-validation/README_6809.md](cpu-validation/README_6809.md).
+- **M6800** — 192 opcodes, 192,000 test vectors, cross-validated against [mame4all](https://github.com/ValveSoftware/steamlink-sdk/tree/master/examples/mame4all) M6800. See [cpu-validation/README_6800.md](cpu-validation/README_6800.md).
 - **M6502** — 151 opcodes, 1,510,000 test vectors, validated against [SingleStepTests/65x02](https://github.com/SingleStepTests/65x02) with cycle-by-cycle bus traces. See [cpu-validation/README_6502.md](cpu-validation/README_6502.md).
 - **Z80** — 1604 opcodes, 1,604,000 test vectors, validated against [SingleStepTests/z80](https://github.com/SingleStepTests/z80) with full register/flag/timing verification. See [cpu-validation/README_z80.md](cpu-validation/README_z80.md).
-- **I8035** — 229 opcodes, 229,000 test vectors, cross-validated against [MAME](https://github.com/mamedev/mame) MCS-48. See [cpu-validation/README_i8035.md](cpu-validation/README_i8035.md).
+- **I8035** — 229 opcodes, 229,000 test vectors, cross-validated against [mame4all](https://github.com/ValveSoftware/steamlink-sdk/tree/master/examples/mame4all) MCS-48. See [cpu-validation/README_i8035.md](cpu-validation/README_i8035.md).
 
 ### Cross-Validation (`cross-validation/`)
 
 C++ harnesses that validate phosphor-core's test vectors against independent reference emulators. Compares registers, memory, and cycle counts.
 
-- **M6809** — 266,000/266,000 tests pass (100%)
-- **M6800** — 191,996/192,000 tests pass (99.998%)
+- **M6809** — 266,000/266,000 tests pass (100%) vs elmerucr/MC6809; 261,601/266,000 (98.3%) vs mame4all
+- **M6800** — 191,996/192,000 tests pass (99.998%) vs mame4all
 - **M6502** — 1,510,000/1,510,000 tests pass (100%) — via SingleStepTests/65x02 reference vectors
 - **Z80** — 1,604,000/1,604,000 tests pass (100%) — via SingleStepTests/z80 reference vectors
-- **I8035** — 229,000 test vectors generated, cross-validation harness ready (awaiting vendored MAME mcs48)
+- **I8035** — 221,000/225,000 tests pass (98.2%) vs mame4all (4 ANLD opcodes excluded due to known MAME bug)
 
 ## Project Structure
 
@@ -254,11 +254,15 @@ phosphor-core/
 └── cross-validation/               # C++ reference validation
     ├── Makefile
     ├── validate_m6809.cpp          # M6809 harness using elmerucr/MC6809
+    ├── validate_m6809_mame.cpp     # M6809 harness using mame4all
     ├── validate_m6800.cpp          # M6800 harness using mame4all
-    ├── validate_i8035.cpp          # I8035 (MCS-48) harness using MAME mcs48
+    ├── validate_i8035.cpp          # I8035 (MCS-48) harness using mame4all
     ├── bin/                        # Compiled binaries (gitignored)
     ├── mc6809/                     # Git submodule: elmerucr/MC6809
-    ├── m6800/                      # mame4all M6800 CPU core + shim
+    ├── mame4all/                   # Git submodule: mame4all (ValveSoftware/steamlink-sdk)
+    ├── m6809/                      # mame4all M6809 shim headers
+    ├── m6800/                      # mame4all M6800 shim headers
+    ├── i8039/                      # mame4all I8039 shim headers
     └── include/nlohmann/json.hpp   # Single-header JSON parser
 ```
 
