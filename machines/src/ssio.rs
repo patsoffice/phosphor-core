@@ -35,8 +35,8 @@ use phosphor_core::audio::AudioResampler;
 use phosphor_core::bus_split;
 use phosphor_core::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
-use phosphor_core::cpu::z80::Z80;
 use phosphor_core::cpu::Cpu;
+use phosphor_core::cpu::z80::Z80;
 use phosphor_core::device::Ay8910;
 
 /// SSIO CPU clock: 16 MHz / 8 = 2 MHz.
@@ -74,8 +74,8 @@ pub struct SsioBoard {
     ay: [Ay8910; 2],
 
     // Memory
-    rom: Vec<u8>,        // 16 KB sound ROM
-    ram: [u8; 0x0400],   // 1 KB RAM
+    rom: Vec<u8>,      // 16 KB sound ROM
+    ram: [u8; 0x0400], // 1 KB RAM
 
     // Communication with main CPU
     data_latch: [u8; 4], // Command latches (main CPU writes, SSIO reads)

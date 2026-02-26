@@ -195,6 +195,90 @@ pub fn decode_dkong_sprites(rom: &[u8], base: usize, count: usize) -> GfxCache {
     cache
 }
 
+// ---------------------------------------------------------------------------
+// Midway MCR family ROM layouts
+// ---------------------------------------------------------------------------
+
+/// Decode MCR tiles: 8x8, 4bpp.
+///
+/// MAME layout `mcr_bg_layout`: ROM is split in two halves. Each half
+/// stores two interleaved bitplanes in 2-byte words (16 bytes per tile).
+///
+/// Plane mapping (index 0 = MSB of pixel):
+///   - Planes 0,1 from second half of ROM
+///   - Planes 2,3 from first half of ROM
+///
+/// Within each half: pixel bits are packed at 2-bit intervals across
+/// each 2-byte row word (8 pixels per row, 2 bits per pixel per half).
+pub fn decode_mcr_tiles(rom: &[u8], count: usize) -> GfxCache {
+    let half = rom.len() / 2;
+    let mut cache = GfxCache::new(count, 8, 8);
+    for code in 0..count {
+        for py in 0..8usize {
+            for px in 0..8usize {
+                let byte_off = code * 16 + py * 2 + px / 4;
+                let bit_pos = (px % 4) * 2;
+
+                let lo_byte = rom[byte_off]; // first half
+                let hi_byte = rom[half + byte_off]; // second half
+
+                // Plane ordering: planeoffs[0]=half (MSB), [1]=half+1, [2]=0, [3]=1 (LSB)
+                let p0 = (hi_byte >> bit_pos) & 1; // plane 0 → pixel bit 3
+                let p1 = (hi_byte >> (bit_pos + 1)) & 1; // plane 1 → pixel bit 2
+                let p2 = (lo_byte >> bit_pos) & 1; // plane 2 → pixel bit 1
+                let p3 = (lo_byte >> (bit_pos + 1)) & 1; // plane 3 → pixel bit 0
+
+                cache.set_pixel(code, px, py, (p0 << 3) | (p1 << 2) | (p2 << 1) | p3);
+            }
+        }
+    }
+    cache
+}
+
+/// Decode MCR sprites: 32x32, 4bpp.
+///
+/// MAME layout `mcr_sprite_layout`: 4 ROM chips concatenated into one
+/// region (each chip is one quarter). Plane offsets {0,1,2,3} are packed
+/// into nibbles. Each sprite uses 128 bytes per ROM chip (4 bytes/row × 32 rows).
+///
+/// X columns are distributed across the 4 ROMs in pairs:
+///   - Columns 0-1,8-9,16-17,24-25 from ROM 0
+///   - Columns 2-3,10-11,18-19,26-27 from ROM 1
+///   - Columns 4-5,12-13,20-21,28-29 from ROM 2
+///   - Columns 6-7,14-15,22-23,30-31 from ROM 3
+///
+/// Within each ROM, each row occupies 4 bytes. Each byte holds two pixels
+/// (low nibble = even column, high nibble = odd column), with nibble bits
+/// reversed (bit 0 of nibble = MSB of pixel value).
+pub fn decode_mcr_sprites(rom: &[u8], count: usize) -> GfxCache {
+    let quarter = rom.len() / 4;
+    let mut cache = GfxCache::new(count, 32, 32);
+    for code in 0..count {
+        for py in 0..32usize {
+            for px in 0..32usize {
+                let rom_idx = (px / 2) % 4;
+                let group = px / 8;
+                let sub_pixel = px % 2;
+
+                let rom_offset = rom_idx * quarter;
+                let byte_off = code * 128 + py * 4 + group;
+                let byte = rom[rom_offset + byte_off];
+                let nibble = (byte >> (sub_pixel * 4)) & 0x0F;
+
+                // Reverse nibble: MAME planeoffs {0,1,2,3} means
+                // bit 0 of nibble is MSB of pixel value
+                let pixel = ((nibble & 1) << 3)
+                    | ((nibble & 2) << 1)
+                    | ((nibble & 4) >> 1)
+                    | ((nibble & 8) >> 3);
+
+                cache.set_pixel(code, px, py, pixel);
+            }
+        }
+    }
+    cache
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,5 +349,95 @@ mod tests {
         for px in 8..16 {
             assert_eq!(cache.pixel(0, px, 0), 0, "px={px}");
         }
+    }
+
+    // -- MCR tile/sprite decode tests --
+
+    #[test]
+    fn decode_mcr_tiles_known_pattern() {
+        // 1 tile, 32 bytes total (16 bytes first half + 16 bytes second half).
+        // Tile data: 16 bytes per tile per half.
+        // For px=0, py=0: bit_pos=0, byte_off=0
+        //   lo_byte (first half, byte 0): set bits 0,1 -> p2=1, p3=1
+        //   hi_byte (second half, byte 0): set bit 0 only -> p0=1, p1=0
+        //   pixel = (1<<3)|(0<<2)|(1<<1)|1 = 0b1011 = 11
+        let mut rom = vec![0u8; 32]; // 16 bytes per half
+        rom[0] = 0x03; // first half, tile 0, row 0: bits 0,1 set
+        rom[16] = 0x01; // second half, tile 0, row 0: bit 0 set
+
+        let cache = decode_mcr_tiles(&rom, 1);
+        assert_eq!(cache.pixel(0, 0, 0), 0b1011); // px=0: p0=1,p1=0,p2=1,p3=1
+    }
+
+    #[test]
+    fn decode_mcr_tiles_all_planes_set() {
+        // All bits set in both halves for px=0, py=0
+        let mut rom = vec![0u8; 32];
+        rom[0] = 0xFF; // first half: p2=1, p3=1 for all 4 pixels in this byte
+        rom[16] = 0xFF; // second half: p0=1, p1=1 for all 4 pixels
+
+        let cache = decode_mcr_tiles(&rom, 1);
+        // px=0: bit_pos=0, all 4 planes = 1 -> pixel = 0x0F
+        assert_eq!(cache.pixel(0, 0, 0), 0x0F);
+        // px=1: bit_pos=2, all 4 planes = 1 -> pixel = 0x0F
+        assert_eq!(cache.pixel(0, 1, 0), 0x0F);
+    }
+
+    #[test]
+    fn decode_mcr_sprites_known_pattern() {
+        // 1 sprite, 4 ROM quarters of 128 bytes each = 512 bytes total.
+        // Sprite 0, row 0, ROM 0 (columns 0-1), group 0 (byte 0 of row).
+        // Byte value 0x0F: low nibble = 0xF (sub_pixel=0), high nibble = 0x0 (sub_pixel=1)
+        // Low nibble 0xF = 0b1111:
+        //   reverse: bit0(1)<<3 | bit1(1)<<1 | bit2(1)>>1 ... wait
+        //   0xF reversed = 0xF (symmetric)
+        // High nibble 0x0: pixel = 0
+        let mut rom = vec![0u8; 512]; // 4 quarters of 128 bytes
+        rom[0] = 0x0F; // ROM 0, sprite 0, row 0, group 0
+
+        let cache = decode_mcr_sprites(&rom, 1);
+        assert_eq!(cache.pixel(0, 0, 0), 0x0F); // px=0: ROM0, sub_pixel=0, nibble=0xF
+        assert_eq!(cache.pixel(0, 1, 0), 0x00); // px=1: ROM0, sub_pixel=1, nibble=0x0
+    }
+
+    #[test]
+    fn decode_mcr_sprites_nibble_reversal() {
+        // Test that nibble bit reversal works correctly.
+        // Nibble 0x01 = 0b0001 should become 0b1000 = 0x08
+        let mut rom = vec![0u8; 512];
+        rom[0] = 0x01; // ROM 0, low nibble = 1
+
+        let cache = decode_mcr_sprites(&rom, 1);
+        assert_eq!(cache.pixel(0, 0, 0), 0x08); // reversed: bit0=1 -> pixel bit 3
+    }
+
+    #[test]
+    fn decode_mcr_sprites_rom_distribution() {
+        // Verify columns are distributed across ROMs correctly.
+        // px=0,1 -> ROM 0; px=2,3 -> ROM 1; px=4,5 -> ROM 2; px=6,7 -> ROM 3
+        // Then px=8,9 -> ROM 0 again (group 1), etc.
+        let mut rom = vec![0u8; 512]; // 4 x 128
+        // Set ROM 0 byte to 0x11 (low nibble=1, high nibble=1)
+        rom[0] = 0x11;
+        // Set ROM 1 byte to 0x22
+        rom[128] = 0x22;
+        // Set ROM 2 byte to 0x33
+        rom[256] = 0x33;
+        // Set ROM 3 byte to 0x44
+        rom[384] = 0x44;
+
+        let cache = decode_mcr_sprites(&rom, 1);
+        // px=0: ROM0, sub_pixel=0, nibble=0x1 -> reversed=0x8
+        assert_eq!(cache.pixel(0, 0, 0), 0x08);
+        // px=1: ROM0, sub_pixel=1, nibble=0x1 -> reversed=0x8
+        assert_eq!(cache.pixel(0, 1, 0), 0x08);
+        // px=2: ROM1, sub_pixel=0, nibble=0x2 -> reversed=0x4
+        assert_eq!(cache.pixel(0, 2, 0), 0x04);
+        // px=3: ROM1, sub_pixel=1, nibble=0x2 -> reversed=0x4
+        assert_eq!(cache.pixel(0, 3, 0), 0x04);
+        // px=4: ROM2, sub_pixel=0, nibble=0x3 -> reversed=0xC
+        assert_eq!(cache.pixel(0, 4, 0), 0x0C);
+        // px=6: ROM3, sub_pixel=0, nibble=0x4 -> reversed=0x2
+        assert_eq!(cache.pixel(0, 6, 0), 0x02);
     }
 }
