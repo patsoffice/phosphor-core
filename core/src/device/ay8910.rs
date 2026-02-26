@@ -29,6 +29,8 @@
 //! | R14 | PORT_A    | I/O Port A data                                      |
 //! | R15 | PORT_B    | I/O Port B data                                      |
 
+use crate::audio::AudioResampler;
+
 /// AY-8910 DAC volume table (logarithmic, ~3 dB per step).
 ///
 /// Level 0 produces silence (zero_is_off characteristic of the AY-8910).
@@ -37,8 +39,6 @@
 const VOLUME_TABLE: [i32; 16] = [
     0, 64, 91, 128, 181, 256, 362, 512, 724, 1024, 1448, 2048, 2896, 4096, 5793, 8192,
 ];
-
-const OUTPUT_SAMPLE_RATE: u64 = 44_100;
 
 /// AY-8910 Programmable Sound Generator.
 pub struct Ay8910 {
@@ -70,12 +70,7 @@ pub struct Ay8910 {
     // Clock prescaler (chip_clock / 8)
     prescaler_count: u8,
 
-    // Audio output (Bresenham resampling from chip clock to 44.1 kHz)
-    chip_clock_hz: u64,
-    audio_buffer: Vec<i16>,
-    sample_accum: i64,
-    sample_count: u32,
-    sample_phase: u64,
+    resampler: AudioResampler,
 
     // Per-channel gain for external volume modulation (0–255, 255 = full)
     channel_gain: [u8; 3],
@@ -105,11 +100,7 @@ impl Ay8910 {
             port_a_in: 0,
             port_b_in: 0,
             prescaler_count: 0,
-            chip_clock_hz,
-            audio_buffer: Vec::with_capacity(2048),
-            sample_accum: 0,
-            sample_count: 0,
-            sample_phase: 0,
+            resampler: AudioResampler::new(chip_clock_hz, 44_100),
             channel_gain: [255; 3],
         }
     }
@@ -174,23 +165,8 @@ impl Ay8910 {
             self.clock_generators();
         }
 
-        // Compute current output and accumulate for Bresenham resampling
         let output = self.compute_output();
-        self.sample_accum += output as i64;
-        self.sample_count += 1;
-        self.sample_phase += OUTPUT_SAMPLE_RATE;
-
-        if self.sample_phase >= self.chip_clock_hz {
-            self.sample_phase -= self.chip_clock_hz;
-            let avg = if self.sample_count > 0 {
-                (self.sample_accum / self.sample_count as i64) as i16
-            } else {
-                0
-            };
-            self.audio_buffer.push(avg);
-            self.sample_accum = 0;
-            self.sample_count = 0;
-        }
+        self.resampler.tick(output as i16);
     }
 
     /// Set the external input value for I/O Port A.
@@ -225,10 +201,7 @@ impl Ay8910 {
     /// Drain accumulated audio samples into the provided buffer.
     /// Returns the number of samples written.
     pub fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
-        let n = buffer.len().min(self.audio_buffer.len());
-        buffer[..n].copy_from_slice(&self.audio_buffer[..n]);
-        self.audio_buffer.drain(..n);
-        n
+        self.resampler.fill_audio(buffer)
     }
 
     /// Reset the PSG to initial state.
@@ -250,10 +223,7 @@ impl Ay8910 {
         self.port_a_in = 0;
         self.port_b_in = 0;
         self.prescaler_count = 0;
-        self.audio_buffer.clear();
-        self.sample_accum = 0;
-        self.sample_count = 0;
-        self.sample_phase = 0;
+        self.resampler.reset();
         self.channel_gain = [255; 3];
     }
 
@@ -500,10 +470,7 @@ impl Saveable for Ay8910 {
         w.write_u8(self.port_b_in);
         w.write_u8(self.prescaler_count);
 
-        w.write_u64_le(self.chip_clock_hz);
-        w.write_i64_le(self.sample_accum);
-        w.write_u32_le(self.sample_count);
-        w.write_u64_le(self.sample_phase);
+        self.resampler.save_state(w);
 
         for i in 0..3 {
             w.write_u8(self.channel_gain[i]);
@@ -535,16 +502,12 @@ impl Saveable for Ay8910 {
         self.port_b_in = r.read_u8()?;
         self.prescaler_count = r.read_u8()?;
 
-        self.chip_clock_hz = r.read_u64_le()?;
-        self.sample_accum = r.read_i64_le()?;
-        self.sample_count = r.read_u32_le()?;
-        self.sample_phase = r.read_u64_le()?;
+        self.resampler.load_state(r)?;
 
         for i in 0..3 {
             self.channel_gain[i] = r.read_u8()?;
         }
 
-        self.audio_buffer.clear();
         Ok(())
     }
 }
@@ -752,7 +715,7 @@ mod tests {
         let data = w.into_vec();
 
         // Create fresh instance and load
-        let mut ay2 = Ay8910::new(1_000_000); // Different clock to verify it's overwritten
+        let mut ay2 = Ay8910::new(2_000_000);
         let mut r = StateReader::new(&data);
         ay2.load_state(&mut r).unwrap();
 
@@ -761,7 +724,6 @@ mod tests {
         assert_eq!(ay2.tone_counters, ay.tone_counters);
         assert_eq!(ay2.noise_lfsr, ay.noise_lfsr);
         assert_eq!(ay2.envelope_volume, ay.envelope_volume);
-        assert_eq!(ay2.chip_clock_hz, 2_000_000);
         assert_eq!(ay2.channel_gain, [255; 3]);
     }
 }

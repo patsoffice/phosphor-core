@@ -1,5 +1,6 @@
+use phosphor_core::audio::AudioResampler;
 use phosphor_core::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
-use phosphor_core::core::{Bus, BusMaster};
+use phosphor_core::core::{Bus, BusMaster, ClockDivider};
 use phosphor_core::cpu::i8035::I8035;
 use phosphor_core::cpu::z80::Z80;
 use phosphor_core::device::dac::Mc1408Dac;
@@ -260,14 +261,11 @@ pub struct Tkg04Board {
     // Audio output
     #[debug_device("DAC")]
     pub(crate) dac: Mc1408Dac,
-    pub(crate) audio_buffer: Vec<i16>,
-    pub(crate) sample_accum: i64,
-    pub(crate) sample_count: u32,
-    pub(crate) sample_phase: u64,
+    pub(crate) resampler: AudioResampler,
 
     // Timing
     pub(crate) clock: u64,
-    pub(crate) sound_phase_accum: u32,
+    pub(crate) sound_clock: ClockDivider,
     pub(crate) vblank_nmi_pending: bool,
 
     // Discrete sound effects (walk, jump, stomp)
@@ -314,12 +312,9 @@ impl Tkg04Board {
             dma: I8257::new(),
             sound_irq_pending: false,
             dac: Mc1408Dac::new(),
-            audio_buffer: Vec::with_capacity(1024),
-            sample_accum: 0,
-            sample_count: 0,
-            sample_phase: 0,
+            resampler: AudioResampler::new(CPU_CLOCK_HZ, OUTPUT_SAMPLE_RATE),
             clock: 0,
-            sound_phase_accum: 0,
+            sound_clock: ClockDivider::new(SOUND_TICK_NUM, SOUND_TICK_DEN),
             vblank_nmi_pending: false,
             discrete: DkongDiscrete::new(),
         }
@@ -511,26 +506,15 @@ impl Tkg04Board {
         self.cpu.execute_cycle(bus, BusMaster::Cpu(0));
 
         // Tick sound CPU (Bresenham 25/192 ratio: 400 kHz from 3.072 MHz)
-        self.sound_phase_accum += SOUND_TICK_NUM;
-        if self.sound_phase_accum >= SOUND_TICK_DEN {
-            self.sound_phase_accum -= SOUND_TICK_DEN;
+        if self.sound_clock.tick() {
             self.sound_cpu.execute_cycle(bus, BusMaster::Cpu(1));
         }
 
         // Audio accumulation (Bresenham downsample: 3.072 MHz → 44.1 kHz)
-        self.sample_accum += self.dac.sample_i16() as i64;
-        self.sample_count += 1;
-        self.sample_phase += OUTPUT_SAMPLE_RATE;
-        if self.sample_phase >= CPU_CLOCK_HZ {
-            self.sample_phase -= CPU_CLOCK_HZ;
-            if self.sample_count > 0 {
-                let dac_sample = (self.sample_accum / self.sample_count as i64) as i32;
-                let discrete_sample = self.discrete.generate_sample() as i32;
-                let mixed = (dac_sample + discrete_sample).clamp(-32767, 32767) as i16;
-                self.audio_buffer.push(mixed);
-            }
-            self.sample_accum = 0;
-            self.sample_count = 0;
+        if let Some(dac_avg) = self.resampler.tick_sample(self.dac.sample_i16()) {
+            let discrete_sample = self.discrete.generate_sample() as i32;
+            let mixed = (dac_avg as i32 + discrete_sample).clamp(-32767, 32767) as i16;
+            self.resampler.push_sample(mixed);
         }
 
         self.clock += 1;
@@ -562,10 +546,7 @@ impl Tkg04Board {
     // -----------------------------------------------------------------------
 
     pub fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
-        let n = buffer.len().min(self.audio_buffer.len());
-        buffer[..n].copy_from_slice(&self.audio_buffer[..n]);
-        self.audio_buffer.drain(..n);
-        n
+        self.resampler.fill_audio(buffer)
     }
 
     // -----------------------------------------------------------------------
@@ -588,11 +569,8 @@ impl Tkg04Board {
         self.dma.reset();
 
         self.clock = 0;
-        self.sound_phase_accum = 0;
-        self.sample_accum = 0;
-        self.sample_count = 0;
-        self.sample_phase = 0;
-        self.audio_buffer.clear();
+        self.sound_clock.reset();
+        self.resampler.reset();
         self.dac.reset();
 
         self.in0 = 0x00;
@@ -704,11 +682,9 @@ impl Tkg04Board {
         self.dac.save_state(w);
         self.discrete.save_state(w);
         w.write_bool(self.sound_irq_pending);
-        w.write_i64_le(self.sample_accum);
-        w.write_u32_le(self.sample_count);
-        w.write_u64_le(self.sample_phase);
+        self.resampler.save_state(w);
         w.write_u64_le(self.clock);
-        w.write_u32_le(self.sound_phase_accum);
+        self.sound_clock.save_state(w);
         w.write_bool(self.vblank_nmi_pending);
     }
 
@@ -733,13 +709,10 @@ impl Tkg04Board {
         self.dac.load_state(r)?;
         self.discrete.load_state(r)?;
         self.sound_irq_pending = r.read_bool()?;
-        self.sample_accum = r.read_i64_le()?;
-        self.sample_count = r.read_u32_le()?;
-        self.sample_phase = r.read_u64_le()?;
+        self.resampler.load_state(r)?;
         self.clock = r.read_u64_le()?;
-        self.sound_phase_accum = r.read_u32_le()?;
+        self.sound_clock.load_state(r)?;
         self.vblank_nmi_pending = r.read_bool()?;
-        self.audio_buffer.clear();
         Ok(())
     }
 }

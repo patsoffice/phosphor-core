@@ -93,6 +93,8 @@ ROMs are matched by CRC32 checksum, so any MAME ROM naming convention works. All
 | **Atari DVG** | Complete | Digital Vector Generator: 8 opcodes, 7497 BRM, hardware clipping |
 | **MC1408 DAC** | Complete | 8-bit digital-to-analog converter for sound output |
 | **74LS259 Latch** | Complete | 8-bit addressable output latch for control signals |
+| **AudioResampler** | Complete | Bresenham box-filter downsampler (CPU clock → 44.1 kHz), i16 and f32 variants |
+| **ClockDivider** | Complete | Bresenham fractional clock divider for cross-domain ticking |
 | **DK Discrete** | Complete | Donkey Kong analog sound effects (walk, jump, stomp) |
 | **CMOS RAM** | Complete | 1KB battery-backed RAM with save/load persistence |
 | **ROM Loader** | Complete | MAME ZIP support, CRC32-based ROM matching, multi-variant support |
@@ -117,6 +119,8 @@ Contains all reusable components — zero external dependencies:
 - Machine trait (frontend-agnostic display/input/render interface)
 - Device trait (common interface for all peripherals: reset, read/write, tick)
 - Debug traits (Debuggable, DebugCpu, BusDebug) for interactive inspection and device register writes
+- Audio utilities (AudioResampler, AudioResamplerF32 — Bresenham box-filter downsampling from CPU clock to output rate)
+- ClockDivider (Bresenham fractional clock divider for cross-domain ticking)
 - Peripheral devices (MC6821 PIA, AY-8910, POKEY, Namco WSG, Z80 CTC, Williams SC1/SC2 blitter, DVG, I8257 DMA, MC1408 DAC, 74LS259 latch, CMOS RAM)
 
 ### Machines Crate (`phosphor-machines`)
@@ -178,9 +182,12 @@ phosphor-core/
 ├── core/                           # phosphor-core crate
 │   ├── Cargo.toml                  # Core crate manifest (zero dependencies)
 │   ├── src/
-│   │   ├── lib.rs                  # Library root, exports core, cpu, device
+│   │   ├── lib.rs                  # Library root, exports core, cpu, device, audio
+│   │   ├── audio/                  # Shared audio utilities
+│   │   │   └── mod.rs              # AudioResampler (i16), AudioResamplerF32 (f32)
 │   │   ├── core/                   # Core abstractions (complete)
 │   │   │   ├── bus.rs              # Bus trait, BusMaster, InterruptState
+│   │   │   ├── clock.rs            # ClockDivider (Bresenham fractional clock)
 │   │   │   ├── component.rs        # Component traits
 │   │   │   ├── debug.rs            # Debuggable, DebugCpu, BusDebug traits
 │   │   │   ├── machine.rs          # Machine trait, InputButton (frontend interface)

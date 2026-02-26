@@ -1,3 +1,4 @@
+use phosphor_core::audio::AudioResampler;
 use phosphor_core::bus_split;
 use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
@@ -201,10 +202,7 @@ pub struct WilliamsBoard {
     // Audio output
     #[debug_device("DAC")]
     pub(crate) dac: Mc1408Dac,
-    pub(crate) audio_buffer: Vec<i16>,
-    pub(crate) sample_accum: i64,
-    pub(crate) sample_count: u32,
-    pub(crate) sample_phase: u64,
+    pub(crate) resampler: AudioResampler,
 
     // System state
     pub watchdog_counter: u32,
@@ -235,10 +233,7 @@ impl WilliamsBoard {
             sound_pia: Pia6820::new(),
             sound_rom: [0; 0x1000],
             dac: Mc1408Dac::new(),
-            audio_buffer: Vec::with_capacity(1024),
-            sample_accum: 0,
-            sample_count: 0,
-            sample_phase: 0,
+            resampler: AudioResampler::new(1_000_000, 44_100),
             watchdog_counter: 0,
             clock: 0,
             rom_pia_input: 0,
@@ -492,20 +487,7 @@ impl WilliamsBoard {
         self.dac.write(dac_byte);
 
         // Bresenham downsample: 1 MHz CPU clock -> 44.1 kHz output
-        const CPU_CLOCK_HZ: u64 = 1_000_000;
-        const OUTPUT_SAMPLE_RATE: u64 = 44_100;
-
-        self.sample_accum += self.dac.sample_i16() as i64;
-        self.sample_count += 1;
-        self.sample_phase += OUTPUT_SAMPLE_RATE;
-
-        if self.sample_phase >= CPU_CLOCK_HZ {
-            self.sample_phase -= CPU_CLOCK_HZ;
-            let sample = (self.sample_accum / self.sample_count as i64) as i16;
-            self.audio_buffer.push(sample);
-            self.sample_accum = 0;
-            self.sample_count = 0;
-        }
+        self.resampler.tick(self.dac.sample_i16());
 
         self.clock += 1;
         self.watchdog_counter += 1;
@@ -521,10 +503,7 @@ impl WilliamsBoard {
         self.blitter.reset();
         self.rom_bank = 0;
         self.dac.reset();
-        self.audio_buffer.clear();
-        self.sample_accum = 0;
-        self.sample_count = 0;
-        self.sample_phase = 0;
+        self.resampler.reset();
         self.watchdog_counter = 0;
         self.clock = 0;
         self.rom_pia_input = 0;
@@ -569,10 +548,7 @@ impl WilliamsBoard {
     }
 
     pub fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
-        let n = buffer.len().min(self.audio_buffer.len());
-        buffer[..n].copy_from_slice(&self.audio_buffer[..n]);
-        self.audio_buffer.drain(..n);
-        n
+        self.resampler.fill_audio(buffer)
     }
 
     // --- Save state helpers (called by game wrappers) ---
@@ -594,9 +570,7 @@ impl WilliamsBoard {
         self.dac.save_state(w);
         // I/O & timing
         w.write_u8(self.rom_bank);
-        w.write_i64_le(self.sample_accum);
-        w.write_u32_le(self.sample_count);
-        w.write_u64_le(self.sample_phase);
+        self.resampler.save_state(w);
         w.write_u32_le(self.watchdog_counter);
         w.write_u64_le(self.clock);
         w.write_u8(self.rom_pia_input);
@@ -619,14 +593,10 @@ impl WilliamsBoard {
         self.dac.load_state(r)?;
         // I/O & timing
         self.rom_bank = r.read_u8()?;
-        self.sample_accum = r.read_i64_le()?;
-        self.sample_count = r.read_u32_le()?;
-        self.sample_phase = r.read_u64_le()?;
+        self.resampler.load_state(r)?;
         self.watchdog_counter = r.read_u32_le()?;
         self.clock = r.read_u64_le()?;
         self.rom_pia_input = r.read_u8()?;
-        // Clear transient buffers
-        self.audio_buffer.clear();
         Ok(())
     }
 }
@@ -751,9 +721,11 @@ mod tests {
         board.clock = 123_456;
         board.watchdog_counter = 789;
         board.rom_pia_input = 0x10;
-        board.sample_accum = -42;
-        board.sample_count = 17;
-        board.sample_phase = 99_999;
+        // Run a few ticks to accumulate some resampler state
+        for _ in 0..100 {
+            board.dac.write(0xA0);
+            board.resampler.tick(board.dac.sample_i16());
+        }
 
         // Write CMOS data
         board.cmos_ram.write(0, 0xF1);
@@ -804,9 +776,6 @@ mod tests {
         assert_eq!(board2.clock, 123_456);
         assert_eq!(board2.watchdog_counter, 789);
         assert_eq!(board2.rom_pia_input, 0x10);
-        assert_eq!(board2.sample_accum, -42);
-        assert_eq!(board2.sample_count, 17);
-        assert_eq!(board2.sample_phase, 99_999);
     }
 
     #[test]

@@ -3,7 +3,7 @@ use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::debug::BusDebug;
 use phosphor_core::core::machine::{AnalogInput, InputButton, Machine};
 use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
-use phosphor_core::core::{Bus, BusMaster};
+use phosphor_core::core::{Bus, BusMaster, ClockDivider};
 use phosphor_core::cpu::m6809::M6809;
 use phosphor_core::cpu::state::M6809State;
 use phosphor_core::cpu::{Cpu, CpuStateTrait};
@@ -274,7 +274,7 @@ pub struct GridleeSystem {
     tone_fraction: u64,   // 24-bit phase accumulator
     tone_volume: u8,      // 8-bit volume
     audio_buffer: Vec<i16>,
-    audio_phase: u64, // Bresenham phase for 1.25 MHz → 44.1 kHz
+    audio_clock: ClockDivider, // Bresenham phase for 1.25 MHz → 44.1 kHz
 
     // Interrupt state
     irq_pending: bool,
@@ -318,7 +318,7 @@ impl GridleeSystem {
             tone_fraction: 0,
             tone_volume: 0,
             audio_buffer: Vec::with_capacity(1024),
-            audio_phase: 0,
+            audio_clock: ClockDivider::new(SAMPLE_RATE as u32, CPU_CLOCK_HZ as u32),
             irq_pending: false,
             firq_pending: false,
             clock: 0,
@@ -388,9 +388,7 @@ impl GridleeSystem {
 
         // Sound: Bresenham downsampling from 1.25 MHz → 44.1 kHz.
         // Tone phase accumulator advances once per output sample.
-        self.audio_phase += SAMPLE_RATE;
-        if self.audio_phase >= CPU_CLOCK_HZ {
-            self.audio_phase -= CPU_CLOCK_HZ;
+        if self.audio_clock.tick() {
             let sample = if self.tone_volume > 0 && self.tone_step > 0 {
                 self.tone_fraction = self.tone_fraction.wrapping_add(self.tone_step);
                 if self.tone_fraction & 0x0800000 != 0 {
@@ -929,7 +927,7 @@ impl Machine for GridleeSystem {
         self.tone_fraction = 0;
         self.tone_volume = 0;
         self.audio_buffer.clear();
-        self.audio_phase = 0;
+        self.audio_clock.reset();
         self.scanline_buffer.fill(0);
 
         bus_split!(self, bus => {
@@ -977,7 +975,7 @@ impl Machine for GridleeSystem {
         w.write_u64_le(self.tone_step);
         w.write_u64_le(self.tone_fraction);
         w.write_u8(self.tone_volume);
-        w.write_u64_le(self.audio_phase);
+        self.audio_clock.save_state(&mut w);
         w.write_bool(self.irq_pending);
         w.write_bool(self.firq_pending);
         w.write_u64_le(self.clock);
@@ -1008,13 +1006,12 @@ impl Machine for GridleeSystem {
         self.tone_step = r.read_u64_le()?;
         self.tone_fraction = r.read_u64_le()?;
         self.tone_volume = r.read_u8()?;
-        self.audio_phase = r.read_u64_le()?;
+        self.audio_clock.load_state(&mut r)?;
         self.irq_pending = r.read_bool()?;
         self.firq_pending = r.read_bool()?;
         self.clock = r.read_u64_le()?;
         self.cpu_cycles = r.read_u64_le()?;
         self.watchdog_frame_count = r.read_u8()?;
-        self.audio_buffer.clear();
         Ok(())
     }
 
@@ -1643,7 +1640,7 @@ mod tests {
         sys.tone_step = 1234;
         sys.tone_fraction = 5678;
         sys.tone_volume = 0xAB;
-        sys.audio_phase = 9012;
+        sys.audio_clock.set_phase(9012);
         sys.irq_pending = true;
         sys.firq_pending = true;
         sys.clock = 150_000;
@@ -1680,7 +1677,7 @@ mod tests {
         assert_eq!(sys2.tone_step, 1234);
         assert_eq!(sys2.tone_fraction, 5678);
         assert_eq!(sys2.tone_volume, 0xAB);
-        assert_eq!(sys2.audio_phase, 9012);
+        assert_eq!(sys2.audio_clock.phase(), 9012);
         assert!(sys2.irq_pending);
         assert!(sys2.firq_pending);
         assert_eq!(sys2.clock, 150_000);

@@ -8,6 +8,8 @@
 //! Clock: master_clock / 6 / 32 = 96 KHz for 18.432 MHz master.
 //! Register interface: 32 nibble-wide registers written at 0x5040–0x505F.
 
+use crate::audio::AudioResampler;
+
 /// 3-voice Namco WSG wavetable synthesizer.
 pub struct NamcoWsg {
     voices: [WsgVoice; 3],
@@ -19,14 +21,7 @@ pub struct NamcoWsg {
 
     sound_enabled: bool,
 
-    // Audio output (Bresenham resampling from CPU clock to 44.1 kHz)
-    audio_buffer: Vec<i16>,
-    sample_accum: i64,
-    sample_count: u32,
-    sample_phase: u64,
-
-    /// CPU clock rate in Hz (for Bresenham resampling).
-    cpu_clock_hz: u64,
+    resampler: AudioResampler,
 }
 
 #[derive(Default)]
@@ -50,8 +45,6 @@ struct WsgVoice {
 ///   Ours:  freq × 3072000 / 2^(20+5) = freq × 3072000 / 2^25 = freq × 192000 / 2^21
 const F_FRACBITS: u32 = 20;
 
-const OUTPUT_SAMPLE_RATE: u64 = 44_100;
-
 impl NamcoWsg {
     /// Create a new WSG with the given CPU clock rate (e.g., 3_072_000).
     pub fn new(cpu_clock_hz: u64) -> Self {
@@ -64,11 +57,7 @@ impl NamcoWsg {
             sound_regs: [0; 32],
             waveform_rom: [0; 256],
             sound_enabled: false,
-            audio_buffer: Vec::with_capacity(2048),
-            sample_accum: 0,
-            sample_count: 0,
-            sample_phase: 0,
-            cpu_clock_hz,
+            resampler: AudioResampler::new(cpu_clock_hz, 44_100),
         }
     }
 
@@ -147,15 +136,7 @@ impl NamcoWsg {
     /// We accumulate at CPU rate — the fractional bits handle the division.
     pub fn tick(&mut self) {
         if !self.sound_enabled {
-            // Still need to run resampling to output silence
-            self.sample_count += 1;
-            self.sample_phase += OUTPUT_SAMPLE_RATE;
-            if self.sample_phase >= self.cpu_clock_hz {
-                self.sample_phase -= self.cpu_clock_hz;
-                self.audio_buffer.push(0);
-                self.sample_count = 0;
-                self.sample_accum = 0;
-            }
+            self.resampler.tick(0);
             return;
         }
 
@@ -179,28 +160,12 @@ impl NamcoWsg {
 
         // Scale to i16 range. Each voice max: 7 * 15 = 105. Three voices: 315.
         // Scale so max output uses ~75% of i16 range.
-        let sample = (mixed * 80) as i64;
-
-        // Bresenham downsample: CPU clock -> 44.1 kHz
-        self.sample_accum += sample;
-        self.sample_count += 1;
-        self.sample_phase += OUTPUT_SAMPLE_RATE;
-
-        if self.sample_phase >= self.cpu_clock_hz {
-            self.sample_phase -= self.cpu_clock_hz;
-            let avg = (self.sample_accum / self.sample_count as i64) as i16;
-            self.audio_buffer.push(avg);
-            self.sample_accum = 0;
-            self.sample_count = 0;
-        }
+        self.resampler.tick((mixed * 80) as i16);
     }
 
     /// Drain audio samples into the provided buffer. Returns number of samples written.
     pub fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
-        let n = buffer.len().min(self.audio_buffer.len());
-        buffer[..n].copy_from_slice(&self.audio_buffer[..n]);
-        self.audio_buffer.drain(..n);
-        n
+        self.resampler.fill_audio(buffer)
     }
 
     /// Reset the WSG to initial state.
@@ -213,10 +178,7 @@ impl NamcoWsg {
         }
         self.sound_regs = [0; 32];
         self.sound_enabled = false;
-        self.audio_buffer.clear();
-        self.sample_accum = 0;
-        self.sample_count = 0;
-        self.sample_phase = 0;
+        self.resampler.reset();
     }
 }
 
@@ -298,21 +260,15 @@ use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
 
 impl Saveable for NamcoWsg {
     fn save_state(&self, w: &mut StateWriter) {
-        // Voices
         for voice in &self.voices {
             w.write_u32_le(voice.frequency);
             w.write_u32_le(voice.counter);
             w.write_u8(voice.volume);
             w.write_u8(voice.waveform_select);
         }
-        // Sound registers
         w.write_bytes(&self.sound_regs);
         w.write_bool(self.sound_enabled);
-        // Bresenham resampling state
-        w.write_i64_le(self.sample_accum);
-        w.write_u32_le(self.sample_count);
-        w.write_u64_le(self.sample_phase);
-        w.write_u64_le(self.cpu_clock_hz);
+        self.resampler.save_state(w);
     }
 
     fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
@@ -324,12 +280,7 @@ impl Saveable for NamcoWsg {
         }
         r.read_bytes_into(&mut self.sound_regs)?;
         self.sound_enabled = r.read_bool()?;
-        self.sample_accum = r.read_i64_le()?;
-        self.sample_count = r.read_u32_le()?;
-        self.sample_phase = r.read_u64_le()?;
-        self.cpu_clock_hz = r.read_u64_le()?;
-        // Clear audio buffer on load (will be regenerated)
-        self.audio_buffer.clear();
+        self.resampler.load_state(r)?;
         Ok(())
     }
 }

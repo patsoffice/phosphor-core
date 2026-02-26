@@ -87,6 +87,7 @@
 /// 8. **Resampling**: a Bresenham accumulator downsamples the 1.79 MHz
 ///    mixed output to the host audio sample rate using box-filter averaging.
 pub struct Pokey {
+    resampler: crate::audio::AudioResamplerF32,
     // Audio channel registers (CPU-written)
     audf: [u8; 4], // AUDF1-4: frequency divider reload values
     audc: [u8; 4], // AUDC1-4: volume (bits 3:0), distortion (bits 7:5), tone gate (bit 4)
@@ -126,13 +127,7 @@ pub struct Pokey {
     irqen: u8, // IRQEN: enable mask
     irqst: u8, // IRQST: status (active-low: 0 = pending)
 
-    // Audio output buffer (resampled from 1.79 MHz to host sample rate)
-    sample_buffer: Vec<f32>,
-    sample_accum: f32, // Running sum for box-filter downsampling
-    sample_count: u32, // Ticks accumulated in current sample
-    sample_phase: u64, // Bresenham-style fractional accumulator
-    output_sample_rate: u32,
-    master_clock_hz: u32, // 1_789_773 (NTSC)
+    master_clock_hz: u32, // 1_789_773 (NTSC) — kept for with_clock() API
 }
 
 // AUDCTL bit positions (from Atari C012294 datasheet)
@@ -172,7 +167,17 @@ impl Pokey {
     /// seeded to their maximum values. The `output_sample_rate` determines
     /// the Bresenham resampling ratio (e.g. 44100 or 48000 Hz).
     pub fn new(output_sample_rate: u32) -> Self {
+        Self::with_clock(1_789_773, output_sample_rate)
+    }
+
+    /// Create a POKEY with a custom master clock rate.
+    /// Missile Command uses 1.25 MHz vs the standard 1.79 MHz NTSC clock.
+    pub fn with_clock(master_clock_hz: u32, output_sample_rate: u32) -> Self {
         Self {
+            resampler: crate::audio::AudioResamplerF32::new(
+                master_clock_hz as u64,
+                output_sample_rate as u64,
+            ),
             audf: [0; 4],
             audc: [0; 4],
             audctl: 0,
@@ -198,21 +203,8 @@ impl Pokey {
             skstat: 0xFF,
             irqen: 0,
             irqst: 0xFF,
-            sample_buffer: Vec::new(),
-            sample_accum: 0.0,
-            sample_count: 0,
-            sample_phase: 0,
-            output_sample_rate,
-            master_clock_hz: 1_789_773,
+            master_clock_hz,
         }
-    }
-
-    /// Create a POKEY with a custom master clock rate.
-    /// Missile Command uses 1.25 MHz vs the standard 1.79 MHz NTSC clock.
-    pub fn with_clock(master_clock_hz: u32, output_sample_rate: u32) -> Self {
-        let mut pokey = Self::new(output_sample_rate);
-        pokey.master_clock_hz = master_clock_hz;
-        pokey
     }
 
     /// Read from a POKEY register. `offset` is masked to 4 bits (0x00-0x0F).
@@ -516,17 +508,7 @@ impl Pokey {
         mixed_sample /= 60.0;
 
         // 5. Resample
-        self.sample_accum += mixed_sample;
-        self.sample_count += 1;
-        self.sample_phase += self.output_sample_rate as u64;
-
-        if self.sample_phase >= self.master_clock_hz as u64 {
-            self.sample_phase -= self.master_clock_hz as u64;
-            let sample = self.sample_accum / self.sample_count as f32;
-            self.sample_buffer.push(sample);
-            self.sample_accum = 0.0;
-            self.sample_count = 0;
-        }
+        self.resampler.tick(mixed_sample);
 
         // 6. Pot scanning (runs at 15 kHz, stops after POT_SCAN_MAX ticks)
         if self.pot_scanning && tick_15k {
@@ -619,7 +601,7 @@ impl Pokey {
     /// resampled from 1.79 MHz to the configured output sample rate.
     /// The buffer is emptied after this call.
     pub fn drain_audio(&mut self) -> Vec<f32> {
-        std::mem::take(&mut self.sample_buffer)
+        self.resampler.drain_audio()
     }
 
     /// Check if the POKEY's IRQ output line is asserted.
@@ -683,10 +665,7 @@ impl Pokey {
         self.skstat = 0xFF;
         self.irqen = 0;
         self.irqst = 0xFF;
-        self.sample_buffer.clear();
-        self.sample_accum = 0.0;
-        self.sample_count = 0;
-        self.sample_phase = 0;
+        self.resampler.reset();
     }
 }
 
@@ -837,11 +816,8 @@ impl Saveable for Pokey {
         w.write_u8(self.irqen);
         w.write_u8(self.irqst);
 
-        // Bresenham resampling state
-        w.write_f32_le(self.sample_accum);
-        w.write_u32_le(self.sample_count);
-        w.write_u64_le(self.sample_phase);
-        w.write_u32_le(self.output_sample_rate);
+        // Resampling state
+        self.resampler.save_state(w);
         w.write_u32_le(self.master_clock_hz);
     }
 
@@ -894,14 +870,8 @@ impl Saveable for Pokey {
         self.irqen = r.read_u8()?;
         self.irqst = r.read_u8()?;
 
-        self.sample_accum = r.read_f32_le()?;
-        self.sample_count = r.read_u32_le()?;
-        self.sample_phase = r.read_u64_le()?;
-        self.output_sample_rate = r.read_u32_le()?;
+        self.resampler.load_state(r)?;
         self.master_clock_hz = r.read_u32_le()?;
-
-        // Clear audio buffer on load (will be regenerated)
-        self.sample_buffer.clear();
 
         Ok(())
     }

@@ -570,11 +570,8 @@ mod tests {
         sys.board.nmi_mask = true;
         sys.board.palette_bank = 2;
         sys.board.sound_irq_pending = true;
-        sys.board.sample_accum = 12345;
-        sys.board.sample_count = 67;
-        sys.board.sample_phase = 89012;
         sys.board.clock = 200_000;
-        sys.board.sound_phase_accum = 150;
+        sys.board.sound_clock.set_phase(150);
         sys.board.vblank_nmi_pending = true;
 
         // Save
@@ -610,11 +607,8 @@ mod tests {
         assert!(sys2.board.nmi_mask);
         assert_eq!(sys2.board.palette_bank, 2);
         assert!(sys2.board.sound_irq_pending);
-        assert_eq!(sys2.board.sample_accum, 12345);
-        assert_eq!(sys2.board.sample_count, 67);
-        assert_eq!(sys2.board.sample_phase, 89012);
         assert_eq!(sys2.board.clock, 200_000);
-        assert_eq!(sys2.board.sound_phase_accum, 150);
+        assert_eq!(sys2.board.sound_clock.phase(), 150);
         assert!(sys2.board.vblank_nmi_pending);
     }
 
