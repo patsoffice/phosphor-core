@@ -8,6 +8,7 @@ pub mod namco_wsg;
 pub mod pia6820;
 pub mod pokey;
 pub mod williams_blitter;
+pub mod z80ctc;
 
 pub use ay8910::Ay8910;
 pub use cmos_ram::CmosRam;
@@ -19,3 +20,4 @@ pub use namco_wsg::NamcoWsg;
 pub use pia6820::Pia6820;
 pub use pokey::Pokey;
 pub use williams_blitter::WilliamsBlitter;
+pub use z80ctc::Z80Ctc;
