@@ -264,7 +264,11 @@ pub struct DkongSystem {
     cpu: Z80,
 
     // Sound CPU (I8035 @ 6 MHz / 15 = 400 kHz machine cycles)
-    #[debug_cpu("I8035 Sound", read = "sound_memory_read", write = "sound_memory_write")]
+    #[debug_cpu(
+        "I8035 Sound",
+        read = "sound_memory_read",
+        write = "sound_memory_write"
+    )]
     sound_cpu: I8035,
 
     // Main CPU memory

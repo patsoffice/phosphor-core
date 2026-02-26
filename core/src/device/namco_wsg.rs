@@ -225,16 +225,56 @@ use crate::core::debug::{DebugRegister, Debuggable};
 impl Debuggable for NamcoWsg {
     fn debug_registers(&self) -> Vec<DebugRegister> {
         vec![
-            DebugRegister { name: "ENABLED", value: self.sound_enabled as u64, width: 8 },
-            DebugRegister { name: "FREQ0", value: self.voices[0].frequency as u64, width: 16 },
-            DebugRegister { name: "VOL0", value: self.voices[0].volume as u64, width: 8 },
-            DebugRegister { name: "WAVE0", value: self.voices[0].waveform_select as u64, width: 8 },
-            DebugRegister { name: "FREQ1", value: self.voices[1].frequency as u64, width: 16 },
-            DebugRegister { name: "VOL1", value: self.voices[1].volume as u64, width: 8 },
-            DebugRegister { name: "WAVE1", value: self.voices[1].waveform_select as u64, width: 8 },
-            DebugRegister { name: "FREQ2", value: self.voices[2].frequency as u64, width: 16 },
-            DebugRegister { name: "VOL2", value: self.voices[2].volume as u64, width: 8 },
-            DebugRegister { name: "WAVE2", value: self.voices[2].waveform_select as u64, width: 8 },
+            DebugRegister {
+                name: "ENABLED",
+                value: self.sound_enabled as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "FREQ0",
+                value: self.voices[0].frequency as u64,
+                width: 16,
+            },
+            DebugRegister {
+                name: "VOL0",
+                value: self.voices[0].volume as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "WAVE0",
+                value: self.voices[0].waveform_select as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "FREQ1",
+                value: self.voices[1].frequency as u64,
+                width: 16,
+            },
+            DebugRegister {
+                name: "VOL1",
+                value: self.voices[1].volume as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "WAVE1",
+                value: self.voices[1].waveform_select as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "FREQ2",
+                value: self.voices[2].frequency as u64,
+                width: 16,
+            },
+            DebugRegister {
+                name: "VOL2",
+                value: self.voices[2].volume as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "WAVE2",
+                value: self.voices[2].waveform_select as u64,
+                width: 8,
+            },
         ]
     }
 }

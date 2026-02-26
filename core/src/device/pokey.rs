@@ -662,17 +662,61 @@ use crate::core::debug::{DebugRegister, Debuggable};
 impl Debuggable for Pokey {
     fn debug_registers(&self) -> Vec<DebugRegister> {
         vec![
-            DebugRegister { name: "AUDCTL", value: self.audctl as u64, width: 8 },
-            DebugRegister { name: "AUDF1", value: self.audf[0] as u64, width: 8 },
-            DebugRegister { name: "AUDC1", value: self.audc[0] as u64, width: 8 },
-            DebugRegister { name: "AUDF2", value: self.audf[1] as u64, width: 8 },
-            DebugRegister { name: "AUDC2", value: self.audc[1] as u64, width: 8 },
-            DebugRegister { name: "AUDF3", value: self.audf[2] as u64, width: 8 },
-            DebugRegister { name: "AUDC3", value: self.audc[2] as u64, width: 8 },
-            DebugRegister { name: "AUDF4", value: self.audf[3] as u64, width: 8 },
-            DebugRegister { name: "AUDC4", value: self.audc[3] as u64, width: 8 },
-            DebugRegister { name: "IRQEN", value: self.irqen as u64, width: 8 },
-            DebugRegister { name: "IRQST", value: self.irqst as u64, width: 8 },
+            DebugRegister {
+                name: "AUDCTL",
+                value: self.audctl as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "AUDF1",
+                value: self.audf[0] as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "AUDC1",
+                value: self.audc[0] as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "AUDF2",
+                value: self.audf[1] as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "AUDC2",
+                value: self.audc[1] as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "AUDF3",
+                value: self.audf[2] as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "AUDC3",
+                value: self.audc[2] as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "AUDF4",
+                value: self.audf[3] as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "AUDC4",
+                value: self.audc[3] as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "IRQEN",
+                value: self.irqen as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "IRQST",
+                value: self.irqst as u64,
+                width: 8,
+            },
         ]
     }
 }

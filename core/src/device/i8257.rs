@@ -332,15 +332,51 @@ use crate::core::debug::{DebugRegister, Debuggable};
 impl Debuggable for I8257 {
     fn debug_registers(&self) -> Vec<DebugRegister> {
         vec![
-            DebugRegister { name: "MODE", value: self.mode as u64, width: 8 },
-            DebugRegister { name: "ADDR0", value: self.channels[0].address as u64, width: 16 },
-            DebugRegister { name: "COUNT0", value: self.channels[0].count as u64, width: 16 },
-            DebugRegister { name: "ADDR1", value: self.channels[1].address as u64, width: 16 },
-            DebugRegister { name: "COUNT1", value: self.channels[1].count as u64, width: 16 },
-            DebugRegister { name: "ADDR2", value: self.channels[2].address as u64, width: 16 },
-            DebugRegister { name: "COUNT2", value: self.channels[2].count as u64, width: 16 },
-            DebugRegister { name: "ADDR3", value: self.channels[3].address as u64, width: 16 },
-            DebugRegister { name: "COUNT3", value: self.channels[3].count as u64, width: 16 },
+            DebugRegister {
+                name: "MODE",
+                value: self.mode as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "ADDR0",
+                value: self.channels[0].address as u64,
+                width: 16,
+            },
+            DebugRegister {
+                name: "COUNT0",
+                value: self.channels[0].count as u64,
+                width: 16,
+            },
+            DebugRegister {
+                name: "ADDR1",
+                value: self.channels[1].address as u64,
+                width: 16,
+            },
+            DebugRegister {
+                name: "COUNT1",
+                value: self.channels[1].count as u64,
+                width: 16,
+            },
+            DebugRegister {
+                name: "ADDR2",
+                value: self.channels[2].address as u64,
+                width: 16,
+            },
+            DebugRegister {
+                name: "COUNT2",
+                value: self.channels[2].count as u64,
+                width: 16,
+            },
+            DebugRegister {
+                name: "ADDR3",
+                value: self.channels[3].address as u64,
+                width: 16,
+            },
+            DebugRegister {
+                name: "COUNT3",
+                value: self.channels[3].count as u64,
+                width: 16,
+            },
         ]
     }
 }

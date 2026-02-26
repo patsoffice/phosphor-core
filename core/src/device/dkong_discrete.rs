@@ -172,10 +172,26 @@ use crate::core::debug::{DebugRegister, Debuggable};
 impl Debuggable for DkongDiscrete {
     fn debug_registers(&self) -> Vec<DebugRegister> {
         vec![
-            DebugRegister { name: "LATCH", value: self.latch as u64, width: 8 },
-            DebugRegister { name: "WALK", value: (self.latch & 0x01 != 0) as u64, width: 8 },
-            DebugRegister { name: "JUMP", value: self.jump_active as u64, width: 8 },
-            DebugRegister { name: "STOMP", value: self.stomp_active as u64, width: 8 },
+            DebugRegister {
+                name: "LATCH",
+                value: self.latch as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "WALK",
+                value: (self.latch & 0x01 != 0) as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "JUMP",
+                value: self.jump_active as u64,
+                width: 8,
+            },
+            DebugRegister {
+                name: "STOMP",
+                value: self.stomp_active as u64,
+                width: 8,
+            },
         ]
     }
 }

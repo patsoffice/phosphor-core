@@ -34,6 +34,8 @@ pub fn default_key_map(buttons: &[InputButton]) -> KeyMap {
     let mut km = KeyMap::new();
 
     for button in buttons {
+        // Exact name match first, then substring fallback for combo names
+        // like "Jump L / P1 Start".
         let scancode = match button.name {
             // Player 1
             "P1 Left" => Some(Scancode::Left),
@@ -69,11 +71,27 @@ pub fn default_key_map(buttons: &[InputButton]) -> KeyMap {
             // System
             "Coin" => Some(Scancode::Num5),
 
+            // Substring fallback for combo-named buttons
+            name if name.contains("P1 Start") => Some(Scancode::Num1),
+            name if name.contains("P2 Start") => Some(Scancode::Num2),
+            name if name.contains("Coin") => Some(Scancode::Num5),
+
             _ => None,
         };
 
         if let Some(sc) = scancode {
             km.bind(sc, button.id);
+        }
+
+        // Secondary bindings: combo buttons that serve dual roles (e.g. a jump
+        // button that also acts as P1 Start) get both a system key and an
+        // action key so players can use them during gameplay.
+        if button.name.contains("Jump") {
+            if button.name.contains(" L") {
+                km.bind(Scancode::Space, button.id);
+            } else if button.name.contains(" R") {
+                km.bind(Scancode::LShift, button.id);
+            }
         }
     }
 
@@ -212,11 +230,19 @@ pub fn default_controller_map(buttons: &[InputButton]) -> ControllerMap {
         cm.bind_button(Button::Y, id);
     }
 
-    // System buttons
-    if let Some(&id) = name_map.get("Coin") {
+    // System buttons (exact match first, then substring fallback for combo names)
+    let find_by_name = |exact: &str| -> Option<u8> {
+        name_map.get(exact).copied().or_else(|| {
+            buttons
+                .iter()
+                .find(|b| b.name.contains(exact))
+                .map(|b| b.id)
+        })
+    };
+    if let Some(id) = find_by_name("Coin") {
         cm.bind_button(Button::Back, id);
     }
-    if let Some(&id) = name_map.get("P1 Start") {
+    if let Some(id) = find_by_name("P1 Start") {
         cm.bind_button(Button::Start, id);
     }
 
@@ -277,16 +303,19 @@ pub fn mouse_button_to_input(
 
     match mouse_btn {
         MouseButton::Left => {
-            // Try "Fire Center" (Missile Command), then "P1 Fire" (generic)
+            // Try "Fire Center" (Missile Command), "P1 Fire" (generic),
+            // then "Jump L" (Crystal Castles).
             buttons
                 .iter()
                 .find(|b| b.name == "Fire Center")
                 .or_else(|| buttons.iter().find(|b| b.name == "P1 Fire"))
+                .or_else(|| buttons.iter().find(|b| b.name.contains("Jump L")))
                 .map(|b| b.id)
         }
         MouseButton::Right => buttons
             .iter()
             .find(|b| b.name == "Fire Right")
+            .or_else(|| buttons.iter().find(|b| b.name.contains("Jump R")))
             .map(|b| b.id),
         MouseButton::Middle => buttons.iter().find(|b| b.name == "Fire Left").map(|b| b.id),
         _ => None,
