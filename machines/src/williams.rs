@@ -1,3 +1,4 @@
+use phosphor_core::bus_split;
 use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
@@ -489,9 +490,7 @@ impl WilliamsBoard {
             self.sound_pia.set_cb1(command != 0xFF);
         }
 
-        let bus_ptr: *mut Self = self;
-        unsafe {
-            let bus = &mut *bus_ptr as &mut dyn Bus<Address = u16, Data = u8>;
+        bus_split!(self, bus => {
             if self.blitter.is_active() {
                 self.blitter.do_dma_cycle(bus);
             } else {
@@ -499,7 +498,7 @@ impl WilliamsBoard {
             }
             // Sound CPU runs every cycle (separate bus, not halted by blitter)
             self.sound_cpu.execute_cycle(bus, BusMaster::Cpu(1));
-        }
+        });
 
         // DAC is continuously connected to sound PIA Port A output pins
         let dac_byte = self.sound_pia.read_output_a();
@@ -546,12 +545,10 @@ impl WilliamsBoard {
         // CMOS RAM and video RAM NOT cleared (battery-backed / not cleared by hardware)
 
         // CPU reset fetches the reset vector from the bus (matching real hardware)
-        let bus_ptr: *mut Self = self;
-        unsafe {
-            let bus = &mut *bus_ptr as &mut dyn Bus<Address = u16, Data = u8>;
+        bus_split!(self, bus => {
             self.cpu.reset(bus, BusMaster::Cpu(0));
             self.sound_cpu.reset(bus, BusMaster::Cpu(1));
-        }
+        });
     }
 
     // --- Debug helpers ---

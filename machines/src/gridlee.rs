@@ -1,3 +1,4 @@
+use phosphor_core::bus_split;
 use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::debug::BusDebug;
 use phosphor_core::core::machine::{AnalogInput, InputButton, Machine};
@@ -405,11 +406,9 @@ impl GridleeSystem {
         }
 
         // CPU execution
-        let bus_ptr: *mut Self = self;
-        unsafe {
-            let bus = &mut *bus_ptr as &mut dyn Bus<Address = u16, Data = u8>;
+        bus_split!(self, bus => {
             self.cpu.execute_cycle(bus, BusMaster::Cpu(0));
-        }
+        });
         self.cpu_cycles += 1;
 
         self.clock += 1;
@@ -933,11 +932,9 @@ impl Machine for GridleeSystem {
         self.audio_phase = 0;
         self.scanline_buffer.fill(0);
 
-        let bus_ptr: *mut Self = self;
-        unsafe {
-            let bus = &mut *bus_ptr as &mut dyn Bus<Address = u16, Data = u8>;
+        bus_split!(self, bus => {
             self.cpu.reset(bus, BusMaster::Cpu(0));
-        }
+        });
     }
 
     fn save_nvram(&self) -> Option<&[u8]> {

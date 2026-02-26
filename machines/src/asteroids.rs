@@ -1,3 +1,4 @@
+use phosphor_core::bus_split;
 use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::debug::BusDebug;
 use phosphor_core::core::machine::{InputButton, Machine};
@@ -215,11 +216,9 @@ impl AsteroidsSystem {
         }
 
         // CPU tick
-        let bus_ptr: *mut Self = self;
-        unsafe {
-            let bus = &mut *bus_ptr as &mut dyn Bus<Address = u16, Data = u8>;
+        bus_split!(self, bus => {
             self.cpu.execute_cycle(bus, BusMaster::Cpu(0));
-        }
+        });
 
         self.clock += 1;
     }
@@ -449,11 +448,9 @@ impl Machine for AsteroidsSystem {
         self.watchdog_frame_count = 0;
         self.display_list.clear();
 
-        let bus_ptr: *mut Self = self;
-        unsafe {
-            let bus = &mut *bus_ptr as &mut dyn Bus<Address = u16, Data = u8>;
+        bus_split!(self, bus => {
             self.cpu.reset(bus, BusMaster::Cpu(0));
-        }
+        });
     }
 
     fn frame_rate_hz(&self) -> f64 {

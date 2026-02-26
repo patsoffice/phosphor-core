@@ -57,7 +57,7 @@ pub struct Ay8910 {
     // Envelope generator
     envelope_counter: u16,
     envelope_step: i16,
-    envelope_attack: u8,     // 0x00 or 0x0F (XOR mask for volume inversion)
+    envelope_attack: u8, // 0x00 or 0x0F (XOR mask for volume inversion)
     envelope_alternate: bool,
     envelope_hold: bool,
     envelope_holding: bool,
@@ -127,9 +127,9 @@ impl Ay8910 {
         // Apply register-specific bit masks
         let masked = match r {
             1 | 3 | 5 => data & 0x0F, // Tone high: 4 bits
-            6 => data & 0x1F,          // Noise period: 5 bits
-            8..=10 => data & 0x1F, // Amplitude: 5 bits (bit 4 = envelope mode)
-            13 => data & 0x0F,         // Envelope shape: 4 bits
+            6 => data & 0x1F,         // Noise period: 5 bits
+            8..=10 => data & 0x1F,    // Amplitude: 5 bits (bit 4 = envelope mode)
+            13 => data & 0x0F,        // Envelope shape: 4 bits
             _ => data,
         };
         self.registers[r] = masked;
@@ -307,8 +307,7 @@ impl Ay8910 {
             let noise_disable = (mixer >> (ch + 3)) & 1 != 0;
 
             // AY-8910 mixing: (tone_output | tone_disable) & (noise_output | noise_disable)
-            let enabled =
-                (self.tone_outputs[ch] || tone_disable) && (noise_out || noise_disable);
+            let enabled = (self.tone_outputs[ch] || tone_disable) && (noise_out || noise_disable);
 
             if enabled {
                 let amp_reg = self.registers[8 + ch];
@@ -665,8 +664,16 @@ mod tests {
         assert!(n1 > 0 && n2 > 0);
 
         // Max samples with half gain should be roughly half
-        let max_full = buf_full[..n1].iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
-        let max_half = buf_half[..n2].iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
+        let max_full = buf_full[..n1]
+            .iter()
+            .map(|s| s.unsigned_abs())
+            .max()
+            .unwrap_or(0);
+        let max_half = buf_half[..n2]
+            .iter()
+            .map(|s| s.unsigned_abs())
+            .max()
+            .unwrap_or(0);
         assert!(
             max_half < max_full,
             "half gain ({max_half}) should be less than full ({max_full})"

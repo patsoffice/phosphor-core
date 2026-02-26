@@ -1,3 +1,4 @@
+use phosphor_core::bus_split;
 use phosphor_core::core::{Bus, BusMaster, bus::InterruptState};
 use phosphor_core::cpu::state::M6502State;
 use phosphor_core::cpu::{CpuStateTrait, m6502::M6502};
@@ -24,11 +25,9 @@ impl Simple6502System {
     }
 
     pub fn tick(&mut self) {
-        let bus_ptr: *mut Self = self;
-        unsafe {
-            let bus = &mut *bus_ptr as &mut dyn Bus<Address = u16, Data = u8>;
+        bus_split!(self, bus => {
             self.cpu.execute_cycle(bus, BusMaster::Cpu(0));
-        }
+        });
         self.clock += 1;
     }
 

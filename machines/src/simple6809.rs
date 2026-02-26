@@ -1,3 +1,4 @@
+use phosphor_core::bus_split;
 use phosphor_core::core::{Bus, BusMaster, bus::InterruptState};
 use phosphor_core::cpu::state::M6809State;
 use phosphor_core::cpu::{CpuStateTrait, m6809::M6809};
@@ -34,15 +35,9 @@ impl Simple6809System {
     }
 
     pub fn tick(&mut self) {
-        // Execute one CPU cycle manually to avoid borrow checker issues
-        // Split the borrow: execute_cycle needs &mut M6809 and &mut Bus
-        let bus_ptr: *mut Self = self;
-
-        unsafe {
-            let bus = &mut *bus_ptr as &mut dyn Bus<Address = u16, Data = u8>;
+        bus_split!(self, bus => {
             self.cpu.execute_cycle(bus, BusMaster::Cpu(0));
-        }
-
+        });
         self.clock += 1;
     }
 

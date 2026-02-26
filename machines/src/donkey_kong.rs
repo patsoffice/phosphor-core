@@ -1,3 +1,4 @@
+use phosphor_core::bus_split;
 use phosphor_core::core::machine::{InputButton, Machine};
 use phosphor_core::core::save_state::{self, SaveError, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
@@ -452,12 +453,11 @@ impl Machine for DkongSystem {
     tkg04::impl_tkg04_debug!();
 
     fn run_frame(&mut self) {
-        let ptr: *mut Self = self;
-        for _ in 0..tkg04::CYCLES_PER_FRAME {
-            unsafe {
-                self.board.tick(&mut *ptr);
+        bus_split!(self, bus => {
+            for _ in 0..tkg04::CYCLES_PER_FRAME {
+                self.board.tick(bus);
             }
-        }
+        });
     }
 
     fn set_input(&mut self, button: u8, pressed: bool) {
@@ -489,11 +489,10 @@ impl Machine for DkongSystem {
     fn reset(&mut self) {
         self.board.reset();
         self.board.dsw0 = 0x80; // upright cabinet, 3 lives, 7000 bonus, 1 coin/1 play
-        let ptr: *mut Self = self;
-        unsafe {
-            self.board.cpu.reset(&mut *ptr, BusMaster::Cpu(0));
-            self.board.sound_cpu.reset(&mut *ptr, BusMaster::Cpu(1));
-        }
+        bus_split!(self, bus => {
+            self.board.cpu.reset(bus, BusMaster::Cpu(0));
+            self.board.sound_cpu.reset(bus, BusMaster::Cpu(1));
+        });
     }
 
     fn machine_id(&self) -> &str {
@@ -514,10 +513,9 @@ impl Machine for DkongSystem {
     }
 
     fn debug_tick(&mut self) -> u32 {
-        let ptr: *mut Self = self;
-        unsafe {
-            self.board.tick(&mut *ptr);
-        }
+        bus_split!(self, bus => {
+            self.board.tick(bus);
+        });
         self.board.debug_tick_boundaries()
     }
 }
