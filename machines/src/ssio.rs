@@ -146,6 +146,15 @@ impl SsioBoard {
         self.status
     }
 
+    /// Read an input port value. `port` is 0–4.
+    pub fn input_port(&self, port: usize) -> u8 {
+        if port < 5 {
+            self.input_ports[port]
+        } else {
+            0xFF
+        }
+    }
+
     /// Set an input port value. `port` is 0–4.
     pub fn set_input_port(&mut self, port: usize, value: u8) {
         if port < 5 {
