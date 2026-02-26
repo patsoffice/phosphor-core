@@ -4,6 +4,7 @@ use phosphor_core::core::debug::BusDebug;
 use phosphor_core::core::machine::{
     AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
 };
+use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
 use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::Cpu;
@@ -14,6 +15,14 @@ use phosphor_macros::BusDebug;
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
 use crate::set_bit_active_high;
+
+mod region {
+    pub const RAM: u8 = 1;
+    pub const IO: u8 = 2;
+    pub const VECTOR_RAM: u8 = 3;
+    pub const VECTOR_ROM: u8 = 4;
+    pub const PROGRAM_ROM: u8 = 5;
+}
 
 // ---------------------------------------------------------------------------
 // ROM definitions (MAME `asteroid` parent set)
@@ -149,16 +158,13 @@ const DISPLAY_HEIGHT: u32 = 1024;
 ///   0x6800–0x7FFF  Program ROM (6 KB)
 #[derive(BusDebug)]
 pub struct AsteroidsSystem {
-    #[debug_cpu("M6502", read = "memory_read", write = "memory_write")]
+    #[debug_cpu("M6502")]
     cpu: M6502,
     #[debug_device("DVG")]
     dvg: Dvg,
 
-    // Memory
-    ram: [u8; 0x0400],
-    vector_ram: [u8; 0x0800],
-    vector_rom: [u8; 0x0800],
-    program_rom: [u8; 0x1800],
+    #[debug_map(cpu = 0)]
+    map: MemoryMap,
 
     // I/O — active-HIGH inputs (default 0x00 = all released)
     in0: u8,
@@ -179,14 +185,41 @@ pub struct AsteroidsSystem {
 }
 
 impl AsteroidsSystem {
+    fn build_map() -> MemoryMap {
+        use region::*;
+        let mut map = MemoryMap::new();
+        map.region(RAM, "RAM", 0x0000, 0x0400, AccessKind::ReadWrite)
+            .mirror(0x0400, 0x0000, 0x0400)
+            .region(IO, "I/O", 0x2000, 0x2000, AccessKind::Io)
+            .region(
+                VECTOR_RAM,
+                "Vector RAM",
+                0x4000,
+                0x0800,
+                AccessKind::ReadWrite,
+            )
+            .region(
+                VECTOR_ROM,
+                "Vector ROM",
+                0x5000,
+                0x0800,
+                AccessKind::ReadOnly,
+            )
+            .region(
+                PROGRAM_ROM,
+                "Program ROM",
+                0x6800,
+                0x1800,
+                AccessKind::ReadOnly,
+            );
+        map
+    }
+
     pub fn new() -> Self {
         Self {
             cpu: M6502::new(),
             dvg: Dvg::new(),
-            ram: [0; 0x0400],
-            vector_ram: [0; 0x0800],
-            vector_rom: [0; 0x0800],
-            program_rom: [0; 0x1800],
+            map: Self::build_map(),
             in0: 0x00,
             in1: 0x00,
             dip_switches: 0x84, // English, 3 lives, 1C/1C
@@ -200,9 +233,9 @@ impl AsteroidsSystem {
 
     pub fn load_rom_set(&mut self, rom_set: &RomSet) -> Result<(), RomLoadError> {
         let prog = PROGRAM_ROM.load(rom_set)?;
-        self.program_rom.copy_from_slice(&prog);
+        self.map.load_region(region::PROGRAM_ROM, &prog);
         let vrom = VECTOR_ROM.load(rom_set)?;
-        self.vector_rom.copy_from_slice(&vrom);
+        self.map.load_region(region::VECTOR_ROM, &vrom);
         Ok(())
     }
 
@@ -235,38 +268,11 @@ impl AsteroidsSystem {
     ///   0x1800–0x1FFF  Unmapped
     fn trigger_dvg(&mut self) {
         let mut vmem = vec![0u8; 0x2000]; // 8 KB DVG address space
-        vmem[0x0000..0x0800].copy_from_slice(&self.vector_ram);
-        vmem[0x1000..0x1800].copy_from_slice(&self.vector_rom);
+        vmem[0x0000..0x0800].copy_from_slice(self.map.region_data(region::VECTOR_RAM));
+        vmem[0x1000..0x1800].copy_from_slice(self.map.region_data(region::VECTOR_ROM));
         self.dvg.go();
         self.dvg.execute(&vmem);
         self.display_list = self.dvg.take_display_list();
-    }
-
-    // --- Memory accessors (side-effect-free, used by Bus::read and BusDebug) ---
-
-    /// Side-effect-free read from the CPU address space.
-    /// Returns RAM, vector RAM, vector ROM, and program ROM; None for I/O.
-    fn memory_read(&self, addr: u16) -> Option<u8> {
-        let addr = addr & 0x7FFF;
-        match addr {
-            0x0000..=0x03FF => Some(self.ram[addr as usize]),
-            0x0400..=0x07FF => Some(self.ram[(addr - 0x0400) as usize]),
-            0x4000..=0x47FF => Some(self.vector_ram[(addr - 0x4000) as usize]),
-            0x5000..=0x57FF => Some(self.vector_rom[(addr - 0x5000) as usize]),
-            0x6800..=0x7FFF => Some(self.program_rom[(addr - 0x6800) as usize]),
-            _ => None,
-        }
-    }
-
-    /// Write to the CPU address space (for debug memory editor).
-    fn memory_write(&mut self, addr: u16, data: u8) {
-        let addr = addr & 0x7FFF;
-        match addr {
-            0x0000..=0x03FF => self.ram[addr as usize] = data,
-            0x0400..=0x07FF => self.ram[(addr - 0x0400) as usize] = data,
-            0x4000..=0x47FF => self.vector_ram[(addr - 0x4000) as usize] = data,
-            _ => {}
-        }
     }
 }
 
@@ -289,96 +295,84 @@ impl Bus for AsteroidsSystem {
     }
 
     fn read(&mut self, _master: BusMaster, addr: u16) -> u8 {
-        // 15-bit address bus
-        let addr = addr & 0x7FFF;
+        let addr = addr & 0x7FFF; // 15-bit address bus
 
-        // Pure memory read (RAM, vector RAM/ROM, program ROM)
-        if let Some(val) = self.memory_read(addr) {
-            return val;
-        }
+        let data = match self.map.page(addr).region_id {
+            region::RAM | region::VECTOR_RAM | region::VECTOR_ROM | region::PROGRAM_ROM => {
+                self.map.read_backing(addr)
+            }
 
-        match addr {
-            // IN0: 0x2000–0x2007 — 74LS251 8:1 multiplexer.
-            // A0–A2 select which input bit to read; the selected bit appears on D7.
-            // The 6502 tests it via BIT (N flag = D7).
-            //   Bit 0: unused
-            //   Bit 1: 3 KHz clock (cpu total_cycles & 0x100)
-            //   Bit 2: VG_HALT (active-LOW: 0 = done, 1 = running)
-            //   Bit 3: Hyperspace     Bit 4: Fire
-            //   Bit 5: Diagnostic     Bit 6: Tilt     Bit 7: Self-test
-            0x2000..=0x2007 => {
-                let offset = (addr & 7) as u8;
-                let mut val = self.in0;
-                // Bit 1: 3 KHz clock
-                if self.clock & 0x100 != 0 {
-                    val |= 0x02;
-                } else {
-                    val &= !0x02;
+            region::IO => match addr {
+                // IN0: 0x2000–0x2007 — 74LS251 8:1 multiplexer.
+                // A0–A2 select which input bit to read; the selected bit appears on D7.
+                // The 6502 tests it via BIT (N flag = D7).
+                //   Bit 0: unused
+                //   Bit 1: 3 KHz clock (cpu total_cycles & 0x100)
+                //   Bit 2: VG_HALT (active-LOW: 0 = done, 1 = running)
+                //   Bit 3: Hyperspace     Bit 4: Fire
+                //   Bit 5: Diagnostic     Bit 6: Tilt     Bit 7: Self-test
+                0x2000..=0x2007 => {
+                    let offset = (addr & 7) as u8;
+                    let mut val = self.in0;
+                    if self.clock & 0x100 != 0 {
+                        val |= 0x02;
+                    } else {
+                        val &= !0x02;
+                    }
+                    if !self.dvg.is_halted() {
+                        val |= 0x04;
+                    } else {
+                        val &= !0x04;
+                    }
+                    ((val >> offset) & 1) << 7
                 }
-                // Bit 2: VG_HALT (0 = halted/done, 1 = running)
-                if !self.dvg.is_halted() {
-                    val |= 0x04;
-                } else {
-                    val &= !0x04;
+
+                // IN1: 0x2400–0x2407 — 74LS251 8:1 multiplexer.
+                //   Bit 0: Left coin   Bit 1: Center coin   Bit 2: Right coin
+                //   Bit 3: 1P Start    Bit 4: 2P Start
+                //   Bit 5: Thrust      Bit 6: Rotate right   Bit 7: Rotate left
+                0x2400..=0x2407 => {
+                    let offset = (addr & 7) as u8;
+                    ((self.in1 >> offset) & 1) << 7
                 }
-                // Mux: selected bit → D7
-                ((val >> offset) & 1) << 7
-            }
 
-            // IN1: 0x2400–0x2407 — 74LS251 8:1 multiplexer.
-            // Same as IN0: A0–A2 select bit, result in D7.
-            //   Bit 0: Left coin   Bit 1: Center coin   Bit 2: Right coin
-            //   Bit 3: 1P Start    Bit 4: 2P Start
-            //   Bit 5: Thrust      Bit 6: Rotate right   Bit 7: Rotate left
-            0x2400..=0x2407 => {
-                let offset = (addr & 7) as u8;
-                ((self.in1 >> offset) & 1) << 7
-            }
+                // DSW1: 0x2800–0x2803 — 74LS253 dual 4:1 multiplexer.
+                // A0–A1 select a pair of DIP switch bits: even bit → D0, odd bit → D7.
+                0x2800..=0x2803 => {
+                    let offset = (addr & 3) as u8;
+                    let bit0 = (self.dip_switches >> (offset * 2)) & 1;
+                    let bit7 = (self.dip_switches >> (offset * 2 + 1)) & 1;
+                    bit0 | (bit7 << 7)
+                }
 
-            // DSW1: 0x2800–0x2803 — 74LS253 dual 4:1 multiplexer.
-            // A0–A1 select a pair of DIP switch bits: even bit → D0, odd bit → D7.
-            0x2800..=0x2803 => {
-                let offset = (addr & 3) as u8;
-                let bit0 = (self.dip_switches >> (offset * 2)) & 1;
-                let bit7 = (self.dip_switches >> (offset * 2 + 1)) & 1;
-                bit0 | (bit7 << 7)
-            }
+                _ => 0,
+            },
 
             _ => 0,
-        }
+        };
+
+        self.map.check_read_watch(addr, data);
+        data
     }
 
     fn write(&mut self, _master: BusMaster, addr: u16, data: u8) {
-        let addr = addr & 0x7FFF;
+        let addr = addr & 0x7FFF; // 15-bit address bus
 
-        match addr {
-            // RAM
-            0x0000..=0x03FF => self.ram[addr as usize] = data,
-            0x0400..=0x07FF => self.ram[(addr - 0x0400) as usize] = data,
+        self.map.check_write_watch(addr, data);
 
-            // DVG GO
-            0x3000 => self.trigger_dvg(),
+        match self.map.page(addr).region_id {
+            region::RAM | region::VECTOR_RAM => self.map.write_backing(addr, data),
 
-            // Output latch (74LS259): LEDs, coin counters, RAMSEL
-            0x3200 => { /* stub */ }
-
-            // Watchdog reset
-            0x3400 => self.watchdog_frame_count = 0,
-
-            // Explosion sound
-            0x3600 => { /* audio stub */ }
-
-            // Thump sound
-            0x3A00 => { /* audio stub */ }
-
-            // Audio latch (74LS259 discrete sound control)
-            0x3C00..=0x3C07 => { /* audio stub */ }
-
-            // Noise reset
-            0x3E00 => { /* audio stub */ }
-
-            // Vector RAM
-            0x4000..=0x47FF => self.vector_ram[(addr - 0x4000) as usize] = data,
+            region::IO => match addr {
+                0x3000 => self.trigger_dvg(),
+                0x3200 => { /* output latch stub */ }
+                0x3400 => self.watchdog_frame_count = 0,
+                0x3600 => { /* audio stub */ }
+                0x3A00 => { /* audio stub */ }
+                0x3C00..=0x3C07 => { /* audio stub */ }
+                0x3E00 => { /* audio stub */ }
+                _ => {}
+            },
 
             _ => {}
         }
@@ -494,8 +488,8 @@ impl Machine for AsteroidsSystem {
         save_state::write_header(&mut w, self.machine_id());
         self.cpu.save_state(&mut w);
         self.dvg.save_state(&mut w);
-        w.write_bytes(&self.ram);
-        w.write_bytes(&self.vector_ram);
+        w.write_bytes(self.map.region_data(region::RAM));
+        w.write_bytes(self.map.region_data(region::VECTOR_RAM));
         w.write_u8(self.in0);
         w.write_u8(self.in1);
         w.write_u64_le(self.clock);
@@ -509,8 +503,8 @@ impl Machine for AsteroidsSystem {
         let mut r = save_state::read_header(data, self.machine_id())?;
         self.cpu.load_state(&mut r)?;
         self.dvg.load_state(&mut r)?;
-        r.read_bytes_into(&mut self.ram)?;
-        r.read_bytes_into(&mut self.vector_ram)?;
+        r.read_bytes_into(self.map.region_data_mut(region::RAM))?;
+        r.read_bytes_into(self.map.region_data_mut(region::VECTOR_RAM))?;
         self.in0 = r.read_u8()?;
         self.in1 = r.read_u8()?;
         self.clock = r.read_u64_le()?;
@@ -619,8 +613,8 @@ mod tests {
         let mut sys = AsteroidsSystem::new();
 
         // Set known state
-        sys.ram[0x100] = 0xAA;
-        sys.vector_ram[0x200] = 0xBB;
+        sys.map.region_data_mut(region::RAM)[0x100] = 0xAA;
+        sys.map.region_data_mut(region::VECTOR_RAM)[0x200] = 0xBB;
         sys.in0 = 0x18;
         sys.in1 = 0xE8;
         sys.clock = 75_000;
@@ -634,7 +628,7 @@ mod tests {
 
         // Mutate everything
         let mut sys2 = AsteroidsSystem::new();
-        sys2.ram[0x100] = 0xFF;
+        sys2.map.region_data_mut(region::RAM)[0x100] = 0xFF;
         sys2.in0 = 0xFF;
         sys2.clock = 999;
 
@@ -645,8 +639,8 @@ mod tests {
         assert_eq!(sys2.cpu.snapshot(), cpu_snap);
 
         // Verify memory
-        assert_eq!(sys2.ram[0x100], 0xAA);
-        assert_eq!(sys2.vector_ram[0x200], 0xBB);
+        assert_eq!(sys2.map.region_data(region::RAM)[0x100], 0xAA);
+        assert_eq!(sys2.map.region_data(region::VECTOR_RAM)[0x200], 0xBB);
 
         // Verify I/O and timing state
         assert_eq!(sys2.in0, 0x18);
@@ -678,8 +672,8 @@ mod tests {
     #[test]
     fn save_does_not_include_rom() {
         let mut sys = AsteroidsSystem::new();
-        sys.program_rom[0] = 0xDE;
-        sys.vector_rom[0] = 0xAD;
+        sys.map.region_data_mut(region::PROGRAM_ROM)[0] = 0xDE;
+        sys.map.region_data_mut(region::VECTOR_ROM)[0] = 0xAD;
 
         let data = sys.save_state().unwrap();
 
@@ -688,7 +682,7 @@ mod tests {
         sys2.load_state(&data).unwrap();
 
         // ROMs should remain at their default (zeroed), not overwritten
-        assert_eq!(sys2.program_rom[0], 0x00);
-        assert_eq!(sys2.vector_rom[0], 0x00);
+        assert_eq!(sys2.map.region_data(region::PROGRAM_ROM)[0], 0x00);
+        assert_eq!(sys2.map.region_data(region::VECTOR_ROM)[0], 0x00);
     }
 }
