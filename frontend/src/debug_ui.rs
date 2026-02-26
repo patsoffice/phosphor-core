@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use phosphor_core::core::debug::{BusDebug, DebugCpu, DebugRegister};
 use phosphor_core::core::machine::Machine;
+use phosphor_core::core::memory_map::{WatchpointHit, WatchpointKind};
 
 /// Execution modes for the debug interface.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -54,6 +55,20 @@ pub struct DebugState {
     /// Input buffer for cycle breakpoint.
     pub cycle_bp_input: String,
 
+    // Watchpoints
+    /// Active memory watchpoints: (cpu_index, address, kind).
+    pub watchpoints: Vec<(usize, u16, WatchpointKind)>,
+    /// Hex address input buffer for adding watchpoints.
+    pub watchpoint_input: String,
+    /// Whether the next watchpoint should watch reads.
+    pub watchpoint_read: bool,
+    /// Whether the next watchpoint should watch writes.
+    pub watchpoint_write: bool,
+    /// Last watchpoint hit (displayed until user continues).
+    pub last_watchpoint_hit: Option<WatchpointHit>,
+    /// True when the UI has modified watchpoints and they need to be synced to the machine.
+    pub watchpoints_dirty: bool,
+
     // Per-CPU column state
     /// Which tab (Disassembly/Memory) is selected per CPU column.
     pub bottom_tabs: Vec<BottomTab>,
@@ -81,6 +96,12 @@ impl DebugState {
             breakpoint_input: String::new(),
             cycle_breakpoint: None,
             cycle_bp_input: String::new(),
+            watchpoints: Vec::new(),
+            watchpoint_input: String::new(),
+            watchpoint_read: false,
+            watchpoint_write: true,
+            last_watchpoint_hit: None,
+            watchpoints_dirty: false,
             bottom_tabs: Vec::new(),
             memory_addr_inputs: Vec::new(),
             memory_scroll_to: Vec::new(),
@@ -88,9 +109,11 @@ impl DebugState {
         }
     }
 
-    /// True if any PC or cycle breakpoint is set.
+    /// True if any PC, cycle, or memory watchpoint is set.
     pub fn has_any_breakpoints(&self) -> bool {
-        self.cycle_breakpoint.is_some() || self.breakpoints.iter().any(|s| !s.is_empty())
+        self.cycle_breakpoint.is_some()
+            || self.breakpoints.iter().any(|s| !s.is_empty())
+            || !self.watchpoints.is_empty()
     }
 
     /// Width (in pixels) needed for the debug panel, based on CPU count.
@@ -151,6 +174,15 @@ pub fn execute_frame(machine: &mut dyn Machine, state: &mut DebugState) -> bool 
         return true;
     }
 
+    // Sync watchpoints to machine if the UI changed them
+    if state.watchpoints_dirty {
+        state.watchpoints_dirty = false;
+        machine.clear_all_watchpoints();
+        for &(cpu_idx, addr, kind) in &state.watchpoints {
+            machine.set_watchpoint(cpu_idx, addr, kind);
+        }
+    }
+
     match state.run_mode {
         RunMode::Running => {
             let cpf = machine.cycles_per_frame();
@@ -189,6 +221,16 @@ pub fn execute_frame(machine: &mut dyn Machine, state: &mut DebugState) -> bool 
                                 }
                             }
                         }
+
+                        // Memory watchpoint hits
+                        if let Some(hit) = machine.take_watchpoint_hit() {
+                            state.last_watchpoint_hit = Some(hit);
+                            state.run_mode = RunMode::Paused;
+                            if let Some(bus) = machine.debug_bus() {
+                                state.refresh(bus);
+                            }
+                            return false;
+                        }
                     }
                 }
             } else {
@@ -209,6 +251,9 @@ pub fn execute_frame(machine: &mut dyn Machine, state: &mut DebugState) -> bool 
             loop {
                 let boundaries = machine.debug_tick();
                 state.cycle_count += 1;
+                if let Some(hit) = machine.take_watchpoint_hit() {
+                    state.last_watchpoint_hit = Some(hit);
+                }
                 if (boundaries >> state.step_cpu) & 1 != 0 {
                     break;
                 }
@@ -222,6 +267,9 @@ pub fn execute_frame(machine: &mut dyn Machine, state: &mut DebugState) -> bool 
         RunMode::StepCycle => {
             machine.debug_tick();
             state.cycle_count += 1;
+            if let Some(hit) = machine.take_watchpoint_hit() {
+                state.last_watchpoint_hit = Some(hit);
+            }
             if let Some(bus) = machine.debug_bus() {
                 state.refresh(bus);
             }
@@ -343,6 +391,7 @@ fn draw_controls_column(ui: &mut egui::Ui, state: &mut DebugState, min_top_heigh
             }
         } else if ui.button("Continue (F4)").clicked() {
             state.run_mode = RunMode::Running;
+            state.last_watchpoint_hit = None;
         }
     });
 
@@ -370,8 +419,9 @@ fn draw_controls_column(ui: &mut egui::Ui, state: &mut DebugState, min_top_heigh
         }
     }
 
-    // Breakpoints
+    // Breakpoints & Watchpoints
     draw_breakpoints_panel(ui, state);
+    draw_watchpoints_panel(ui, state);
 
     let natural_height = ui.cursor().top() - top_y;
 
@@ -533,6 +583,93 @@ fn draw_breakpoints_panel(ui: &mut egui::Ui, state: &mut DebugState) {
                         state.cycle_breakpoint = None;
                     }
                 });
+            }
+        });
+}
+
+// ---------------------------------------------------------------------------
+// Watchpoints panel (controls column)
+// ---------------------------------------------------------------------------
+
+fn draw_watchpoints_panel(ui: &mut egui::Ui, state: &mut DebugState) {
+    egui::CollapsingHeader::new("Watchpoints")
+        .default_open(true)
+        .show(ui, |ui| {
+            // Watchpoint entry: address + R/W checkboxes + Add button
+            ui.horizontal(|ui| {
+                ui.label("$");
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut state.watchpoint_input)
+                        .desired_width(48.0)
+                        .font(egui::TextStyle::Monospace),
+                );
+                ui.checkbox(&mut state.watchpoint_read, "R");
+                ui.checkbox(&mut state.watchpoint_write, "W");
+                let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if (ui.button("Add").clicked() || enter)
+                    && let Ok(addr) =
+                        u16::from_str_radix(state.watchpoint_input.trim_start_matches('$'), 16)
+                {
+                    let kinds: Vec<WatchpointKind> = [
+                        state.watchpoint_read.then_some(WatchpointKind::Read),
+                        state.watchpoint_write.then_some(WatchpointKind::Write),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                    for kind in kinds {
+                        let entry = (state.step_cpu, addr, kind);
+                        if !state.watchpoints.contains(&entry) {
+                            state.watchpoints.push(entry);
+                            state.watchpoints_dirty = true;
+                        }
+                    }
+                    state.watchpoint_input.clear();
+                }
+            });
+
+            // List active watchpoints
+            let mut to_remove = None;
+            for (i, &(cpu_idx, addr, kind)) in state.watchpoints.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    let kind_str = match kind {
+                        WatchpointKind::Read => "R",
+                        WatchpointKind::Write => "W",
+                    };
+                    let cpu_label = if state.cpu_panels.len() > 1 {
+                        format!("[CPU{}] ", cpu_idx)
+                    } else {
+                        String::new()
+                    };
+                    ui.label(
+                        egui::RichText::new(format!("{cpu_label}${addr:04X} {kind_str}"))
+                            .monospace(),
+                    );
+                    if ui.small_button("\u{2715}").clicked() {
+                        to_remove = Some(i);
+                    }
+                });
+            }
+            if let Some(idx) = to_remove {
+                state.watchpoints.remove(idx);
+                state.watchpoints_dirty = true;
+            }
+
+            // Display last watchpoint hit
+            if let Some(hit) = &state.last_watchpoint_hit {
+                let kind_str = match hit.kind {
+                    WatchpointKind::Read => "Read",
+                    WatchpointKind::Write => "Write",
+                };
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{kind_str} ${:04X} = ${:02X}",
+                        hit.addr, hit.value
+                    ))
+                    .monospace()
+                    .color(egui::Color32::from_rgb(255, 200, 80)),
+                );
             }
         });
 }

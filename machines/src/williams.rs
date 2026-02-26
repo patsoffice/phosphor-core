@@ -353,14 +353,26 @@ impl WilliamsBoard {
     fn build_main_map() -> MemoryMap {
         use main_region::*;
         let mut map = MemoryMap::new();
-        map.region(VIDEO_RAM, "Video RAM", 0x0000, 0xC000, AccessKind::ReadWrite)
-            .region(PALETTE, "Palette", 0xC000, 0x100, AccessKind::ReadWrite)
-            .region(IO_PIA, "PIAs", 0xC800, 0x100, AccessKind::Io)
-            .region(IO_BANK, "ROM Bank", 0xC900, 0x100, AccessKind::Io)
-            .region(IO_BLITTER, "Blitter", 0xCA00, 0x100, AccessKind::Io)
-            .region(IO_VIDEO, "Video Counter", 0xCB00, 0x100, AccessKind::Io)
-            .region(CMOS, "CMOS RAM", 0xCC00, 0x400, AccessKind::ReadWrite)
-            .region(PROGRAM_ROM, "Program ROM", 0xD000, 0x3000, AccessKind::ReadOnly);
+        map.region(
+            VIDEO_RAM,
+            "Video RAM",
+            0x0000,
+            0xC000,
+            AccessKind::ReadWrite,
+        )
+        .region(PALETTE, "Palette", 0xC000, 0x100, AccessKind::ReadWrite)
+        .region(IO_PIA, "PIAs", 0xC800, 0x100, AccessKind::Io)
+        .region(IO_BANK, "ROM Bank", 0xC900, 0x100, AccessKind::Io)
+        .region(IO_BLITTER, "Blitter", 0xCA00, 0x100, AccessKind::Io)
+        .region(IO_VIDEO, "Video Counter", 0xCB00, 0x100, AccessKind::Io)
+        .region(CMOS, "CMOS RAM", 0xCC00, 0x400, AccessKind::ReadWrite)
+        .region(
+            PROGRAM_ROM,
+            "Program ROM",
+            0xD000,
+            0x3000,
+            AccessKind::ReadOnly,
+        );
         map
     }
 

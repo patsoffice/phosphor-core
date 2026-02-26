@@ -103,6 +103,9 @@ pub struct MemoryMap {
     regions: Vec<RegionDescriptor>,
     active_watch_count: u16,
     pending_hit: Option<WatchpointHit>,
+    /// Exact watched addresses. Page flags serve as a fast filter; this vec
+    /// provides address-level precision so only the exact address fires.
+    watched_addrs: Vec<(u16, WatchpointKind)>,
 }
 
 impl MemoryMap {
@@ -113,6 +116,7 @@ impl MemoryMap {
             regions: Vec::new(),
             active_watch_count: 0,
             pending_hit: None,
+            watched_addrs: Vec::new(),
         }
     }
 
@@ -252,7 +256,12 @@ impl MemoryMap {
             return false;
         }
         let page = &self.pages[(addr >> 8) as usize];
-        if page.watch_read {
+        if page.watch_read
+            && self
+                .watched_addrs
+                .iter()
+                .any(|&(a, k)| a == addr && k == WatchpointKind::Read)
+        {
             self.pending_hit = Some(WatchpointHit {
                 addr,
                 kind: WatchpointKind::Read,
@@ -271,7 +280,12 @@ impl MemoryMap {
             return false;
         }
         let page = &self.pages[(addr >> 8) as usize];
-        if page.watch_write {
+        if page.watch_write
+            && self
+                .watched_addrs
+                .iter()
+                .any(|&(a, k)| a == addr && k == WatchpointKind::Write)
+        {
             self.pending_hit = Some(WatchpointHit {
                 addr,
                 kind: WatchpointKind::Write,
@@ -294,8 +308,19 @@ impl MemoryMap {
         self.active_watch_count > 0
     }
 
-    /// Set a watchpoint on the page containing `addr`.
+    /// Set a watchpoint on the exact address `addr`.
+    ///
+    /// The page-level flag is set as a fast filter; the exact address is
+    /// recorded in `watched_addrs` so only that address fires.
     pub fn set_watchpoint(&mut self, addr: u16, kind: WatchpointKind) {
+        // Record exact address (avoid duplicates)
+        if !self
+            .watched_addrs
+            .iter()
+            .any(|&(a, k)| a == addr && k == kind)
+        {
+            self.watched_addrs.push((addr, kind));
+        }
         let page = &mut self.pages[(addr >> 8) as usize];
         let was_active = page.watch_read || page.watch_write;
         match kind {
@@ -307,13 +332,29 @@ impl MemoryMap {
         }
     }
 
-    /// Clear a watchpoint on the page containing `addr`.
+    /// Clear a watchpoint on the exact address `addr`.
+    ///
+    /// The page-level flag is only cleared if no other watched addresses
+    /// on the same page still need it.
     pub fn clear_watchpoint(&mut self, addr: u16, kind: WatchpointKind) {
-        let page = &mut self.pages[(addr >> 8) as usize];
+        // Remove exact address entry
+        self.watched_addrs
+            .retain(|&(a, k)| !(a == addr && k == kind));
+
+        // Check if any remaining entries share this page and kind
+        let page_idx = (addr >> 8) as usize;
+        let still_has_kind = self
+            .watched_addrs
+            .iter()
+            .any(|&(a, k)| (a >> 8) as usize == page_idx && k == kind);
+
+        let page = &mut self.pages[page_idx];
         let was_active = page.watch_read || page.watch_write;
-        match kind {
-            WatchpointKind::Read => page.watch_read = false,
-            WatchpointKind::Write => page.watch_write = false,
+        if !still_has_kind {
+            match kind {
+                WatchpointKind::Read => page.watch_read = false,
+                WatchpointKind::Write => page.watch_write = false,
+            }
         }
         let is_active = page.watch_read || page.watch_write;
         if was_active && !is_active {
@@ -329,6 +370,7 @@ impl MemoryMap {
         }
         self.active_watch_count = 0;
         self.pending_hit = None;
+        self.watched_addrs.clear();
     }
 
     // -----------------------------------------------------------------------
@@ -509,15 +551,18 @@ mod tests {
         assert!(map.has_any_watchpoints());
         assert_eq!(map.active_watch_count, 1);
 
-        // Read in the watched page → hit
-        assert!(map.check_read_watch(0x4042, 0xAB));
+        // Read at the exact watched address → hit
+        assert!(map.check_read_watch(0x4000, 0xAB));
         let hit = map.take_hit().unwrap();
-        assert_eq!(hit.addr, 0x4042);
+        assert_eq!(hit.addr, 0x4000);
         assert_eq!(hit.kind, WatchpointKind::Read);
         assert_eq!(hit.value, 0xAB);
 
-        // Write in the same page → no hit (only read watchpoint set)
-        assert!(!map.check_write_watch(0x4042, 0xCD));
+        // Read at a different address on the same page → no hit (exact match only)
+        assert!(!map.check_read_watch(0x4042, 0xCD));
+
+        // Write at the watched address → no hit (only read watchpoint set)
+        assert!(!map.check_write_watch(0x4000, 0xCD));
         assert!(map.take_hit().is_none());
 
         // Read in a different page → no hit
@@ -531,9 +576,9 @@ mod tests {
 
         map.set_watchpoint(0x1000, WatchpointKind::Write);
 
-        assert!(map.check_write_watch(0x10FF, 0x99));
+        assert!(map.check_write_watch(0x1000, 0x99));
         let hit = map.take_hit().unwrap();
-        assert_eq!(hit.addr, 0x10FF);
+        assert_eq!(hit.addr, 0x1000);
         assert_eq!(hit.kind, WatchpointKind::Write);
         assert_eq!(hit.value, 0x99);
 
@@ -604,9 +649,48 @@ mod tests {
         map.set_watchpoint(0x2000, WatchpointKind::Read);
         assert_eq!(map.active_watch_count, 2);
 
-        // Only page 0x10 fires
+        // Only exact addresses fire
         assert!(!map.check_read_watch(0x0000, 0x00));
-        assert!(map.check_read_watch(0x1050, 0x42));
+        assert!(map.check_read_watch(0x1000, 0x42));
+        map.take_hit();
+        // Different address on same page → no hit
+        assert!(!map.check_read_watch(0x1050, 0x00));
+    }
+
+    #[test]
+    fn watchpoint_exact_address_only() {
+        let mut map = MemoryMap::new();
+        map.region(RAM, "RAM", 0x0000, 0x10000, AccessKind::ReadWrite);
+
+        map.set_watchpoint(0x2042, WatchpointKind::Write);
+
+        // Same page, different address → no hit
+        assert!(!map.check_write_watch(0x2000, 0x11));
+        assert!(!map.check_write_watch(0x2041, 0x22));
+        assert!(!map.check_write_watch(0x2043, 0x33));
+        assert!(!map.check_write_watch(0x20FF, 0x44));
+
+        // Exact address → hit
+        assert!(map.check_write_watch(0x2042, 0x55));
+        let hit = map.take_hit().unwrap();
+        assert_eq!(hit.addr, 0x2042);
+        assert_eq!(hit.value, 0x55);
+    }
+
+    #[test]
+    fn clear_one_of_two_on_same_page() {
+        let mut map = MemoryMap::new();
+        map.region(RAM, "RAM", 0x0000, 0x10000, AccessKind::ReadWrite);
+
+        map.set_watchpoint(0x3000, WatchpointKind::Read);
+        map.set_watchpoint(0x3010, WatchpointKind::Read);
+        assert_eq!(map.active_watch_count, 1); // same page
+
+        // Clear the first; page flag should stay (0x3010 still active)
+        map.clear_watchpoint(0x3000, WatchpointKind::Read);
+        assert_eq!(map.active_watch_count, 1);
+        assert!(!map.check_read_watch(0x3000, 0x00)); // cleared
+        assert!(map.check_read_watch(0x3010, 0xAA)); // still active
     }
 
     // -----------------------------------------------------------------------
@@ -654,6 +738,7 @@ mod tests {
         let mut map = MemoryMap::new();
         map.region(RAM, "RAM", 0x0000, 0x10000, AccessKind::ReadWrite);
         map.set_watchpoint(0x1000, WatchpointKind::Read);
+        map.set_watchpoint(0x1001, WatchpointKind::Read);
 
         map.check_read_watch(0x1000, 0xAA);
         map.check_read_watch(0x1001, 0xBB); // overwrites previous
