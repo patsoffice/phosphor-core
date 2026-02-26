@@ -13,5 +13,5 @@ pub use debug::{BusDebug, DebugCpu, DebugDisassembly, DebugRegister, Debuggable}
 pub use machine::{
     AnalogInput, AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
 };
-pub use memory_map::MemoryMap;
+pub use memory_map::{MemoryMap, WatchpointHit, WatchpointKind};
 pub use save_state::{SaveError, Saveable, StateReader, StateWriter};

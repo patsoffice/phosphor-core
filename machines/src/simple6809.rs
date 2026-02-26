@@ -1,7 +1,12 @@
 use phosphor_core::bus_split;
+use phosphor_core::core::memory_map::{AccessKind, MemoryMap, WatchpointHit, WatchpointKind};
 use phosphor_core::core::{Bus, BusMaster, bus::InterruptState};
 use phosphor_core::cpu::state::M6809State;
 use phosphor_core::cpu::{CpuStateTrait, m6809::M6809};
+
+// Region IDs for Simple6809System address space
+const RAM: u8 = 1;
+const ROM: u8 = 2;
 
 pub struct Simple6809System {
     #[allow(dead_code)]
@@ -9,6 +14,7 @@ pub struct Simple6809System {
     ram: [u8; 0x8000],
     rom: [u8; 0x8000],
     clock: u64,
+    memory_map: MemoryMap,
 }
 
 impl Default for Simple6809System {
@@ -19,11 +25,17 @@ impl Default for Simple6809System {
 
 impl Simple6809System {
     pub fn new() -> Self {
+        let mut memory_map = MemoryMap::new();
+        memory_map
+            .region(RAM, "RAM", 0x0000, 0x8000, AccessKind::ReadWrite)
+            .region(ROM, "ROM", 0x8000, 0x8000, AccessKind::ReadOnly);
+
         Self {
             cpu: M6809::new(),
             ram: [0; 0x8000],
             rom: [0; 0x8000],
             clock: 0,
+            memory_map,
         }
     }
 
@@ -89,6 +101,16 @@ impl Simple6809System {
             self.ram[addr] = data;
         }
     }
+
+    /// Consume a pending watchpoint hit (for testing)
+    pub fn take_watchpoint_hit(&mut self) -> Option<WatchpointHit> {
+        self.memory_map.take_hit()
+    }
+
+    /// Set a memory watchpoint (for testing)
+    pub fn set_watchpoint(&mut self, addr: u16, kind: WatchpointKind) {
+        self.memory_map.set_watchpoint(addr, kind);
+    }
 }
 
 impl Bus for Simple6809System {
@@ -96,16 +118,21 @@ impl Bus for Simple6809System {
     type Data = u8;
 
     fn read(&mut self, _master: BusMaster, addr: u16) -> u8 {
-        match addr {
-            0x0000..=0x7FFF => self.ram[addr as usize],
-            0x8000..=0xFFFF => self.rom[(addr - 0x8000) as usize],
-        }
+        let page = self.memory_map.page(addr);
+        let data = match page.region_id {
+            RAM => self.ram[addr as usize],
+            ROM => self.rom[(addr - 0x8000) as usize],
+            _ => 0xFF,
+        };
+        self.memory_map.check_read_watch(addr, data);
+        data
     }
 
     fn write(&mut self, _master: BusMaster, addr: u16, data: u8) {
-        if addr < 0x8000 {
+        if self.memory_map.page(addr).region_id == RAM {
             self.ram[addr as usize] = data;
         }
+        self.memory_map.check_write_watch(addr, data);
     }
 
     fn is_halted_for(&self, _master: BusMaster) -> bool {

@@ -15,6 +15,7 @@ pub struct AnalogInput {
 }
 
 use super::debug::BusDebug;
+use super::memory_map::{MemoryMap, WatchpointHit, WatchpointKind};
 use super::save_state::SaveError;
 
 // ---------------------------------------------------------------------------
@@ -104,6 +105,30 @@ pub trait MachineDebug {
     /// Bit 0 = CPU 0, bit 1 = CPU 1, etc.
     fn debug_tick(&mut self) -> u32 {
         0
+    }
+
+    /// Consume a pending watchpoint hit from the last tick, if any.
+    ///
+    /// The debugger polls this after each `debug_tick()`. When `Some` is
+    /// returned, the debugger pauses execution and displays the hit.
+    fn take_watchpoint_hit(&mut self) -> Option<WatchpointHit> {
+        None
+    }
+
+    /// Set a memory watchpoint in the address space of `cpu_index`.
+    fn set_watchpoint(&mut self, _cpu_index: usize, _addr: u16, _kind: WatchpointKind) {}
+
+    /// Clear a memory watchpoint in the address space of `cpu_index`.
+    fn clear_watchpoint(&mut self, _cpu_index: usize, _addr: u16, _kind: WatchpointKind) {}
+
+    /// Clear all memory watchpoints across all address spaces.
+    fn clear_all_watchpoints(&mut self) {}
+
+    /// Get the memory map for a CPU's address space (for region introspection).
+    ///
+    /// Returns `None` if the machine hasn't adopted `MemoryMap` yet.
+    fn memory_map(&self, _cpu_index: usize) -> Option<&MemoryMap> {
+        None
     }
 }
 
