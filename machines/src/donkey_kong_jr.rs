@@ -9,7 +9,7 @@ use phosphor_core::cpu::Cpu; // for .reset()
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
 use crate::set_bit_active_high;
-use crate::tkg04::{self, Tkg04Board};
+use crate::tkg04::{self, Tkg04Board, main_region, sound_region};
 
 // ---------------------------------------------------------------------------
 // Donkey Kong Jr ROM definitions ("dkongjr2" MAME set — contiguous layout)
@@ -234,10 +234,12 @@ impl DkongJrSystem {
     /// Load all ROM sets.
     pub fn load_rom_set(&mut self, rom_set: &RomSet) -> Result<(), RomLoadError> {
         let rom_data = DKONGJR_PROGRAM_ROM.load(rom_set)?;
-        self.board.rom[..0x6000].copy_from_slice(&rom_data);
+        self.board.main_map.load_region(main_region::ROM, &rom_data);
 
         let sound_data = DKONGJR_SOUND_ROM.load(rom_set)?;
-        self.board.sound_rom.copy_from_slice(&sound_data);
+        self.board
+            .sound_map
+            .load_region(sound_region::ROM, &sound_data);
         // DK Jr has no tune ROM (board.tune_rom stays zeroed)
 
         let tile_data = DKONGJR_TILE_ROM.load(rom_set)?;
@@ -269,27 +271,37 @@ impl Bus for DkongJrSystem {
     fn read(&mut self, master: BusMaster, addr: u16) -> u8 {
         match master {
             // Main CPU (Z80)
-            BusMaster::Cpu(0) => match addr {
-                0x0000..=0x5FFF => self.board.rom[addr as usize], // 24KB ROM
-                0x6000..=0x6BFF => self.board.ram[(addr - 0x6000) as usize],
-                0x7000..=0x73FF => self.board.sprite_ram[(addr - 0x7000) as usize],
-                0x7400..=0x77FF => self.board.video_ram[(addr - 0x7400) as usize],
-                0x7800..=0x7808 => self.board.dma.read((addr - 0x7800) as u8),
-                0x7C00 => self.board.in0,
-                0x7C80 => self.board.in1,
-                0x7D00 => {
-                    // IN2: DK Jr does not have the MCU line connected (bit 6 always 0)
-                    self.board.in2 & !0x40
-                }
-                0x7D80 => self.board.dsw0,
-                _ => 0x00,
-            },
+            BusMaster::Cpu(0) => {
+                let data = match self.board.main_map.page(addr).region_id {
+                    main_region::ROM
+                    | main_region::RAM
+                    | main_region::SPRITE_RAM
+                    | main_region::VIDEO_RAM => self.board.main_map.read_backing(addr),
+                    main_region::IO_DMA => {
+                        if addr <= 0x7808 {
+                            self.board.dma.read((addr - 0x7800) as u8)
+                        } else {
+                            0x00
+                        }
+                    }
+                    main_region::IO_PORTS => match addr {
+                        0x7C00 => self.board.in0,
+                        0x7C80 => self.board.in1,
+                        0x7D00 => {
+                            // IN2: DK Jr does not have the MCU line connected (bit 6 always 0)
+                            self.board.in2 & !0x40
+                        }
+                        0x7D80 => self.board.dsw0,
+                        _ => 0x00,
+                    },
+                    _ => 0x00,
+                };
+                self.board.main_map.check_read_watch(addr, data);
+                data
+            }
 
             // Sound CPU (I8035) - program memory
-            BusMaster::Cpu(1) => {
-                let addr12 = (addr & 0x0FFF) as usize;
-                self.board.sound_rom[addr12]
-            }
+            BusMaster::Cpu(1) => self.board.sound_map.read_backing(addr & 0x0FFF),
 
             _ => 0x00,
         }
@@ -297,64 +309,72 @@ impl Bus for DkongJrSystem {
 
     fn write(&mut self, master: BusMaster, addr: u16, data: u8) {
         match master {
-            BusMaster::Cpu(0) => match addr {
-                0x6000..=0x6BFF => self.board.ram[(addr - 0x6000) as usize] = data,
-                0x7000..=0x73FF => self.board.sprite_ram[(addr - 0x7000) as usize] = data,
-                0x7400..=0x77FF => self.board.video_ram[(addr - 0x7400) as usize] = data,
-                0x7800..=0x7808 => self.board.dma.write((addr - 0x7800) as u8, data),
-
-                // Sound latch (ls174.3d)
-                0x7C00 => self.board.sound_latch = data,
-
-                // ls259.4h latch (0x7C80-0x7C87): sound/gfx control
-                // 0x7C80 also writes gfx bank via dkongjr_gfxbank_w
-                0x7C80..=0x7C87 => {
-                    let bit = (addr & 0x07) as u8;
-                    self.board.sound_control_latch_4h.write(bit, data & 1 != 0);
-                    // Bit 0 of ls259.4h is also the gfx bank select
-                    if bit == 0 {
-                        self.board.gfx_bank = data & 1;
+            BusMaster::Cpu(0) => {
+                match self.board.main_map.page(addr).region_id {
+                    main_region::RAM | main_region::SPRITE_RAM | main_region::VIDEO_RAM => {
+                        self.board.main_map.write_backing(addr, data);
                     }
-                }
-
-                // 74LS259 sound control latch (dev_6h): addr bits 0-2 select bit
-                0x7D00..=0x7D07 => {
-                    let bit = (addr & 0x07) as u8;
-                    self.board.write_sound_control_bit(bit, data & 1 != 0);
-                }
-
-                // ls259.5h latch (0x7D80-0x7D87)
-                // 0x7D80 also triggers sound CPU IRQ
-                0x7D80 => {
-                    self.board.sound_irq_pending = data != 0;
-                }
-
-                0x7D82 => self.board.flip_screen = (data & 1) != 0,
-                0x7D83 => self.board.sprite_bank = (data & 1) != 0,
-                0x7D84 => {
-                    self.board.nmi_mask = (data & 1) != 0;
-                    if !self.board.nmi_mask {
-                        self.board.vblank_nmi_pending = false;
+                    main_region::IO_DMA => {
+                        if addr <= 0x7808 {
+                            self.board.dma.write((addr - 0x7800) as u8, data);
+                        }
                     }
-                }
-                0x7D85 => self.board.trigger_sprite_dma(),
-                0x7D86 => {
-                    if data & 1 != 0 {
-                        self.board.palette_bank |= 0x01;
-                    } else {
-                        self.board.palette_bank &= !0x01;
-                    }
-                }
-                0x7D87 => {
-                    if data & 1 != 0 {
-                        self.board.palette_bank |= 0x02;
-                    } else {
-                        self.board.palette_bank &= !0x02;
-                    }
-                }
+                    main_region::IO_PORTS => match addr {
+                        // Sound latch (ls174.3d)
+                        0x7C00 => self.board.sound_latch = data,
 
-                _ => {}
-            },
+                        // ls259.4h latch (0x7C80-0x7C87): sound/gfx control
+                        0x7C80..=0x7C87 => {
+                            let bit = (addr & 0x07) as u8;
+                            self.board.sound_control_latch_4h.write(bit, data & 1 != 0);
+                            // Bit 0 of ls259.4h is also the gfx bank select
+                            if bit == 0 {
+                                self.board.gfx_bank = data & 1;
+                            }
+                        }
+
+                        // 74LS259 sound control latch (dev_6h): addr bits 0-2 select bit
+                        0x7D00..=0x7D07 => {
+                            let bit = (addr & 0x07) as u8;
+                            self.board.write_sound_control_bit(bit, data & 1 != 0);
+                        }
+
+                        // ls259.5h latch (0x7D80-0x7D87)
+                        // 0x7D80 also triggers sound CPU IRQ
+                        0x7D80 => {
+                            self.board.sound_irq_pending = data != 0;
+                        }
+
+                        0x7D82 => self.board.flip_screen = (data & 1) != 0,
+                        0x7D83 => self.board.sprite_bank = (data & 1) != 0,
+                        0x7D84 => {
+                            self.board.nmi_mask = (data & 1) != 0;
+                            if !self.board.nmi_mask {
+                                self.board.vblank_nmi_pending = false;
+                            }
+                        }
+                        0x7D85 => self.board.trigger_sprite_dma(),
+                        0x7D86 => {
+                            if data & 1 != 0 {
+                                self.board.palette_bank |= 0x01;
+                            } else {
+                                self.board.palette_bank &= !0x01;
+                            }
+                        }
+                        0x7D87 => {
+                            if data & 1 != 0 {
+                                self.board.palette_bank |= 0x02;
+                            } else {
+                                self.board.palette_bank &= !0x02;
+                            }
+                        }
+
+                        _ => {}
+                    },
+                    _ => {} // ROM or unmapped: ignored
+                }
+                self.board.main_map.check_write_watch(addr, data);
+            }
 
             // Sound CPU writes to program memory are ignored
             BusMaster::Cpu(1) => {}

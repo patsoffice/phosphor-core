@@ -9,7 +9,7 @@ use phosphor_core::cpu::Cpu; // for .reset()
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
 use crate::set_bit_active_high;
-use crate::tkg04::{self, Tkg04Board};
+use crate::tkg04::{self, Tkg04Board, main_region, sound_region};
 
 // ---------------------------------------------------------------------------
 // Donkey Kong ROM definitions (TKG-04 / "dkong" MAME set)
@@ -240,11 +240,17 @@ impl DkongSystem {
     /// Load all ROM sets.
     pub fn load_rom_set(&mut self, rom_set: &RomSet) -> Result<(), RomLoadError> {
         let rom_data = DKONG_PROGRAM_ROM.load(rom_set)?;
-        self.board.rom[..0x4000].copy_from_slice(&rom_data);
+        self.board
+            .main_map
+            .load_region_at(main_region::ROM, 0, &rom_data);
 
         let sound_data = DKONG_SOUND_ROM.load(rom_set)?;
-        self.board.sound_rom[..0x0800].copy_from_slice(&sound_data);
-        self.board.sound_rom[0x0800..].copy_from_slice(&sound_data); // mirror
+        self.board
+            .sound_map
+            .load_region_at(sound_region::ROM, 0, &sound_data);
+        self.board
+            .sound_map
+            .load_region_at(sound_region::ROM, 0x0800, &sound_data); // mirror
 
         let tune_data = DKONG_TUNE_ROM.load(rom_set)?;
         self.board.tune_rom.copy_from_slice(&tune_data);
@@ -278,32 +284,42 @@ impl Bus for DkongSystem {
     fn read(&mut self, master: BusMaster, addr: u16) -> u8 {
         match master {
             // Main CPU (Z80)
-            BusMaster::Cpu(0) => match addr {
-                0x0000..=0x3FFF => self.board.rom[addr as usize],
-                0x6000..=0x6BFF => self.board.ram[(addr - 0x6000) as usize],
-                0x7000..=0x73FF => self.board.sprite_ram[(addr - 0x7000) as usize],
-                0x7400..=0x77FF => self.board.video_ram[(addr - 0x7400) as usize],
-                0x7800..=0x7808 => self.board.dma.read((addr - 0x7800) as u8),
-                0x7C00 => self.board.in0,
-                0x7C80 => self.board.in1,
-                0x7D00 => {
-                    // IN2: active-high inputs + sound status at bit 6
-                    let sound_status = if self.board.sound_cpu.p2 & 0x10 != 0 {
-                        0x00
-                    } else {
-                        0x40
-                    };
-                    (self.board.in2 & !0x40) | sound_status
-                }
-                0x7D80 => self.board.dsw0,
-                _ => 0x00,
-            },
+            BusMaster::Cpu(0) => {
+                let data = match self.board.main_map.page(addr).region_id {
+                    main_region::ROM
+                    | main_region::RAM
+                    | main_region::SPRITE_RAM
+                    | main_region::VIDEO_RAM => self.board.main_map.read_backing(addr),
+                    main_region::IO_DMA => {
+                        if addr <= 0x7808 {
+                            self.board.dma.read((addr - 0x7800) as u8)
+                        } else {
+                            0x00
+                        }
+                    }
+                    main_region::IO_PORTS => match addr {
+                        0x7C00 => self.board.in0,
+                        0x7C80 => self.board.in1,
+                        0x7D00 => {
+                            // IN2: active-high inputs + sound status at bit 6
+                            let sound_status = if self.board.sound_cpu.p2 & 0x10 != 0 {
+                                0x00
+                            } else {
+                                0x40
+                            };
+                            (self.board.in2 & !0x40) | sound_status
+                        }
+                        0x7D80 => self.board.dsw0,
+                        _ => 0x00,
+                    },
+                    _ => 0x00,
+                };
+                self.board.main_map.check_read_watch(addr, data);
+                data
+            }
 
             // Sound CPU (I8035) - program memory
-            BusMaster::Cpu(1) => {
-                let addr12 = (addr & 0x0FFF) as usize;
-                self.board.sound_rom[addr12]
-            }
+            BusMaster::Cpu(1) => self.board.sound_map.read_backing(addr & 0x0FFF),
 
             _ => 0x00,
         }
@@ -311,61 +327,70 @@ impl Bus for DkongSystem {
 
     fn write(&mut self, master: BusMaster, addr: u16, data: u8) {
         match master {
-            BusMaster::Cpu(0) => match addr {
-                0x6000..=0x6BFF => self.board.ram[(addr - 0x6000) as usize] = data,
-                0x7000..=0x73FF => self.board.sprite_ram[(addr - 0x7000) as usize] = data,
-                0x7400..=0x77FF => self.board.video_ram[(addr - 0x7400) as usize] = data,
-                0x7800..=0x7808 => self.board.dma.write((addr - 0x7800) as u8, data),
-
-                // Sound latch (ls175.3d)
-                0x7C00 => self.board.sound_latch = data,
-
-                // 74LS259 sound control latch: addr bits 0-2 select bit, data bit 0 is value
-                0x7D00..=0x7D07 => {
-                    let bit = (addr & 0x07) as u8;
-                    self.board.write_sound_control_bit(bit, data & 1 != 0);
-                }
-
-                // Sound CPU IRQ trigger
-                0x7D80 => {
-                    self.board.sound_irq_pending = data != 0;
-                }
-
-                // Flip screen
-                0x7D82 => self.board.flip_screen = (data & 1) != 0,
-
-                // Sprite bank select
-                0x7D83 => self.board.sprite_bank = (data & 1) != 0,
-
-                // NMI mask
-                0x7D84 => {
-                    self.board.nmi_mask = (data & 1) != 0;
-                    if !self.board.nmi_mask {
-                        self.board.vblank_nmi_pending = false;
+            BusMaster::Cpu(0) => {
+                match self.board.main_map.page(addr).region_id {
+                    main_region::RAM | main_region::SPRITE_RAM | main_region::VIDEO_RAM => {
+                        self.board.main_map.write_backing(addr, data);
                     }
-                }
-
-                // DMA DRQ: trigger sprite DMA transfer from i8257 channel 0
-                0x7D85 => self.board.trigger_sprite_dma(),
-
-                // Palette bank (2-bit, one bit per address)
-                0x7D86 => {
-                    if data & 1 != 0 {
-                        self.board.palette_bank |= 0x01;
-                    } else {
-                        self.board.palette_bank &= !0x01;
+                    main_region::IO_DMA => {
+                        if addr <= 0x7808 {
+                            self.board.dma.write((addr - 0x7800) as u8, data);
+                        }
                     }
-                }
-                0x7D87 => {
-                    if data & 1 != 0 {
-                        self.board.palette_bank |= 0x02;
-                    } else {
-                        self.board.palette_bank &= !0x02;
-                    }
-                }
+                    main_region::IO_PORTS => match addr {
+                        // Sound latch (ls175.3d)
+                        0x7C00 => self.board.sound_latch = data,
 
-                _ => {}
-            },
+                        // 74LS259 sound control latch: addr bits 0-2 select bit
+                        0x7D00..=0x7D07 => {
+                            let bit = (addr & 0x07) as u8;
+                            self.board.write_sound_control_bit(bit, data & 1 != 0);
+                        }
+
+                        // Sound CPU IRQ trigger
+                        0x7D80 => {
+                            self.board.sound_irq_pending = data != 0;
+                        }
+
+                        // Flip screen
+                        0x7D82 => self.board.flip_screen = (data & 1) != 0,
+
+                        // Sprite bank select
+                        0x7D83 => self.board.sprite_bank = (data & 1) != 0,
+
+                        // NMI mask
+                        0x7D84 => {
+                            self.board.nmi_mask = (data & 1) != 0;
+                            if !self.board.nmi_mask {
+                                self.board.vblank_nmi_pending = false;
+                            }
+                        }
+
+                        // DMA DRQ: trigger sprite DMA transfer from i8257 channel 0
+                        0x7D85 => self.board.trigger_sprite_dma(),
+
+                        // Palette bank (2-bit, one bit per address)
+                        0x7D86 => {
+                            if data & 1 != 0 {
+                                self.board.palette_bank |= 0x01;
+                            } else {
+                                self.board.palette_bank &= !0x01;
+                            }
+                        }
+                        0x7D87 => {
+                            if data & 1 != 0 {
+                                self.board.palette_bank |= 0x02;
+                            } else {
+                                self.board.palette_bank &= !0x02;
+                            }
+                        }
+
+                        _ => {}
+                    },
+                    _ => {} // ROM or unmapped: ignored
+                }
+                self.board.main_map.check_write_watch(addr, data);
+            }
 
             // Sound CPU writes to program memory are ignored
             BusMaster::Cpu(1) => {}
@@ -568,9 +593,9 @@ mod tests {
         let mut sys = DkongSystem::new();
 
         // Set known state
-        sys.board.ram[0x100] = 0xAA;
-        sys.board.sprite_ram[0x50] = 0xBB;
-        sys.board.video_ram[0x100] = 0xCC;
+        sys.board.main_map.region_data_mut(main_region::RAM)[0x100] = 0xAA;
+        sys.board.main_map.region_data_mut(main_region::SPRITE_RAM)[0x50] = 0xBB;
+        sys.board.main_map.region_data_mut(main_region::VIDEO_RAM)[0x100] = 0xCC;
         sys.board.in0 = 0x1F;
         sys.board.in1 = 0x0F;
         sys.board.in2 = 0x8C;
@@ -596,7 +621,7 @@ mod tests {
 
         // Mutate everything
         let mut sys2 = DkongSystem::new();
-        sys2.board.ram[0x100] = 0xFF;
+        sys2.board.main_map.region_data_mut(main_region::RAM)[0x100] = 0xFF;
         sys2.board.clock = 999;
 
         // Load
@@ -607,9 +632,18 @@ mod tests {
         assert_eq!(sys2.board.sound_cpu.snapshot(), sound_snap);
 
         // Verify memory
-        assert_eq!(sys2.board.ram[0x100], 0xAA);
-        assert_eq!(sys2.board.sprite_ram[0x50], 0xBB);
-        assert_eq!(sys2.board.video_ram[0x100], 0xCC);
+        assert_eq!(
+            sys2.board.main_map.region_data(main_region::RAM)[0x100],
+            0xAA
+        );
+        assert_eq!(
+            sys2.board.main_map.region_data(main_region::SPRITE_RAM)[0x50],
+            0xBB
+        );
+        assert_eq!(
+            sys2.board.main_map.region_data(main_region::VIDEO_RAM)[0x100],
+            0xCC
+        );
 
         // Verify I/O and control
         assert_eq!(sys2.board.in0, 0x1F);
@@ -644,8 +678,8 @@ mod tests {
     #[test]
     fn save_does_not_include_rom() {
         let mut sys = DkongSystem::new();
-        sys.board.rom[0] = 0xDE;
-        sys.board.sound_rom[0] = 0xAD;
+        sys.board.main_map.region_data_mut(main_region::ROM)[0] = 0xDE;
+        sys.board.sound_map.region_data_mut(sound_region::ROM)[0] = 0xAD;
         sys.board.tile_rom[0] = 0xBE;
         sys.board.sprite_rom[0] = 0xEF;
 
@@ -654,8 +688,8 @@ mod tests {
         let mut sys2 = DkongSystem::new();
         sys2.load_state(&data).unwrap();
 
-        assert_eq!(sys2.board.rom[0], 0x00);
-        assert_eq!(sys2.board.sound_rom[0], 0x00);
+        assert_eq!(sys2.board.main_map.region_data(main_region::ROM)[0], 0x00);
+        assert_eq!(sys2.board.sound_map.region_data(sound_region::ROM)[0], 0x00);
         assert_eq!(sys2.board.tile_rom[0], 0x00);
         assert_eq!(sys2.board.sprite_rom[0], 0x00);
     }

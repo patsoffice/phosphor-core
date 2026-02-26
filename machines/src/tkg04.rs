@@ -1,4 +1,5 @@
 use phosphor_core::audio::AudioResampler;
+use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
 use phosphor_core::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
 use phosphor_core::core::{Bus, BusMaster, ClockDivider};
 use phosphor_core::cpu::i8035::I8035;
@@ -9,6 +10,25 @@ use phosphor_core::device::i8257::I8257;
 use phosphor_core::device::output_latch::OutputLatch;
 use phosphor_core::gfx;
 use phosphor_macros::BusDebug;
+
+// ---------------------------------------------------------------------------
+// Memory map region IDs (machine-specific constants for page table dispatch)
+// ---------------------------------------------------------------------------
+
+/// Main CPU (Z80) address space region IDs.
+pub(crate) mod main_region {
+    pub const ROM: u8 = 1; // 0x0000-0x5FFF (24KB max program ROM)
+    pub const RAM: u8 = 2; // 0x6000-0x6FFF (4KB work RAM)
+    pub const SPRITE_RAM: u8 = 3; // 0x7000-0x73FF (1KB sprite RAM)
+    pub const VIDEO_RAM: u8 = 4; // 0x7400-0x77FF (1KB video RAM)
+    pub const IO_DMA: u8 = 5; // 0x7800-0x78FF (DMA controller)
+    pub const IO_PORTS: u8 = 6; // 0x7C00-0x7DFF (input/control ports)
+}
+
+/// Sound CPU (I8035) address space region IDs.
+pub(crate) mod sound_region {
+    pub const ROM: u8 = 1; // 0x0000-0x0FFF (4KB sound ROM)
+}
 
 // ---------------------------------------------------------------------------
 // Shared timing constants (Nintendo TKG / TRS hardware)
@@ -207,27 +227,19 @@ pub(crate) use impl_tkg04_renderable;
 /// Screen: 256×240 displayed rotated 90° CCW on vertical monitor.
 #[derive(BusDebug)]
 pub struct Tkg04Board {
-    // Main CPU (Z80 @ 3.072 MHz)
-    #[debug_cpu("Z80 Main", read = "main_memory_read", write = "main_memory_write")]
+    // CPUs (debug reads/writes auto-routed through matching #[debug_map])
+    #[debug_cpu("Z80 Main")]
     pub(crate) cpu: Z80,
-
-    // Sound CPU (I8035 @ 6 MHz / 15 = 400 kHz machine cycles)
-    #[debug_cpu(
-        "I8035 Sound",
-        read = "sound_memory_read",
-        write = "sound_memory_write"
-    )]
+    #[debug_cpu("I8035 Sound")]
     pub(crate) sound_cpu: I8035,
 
-    // Main CPU memory (max sizes across all games)
-    pub(crate) rom: [u8; 0x6000], // 24KB max (DK=16KB, DK Jr=24KB)
-    pub(crate) ram: [u8; 0x1000], // 4KB max
-    pub(crate) sprite_ram: [u8; 0x0400], // 1KB
-    pub(crate) video_ram: [u8; 0x0400], // 1KB
-
-    // Sound CPU memory
-    pub(crate) sound_rom: [u8; 0x1000], // 4KB (DK: 2KB mirrored, DK Jr: 4KB)
-    pub(crate) tune_rom: [u8; 0x0800],  // 2KB (DK only, unused by DK Jr)
+    // Memory maps (page-table dispatch + watchpoints + backing memory)
+    // CPU-addressable RAM/ROM storage lives in the MemoryMap backing store.
+    #[debug_map(cpu = 0)]
+    pub(crate) main_map: MemoryMap,
+    #[debug_map(cpu = 1)]
+    pub(crate) sound_map: MemoryMap,
+    pub(crate) tune_rom: [u8; 0x0800], // 2KB (DK only, unused by DK Jr)
 
     // GFX ROMs
     pub(crate) tile_rom: [u8; 0x2000], // 8KB max (DK=4KB, DK Jr=8KB)
@@ -299,11 +311,8 @@ impl Tkg04Board {
         Self {
             cpu: Z80::new(),
             sound_cpu: I8035::new(),
-            rom: [0; 0x6000],
-            ram: [0; 0x1000],
-            sprite_ram: [0; 0x0400],
-            video_ram: [0; 0x0400],
-            sound_rom: [0; 0x1000],
+            main_map: Self::build_main_map(),
+            sound_map: Self::build_sound_map(),
             tune_rom: [0; 0x0800],
             tile_rom: [0; 0x2000],
             sprite_rom: [0; 0x2000],
@@ -335,6 +344,37 @@ impl Tkg04Board {
             vblank_nmi_pending: false,
             discrete: DkongDiscrete::new(),
         }
+    }
+
+    fn build_main_map() -> MemoryMap {
+        use main_region::*;
+        let mut map = MemoryMap::new();
+        map.region(ROM, "Program ROM", 0x0000, 0x6000, AccessKind::ReadOnly)
+            .region(RAM, "Work RAM", 0x6000, 0x1000, AccessKind::ReadWrite)
+            .region(
+                SPRITE_RAM,
+                "Sprite RAM",
+                0x7000,
+                0x0400,
+                AccessKind::ReadWrite,
+            )
+            .region(
+                VIDEO_RAM,
+                "Video RAM",
+                0x7400,
+                0x0400,
+                AccessKind::ReadWrite,
+            )
+            .region(IO_DMA, "DMA", 0x7800, 0x100, AccessKind::Io)
+            .region(IO_PORTS, "I/O Ports", 0x7C00, 0x200, AccessKind::Io);
+        map
+    }
+
+    fn build_sound_map() -> MemoryMap {
+        use sound_region::*;
+        let mut map = MemoryMap::new();
+        map.region(ROM, "Sound ROM", 0x0000, 0x1000, AccessKind::ReadOnly);
+        map
     }
 
     /// Pre-decode tile and sprite ROMs into GFX caches.
@@ -402,7 +442,7 @@ impl Tkg04Board {
         let row_offset = scanline * NATIVE_WIDTH * 3;
 
         // Split borrows: immutable refs for closures, mutable ref for buffer
-        let video_ram = &self.video_ram;
+        let video_ram = self.main_map.region_data(main_region::VIDEO_RAM);
         let color_prom = &self.color_prom;
         let palette_rgb = &self.palette_rgb;
         let tile_cache = &self.tile_cache;
@@ -442,7 +482,7 @@ impl Tkg04Board {
 
         // --- Sprites ---
         // Iterate forward: later sprites overwrite earlier ones.
-        let sprite_ram = &self.sprite_ram;
+        let sprite_ram = self.main_map.region_data(main_region::SPRITE_RAM);
         let sprite_base = if self.sprite_bank { 0x200 } else { 0x000 };
         let mut offs = sprite_base;
         while offs < sprite_base + 0x200 {
@@ -594,9 +634,13 @@ impl Tkg04Board {
         self.in1 = 0x00;
         self.in2 = 0x00;
 
-        self.video_ram = [0; 0x0400];
-        self.ram = [0; 0x1000];
-        self.sprite_ram = [0; 0x0400];
+        self.main_map
+            .region_data_mut(main_region::VIDEO_RAM)
+            .fill(0);
+        self.main_map.region_data_mut(main_region::RAM).fill(0);
+        self.main_map
+            .region_data_mut(main_region::SPRITE_RAM)
+            .fill(0);
         self.scanline_buffer.fill(0);
 
         self.discrete.reset();
@@ -609,16 +653,16 @@ impl Tkg04Board {
     /// Trigger sprite DMA transfer from i8257 channel 0.
     pub fn trigger_sprite_dma(&mut self) {
         let src_addr = self.dma.channel_address(0);
-        let count = ((self.dma.channel_count(0) & 0x3FFF) + 1).min(self.sprite_ram.len() as u16);
+        let sprite_len = self.main_map.region_data(main_region::SPRITE_RAM).len();
+        let count = ((self.dma.channel_count(0) & 0x3FFF) + 1).min(sprite_len as u16);
+        // Two-phase: read source bytes first, then bulk-write to sprite RAM
+        let mut buf = [0u8; 0x0400];
         for i in 0..count {
             let addr = src_addr.wrapping_add(i);
-            let byte = match addr {
-                0x0000..=0x5FFF => self.rom[addr as usize],
-                0x6000..=0x6FFF => self.ram[(addr - 0x6000) as usize],
-                _ => 0x00,
-            };
-            self.sprite_ram[i as usize] = byte;
+            buf[i as usize] = self.main_map.debug_read(addr).unwrap_or(0);
         }
+        let sprite_data = self.main_map.region_data_mut(main_region::SPRITE_RAM);
+        sprite_data[..count as usize].copy_from_slice(&buf[..count as usize]);
     }
 
     /// Write a single bit to the 74LS259 sound control latch (0x7D00-0x7D07).
@@ -646,34 +690,6 @@ impl Tkg04Board {
         result
     }
 
-    fn main_memory_read(&self, addr: u16) -> Option<u8> {
-        match addr {
-            0x0000..=0x5FFF => Some(self.rom[addr as usize]),
-            0x6000..=0x6FFF => Some(self.ram[(addr - 0x6000) as usize]),
-            0x7000..=0x73FF => Some(self.sprite_ram[(addr - 0x7000) as usize]),
-            0x7400..=0x77FF => Some(self.video_ram[(addr - 0x7400) as usize]),
-            _ => None,
-        }
-    }
-
-    fn main_memory_write(&mut self, addr: u16, data: u8) {
-        match addr {
-            0x6000..=0x6FFF => self.ram[(addr - 0x6000) as usize] = data,
-            0x7000..=0x73FF => self.sprite_ram[(addr - 0x7000) as usize] = data,
-            0x7400..=0x77FF => self.video_ram[(addr - 0x7400) as usize] = data,
-            _ => {}
-        }
-    }
-
-    fn sound_memory_read(&self, addr: u16) -> Option<u8> {
-        let addr12 = (addr & 0x0FFF) as usize;
-        Some(self.sound_rom[addr12])
-    }
-
-    fn sound_memory_write(&mut self, _addr: u16, _data: u8) {
-        // I8035 has no writable external program memory
-    }
-
     // -----------------------------------------------------------------------
     // Save / Load state
     // -----------------------------------------------------------------------
@@ -681,9 +697,9 @@ impl Tkg04Board {
     pub(crate) fn save_board_state(&self, w: &mut StateWriter) {
         self.cpu.save_state(w);
         self.sound_cpu.save_state(w);
-        w.write_bytes(&self.ram);
-        w.write_bytes(&self.sprite_ram);
-        w.write_bytes(&self.video_ram);
+        w.write_bytes(self.main_map.region_data(main_region::RAM));
+        w.write_bytes(self.main_map.region_data(main_region::SPRITE_RAM));
+        w.write_bytes(self.main_map.region_data(main_region::VIDEO_RAM));
         w.write_u8(self.in0);
         w.write_u8(self.in1);
         w.write_u8(self.in2);
@@ -708,9 +724,9 @@ impl Tkg04Board {
     pub(crate) fn load_board_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
         self.cpu.load_state(r)?;
         self.sound_cpu.load_state(r)?;
-        r.read_bytes_into(&mut self.ram)?;
-        r.read_bytes_into(&mut self.sprite_ram)?;
-        r.read_bytes_into(&mut self.video_ram)?;
+        r.read_bytes_into(self.main_map.region_data_mut(main_region::RAM))?;
+        r.read_bytes_into(self.main_map.region_data_mut(main_region::SPRITE_RAM))?;
+        r.read_bytes_into(self.main_map.region_data_mut(main_region::VIDEO_RAM))?;
         self.in0 = r.read_u8()?;
         self.in1 = r.read_u8()?;
         self.in2 = r.read_u8()?;
