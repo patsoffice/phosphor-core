@@ -301,7 +301,6 @@ impl InputReceiver for RobotronSystem {
 
 impl MachineDebug for RobotronSystem {
     williams::impl_williams_debug!();
-    williams::impl_williams_watchpoints!();
 
     fn debug_tick(&mut self) -> u32 {
         self.board.widget_pia.set_port_a_input(self.widget_port_a);
@@ -373,15 +372,17 @@ mod tests {
 
     #[test]
     fn save_load_round_trip() {
+        use crate::williams::{main_region, sound_region};
+
         let mut sys = RobotronSystem::new();
 
         // Set known board state
-        sys.board.video_ram[0x100] = 0xAA;
-        sys.board.palette_ram[5] = 0x77;
+        sys.board.write_video_ram(0x100, 0xAA);
+        sys.board.main_map.region_data_mut(main_region::PALETTE)[5] = 0x77;
         sys.board.rom_bank = 3;
         sys.board.clock = 50_000;
         sys.board.watchdog_counter = 42;
-        sys.board.sound_ram[0x20] = 0xEF;
+        sys.board.sound_map.region_data_mut(sound_region::RAM)[0x20] = 0xEF;
 
         // Set Robotron-specific input state
         sys.widget_port_a = 0x3F;
@@ -396,7 +397,7 @@ mod tests {
 
         // Mutate everything
         let mut sys2 = RobotronSystem::new();
-        sys2.board.video_ram[0x100] = 0xFF;
+        sys2.board.write_video_ram(0x100, 0xFF);
         sys2.board.rom_bank = 7;
         sys2.widget_port_a = 0xFF;
         sys2.widget_port_b = 0xFF;
@@ -409,12 +410,18 @@ mod tests {
         assert_eq!(sys2.board.sound_cpu.snapshot(), sound_snap);
 
         // Verify board state
-        assert_eq!(sys2.board.video_ram[0x100], 0xAA);
-        assert_eq!(sys2.board.palette_ram[5], 0x77);
+        assert_eq!(sys2.board.read_video_ram(0x100), 0xAA);
+        assert_eq!(
+            sys2.board.main_map.region_data(main_region::PALETTE)[5],
+            0x77
+        );
         assert_eq!(sys2.board.rom_bank, 3);
         assert_eq!(sys2.board.clock, 50_000);
         assert_eq!(sys2.board.watchdog_counter, 42);
-        assert_eq!(sys2.board.sound_ram[0x20], 0xEF);
+        assert_eq!(
+            sys2.board.sound_map.region_data(sound_region::RAM)[0x20],
+            0xEF
+        );
 
         // Verify Robotron-specific state
         assert_eq!(sys2.widget_port_a, 0x3F);

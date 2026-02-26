@@ -4,7 +4,7 @@
 
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-2203%20passing-brightgreen.svg)](core/tests/)
+[![Tests](https://img.shields.io/badge/tests-2283%20passing-brightgreen.svg)](core/tests/)
 
 A modular emulator framework for retro CPUs, designed for extensibility and educational purposes. Features a trait-based architecture that allows easy addition of new CPUs, peripherals, and complete systems.
 
@@ -28,7 +28,7 @@ cargo build
 cargo test
 
 # Expected output:
-#   test result: ok. 2203 passed; 0 failed
+#   test result: ok. 2283 passed; 0 failed
 ```
 
 ### Running the Emulator
@@ -78,7 +78,7 @@ ROMs are matched by CRC32 checksum, so any MAME ROM naming convention works. All
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| **Core Framework** | Complete | Bus trait, Machine trait, component system, arbitration, debug traits |
+| **Core Framework** | Complete | Bus trait, Machine trait, component system, MemoryMap (page-table dispatch + backing memory), debug traits |
 | **M6809 CPU** | Complete | 285 opcodes, cycle-accurate, all addressing modes. [Details](core/src/cpu/m6809/README.md) |
 | **M6800 CPU** | Complete | 192 opcodes, cycle-accurate, all addressing modes. [Details](core/src/cpu/m6800/README.md) |
 | **M6502 CPU** | Complete | 151 opcodes, cycle-accurate with bus-level traces. [Details](core/src/cpu/m6502/README.md) |
@@ -104,7 +104,7 @@ ROMs are matched by CRC32 checksum, so any MAME ROM naming convention works. All
 | **CPU Validation** | Complete | M6809: 266K vectors (100%), M6800: 192K vectors (99.998%), M6502: 1.51M vectors (100%), Z80: 1.60M vectors (100%) |
 | **Crystal Castles System** | Complete | Atari arcade: M6502 + 2×POKEY + bitmap video + sprites + trackball |
 | **Device Trait** | Complete | Common interface for all peripherals: reset, read/write, tick, debug |
-| **Test Suite** | Complete | 2203 tests across core, devices, and machine integration |
+| **Test Suite** | Complete | 2283 tests across core, devices, and machine integration |
 
 ## Workspace Architecture
 
@@ -119,6 +119,7 @@ Contains all reusable components — zero external dependencies:
 - Machine trait (frontend-agnostic display/input/render interface)
 - Device trait (common interface for all peripherals: reset, read/write, tick)
 - Debug traits (Debuggable, DebugCpu, BusDebug) for interactive inspection and device register writes
+- MemoryMap (page-table dispatch with backing memory for side-effect-free debug reads, watchpoints, region introspection, and bank switching)
 - Audio utilities (AudioResampler, AudioResamplerF32 — Bresenham box-filter downsampling from CPU clock to output rate)
 - ClockDivider (Bresenham fractional clock divider for cross-domain ticking)
 - Peripheral devices (MC6821 PIA, AY-8910, POKEY, Namco WSG, Z80 CTC, Williams SC1/SC2 blitter, DVG, I8257 DMA, MC1408 DAC, 74LS259 latch, CMOS RAM)
@@ -140,7 +141,7 @@ Complete system implementations that wire core components together:
 
 ### Macros Crate (`phosphor-macros`)
 
-Proc macro crate providing `#[derive(BusDebug)]` — auto-generates bus-level debug discovery, device register writes, and device reset dispatch from struct annotations (`#[debug_cpu(...)]`, `#[debug_device(...)]`).
+Proc macro crate providing `#[derive(BusDebug)]` — auto-generates bus-level debug discovery, device register writes, watchpoint routing, and device reset dispatch from struct annotations (`#[debug_cpu(...)]`, `#[debug_device(...)]`, `#[debug_map(...)]`). When `#[debug_cpu]` omits explicit read/write methods, debug memory access is auto-routed through the matching `#[debug_map]` field's MemoryMap backing store.
 
 ### Frontend Crate (`phosphor-frontend`)
 
@@ -191,6 +192,7 @@ phosphor-core/
 │   │   │   ├── component.rs        # Component traits
 │   │   │   ├── debug.rs            # Debuggable, DebugCpu, BusDebug traits
 │   │   │   ├── machine.rs          # Machine trait, InputButton (frontend interface)
+│   │   │   ├── memory_map.rs       # MemoryMap (page-table dispatch, backing memory, watchpoints)
 │   │   │   └── mod.rs              # Module exports
 │   │   ├── cpu/                    # CPU implementations
 │   │   │   ├── mod.rs              # Generic Cpu trait + CpuStateTrait

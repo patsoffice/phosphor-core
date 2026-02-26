@@ -301,7 +301,6 @@ impl InputReceiver for JoustSystem {
 
 impl MachineDebug for JoustSystem {
     williams::impl_williams_debug!();
-    williams::impl_williams_watchpoints!();
 
     fn debug_tick(&mut self) -> u32 {
         self.update_widget_mux();
@@ -382,15 +381,17 @@ mod tests {
 
     #[test]
     fn save_load_round_trip() {
+        use crate::williams::{main_region, sound_region};
+
         let mut sys = JoustSystem::new();
 
         // Set known board state
-        sys.board.video_ram[0x100] = 0xAA;
-        sys.board.palette_ram[5] = 0x77;
+        sys.board.write_video_ram(0x100, 0xAA);
+        sys.board.main_map.region_data_mut(main_region::PALETTE)[5] = 0x77;
         sys.board.rom_bank = 3;
         sys.board.clock = 50_000;
         sys.board.watchdog_counter = 42;
-        sys.board.sound_ram[0x20] = 0xEF;
+        sys.board.sound_map.region_data_mut(sound_region::RAM)[0x20] = 0xEF;
 
         // Set Joust-specific input state
         sys.p1_controls = 0x05;
@@ -406,7 +407,7 @@ mod tests {
 
         // Mutate everything
         let mut sys2 = JoustSystem::new();
-        sys2.board.video_ram[0x100] = 0xFF;
+        sys2.board.write_video_ram(0x100, 0xFF);
         sys2.board.rom_bank = 7;
         sys2.p1_controls = 0xFF;
         sys2.p2_controls = 0xFF;
@@ -420,12 +421,18 @@ mod tests {
         assert_eq!(sys2.board.sound_cpu.snapshot(), sound_snap);
 
         // Verify board state
-        assert_eq!(sys2.board.video_ram[0x100], 0xAA);
-        assert_eq!(sys2.board.palette_ram[5], 0x77);
+        assert_eq!(sys2.board.read_video_ram(0x100), 0xAA);
+        assert_eq!(
+            sys2.board.main_map.region_data(main_region::PALETTE)[5],
+            0x77
+        );
         assert_eq!(sys2.board.rom_bank, 3);
         assert_eq!(sys2.board.clock, 50_000);
         assert_eq!(sys2.board.watchdog_counter, 42);
-        assert_eq!(sys2.board.sound_ram[0x20], 0xEF);
+        assert_eq!(
+            sys2.board.sound_map.region_data(sound_region::RAM)[0x20],
+            0xEF
+        );
 
         // Verify Joust-specific state
         assert_eq!(sys2.p1_controls, 0x05);
@@ -450,19 +457,29 @@ mod tests {
 
     #[test]
     fn save_does_not_include_rom() {
+        use crate::williams::main_region;
+
         let mut sys = JoustSystem::new();
-        sys.board.program_rom[0] = 0xDE;
-        sys.board.banked_rom[0] = 0xAD;
+        sys.board.main_map.region_data_mut(main_region::PROGRAM_ROM)[0] = 0xDE;
+        sys.board.main_map.region_data_mut(main_region::BANKED_ROM)[0] = 0xAD;
 
         let data = sys.save_state().unwrap();
 
         // Load into system with different ROM — ROM should be preserved
         let mut sys2 = JoustSystem::new();
-        sys2.board.program_rom[0] = 0x11;
-        sys2.board.banked_rom[0] = 0x22;
+        sys2.board
+            .main_map
+            .region_data_mut(main_region::PROGRAM_ROM)[0] = 0x11;
+        sys2.board.main_map.region_data_mut(main_region::BANKED_ROM)[0] = 0x22;
         sys2.load_state(&data).unwrap();
 
-        assert_eq!(sys2.board.program_rom[0], 0x11);
-        assert_eq!(sys2.board.banked_rom[0], 0x22);
+        assert_eq!(
+            sys2.board.main_map.region_data(main_region::PROGRAM_ROM)[0],
+            0x11
+        );
+        assert_eq!(
+            sys2.board.main_map.region_data(main_region::BANKED_ROM)[0],
+            0x22
+        );
     }
 }

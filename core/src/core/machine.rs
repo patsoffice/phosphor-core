@@ -111,24 +111,45 @@ pub trait MachineDebug {
     ///
     /// The debugger polls this after each `debug_tick()`. When `Some` is
     /// returned, the debugger pauses execution and displays the hit.
+    ///
+    /// Default: delegates to `BusDebug::take_watchpoint_hit()` via `debug_bus_mut()`.
     fn take_watchpoint_hit(&mut self) -> Option<WatchpointHit> {
-        None
+        self.debug_bus_mut()
+            .and_then(|bus| bus.take_watchpoint_hit())
     }
 
     /// Set a memory watchpoint in the address space of `cpu_index`.
-    fn set_watchpoint(&mut self, _cpu_index: usize, _addr: u16, _kind: WatchpointKind) {}
+    ///
+    /// Default: delegates to `BusDebug::set_watchpoint()` via `debug_bus_mut()`.
+    fn set_watchpoint(&mut self, cpu_index: usize, addr: u16, kind: WatchpointKind) {
+        if let Some(bus) = self.debug_bus_mut() {
+            bus.set_watchpoint(cpu_index, addr, kind);
+        }
+    }
 
     /// Clear a memory watchpoint in the address space of `cpu_index`.
-    fn clear_watchpoint(&mut self, _cpu_index: usize, _addr: u16, _kind: WatchpointKind) {}
+    ///
+    /// Default: delegates to `BusDebug::clear_watchpoint()` via `debug_bus_mut()`.
+    fn clear_watchpoint(&mut self, cpu_index: usize, addr: u16, kind: WatchpointKind) {
+        if let Some(bus) = self.debug_bus_mut() {
+            bus.clear_watchpoint(cpu_index, addr, kind);
+        }
+    }
 
     /// Clear all memory watchpoints across all address spaces.
-    fn clear_all_watchpoints(&mut self) {}
+    ///
+    /// Default: delegates to `BusDebug::clear_all_watchpoints()` via `debug_bus_mut()`.
+    fn clear_all_watchpoints(&mut self) {
+        if let Some(bus) = self.debug_bus_mut() {
+            bus.clear_all_watchpoints();
+        }
+    }
 
     /// Get the memory map for a CPU's address space (for region introspection).
     ///
-    /// Returns `None` if the machine hasn't adopted `MemoryMap` yet.
-    fn memory_map(&self, _cpu_index: usize) -> Option<&MemoryMap> {
-        None
+    /// Default: delegates to `BusDebug::memory_map()` via `debug_bus()`.
+    fn memory_map(&self, cpu_index: usize) -> Option<&MemoryMap> {
+        self.debug_bus()?.memory_map(cpu_index)
     }
 }
 

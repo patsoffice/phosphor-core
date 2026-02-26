@@ -96,11 +96,23 @@ pub enum WatchpointKind {
 /// 256 pages of 256 bytes each. Machines build this at init time and
 /// use it in `Bus::read`/`write` to look up the `region_id` for dispatch.
 ///
+/// Non-I/O regions (RAM, ROM) have backing memory stored in a flat `Vec<u8>`.
+/// This enables side-effect-free `debug_read`/`debug_write` for the debugger
+/// without requiring machines to write manual `memory_read` methods.
+///
 /// The debugger uses it for watchpoints (per-page flags checked only on
 /// flagged pages) and region introspection (list of named regions).
 pub struct MemoryMap {
     pages: [PageEntry; 256],
     regions: Vec<RegionDescriptor>,
+
+    /// Flat backing store for all non-I/O regions (RAM, ROM, etc.).
+    backing: Vec<u8>,
+    /// Offset into `backing` for each region_id. `u32::MAX` = no backing (I/O).
+    region_backing: [u32; 256],
+    /// Byte length of each region's backing.
+    region_lengths: [u32; 256],
+
     active_watch_count: u16,
     pending_hit: Option<WatchpointHit>,
     /// Exact watched addresses. Page flags serve as a fast filter; this vec
@@ -114,6 +126,9 @@ impl MemoryMap {
         Self {
             pages: [PageEntry::default(); 256],
             regions: Vec::new(),
+            backing: Vec::new(),
+            region_backing: [u32::MAX; 256],
+            region_lengths: [0; 256],
             active_watch_count: 0,
             pending_hit: None,
             watched_addrs: Vec::new(),
@@ -173,6 +188,39 @@ impl MemoryMap {
             start_addr: start,
             end_addr,
             access,
+        });
+
+        // Allocate backing memory for non-I/O regions
+        if matches!(
+            access,
+            AccessKind::ReadWrite | AccessKind::ReadOnly | AccessKind::WriteOnly
+        ) {
+            let offset = self.backing.len() as u32;
+            self.backing.resize(self.backing.len() + length as usize, 0);
+            self.region_backing[id as usize] = offset;
+            self.region_lengths[id as usize] = length;
+        }
+
+        self
+    }
+
+    /// Register a region with backing memory but no page mapping.
+    ///
+    /// Used for bank-switched overlays (e.g., banked ROM) that share an
+    /// address range with another region. Use `remap_pages()` to switch
+    /// pages to this region at runtime.
+    pub fn backing_region(&mut self, id: RegionId, name: &'static str, length: u32) -> &mut Self {
+        let offset = self.backing.len() as u32;
+        self.backing.resize(self.backing.len() + length as usize, 0);
+        self.region_backing[id as usize] = offset;
+        self.region_lengths[id as usize] = length;
+
+        self.regions.push(RegionDescriptor {
+            id,
+            name,
+            start_addr: 0,
+            end_addr: 0,
+            access: AccessKind::ReadOnly,
         });
 
         self
@@ -239,6 +287,127 @@ impl MemoryMap {
     pub fn region_offset(&self, addr: u16) -> usize {
         let page = self.page(addr);
         page.base_offset as usize + (addr & 0xFF) as usize
+    }
+
+    // -----------------------------------------------------------------------
+    // Backing memory access
+    // -----------------------------------------------------------------------
+
+    /// Side-effect-free read from backing memory. Returns `None` for I/O
+    /// and unmapped regions (which have no backing store).
+    #[inline]
+    pub fn debug_read(&self, addr: u16) -> Option<u8> {
+        let page = self.page(addr);
+        let backing_offset = self.region_backing[page.region_id as usize];
+        if backing_offset == u32::MAX {
+            return None;
+        }
+        let byte_offset =
+            backing_offset as usize + page.base_offset as usize + (addr as usize & 0xFF);
+        Some(self.backing[byte_offset])
+    }
+
+    /// Side-effect-free write to backing memory. No-op for I/O and unmapped regions.
+    #[inline]
+    pub fn debug_write(&mut self, addr: u16, data: u8) {
+        let page = self.page(addr);
+        let backing_offset = self.region_backing[page.region_id as usize];
+        if backing_offset == u32::MAX {
+            return;
+        }
+        let byte_offset =
+            backing_offset as usize + page.base_offset as usize + (addr as usize & 0xFF);
+        self.backing[byte_offset] = data;
+    }
+
+    /// Read a byte from backing memory (hot-path version).
+    ///
+    /// Only call on addresses mapped to regions with backing (RAM/ROM).
+    /// Panics in debug builds if the region has no backing.
+    #[inline(always)]
+    pub fn read_backing(&self, addr: u16) -> u8 {
+        let page = self.page(addr);
+        let backing_offset = self.region_backing[page.region_id as usize];
+        debug_assert!(
+            backing_offset != u32::MAX,
+            "read_backing called on region {} with no backing (addr={:#06X})",
+            page.region_id,
+            addr
+        );
+        let byte_offset =
+            backing_offset as usize + page.base_offset as usize + (addr as usize & 0xFF);
+        self.backing[byte_offset]
+    }
+
+    /// Write a byte to backing memory (hot-path version).
+    ///
+    /// Only call on addresses mapped to regions with backing (RAM/ROM).
+    /// Panics in debug builds if the region has no backing.
+    #[inline(always)]
+    pub fn write_backing(&mut self, addr: u16, data: u8) {
+        let page = self.page(addr);
+        let backing_offset = self.region_backing[page.region_id as usize];
+        debug_assert!(
+            backing_offset != u32::MAX,
+            "write_backing called on region {} with no backing (addr={:#06X})",
+            page.region_id,
+            addr
+        );
+        let byte_offset =
+            backing_offset as usize + page.base_offset as usize + (addr as usize & 0xFF);
+        self.backing[byte_offset] = data;
+    }
+
+    /// Get a read-only slice of a region's backing store.
+    ///
+    /// Panics if the region has no backing (I/O or unregistered).
+    pub fn region_data(&self, region_id: RegionId) -> &[u8] {
+        let offset = self.region_backing[region_id as usize];
+        debug_assert!(
+            offset != u32::MAX,
+            "region_data called on region {region_id} with no backing"
+        );
+        let offset = offset as usize;
+        let length = self.region_lengths[region_id as usize] as usize;
+        &self.backing[offset..offset + length]
+    }
+
+    /// Get a mutable slice of a region's backing store.
+    ///
+    /// Panics if the region has no backing (I/O or unregistered).
+    pub fn region_data_mut(&mut self, region_id: RegionId) -> &mut [u8] {
+        let offset = self.region_backing[region_id as usize];
+        debug_assert!(
+            offset != u32::MAX,
+            "region_data_mut called on region {region_id} with no backing"
+        );
+        let offset = offset as usize;
+        let length = self.region_lengths[region_id as usize] as usize;
+        &mut self.backing[offset..offset + length]
+    }
+
+    /// Bulk-copy data into a region's backing store (e.g., ROM loading).
+    ///
+    /// `data` must exactly match the region's length.
+    pub fn load_region(&mut self, region_id: RegionId, data: &[u8]) {
+        let dest = self.region_data_mut(region_id);
+        assert_eq!(
+            dest.len(),
+            data.len(),
+            "load_region: data length {} doesn't match region {} length {}",
+            data.len(),
+            region_id,
+            dest.len()
+        );
+        dest.copy_from_slice(data);
+    }
+
+    /// Copy data into a region's backing store at the given byte offset.
+    pub fn load_region_at(&mut self, region_id: RegionId, offset: usize, data: &[u8]) {
+        let dest = self.region_data_mut(region_id);
+        let end = (offset + data.len()).min(dest.len());
+        let len = end - offset;
+        dest[offset..end].copy_from_slice(&data[..len]);
     }
 
     // -----------------------------------------------------------------------
@@ -746,5 +915,172 @@ mod tests {
         let hit = map.take_hit().unwrap();
         assert_eq!(hit.addr, 0x1001);
         assert_eq!(hit.value, 0xBB);
+    }
+
+    // -----------------------------------------------------------------------
+    // Backing memory tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn region_allocates_backing_for_rw() {
+        let mut map = MemoryMap::new();
+        map.region(RAM, "RAM", 0x0000, 0x0400, AccessKind::ReadWrite);
+
+        assert_eq!(map.region_data(RAM).len(), 0x0400);
+        assert!(map.region_data(RAM).iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn region_allocates_backing_for_rom() {
+        let mut map = MemoryMap::new();
+        map.region(ROM, "ROM", 0xD000, 0x3000, AccessKind::ReadOnly);
+
+        assert_eq!(map.region_data(ROM).len(), 0x3000);
+    }
+
+    #[test]
+    fn io_region_has_no_backing() {
+        let mut map = MemoryMap::new();
+        map.region(IO, "I/O", 0xC000, 0x100, AccessKind::Io);
+
+        assert!(map.debug_read(0xC042).is_none());
+    }
+
+    #[test]
+    fn debug_read_returns_backing_data() {
+        let mut map = MemoryMap::new();
+        map.region(RAM, "RAM", 0x0000, 0x8000, AccessKind::ReadWrite)
+            .region(IO, "I/O", 0xC000, 0x100, AccessKind::Io)
+            .region(ROM, "ROM", 0xD000, 0x3000, AccessKind::ReadOnly);
+
+        // Write via region_data_mut
+        map.region_data_mut(RAM)[0x1234] = 0xAB;
+        map.region_data_mut(ROM)[0x0042] = 0xCD;
+
+        // Read back via debug_read
+        assert_eq!(map.debug_read(0x1234), Some(0xAB));
+        assert_eq!(map.debug_read(0xD042), Some(0xCD));
+
+        // I/O returns None
+        assert_eq!(map.debug_read(0xC042), None);
+
+        // Unmapped returns None
+        assert_eq!(map.debug_read(0xA000), None);
+    }
+
+    #[test]
+    fn debug_write_updates_backing() {
+        let mut map = MemoryMap::new();
+        map.region(RAM, "RAM", 0x0000, 0x8000, AccessKind::ReadWrite)
+            .region(IO, "I/O", 0xC000, 0x100, AccessKind::Io);
+
+        map.debug_write(0x1234, 0x42);
+        assert_eq!(map.debug_read(0x1234), Some(0x42));
+
+        // I/O write is a no-op (doesn't panic)
+        map.debug_write(0xC042, 0xFF);
+    }
+
+    #[test]
+    fn read_write_backing_hot_path() {
+        let mut map = MemoryMap::new();
+        map.region(RAM, "RAM", 0x0000, 0x8000, AccessKind::ReadWrite);
+
+        map.write_backing(0x4000, 0xBE);
+        assert_eq!(map.read_backing(0x4000), 0xBE);
+    }
+
+    #[test]
+    fn load_region_copies_data() {
+        let mut map = MemoryMap::new();
+        map.region(ROM, "ROM", 0xD000, 0x0400, AccessKind::ReadOnly);
+
+        let rom_data: Vec<u8> = (0..0x0400).map(|i| (i & 0xFF) as u8).collect();
+        map.load_region(ROM, &rom_data);
+
+        assert_eq!(map.debug_read(0xD000), Some(0x00));
+        assert_eq!(map.debug_read(0xD0FF), Some(0xFF));
+        assert_eq!(map.debug_read(0xD100), Some(0x00));
+    }
+
+    #[test]
+    fn load_region_at_partial() {
+        let mut map = MemoryMap::new();
+        map.region(ROM, "ROM", 0xD000, 0x3000, AccessKind::ReadOnly);
+
+        let chunk = [0xAA, 0xBB, 0xCC];
+        map.load_region_at(ROM, 0x100, &chunk);
+
+        assert_eq!(map.debug_read(0xD100), Some(0xAA));
+        assert_eq!(map.debug_read(0xD101), Some(0xBB));
+        assert_eq!(map.debug_read(0xD102), Some(0xCC));
+        assert_eq!(map.debug_read(0xD103), Some(0x00)); // not written
+    }
+
+    #[test]
+    fn remap_pages_switches_backing() {
+        const BANK_ROM: RegionId = 4;
+
+        let mut map = MemoryMap::new();
+        map.region(RAM, "Video RAM", 0x0000, 0x9000, AccessKind::ReadWrite)
+            .backing_region(BANK_ROM, "Banked ROM", 0x9000);
+
+        // Write different values to each region's backing
+        map.region_data_mut(RAM)[0x1000] = 0xAA; // Video RAM at offset 0x1000
+        map.region_data_mut(BANK_ROM)[0x1000] = 0xBB; // Banked ROM at offset 0x1000
+
+        // Initially reads Video RAM
+        assert_eq!(map.read_backing(0x1000), 0xAA);
+
+        // Remap pages 0x00..0x90 to Banked ROM
+        map.remap_pages(0x00, 0x90, BANK_ROM, 0);
+        assert_eq!(map.read_backing(0x1000), 0xBB);
+
+        // Remap back to Video RAM
+        map.remap_pages(0x00, 0x90, RAM, 0);
+        assert_eq!(map.read_backing(0x1000), 0xAA);
+    }
+
+    #[test]
+    fn mirror_reads_same_backing() {
+        let mut map = MemoryMap::new();
+        map.region(ROM, "Sound ROM", 0xF000, 0x1000, AccessKind::ReadOnly)
+            .mirror(0xB000, 0xF000, 0x1000);
+
+        map.region_data_mut(ROM)[0x42] = 0xEE;
+
+        // Both canonical and mirror addresses read the same byte
+        assert_eq!(map.debug_read(0xF042), Some(0xEE));
+        assert_eq!(map.debug_read(0xB042), Some(0xEE));
+    }
+
+    #[test]
+    fn backing_region_has_no_page_mapping() {
+        const OVERLAY: RegionId = 5;
+
+        let mut map = MemoryMap::new();
+        map.region(RAM, "RAM", 0x0000, 0x8000, AccessKind::ReadWrite)
+            .backing_region(OVERLAY, "Overlay", 0x8000);
+
+        // Overlay has backing
+        assert_eq!(map.region_data(OVERLAY).len(), 0x8000);
+
+        // But pages 0x00..0x7F still point to RAM, not OVERLAY
+        assert_eq!(map.page(0x0000).region_id, RAM);
+        assert_eq!(map.page(0x7F00).region_id, RAM);
+    }
+
+    #[test]
+    fn multiple_regions_share_backing_vec() {
+        let mut map = MemoryMap::new();
+        map.region(RAM, "RAM", 0x0000, 0x8000, AccessKind::ReadWrite)
+            .region(ROM, "ROM", 0xD000, 0x3000, AccessKind::ReadOnly);
+
+        // Both get independent backing
+        map.region_data_mut(RAM)[0] = 0x11;
+        map.region_data_mut(ROM)[0] = 0x22;
+
+        assert_eq!(map.debug_read(0x0000), Some(0x11));
+        assert_eq!(map.debug_read(0xD000), Some(0x22));
     }
 }
