@@ -1,6 +1,7 @@
 pub mod asteroids;
 pub mod ccastles;
-pub mod dkong;
+pub mod donkey_kong;
+pub mod donkey_kong_jr;
 pub mod gridlee;
 pub mod joust;
 pub mod missile_command;
@@ -12,11 +13,13 @@ pub mod simple6502;
 pub mod simple6800;
 pub mod simple6809;
 pub mod simplez80;
+pub mod tkg04;
 pub mod williams;
 
 pub use asteroids::AsteroidsSystem;
 pub use ccastles::CrystalCastlesSystem;
-pub use dkong::DkongSystem;
+pub use donkey_kong::DkongSystem;
+pub use donkey_kong_jr::DkongJrSystem;
 pub use gridlee::GridleeSystem;
 pub use joust::JoustSystem;
 pub use missile_command::MissileCommandSystem;

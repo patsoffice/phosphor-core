@@ -4,7 +4,7 @@
 
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1401%20passing-brightgreen.svg)](core/tests/)
+[![Tests](https://img.shields.io/badge/tests-2177%20passing-brightgreen.svg)](core/tests/)
 
 A modular emulator framework for retro CPUs, designed for extensibility and educational purposes. Features a trait-based architecture that allows easy addition of new CPUs, peripherals, and complete systems.
 
@@ -28,7 +28,7 @@ cargo build
 cargo test
 
 # Expected output:
-#   test result: ok. 1401 passed; 0 failed
+#   test result: ok. 2177 passed; 0 failed
 ```
 
 ### Running the Emulator
@@ -92,7 +92,7 @@ ROMs are matched by CRC32 checksum, so any MAME ROM naming convention works. All
 | **Atari DVG** | Complete | Digital Vector Generator: 8 opcodes, 7497 BRM drawing, hardware clipping |
 | **CPU Validation** | Complete | M6809: 266K vectors (100%), M6800: 192K vectors (99.998%), M6502: 1.51M vectors (100%), Z80: 1.60M vectors (100%) |
 | **Crystal Castles System** | Complete | Atari arcade: M6502 + 2×POKEY + bitmap video + sprites + trackball |
-| **Test Suite** | Complete | 1401 tests across core, devices, and machine integration |
+| **Test Suite** | Complete | 2177 tests across core, devices, and machine integration |
 
 ## Workspace Architecture
 
@@ -113,7 +113,8 @@ Contains all reusable components — zero external dependencies:
 Complete system implementations that wire core components together:
 
 - **AsteroidsSystem** — Atari vector arcade (M6502 + DVG + 1024×1024 vector display)
-- **DkongSystem** — Nintendo arcade (Z80 + I8035 + I8257 DMA + tile/sprite video)
+- **DkongSystem** — Donkey Kong on shared TKG-04 board (Z80 + I8035 + I8257 DMA + tile/sprite video)
+- **DkongJrSystem** — Donkey Kong Junior on shared TKG-04 board (24KB ROM, gfx bank, different sound I/O)
 - **JoustSystem** — Williams arcade board (M6809 + 48KB video RAM + two PIAs + blitter + CMOS + 12KB ROM)
 - **CrystalCastlesSystem** — Atari arcade (M6502 + 2×POKEY + bitmap video + sprites + trackball)
 - **MissileCommandSystem** — Atari raster arcade (M6502 + POKEY + bitmap video)
@@ -207,6 +208,9 @@ phosphor-core/
 │   │   ├── williams.rs             # Shared Williams gen-1 board (M6809 + M6800 + PIAs + blitter)
 │   │   ├── joust.rs                # Joust arcade board (Williams gen-1)
 │   │   ├── robotron.rs             # Robotron 2084 arcade board (Williams gen-1)
+│   │   ├── tkg04.rs                # Shared Nintendo TKG-04 board (Z80 + I8035 + I8257 DMA + tile/sprite)
+│   │   ├── donkey_kong.rs          # Donkey Kong (TKG-04, 16KB ROM)
+│   │   ├── donkey_kong_jr.rs       # Donkey Kong Junior (TKG-04, 24KB ROM, gfx bank)
 │   │   ├── asteroids.rs            # Asteroids (Atari: M6502 + DVG vector display)
 │   │   ├── ccastles.rs             # Crystal Castles (Atari: M6502 + 2×POKEY + bitmap + sprites)
 │   │   ├── rom_loader.rs           # ROM loading with CRC32 matching, multi-variant support
@@ -436,7 +440,9 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 - [x] Robotron 2084 (Williams: twin-stick M6809 + blitter)
 - [x] Missile Command (Atari: M6502 + POKEY + trackball)
 - [x] Pac-Man (Namco: Z80 + WSG + tile/sprite video)
-- [x] Donkey Kong (Nintendo: Z80 + I8035 + I8257 DMA + tile/sprite video)
+- [x] Donkey Kong (Nintendo TKG-04: Z80 + I8035 + I8257 DMA + tile/sprite video)
+- [x] Donkey Kong Junior (Nintendo TKG-04: shared board, 24KB ROM, gfx bank)
+- [ ] Radar Scope (Nintendo TKG-04: shared board, star field + grid overlay)
 - [x] Asteroids (Atari: M6502 + DVG vector display)
 - [x] Gridlee (Videa: M6809 + bitmap video + trackball — freely distributable ROMs)
 - [ ] Dig Dug (Namco: 3×Z80 + WSG + 06xx/51xx)

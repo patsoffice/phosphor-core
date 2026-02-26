@@ -1,0 +1,771 @@
+use phosphor_core::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
+use phosphor_core::core::{Bus, BusMaster};
+use phosphor_core::cpu::i8035::I8035;
+use phosphor_core::cpu::z80::Z80;
+use phosphor_core::device::dac::Mc1408Dac;
+use phosphor_core::device::dkong_discrete::DkongDiscrete;
+use phosphor_core::device::i8257::I8257;
+use phosphor_macros::BusDebug;
+
+// ---------------------------------------------------------------------------
+// Shared timing constants (Nintendo TKG / TRS hardware)
+// ---------------------------------------------------------------------------
+// Master clock:  61.44 MHz
+// CPU clock:     61.44 / 5 / 4 = 3.072 MHz
+// Pixel clock:   61.44 / 10 = 6.144 MHz
+// HTOTAL:        384 pixels = 192 CPU cycles per scanline
+// VTOTAL:        264 lines
+// VBSTART:       240 (visible height)
+// Frame:         192 × 264 = 50688 CPU cycles per frame
+// Frame rate:    3072000 / 50688 ≈ 60.61 Hz
+
+pub const CYCLES_PER_SCANLINE: u64 = 192;
+pub const VISIBLE_LINES: u64 = 240;
+pub const TOTAL_LINES: u64 = 264;
+pub const CYCLES_PER_FRAME: u64 = TOTAL_LINES * CYCLES_PER_SCANLINE;
+
+pub const CPU_CLOCK_HZ: u64 = 3_072_000;
+pub const OUTPUT_SAMPLE_RATE: u64 = 44_100;
+
+// Sound CPU: I8035 @ 6 MHz / 15 = 400 kHz machine cycles
+// Bresenham ratio: 400000 / 3072000 = 25 / 192
+pub const SOUND_TICK_NUM: u32 = 25;
+pub const SOUND_TICK_DEN: u32 = 192;
+
+// Screen: 256×240 native, visible region Y: 16-239 (224 lines, VBEND=16).
+// Rotated 90° CCW → 224×256 output.
+pub const NATIVE_WIDTH: usize = 256;
+pub const NATIVE_HEIGHT: usize = 240;
+pub const VBLANK_END: usize = 16; // first visible scanline
+pub const SCREEN_WIDTH: u32 = (NATIVE_HEIGHT - VBLANK_END) as u32; // 224
+pub const SCREEN_HEIGHT: u32 = NATIVE_WIDTH as u32; // 256
+
+// ---------------------------------------------------------------------------
+// Shared helper functions
+// ---------------------------------------------------------------------------
+
+/// Active-high bit manipulation: set bit on press, clear on release.
+pub(crate) fn set_bit_active_high(reg: &mut u8, bit: u8, pressed: bool) {
+    if pressed {
+        *reg |= 1 << bit;
+    } else {
+        *reg &= !(1 << bit);
+    }
+}
+
+/// Darlington amplifier 3-bit resistor network (for R and G channels).
+/// Resistors: 1kΩ, 470Ω, 220Ω with 470Ω pulldown.
+pub(crate) fn darlington_3bit(bit0: f64, bit1: f64, bit2: f64) -> u8 {
+    // Conductances
+    let g0 = bit0 / 1000.0;
+    let g1 = bit1 / 470.0;
+    let g2 = bit2 / 220.0;
+    let g_pull = 1.0 / 470.0;
+    let total = g0 + g1 + g2 + g_pull;
+    let active = g0 + g1 + g2;
+    let voltage = if total > 0.0 { active / total } else { 0.0 };
+    (voltage * 255.0).round().min(255.0) as u8
+}
+
+/// Emitter follower 2-bit resistor network (for B channel).
+/// Resistors: 470Ω, 220Ω with 680Ω pulldown.
+pub(crate) fn emitter_2bit(bit0: f64, bit1: f64) -> u8 {
+    let g0 = bit0 / 470.0;
+    let g1 = bit1 / 220.0;
+    let g_pull = 1.0 / 680.0;
+    let total = g0 + g1 + g_pull;
+    let active = g0 + g1;
+    let voltage = if total > 0.0 { active / total } else { 0.0 };
+    (voltage * 255.0).round().min(255.0) as u8
+}
+
+// ---------------------------------------------------------------------------
+// Shared macros for DK-family game wrappers
+// ---------------------------------------------------------------------------
+
+/// Implements the Machine methods that are identical across all DK-family
+/// games: display_size, render_frame, save_nvram, load_nvram, fill_audio,
+/// audio_sample_rate, frame_rate_hz, cycles_per_frame.
+///
+/// The implementing type must have a `board: Tkg04Board` field.
+macro_rules! impl_tkg04_machine_common {
+    () => {
+        fn display_size(&self) -> (u32, u32) {
+            (crate::tkg04::SCREEN_WIDTH, crate::tkg04::SCREEN_HEIGHT)
+        }
+
+        fn render_frame(&self, buffer: &mut [u8]) {
+            self.board.render_frame(buffer);
+        }
+
+        fn save_nvram(&self) -> Option<&[u8]> {
+            None // DK hardware has no battery-backed RAM
+        }
+
+        fn load_nvram(&mut self, _data: &[u8]) {}
+
+        fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
+            self.board.fill_audio(buffer)
+        }
+
+        fn audio_sample_rate(&self) -> u32 {
+            44100
+        }
+
+        fn frame_rate_hz(&self) -> f64 {
+            crate::tkg04::CPU_CLOCK_HZ as f64 / crate::tkg04::CYCLES_PER_FRAME as f64
+        }
+
+        fn cycles_per_frame(&self) -> u64 {
+            crate::tkg04::CYCLES_PER_FRAME
+        }
+    };
+}
+
+/// Implements Bus methods that are identical across all DK-family games:
+/// is_halted_for and check_interrupts.
+///
+/// Bus::read, write, io_read, io_write are NOT included because DK and
+/// DK Jr have different memory maps and sound CPU I/O wiring.
+macro_rules! impl_tkg04_bus_common {
+    () => {
+        fn is_halted_for(&self, _master: phosphor_core::core::BusMaster) -> bool {
+            false // DK hardware has no bus halt mechanism
+        }
+
+        fn check_interrupts(
+            &self,
+            target: phosphor_core::core::BusMaster,
+        ) -> phosphor_core::core::bus::InterruptState {
+            match target {
+                // Main CPU: VBlank NMI (edge-triggered by Z80)
+                phosphor_core::core::BusMaster::Cpu(0) => {
+                    phosphor_core::core::bus::InterruptState {
+                        nmi: self.board.vblank_nmi_pending && self.board.nmi_mask,
+                        irq: false,
+                        firq: false,
+                        ..Default::default()
+                    }
+                }
+                // Sound CPU: IRQ from main CPU
+                phosphor_core::core::BusMaster::Cpu(1) => {
+                    phosphor_core::core::bus::InterruptState {
+                        nmi: false,
+                        irq: self.board.sound_irq_pending,
+                        firq: false,
+                        ..Default::default()
+                    }
+                }
+                _ => phosphor_core::core::bus::InterruptState::default(),
+            }
+        }
+    };
+}
+
+/// Implements debug_bus and debug_bus_mut on Machine, returning the board.
+macro_rules! impl_tkg04_debug {
+    () => {
+        fn debug_bus(&self) -> Option<&dyn phosphor_core::core::debug::BusDebug> {
+            Some(&self.board)
+        }
+
+        fn debug_bus_mut(&mut self) -> Option<&mut dyn phosphor_core::core::debug::BusDebug> {
+            Some(&mut self.board)
+        }
+    };
+}
+
+pub(crate) use impl_tkg04_bus_common;
+pub(crate) use impl_tkg04_debug;
+pub(crate) use impl_tkg04_machine_common;
+
+// ---------------------------------------------------------------------------
+// Tkg04Board — shared Nintendo TKG/TRS arcade hardware
+// ---------------------------------------------------------------------------
+
+/// Shared hardware for the Nintendo TKG-04 arcade platform.
+///
+/// Named after the Nintendo PCB designation "TKG-04", the final 2-board
+/// Donkey Kong design. The same core hardware (with minor variations) is
+/// used by Donkey Kong (TKG-04), Donkey Kong Jr, and Radar Scope (TRS-02).
+/// Earlier 4-board sets (TKG-02, TKG-03) are electrically equivalent.
+///
+/// Hardware: Z80 @ 3.072 MHz (main), I8035 @ 6 MHz (sound).
+/// Video: 32×32 tile playfield + 16×16 sprites, 2bpp, PROM palette.
+/// Audio: I8035 DAC + discrete circuits (walk, jump, stomp effects).
+/// Screen: 256×240 displayed rotated 90° CCW on vertical monitor.
+#[derive(BusDebug)]
+pub struct Tkg04Board {
+    // Main CPU (Z80 @ 3.072 MHz)
+    #[debug_cpu("Z80 Main", read = "main_memory_read", write = "main_memory_write")]
+    pub(crate) cpu: Z80,
+
+    // Sound CPU (I8035 @ 6 MHz / 15 = 400 kHz machine cycles)
+    #[debug_cpu(
+        "I8035 Sound",
+        read = "sound_memory_read",
+        write = "sound_memory_write"
+    )]
+    pub(crate) sound_cpu: I8035,
+
+    // Main CPU memory (max sizes across all games)
+    pub(crate) rom: [u8; 0x6000], // 24KB max (DK=16KB, DK Jr=24KB)
+    pub(crate) ram: [u8; 0x1000], // 4KB max
+    pub(crate) sprite_ram: [u8; 0x0400], // 1KB
+    pub(crate) video_ram: [u8; 0x0400], // 1KB
+
+    // Sound CPU memory
+    pub(crate) sound_rom: [u8; 0x1000], // 4KB (DK: 2KB mirrored, DK Jr: 4KB)
+    pub(crate) tune_rom: [u8; 0x0800],  // 2KB (DK only, unused by DK Jr)
+
+    // GFX ROMs
+    pub(crate) tile_rom: [u8; 0x2000], // 8KB max (DK=4KB, DK Jr=8KB)
+    pub(crate) sprite_rom: [u8; 0x2000], // 8KB
+
+    // PROMs
+    pub(crate) palette_prom: [u8; 0x0200], // c-2k/c-2e + c-2j/c-2f
+    pub(crate) color_prom: [u8; 0x0100],   // v-5e/v-2n
+
+    // Pre-computed palette (256 RGB entries)
+    pub(crate) palette_rgb: [(u8, u8, u8); 256],
+
+    // Scanline-rendered framebuffer (256 × 240 × RGB24)
+    pub(crate) scanline_buffer: Vec<u8>,
+
+    // I/O state (active-high: 0x00 = all released)
+    pub(crate) in0: u8,
+    pub(crate) in1: u8,
+    pub(crate) in2: u8,
+    pub(crate) dsw0: u8,
+
+    // Control registers
+    pub(crate) sound_latch: u8,
+    pub(crate) sound_control_latch: u8,
+    pub(crate) flip_screen: bool,
+    pub(crate) sprite_bank: bool,
+    pub(crate) nmi_mask: bool,
+    pub(crate) palette_bank: u8,
+
+    // DK Jr extras (always 0 for DK)
+    pub(crate) gfx_bank: u8,
+    pub(crate) sound_control_latch_4h: u8,
+
+    // Configuration (set at construction, not saved)
+    tile_plane1_offset: usize, // 0x800 for DK (4KB tiles), 0x1000 for DK Jr (8KB)
+
+    // DMA controller (i8257)
+    #[debug_device("DMA")]
+    pub(crate) dma: I8257,
+
+    // Sound CPU interface
+    pub(crate) sound_irq_pending: bool,
+
+    // Audio output
+    #[debug_device("DAC")]
+    pub(crate) dac: Mc1408Dac,
+    pub(crate) audio_buffer: Vec<i16>,
+    pub(crate) sample_accum: i64,
+    pub(crate) sample_count: u32,
+    pub(crate) sample_phase: u64,
+
+    // Timing
+    pub(crate) clock: u64,
+    pub(crate) sound_phase_accum: u32,
+    pub(crate) vblank_nmi_pending: bool,
+
+    // Discrete sound effects (walk, jump, stomp)
+    #[debug_device("Discrete")]
+    pub(crate) discrete: DkongDiscrete,
+}
+
+impl Tkg04Board {
+    /// Create a new board with the given tile ROM plane-1 offset.
+    ///
+    /// - DK: `tile_plane1_offset = 0x800` (4KB tile ROM)
+    /// - DK Jr: `tile_plane1_offset = 0x1000` (8KB tile ROM)
+    pub fn new(tile_plane1_offset: usize) -> Self {
+        Self {
+            cpu: Z80::new(),
+            sound_cpu: I8035::new(),
+            rom: [0; 0x6000],
+            ram: [0; 0x1000],
+            sprite_ram: [0; 0x0400],
+            video_ram: [0; 0x0400],
+            sound_rom: [0; 0x1000],
+            tune_rom: [0; 0x0800],
+            tile_rom: [0; 0x2000],
+            sprite_rom: [0; 0x2000],
+            palette_prom: [0; 0x0200],
+            color_prom: [0; 0x0100],
+            palette_rgb: [(0, 0, 0); 256],
+            scanline_buffer: vec![0u8; NATIVE_WIDTH * NATIVE_HEIGHT * 3],
+            in0: 0x00,
+            in1: 0x00,
+            in2: 0x00,
+            dsw0: 0x80, // default: upright cabinet, 3 lives, 7000 bonus, 1 coin/1 play
+            sound_latch: 0,
+            sound_control_latch: 0,
+            flip_screen: false,
+            sprite_bank: false,
+            nmi_mask: false,
+            palette_bank: 0,
+            gfx_bank: 0,
+            sound_control_latch_4h: 0,
+            tile_plane1_offset,
+            dma: I8257::new(),
+            sound_irq_pending: false,
+            dac: Mc1408Dac::new(),
+            audio_buffer: Vec::with_capacity(1024),
+            sample_accum: 0,
+            sample_count: 0,
+            sample_phase: 0,
+            clock: 0,
+            sound_phase_accum: 0,
+            vblank_nmi_pending: false,
+            discrete: DkongDiscrete::new(),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Palette
+    // -----------------------------------------------------------------------
+
+    /// Pre-compute the 256-entry RGB palette from PROMs using resistor network
+    /// decoding (Darlington amp for R/G, emitter follower for B).
+    pub fn build_palette(&mut self) {
+        for i in 0..256 {
+            // PROMs are inverted (open-collector MB7052/MB7114)
+            let c2k = !self.palette_prom[i]; // c-2k at offset 0x000
+            let c2j = !self.palette_prom[0x100 + i]; // c-2j at offset 0x100
+
+            // Special case: when (i & 0x03) == 0, output is forced black
+            // (tri-state NOR on the color decoder)
+            if (i & 0x03) == 0x00 {
+                self.palette_rgb[i] = (0, 0, 0);
+                continue;
+            }
+
+            // Red: 3 bits from c-2j (bits 1-3), Darlington amp
+            let r_bit0 = ((c2j >> 1) & 1) as f64;
+            let r_bit1 = ((c2j >> 2) & 1) as f64;
+            let r_bit2 = ((c2j >> 3) & 1) as f64;
+            let r = darlington_3bit(r_bit0, r_bit1, r_bit2);
+
+            // Green: c-2j bit 0 (MSB/220Ω) + c-2k bits 2-3 (LSB weights)
+            let g_bit0 = ((c2k >> 2) & 1) as f64;
+            let g_bit1 = ((c2k >> 3) & 1) as f64;
+            let g_bit2 = (c2j & 1) as f64;
+            let g = darlington_3bit(g_bit0, g_bit1, g_bit2);
+
+            // Blue: 2 bits from c-2k (bits 0-1), emitter follower
+            let b_bit0 = (c2k & 1) as f64;
+            let b_bit1 = ((c2k >> 1) & 1) as f64;
+            let b = emitter_2bit(b_bit0, b_bit1);
+
+            self.palette_rgb[i] = (r, g, b);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // GFX decoding
+    // -----------------------------------------------------------------------
+
+    /// Resolve a 2-bit pixel value to an RGB color using the palette system.
+    fn resolve_color(&self, color: u8, pixel_value: u8) -> (u8, u8, u8) {
+        let palette_index = (color as usize & 0x3F) * 4 + (pixel_value as usize & 0x03);
+        self.palette_rgb[palette_index & 0xFF]
+    }
+
+    /// Decode a single tile pixel from the GFX ROM.
+    /// 8×8 tiles, 2bpp planar: plane 0 at base, plane 1 at base + tile_plane1_offset.
+    fn decode_tile_pixel(&self, tile_code: u16, px: u8, py: u8) -> u8 {
+        let tile_offset = (tile_code as usize) * 8 + py as usize;
+        let plane0 = self.tile_rom[tile_offset];
+        let plane1 = self.tile_rom[self.tile_plane1_offset + tile_offset];
+        let bit_mask = 0x80 >> px; // MSB = leftmost pixel (hardware shift register)
+        let p0 = u8::from(plane0 & bit_mask != 0);
+        let p1 = u8::from(plane1 & bit_mask != 0);
+        p0 | (p1 << 1)
+    }
+
+    /// Decode a single sprite pixel from the GFX ROM.
+    /// 16×16 sprites, 2bpp, 4-ROM interleaved layout.
+    fn decode_sprite_pixel(&self, spr_code: u16, px: u8, py: u8) -> u8 {
+        let base = (spr_code as usize) * 16 + py as usize;
+        let (plane0_addr, plane1_addr) = if px < 8 {
+            (base, 0x1000 + base)
+        } else {
+            (0x0800 + base, 0x1800 + base)
+        };
+        let bit_mask = 0x80 >> (px & 7);
+        let p0 = u8::from(self.sprite_rom[plane0_addr] & bit_mask != 0);
+        let p1 = u8::from(self.sprite_rom[plane1_addr] & bit_mask != 0);
+        p0 | (p1 << 1)
+    }
+
+    // -----------------------------------------------------------------------
+    // Scanline rendering
+    // -----------------------------------------------------------------------
+
+    /// Render a single scanline from current VRAM/sprite state.
+    pub fn render_scanline(&mut self, scanline: usize) {
+        let row_offset = scanline * NATIVE_WIDTH * 3;
+
+        // --- Background tiles: 32×32 tilemap, 8×8 tiles ---
+        let tile_row = scanline / 8;
+        let py = (scanline % 8) as u8;
+        for tile_col in 0..32 {
+            let vram_offset = tile_row * 32 + tile_col;
+            let tile_code = self.video_ram[vram_offset] as u16 + 256 * self.gfx_bank as u16;
+            let attribute =
+                (self.color_prom[tile_col + 32 * (tile_row / 4)] & 0x0F) + 0x10 * self.palette_bank;
+
+            for px in 0..8u8 {
+                let screen_x = tile_col * 8 + px as usize;
+                let pixel_value = self.decode_tile_pixel(tile_code, px, py);
+                let (r, g, b) = self.resolve_color(attribute, pixel_value);
+                let off = row_offset + screen_x * 3;
+                self.scanline_buffer[off] = r;
+                self.scanline_buffer[off + 1] = g;
+                self.scanline_buffer[off + 2] = b;
+            }
+        }
+
+        // --- Sprites ---
+        // Iterate forward: later sprites overwrite earlier ones.
+        let sprite_base = if self.sprite_bank { 0x200 } else { 0x000 };
+        let mut offs = sprite_base;
+        while offs < sprite_base + 0x200 {
+            let y_byte = self.sprite_ram[offs];
+            let code_byte = self.sprite_ram[offs + 1];
+            let attr_byte = self.sprite_ram[offs + 2];
+            let x_byte = self.sprite_ram[offs + 3];
+
+            let test = y_byte.wrapping_add(0xF9).wrapping_add(scanline as u8);
+            if (test & 0xF0) == 0xF0 {
+                let row_in_sprite = test & 0x0F;
+
+                let spr_code = (code_byte & 0x7F) as u16 | (((attr_byte & 0x40) as u16) << 1);
+                let flip_y = (code_byte & 0x80) != 0;
+                let flip_x = (attr_byte & 0x80) != 0;
+                let color_attr = (attr_byte & 0x0F) + 0x10 * self.palette_bank;
+
+                let src_py = if flip_y {
+                    15 - row_in_sprite
+                } else {
+                    row_in_sprite
+                };
+
+                let sprite_x = x_byte.wrapping_add(0xF8) as i32;
+
+                for px in 0..16i32 {
+                    let draw_x = (sprite_x + px) & 0xFF;
+                    if draw_x >= NATIVE_WIDTH as i32 {
+                        continue;
+                    }
+                    let src_px = if flip_x { 15 - px as u8 } else { px as u8 };
+                    let pixel_value = self.decode_sprite_pixel(spr_code, src_px, src_py);
+                    if pixel_value == 0 {
+                        continue;
+                    }
+                    let (r, g, b) = self.resolve_color(color_attr, pixel_value);
+                    let off = row_offset + draw_x as usize * 3;
+                    self.scanline_buffer[off] = r;
+                    self.scanline_buffer[off + 1] = g;
+                    self.scanline_buffer[off + 2] = b;
+                }
+
+                // Sprite X wraparound
+                if sprite_x >= 240 {
+                    for px in 0..16i32 {
+                        let draw_x = sprite_x + px - 256;
+                        if draw_x < 0 || draw_x >= NATIVE_WIDTH as i32 {
+                            continue;
+                        }
+                        let src_px = if flip_x { 15 - px as u8 } else { px as u8 };
+                        let pixel_value = self.decode_sprite_pixel(spr_code, src_px, src_py);
+                        if pixel_value == 0 {
+                            continue;
+                        }
+                        let (r, g, b) = self.resolve_color(color_attr, pixel_value);
+                        let off = row_offset + draw_x as usize * 3;
+                        self.scanline_buffer[off] = r;
+                        self.scanline_buffer[off + 1] = g;
+                        self.scanline_buffer[off + 2] = b;
+                    }
+                }
+            }
+
+            offs += 4;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Core tick
+    // -----------------------------------------------------------------------
+
+    /// Execute one CPU cycle at the Z80 clock rate (3.072 MHz).
+    ///
+    /// The `bus` parameter is the game wrapper (which implements `Bus`) passed
+    /// in from the wrapper's `run_frame()` / `debug_tick()`.
+    pub fn tick(&mut self, bus: &mut dyn Bus<Address = u16, Data = u8>) {
+        let frame_cycle = self.clock % CYCLES_PER_FRAME;
+
+        // Per-scanline rendering at scanline boundary
+        if frame_cycle.is_multiple_of(CYCLES_PER_SCANLINE) {
+            let scanline = (frame_cycle / CYCLES_PER_SCANLINE) as u16;
+            if scanline < VISIBLE_LINES as u16 {
+                self.render_scanline(scanline as usize);
+            }
+        }
+
+        // VBLANK NMI: assert at scanline 240
+        let vblank_cycle = VISIBLE_LINES * CYCLES_PER_SCANLINE;
+        if frame_cycle == vblank_cycle {
+            self.vblank_nmi_pending = true;
+        }
+        // Clear NMI at frame boundary (end of VBLANK)
+        if frame_cycle == 0 && self.clock > 0 {
+            self.vblank_nmi_pending = false;
+        }
+
+        // Execute main CPU cycle
+        self.cpu.execute_cycle(bus, BusMaster::Cpu(0));
+
+        // Tick sound CPU (Bresenham 25/192 ratio: 400 kHz from 3.072 MHz)
+        self.sound_phase_accum += SOUND_TICK_NUM;
+        if self.sound_phase_accum >= SOUND_TICK_DEN {
+            self.sound_phase_accum -= SOUND_TICK_DEN;
+            self.sound_cpu.execute_cycle(bus, BusMaster::Cpu(1));
+        }
+
+        // Audio accumulation (Bresenham downsample: 3.072 MHz → 44.1 kHz)
+        self.sample_accum += self.dac.sample_i16() as i64;
+        self.sample_count += 1;
+        self.sample_phase += OUTPUT_SAMPLE_RATE;
+        if self.sample_phase >= CPU_CLOCK_HZ {
+            self.sample_phase -= CPU_CLOCK_HZ;
+            if self.sample_count > 0 {
+                let dac_sample = (self.sample_accum / self.sample_count as i64) as i32;
+                let discrete_sample = self.discrete.generate_sample() as i32;
+                let mixed = (dac_sample + discrete_sample).clamp(-32767, 32767) as i16;
+                self.audio_buffer.push(mixed);
+            }
+            self.sample_accum = 0;
+            self.sample_count = 0;
+        }
+
+        self.clock += 1;
+    }
+
+    // -----------------------------------------------------------------------
+    // Frame rendering (rotation)
+    // -----------------------------------------------------------------------
+
+    /// Rotate 90° CCW from native scanline_buffer (256w × 240h)
+    /// to output buffer (224w × 256h), clipping VBLANK (scanlines 0-15).
+    pub fn render_frame(&self, buffer: &mut [u8]) {
+        let out_w = SCREEN_WIDTH as usize; // 224
+        for oy in 0..SCREEN_HEIGHT as usize {
+            for ox in 0..out_w {
+                let nx = oy;
+                let ny = (NATIVE_HEIGHT - 1) - ox;
+                let src = (ny * NATIVE_WIDTH + nx) * 3;
+                let dst = (oy * out_w + ox) * 3;
+                buffer[dst] = self.scanline_buffer[src];
+                buffer[dst + 1] = self.scanline_buffer[src + 1];
+                buffer[dst + 2] = self.scanline_buffer[src + 2];
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Audio
+    // -----------------------------------------------------------------------
+
+    pub fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
+        let n = buffer.len().min(self.audio_buffer.len());
+        buffer[..n].copy_from_slice(&self.audio_buffer[..n]);
+        self.audio_buffer.drain(..n);
+        n
+    }
+
+    // -----------------------------------------------------------------------
+    // Reset
+    // -----------------------------------------------------------------------
+
+    /// Reset board state (does not reset CPUs — the wrapper must do that
+    /// using its own unsafe borrow-split, since Bus is on the wrapper).
+    pub fn reset(&mut self) {
+        self.nmi_mask = false;
+        self.vblank_nmi_pending = false;
+        self.sound_irq_pending = false;
+        self.sound_latch = 0;
+        self.sound_control_latch = 0;
+        self.sound_control_latch_4h = 0;
+        self.flip_screen = false;
+        self.sprite_bank = false;
+        self.palette_bank = 0;
+        self.gfx_bank = 0;
+        self.dma = I8257::new();
+
+        self.clock = 0;
+        self.sound_phase_accum = 0;
+        self.sample_accum = 0;
+        self.sample_count = 0;
+        self.sample_phase = 0;
+        self.audio_buffer.clear();
+        self.dac = Mc1408Dac::new();
+
+        self.in0 = 0x00;
+        self.in1 = 0x00;
+        self.in2 = 0x00;
+
+        self.video_ram = [0; 0x0400];
+        self.ram = [0; 0x1000];
+        self.sprite_ram = [0; 0x0400];
+        self.scanline_buffer.fill(0);
+
+        self.discrete.reset();
+    }
+
+    // -----------------------------------------------------------------------
+    // Shared I/O helpers
+    // -----------------------------------------------------------------------
+
+    /// Trigger sprite DMA transfer from i8257 channel 0.
+    pub fn trigger_sprite_dma(&mut self) {
+        let src_addr = self.dma.channel_address(0);
+        let count = ((self.dma.channel_count(0) & 0x3FFF) + 1).min(self.sprite_ram.len() as u16);
+        for i in 0..count {
+            let addr = src_addr.wrapping_add(i);
+            let byte = match addr {
+                0x0000..=0x5FFF => self.rom[addr as usize],
+                0x6000..=0x6FFF => self.ram[(addr - 0x6000) as usize],
+                _ => 0x00,
+            };
+            self.sprite_ram[i as usize] = byte;
+        }
+    }
+
+    /// Write a single bit to the 74LS259 sound control latch (0x7D00-0x7D07).
+    pub fn write_sound_control_bit(&mut self, bit: u8, value: bool) {
+        if value {
+            self.sound_control_latch |= 1 << bit;
+        } else {
+            self.sound_control_latch &= !(1 << bit);
+        }
+        // Forward bits 0-2 to discrete sound device
+        if bit < 3 {
+            self.discrete.write_latch(bit, value);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Debug
+    // -----------------------------------------------------------------------
+
+    /// Return instruction-boundary bitmask for debugger.
+    pub fn debug_tick_boundaries(&self) -> u32 {
+        let mut result = 0;
+        if self.cpu.at_instruction_boundary() {
+            result |= 1;
+        }
+        if self.sound_cpu.at_instruction_boundary() {
+            result |= 2;
+        }
+        result
+    }
+
+    fn main_memory_read(&self, addr: u16) -> Option<u8> {
+        match addr {
+            0x0000..=0x5FFF => Some(self.rom[addr as usize]),
+            0x6000..=0x6FFF => Some(self.ram[(addr - 0x6000) as usize]),
+            0x7000..=0x73FF => Some(self.sprite_ram[(addr - 0x7000) as usize]),
+            0x7400..=0x77FF => Some(self.video_ram[(addr - 0x7400) as usize]),
+            _ => None,
+        }
+    }
+
+    fn main_memory_write(&mut self, addr: u16, data: u8) {
+        match addr {
+            0x6000..=0x6FFF => self.ram[(addr - 0x6000) as usize] = data,
+            0x7000..=0x73FF => self.sprite_ram[(addr - 0x7000) as usize] = data,
+            0x7400..=0x77FF => self.video_ram[(addr - 0x7400) as usize] = data,
+            _ => {}
+        }
+    }
+
+    fn sound_memory_read(&self, addr: u16) -> Option<u8> {
+        let addr12 = (addr & 0x0FFF) as usize;
+        Some(self.sound_rom[addr12])
+    }
+
+    fn sound_memory_write(&mut self, _addr: u16, _data: u8) {
+        // I8035 has no writable external program memory
+    }
+
+    // -----------------------------------------------------------------------
+    // Save / Load state
+    // -----------------------------------------------------------------------
+
+    pub(crate) fn save_board_state(&self, w: &mut StateWriter) {
+        self.cpu.save_state(w);
+        self.sound_cpu.save_state(w);
+        w.write_bytes(&self.ram);
+        w.write_bytes(&self.sprite_ram);
+        w.write_bytes(&self.video_ram);
+        w.write_u8(self.in0);
+        w.write_u8(self.in1);
+        w.write_u8(self.in2);
+        w.write_u8(self.sound_latch);
+        w.write_u8(self.sound_control_latch);
+        w.write_bool(self.flip_screen);
+        w.write_bool(self.sprite_bank);
+        w.write_bool(self.nmi_mask);
+        w.write_u8(self.palette_bank);
+        w.write_u8(self.gfx_bank);
+        w.write_u8(self.sound_control_latch_4h);
+        self.dma.save_state(w);
+        self.dac.save_state(w);
+        self.discrete.save_state(w);
+        w.write_bool(self.sound_irq_pending);
+        w.write_i64_le(self.sample_accum);
+        w.write_u32_le(self.sample_count);
+        w.write_u64_le(self.sample_phase);
+        w.write_u64_le(self.clock);
+        w.write_u32_le(self.sound_phase_accum);
+        w.write_bool(self.vblank_nmi_pending);
+    }
+
+    pub(crate) fn load_board_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        self.cpu.load_state(r)?;
+        self.sound_cpu.load_state(r)?;
+        r.read_bytes_into(&mut self.ram)?;
+        r.read_bytes_into(&mut self.sprite_ram)?;
+        r.read_bytes_into(&mut self.video_ram)?;
+        self.in0 = r.read_u8()?;
+        self.in1 = r.read_u8()?;
+        self.in2 = r.read_u8()?;
+        self.sound_latch = r.read_u8()?;
+        self.sound_control_latch = r.read_u8()?;
+        self.flip_screen = r.read_bool()?;
+        self.sprite_bank = r.read_bool()?;
+        self.nmi_mask = r.read_bool()?;
+        self.palette_bank = r.read_u8()?;
+        self.gfx_bank = r.read_u8()?;
+        self.sound_control_latch_4h = r.read_u8()?;
+        self.dma.load_state(r)?;
+        self.dac.load_state(r)?;
+        self.discrete.load_state(r)?;
+        self.sound_irq_pending = r.read_bool()?;
+        self.sample_accum = r.read_i64_le()?;
+        self.sample_count = r.read_u32_le()?;
+        self.sample_phase = r.read_u64_le()?;
+        self.clock = r.read_u64_le()?;
+        self.sound_phase_accum = r.read_u32_le()?;
+        self.vblank_nmi_pending = r.read_bool()?;
+        self.audio_buffer.clear();
+        Ok(())
+    }
+}
