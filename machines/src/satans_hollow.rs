@@ -311,13 +311,13 @@ impl Bus for SatansHollowSystem {
         false
     }
 
-    fn check_interrupts(&self, target: BusMaster) -> InterruptState {
+    fn check_interrupts(&mut self, target: BusMaster) -> InterruptState {
         match target {
             BusMaster::Cpu(0) => {
                 if self.board.ctc.interrupt_pending() {
                     let vector = self.board.ctc.interrupt_vector();
-                    self.board.ctc_vector_latch.set(vector);
-                    self.board.ctc_ack_needed.set(true);
+                    self.board.ctc_vector_latch = vector;
+                    self.board.ctc_ack_needed = true;
                     InterruptState {
                         irq: true,
                         irq_vector: vector,
@@ -327,7 +327,7 @@ impl Bus for SatansHollowSystem {
                     // Return latched vector for INTA cycle (Z80 reads irq_vector
                     // during interrupt acknowledge regardless of irq flag)
                     InterruptState {
-                        irq_vector: self.board.ctc_vector_latch.get(),
+                        irq_vector: self.board.ctc_vector_latch,
                         ..Default::default()
                     }
                 }

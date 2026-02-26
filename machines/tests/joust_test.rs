@@ -1216,7 +1216,7 @@ fn test_scanline_count240_signal() {
 
 #[test]
 fn test_irq_routing_rom_pia_only() {
-    let sys = JoustSystem::new();
+    let mut sys = JoustSystem::new();
     // With no PIA interrupts enabled, main CPU should have no IRQ
     let state = sys.check_interrupts(BusMaster::Cpu(0));
     assert!(!state.irq);

@@ -37,7 +37,7 @@ impl Bus for TestBus {
     fn is_halted_for(&self, _master: BusMaster) -> bool {
         false
     }
-    fn check_interrupts(&self, _target: BusMaster) -> InterruptState {
+    fn check_interrupts(&mut self, _target: BusMaster) -> InterruptState {
         InterruptState {
             nmi: self.nmi,
             irq: self.irq,

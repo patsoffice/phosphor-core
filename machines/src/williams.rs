@@ -182,7 +182,10 @@ macro_rules! impl_williams_bus_common {
             self.board.is_halted_for(master)
         }
 
-        fn check_interrupts(&self, target: BusMaster) -> phosphor_core::core::bus::InterruptState {
+        fn check_interrupts(
+            &mut self,
+            target: BusMaster,
+        ) -> phosphor_core::core::bus::InterruptState {
             self.board.check_interrupts(target)
         }
     };
@@ -765,7 +768,7 @@ impl Bus for WilliamsBoard {
         }
     }
 
-    fn check_interrupts(&self, target: BusMaster) -> InterruptState {
+    fn check_interrupts(&mut self, target: BusMaster) -> InterruptState {
         match target {
             // Only ROM PIA interrupts are wired to the main CPU IRQ line
             // via INPUT_MERGER_ANY_HIGH. Widget PIA IRQs are not connected.

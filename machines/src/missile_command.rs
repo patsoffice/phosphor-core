@@ -722,7 +722,7 @@ impl Bus for MissileCommandSystem {
         }
     }
 
-    fn check_interrupts(&self, _target: BusMaster) -> InterruptState {
+    fn check_interrupts(&mut self, _target: BusMaster) -> InterruptState {
         InterruptState {
             nmi: false,
             irq: self.irq_state,

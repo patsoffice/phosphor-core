@@ -139,7 +139,7 @@ impl Bus for Simple6809System {
         false
     }
 
-    fn check_interrupts(&self, _target: BusMaster) -> InterruptState {
+    fn check_interrupts(&mut self, _target: BusMaster) -> InterruptState {
         InterruptState {
             nmi: false,
             firq: false,

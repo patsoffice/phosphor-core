@@ -103,7 +103,7 @@ impl Bus for TracingBus {
         false
     }
 
-    fn check_interrupts(&self, _target: BusMaster) -> InterruptState {
+    fn check_interrupts(&mut self, _target: BusMaster) -> InterruptState {
         InterruptState::default()
     }
 }

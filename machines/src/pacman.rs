@@ -631,7 +631,7 @@ impl Bus for PacmanSystem {
         false // No DMA hardware on Pac-Man
     }
 
-    fn check_interrupts(&self, _target: BusMaster) -> InterruptState {
+    fn check_interrupts(&mut self, _target: BusMaster) -> InterruptState {
         InterruptState {
             nmi: false,
             irq: self.vblank_irq_pending && self.irq_enabled,

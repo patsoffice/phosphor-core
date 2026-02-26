@@ -358,7 +358,7 @@ impl Bus for SsioBoard {
         false
     }
 
-    fn check_interrupts(&self, _target: BusMaster) -> crate::core::bus::InterruptState {
+    fn check_interrupts(&mut self, _target: BusMaster) -> crate::core::bus::InterruptState {
         crate::core::bus::InterruptState {
             nmi: false,
             irq: self.irq_pending,

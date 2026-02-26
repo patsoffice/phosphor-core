@@ -176,7 +176,7 @@ macro_rules! impl_tkg04_bus_common {
         }
 
         fn check_interrupts(
-            &self,
+            &mut self,
             target: phosphor_core::core::BusMaster,
         ) -> phosphor_core::core::bus::InterruptState {
             match target {

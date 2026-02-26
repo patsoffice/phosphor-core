@@ -1,5 +1,3 @@
-use std::cell::Cell;
-
 use phosphor_core::core::ClockDivider;
 use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
 use phosphor_core::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
@@ -178,9 +176,9 @@ pub struct Mcr2Board {
     pub(crate) pixel_buffer: Vec<u8>, // 512×480 palette index (u8)
     pub(crate) priority_buffer: Vec<u8>, // 512×480 (sprite palette bank per pixel)
 
-    // CTC interrupt handling (Cell for immutable check_interrupts)
-    pub(crate) ctc_ack_needed: Cell<bool>,
-    pub(crate) ctc_vector_latch: Cell<u8>,
+    // CTC interrupt handling
+    pub(crate) ctc_ack_needed: bool,
+    pub(crate) ctc_vector_latch: u8,
 
     // Timing
     pub(crate) clock: u64,
@@ -201,8 +199,8 @@ impl Mcr2Board {
             palette_rgb: [(0, 0, 0); 64],
             pixel_buffer: vec![0u8; NATIVE_WIDTH * NATIVE_HEIGHT],
             priority_buffer: vec![0u8; NATIVE_WIDTH * NATIVE_HEIGHT],
-            ctc_ack_needed: Cell::new(false),
-            ctc_vector_latch: Cell::new(0),
+            ctc_ack_needed: false,
+            ctc_vector_latch: 0,
             clock: 0,
             ssio_clock: ClockDivider::new(SSIO_CLOCK_NUM, SSIO_CLOCK_DEN),
             watchdog_counter: 0,
@@ -324,9 +322,9 @@ impl Mcr2Board {
             .execute_cycle(bus, phosphor_core::core::BusMaster::Cpu(0));
 
         // Deferred CTC interrupt acknowledge (after CPU has read the vector)
-        if self.ctc_ack_needed.get() {
+        if self.ctc_ack_needed {
             self.ctc.acknowledge_interrupt();
-            self.ctc_ack_needed.set(false);
+            self.ctc_ack_needed = false;
         }
 
         // Tick SSIO at 125/156 ratio (2 MHz from 2.496 MHz)
@@ -493,8 +491,8 @@ impl Mcr2Board {
         self.clock = 0;
         self.ssio_clock.reset();
         self.watchdog_counter = 0;
-        self.ctc_ack_needed.set(false);
-        self.ctc_vector_latch.set(0);
+        self.ctc_ack_needed = false;
+        self.ctc_vector_latch = 0;
         // NVRAM is NOT cleared (battery-backed)
     }
 
@@ -540,8 +538,8 @@ impl Mcr2Board {
         self.watchdog_counter = r.read_u16_le()?;
         // Rebuild derived state from loaded data
         self.rebuild_palette();
-        self.ctc_ack_needed.set(false);
-        self.ctc_vector_latch.set(0);
+        self.ctc_ack_needed = false;
+        self.ctc_vector_latch = 0;
         Ok(())
     }
 }

@@ -33,7 +33,7 @@ pub trait Bus {
     fn is_halted_for(&self, master: BusMaster) -> bool;
 
     /// Generic interrupt query. CPUs pick what they need.
-    fn check_interrupts(&self, target: BusMaster) -> InterruptState;
+    fn check_interrupts(&mut self, target: BusMaster) -> InterruptState;
 }
 
 #[derive(Clone, Copy, Debug)]

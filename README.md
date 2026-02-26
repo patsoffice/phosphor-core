@@ -77,7 +77,7 @@ ROMs are matched by CRC32 checksum, so any MAME ROM naming convention works. All
 ## Implementation Status
 
 | Component | Status | Notes |
-|-----------|--------|-------|
+| --------- | ------ | ----- |
 | **Core Framework** | Complete | Bus trait, Machine trait, component system, MemoryMap (page-table dispatch + backing memory), debug traits |
 | **M6809 CPU** | Complete | 285 opcodes, cycle-accurate, all addressing modes. [Details](core/src/cpu/m6809/README.md) |
 | **M6800 CPU** | Complete | 192 opcodes, cycle-accurate, all addressing modes. [Details](core/src/cpu/m6800/README.md) |
@@ -349,7 +349,7 @@ pub trait Bus {
     fn is_halted_for(&self, master: BusMaster) -> bool;
 
     // Interrupt polling at instruction boundaries
-    fn check_interrupts(&self, target: BusMaster) -> InterruptState;
+    fn check_interrupts(&mut self, target: BusMaster) -> InterruptState;
 }
 ```
 
