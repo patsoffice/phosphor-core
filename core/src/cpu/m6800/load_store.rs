@@ -1,4 +1,5 @@
 use crate::core::{Bus, BusMaster};
+use crate::cpu::m68xx::M68xxAlu;
 use crate::cpu::m6800::{CcFlag, ExecState, M6800};
 
 impl M6800 {

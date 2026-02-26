@@ -16,16 +16,8 @@ use crate::cpu::{
     state::{CpuStateTrait, M6800State},
 };
 
-#[repr(u8)]
-#[derive(Copy, Clone, Debug)]
-pub enum CcFlag {
-    C = 0x01, // Carry
-    V = 0x02, // Overflow
-    Z = 0x04, // Zero
-    N = 0x08, // Negative
-    I = 0x10, // IRQ mask
-    H = 0x20, // Half carry
-}
+pub use super::m68xx::CcFlag;
+use super::m68xx::M68xxAlu;
 
 /// Bits 6-7 of the CC register are unused on the M6800 and always read as 1.
 const CC_UNUSED_BITS: u8 = 0xC0;
@@ -70,6 +62,28 @@ impl Default for M6800 {
     }
 }
 
+impl M68xxAlu for M6800 {
+    #[inline]
+    fn reg_a(&mut self) -> &mut u8 {
+        &mut self.a
+    }
+    #[inline]
+    fn reg_b(&mut self) -> &mut u8 {
+        &mut self.b
+    }
+    #[inline]
+    fn reg_cc(&mut self) -> &mut u8 {
+        &mut self.cc
+    }
+
+    /// M6800 TST also clears C flag (unlike M6809).
+    #[inline]
+    fn perform_tst(&mut self, val: u8) {
+        self.set_flags_logical(val);
+        self.set_flag(CcFlag::C, false);
+    }
+}
+
 impl M6800 {
     pub fn new() -> Self {
         Self {
@@ -85,15 +99,6 @@ impl M6800 {
             temp_data: 0,
             interrupt_type: 0,
             nmi_previous: false,
-        }
-    }
-
-    #[inline]
-    pub(crate) fn set_flag(&mut self, flag: CcFlag, set: bool) {
-        if set {
-            self.cc |= flag as u8
-        } else {
-            self.cc &= !(flag as u8)
         }
     }
 

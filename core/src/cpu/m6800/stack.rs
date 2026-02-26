@@ -1,5 +1,6 @@
 use super::{CcFlag, ExecState, M6800};
 use crate::core::{Bus, BusMaster};
+use crate::cpu::m68xx::M68xxAlu;
 
 impl M6800 {
     // --- Push / Pull (4 cycles each: 1 fetch + 3 execute) ---

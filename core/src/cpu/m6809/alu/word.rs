@@ -1,4 +1,5 @@
 use crate::core::{Bus, BusMaster};
+use crate::cpu::m68xx::M68xxAlu;
 use crate::cpu::m6809::{ExecState, M6809};
 
 impl M6809 {

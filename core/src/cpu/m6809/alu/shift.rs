@@ -1,51 +1,8 @@
 use crate::core::{Bus, BusMaster};
-use crate::cpu::m6809::{CcFlag, ExecState, M6809};
+use crate::cpu::m68xx::M68xxAlu;
+use crate::cpu::m6809::{ExecState, M6809};
 
 impl M6809 {
-    // --- Internal Shift/Rotate Helpers ---
-
-    #[inline]
-    fn perform_asl(&mut self, val: u8) -> u8 {
-        let carry = val & 0x80 != 0;
-        let result = val << 1;
-        self.set_flags_shift(result, carry);
-        result
-    }
-
-    #[inline]
-    fn perform_asr(&mut self, val: u8) -> u8 {
-        let carry = val & 0x01 != 0;
-        let result = ((val as i8) >> 1) as u8;
-        self.set_flags_shift_right(result, carry);
-        result
-    }
-
-    #[inline]
-    fn perform_lsr(&mut self, val: u8) -> u8 {
-        let carry = val & 0x01 != 0;
-        let result = val >> 1;
-        self.set_flags_shift_right(result, carry);
-        result
-    }
-
-    #[inline]
-    fn perform_rol(&mut self, val: u8) -> u8 {
-        let old_carry = self.cc & (CcFlag::C as u8) != 0;
-        let new_carry = val & 0x80 != 0;
-        let result = (val << 1) | (old_carry as u8);
-        self.set_flags_shift(result, new_carry);
-        result
-    }
-
-    #[inline]
-    fn perform_ror(&mut self, val: u8) -> u8 {
-        let old_carry = self.cc & (CcFlag::C as u8) != 0;
-        let new_carry = val & 0x01 != 0;
-        let result = (val >> 1) | ((old_carry as u8) << 7);
-        self.set_flags_shift_right(result, new_carry);
-        result
-    }
-
     /// ASLA/LSLA inherent (0x48): Arithmetic/Logical Shift Left A.
     /// Shifts all bits left one position. Bit 7 goes to C, 0 enters bit 0.
     /// N set if result bit 7 is set. Z set if result is zero.

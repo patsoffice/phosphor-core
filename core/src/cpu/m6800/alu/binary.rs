@@ -1,172 +1,8 @@
 use crate::core::{Bus, BusMaster};
-use crate::cpu::m6800::{CcFlag, M6800};
+use crate::cpu::m68xx::M68xxAlu;
+use crate::cpu::m6800::M6800;
 
 impl M6800 {
-    // --- Internal ALU Helpers ---
-
-    /// ADD: reg + operand. Sets H, N, Z, V, C.
-    #[inline]
-    pub(crate) fn perform_adda(&mut self, operand: u8) {
-        let (result, carry) = self.a.overflowing_add(operand);
-        let half_carry = (self.a & 0x0F) + (operand & 0x0F) > 0x0F;
-        let overflow = (self.a ^ operand) & 0x80 == 0 && (self.a ^ result) & 0x80 != 0;
-        self.a = result;
-        self.set_flag(CcFlag::H, half_carry);
-        self.set_flags_arithmetic(result, overflow, carry);
-    }
-
-    #[inline]
-    pub(crate) fn perform_addb(&mut self, operand: u8) {
-        let (result, carry) = self.b.overflowing_add(operand);
-        let half_carry = (self.b & 0x0F) + (operand & 0x0F) > 0x0F;
-        let overflow = (self.b ^ operand) & 0x80 == 0 && (self.b ^ result) & 0x80 != 0;
-        self.b = result;
-        self.set_flag(CcFlag::H, half_carry);
-        self.set_flags_arithmetic(result, overflow, carry);
-    }
-
-    /// ADC: reg + operand + carry. Sets H, N, Z, V, C.
-    #[inline]
-    pub(crate) fn perform_adca(&mut self, operand: u8) {
-        let carry_in = (self.cc & CcFlag::C as u8) as u16;
-        let a_u16 = self.a as u16;
-        let m_u16 = operand as u16;
-        let sum = a_u16 + m_u16 + carry_in;
-        let result = sum as u8;
-        let carry_out = sum > 0xFF;
-        let half_carry = (self.a & 0x0F) + (operand & 0x0F) + (carry_in as u8) > 0x0F;
-        let overflow = (self.a ^ operand) & 0x80 == 0 && (self.a ^ result) & 0x80 != 0;
-        self.a = result;
-        self.set_flag(CcFlag::H, half_carry);
-        self.set_flags_arithmetic(result, overflow, carry_out);
-    }
-
-    #[inline]
-    pub(crate) fn perform_adcb(&mut self, operand: u8) {
-        let carry_in = (self.cc & CcFlag::C as u8) as u16;
-        let b_u16 = self.b as u16;
-        let m_u16 = operand as u16;
-        let sum = b_u16 + m_u16 + carry_in;
-        let result = sum as u8;
-        let carry_out = sum > 0xFF;
-        let half_carry = (self.b & 0x0F) + (operand & 0x0F) + (carry_in as u8) > 0x0F;
-        let overflow = (self.b ^ operand) & 0x80 == 0 && (self.b ^ result) & 0x80 != 0;
-        self.b = result;
-        self.set_flag(CcFlag::H, half_carry);
-        self.set_flags_arithmetic(result, overflow, carry_out);
-    }
-
-    /// SUB: reg - operand. Sets N, Z, V, C.
-    #[inline]
-    pub(crate) fn perform_suba(&mut self, operand: u8) {
-        let (result, borrow) = self.a.overflowing_sub(operand);
-        let overflow = (self.a ^ operand) & 0x80 != 0 && (self.a ^ result) & 0x80 != 0;
-        self.a = result;
-        self.set_flags_arithmetic(result, overflow, borrow);
-    }
-
-    #[inline]
-    pub(crate) fn perform_subb(&mut self, operand: u8) {
-        let (result, borrow) = self.b.overflowing_sub(operand);
-        let overflow = (self.b ^ operand) & 0x80 != 0 && (self.b ^ result) & 0x80 != 0;
-        self.b = result;
-        self.set_flags_arithmetic(result, overflow, borrow);
-    }
-
-    /// SBC: reg - operand - carry. Sets N, Z, V, C.
-    #[inline]
-    pub(crate) fn perform_sbca(&mut self, operand: u8) {
-        let carry = (self.cc & CcFlag::C as u8) as u16;
-        let a = self.a as u16;
-        let m = operand as u16;
-        let diff = a.wrapping_sub(m).wrapping_sub(carry);
-        let result = diff as u8;
-        let borrow = a < m + carry;
-        let overflow = (self.a ^ operand) & 0x80 != 0 && (self.a ^ result) & 0x80 != 0;
-        self.a = result;
-        self.set_flags_arithmetic(result, overflow, borrow);
-    }
-
-    #[inline]
-    pub(crate) fn perform_sbcb(&mut self, operand: u8) {
-        let carry = (self.cc & CcFlag::C as u8) as u16;
-        let b = self.b as u16;
-        let m = operand as u16;
-        let diff = b.wrapping_sub(m).wrapping_sub(carry);
-        let result = diff as u8;
-        let borrow = b < m + carry;
-        let overflow = (self.b ^ operand) & 0x80 != 0 && (self.b ^ result) & 0x80 != 0;
-        self.b = result;
-        self.set_flags_arithmetic(result, overflow, borrow);
-    }
-
-    /// CMP: reg - operand (discard result). Sets N, Z, V, C.
-    #[inline]
-    pub(crate) fn perform_cmpa(&mut self, operand: u8) {
-        let (result, borrow) = self.a.overflowing_sub(operand);
-        let overflow = (self.a ^ operand) & 0x80 != 0 && (self.a ^ result) & 0x80 != 0;
-        self.set_flags_arithmetic(result, overflow, borrow);
-    }
-
-    #[inline]
-    pub(crate) fn perform_cmpb(&mut self, operand: u8) {
-        let (result, borrow) = self.b.overflowing_sub(operand);
-        let overflow = (self.b ^ operand) & 0x80 != 0 && (self.b ^ result) & 0x80 != 0;
-        self.set_flags_arithmetic(result, overflow, borrow);
-    }
-
-    /// AND: reg & operand. Sets N, Z. V cleared.
-    #[inline]
-    pub(crate) fn perform_anda(&mut self, operand: u8) {
-        self.a &= operand;
-        self.set_flags_logical(self.a);
-    }
-
-    #[inline]
-    pub(crate) fn perform_andb(&mut self, operand: u8) {
-        self.b &= operand;
-        self.set_flags_logical(self.b);
-    }
-
-    /// BIT: reg & operand (discard result). Sets N, Z. V cleared.
-    #[inline]
-    pub(crate) fn perform_bita(&mut self, operand: u8) {
-        let result = self.a & operand;
-        self.set_flags_logical(result);
-    }
-
-    #[inline]
-    pub(crate) fn perform_bitb(&mut self, operand: u8) {
-        let result = self.b & operand;
-        self.set_flags_logical(result);
-    }
-
-    /// EOR: reg ^ operand. Sets N, Z. V cleared.
-    #[inline]
-    pub(crate) fn perform_eora(&mut self, operand: u8) {
-        self.a ^= operand;
-        self.set_flags_logical(self.a);
-    }
-
-    #[inline]
-    pub(crate) fn perform_eorb(&mut self, operand: u8) {
-        self.b ^= operand;
-        self.set_flags_logical(self.b);
-    }
-
-    /// ORA: reg | operand. Sets N, Z. V cleared.
-    #[inline]
-    pub(crate) fn perform_oraa(&mut self, operand: u8) {
-        self.a |= operand;
-        self.set_flags_logical(self.a);
-    }
-
-    #[inline]
-    pub(crate) fn perform_orab(&mut self, operand: u8) {
-        self.b |= operand;
-        self.set_flags_logical(self.b);
-    }
-
     // --- Direct mode ops (3 cycles: 1 fetch + 1 read addr + 1 read operand) ---
 
     /// SUBA direct (0x90). N, Z, V, C affected.
@@ -246,7 +82,7 @@ impl M6800 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        self.alu_direct(cycle, bus, master, |cpu, op| cpu.perform_oraa(op));
+        self.alu_direct(cycle, bus, master, |cpu, op| cpu.perform_ora(op));
     }
 
     /// ADDA direct (0x9B). H, N, Z, V, C affected.
@@ -336,7 +172,7 @@ impl M6800 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        self.alu_direct(cycle, bus, master, |cpu, op| cpu.perform_orab(op));
+        self.alu_direct(cycle, bus, master, |cpu, op| cpu.perform_orb(op));
     }
 
     /// ADDB direct (0xDB). H, N, Z, V, C affected.
@@ -428,7 +264,7 @@ impl M6800 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        self.alu_indexed(cycle, bus, master, |cpu, op| cpu.perform_oraa(op));
+        self.alu_indexed(cycle, bus, master, |cpu, op| cpu.perform_ora(op));
     }
 
     /// ADDA indexed (0xAB). H, N, Z, V, C affected.
@@ -518,7 +354,7 @@ impl M6800 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        self.alu_indexed(cycle, bus, master, |cpu, op| cpu.perform_orab(op));
+        self.alu_indexed(cycle, bus, master, |cpu, op| cpu.perform_orb(op));
     }
 
     /// ADDB indexed (0xEB). H, N, Z, V, C affected.
@@ -610,7 +446,7 @@ impl M6800 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        self.alu_extended(cycle, bus, master, |cpu, op| cpu.perform_oraa(op));
+        self.alu_extended(cycle, bus, master, |cpu, op| cpu.perform_ora(op));
     }
 
     /// ADDA extended (0xBB). H, N, Z, V, C affected.
@@ -700,7 +536,7 @@ impl M6800 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        self.alu_extended(cycle, bus, master, |cpu, op| cpu.perform_orab(op));
+        self.alu_extended(cycle, bus, master, |cpu, op| cpu.perform_orb(op));
     }
 
     /// ADDB extended (0xFB). H, N, Z, V, C affected.
@@ -792,7 +628,7 @@ impl M6800 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        self.alu_imm(cycle, bus, master, |cpu, op| cpu.perform_oraa(op));
+        self.alu_imm(cycle, bus, master, |cpu, op| cpu.perform_ora(op));
     }
 
     /// ADDA immediate (0x8B). H, N, Z, V, C affected.
@@ -882,7 +718,7 @@ impl M6800 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        self.alu_imm(cycle, bus, master, |cpu, op| cpu.perform_orab(op));
+        self.alu_imm(cycle, bus, master, |cpu, op| cpu.perform_orb(op));
     }
 
     /// ADDB immediate (0xCB). H, N, Z, V, C affected.

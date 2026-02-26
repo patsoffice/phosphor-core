@@ -1,5 +1,6 @@
 use super::{CcFlag, ExecState, M6809};
 use crate::core::{Bus, BusMaster};
+use crate::cpu::m68xx::M68xxAlu;
 
 impl M6809 {
     /// LDA immediate (0x86)

@@ -17,18 +17,8 @@ use crate::cpu::{
     state::{CpuStateTrait, M6809State},
 };
 
-#[repr(u8)]
-#[derive(Copy, Clone, Debug)]
-pub enum CcFlag {
-    C = 0x01, // Carry
-    V = 0x02, // Overflow
-    Z = 0x04, // Zero
-    N = 0x08, // Negative
-    I = 0x10, // IRQ mask
-    H = 0x20, // Half carry
-    F = 0x40, // FIRQ mask
-    E = 0x80, // Entire
-}
+pub use super::m68xx::CcFlag;
+use super::m68xx::M68xxAlu;
 
 pub struct M6809 {
     // Registers (a,b,x,y,u,s,pc,cc)
@@ -110,16 +100,24 @@ impl M6809 {
         self.a = bytes[0];
         self.b = bytes[1];
     }
+}
 
+impl M68xxAlu for M6809 {
     #[inline]
-    pub(crate) fn set_flag(&mut self, flag: CcFlag, set: bool) {
-        if set {
-            self.cc |= flag as u8
-        } else {
-            self.cc &= !(flag as u8)
-        }
+    fn reg_a(&mut self) -> &mut u8 {
+        &mut self.a
     }
+    #[inline]
+    fn reg_b(&mut self) -> &mut u8 {
+        &mut self.b
+    }
+    #[inline]
+    fn reg_cc(&mut self) -> &mut u8 {
+        &mut self.cc
+    }
+}
 
+impl M6809 {
     /// Execute one cycle - handles fetch/execute state machine
     pub fn execute_cycle<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,

@@ -1,5 +1,6 @@
 use super::{CcFlag, ExecState, M6809};
 use crate::core::{Bus, BusMaster};
+use crate::cpu::m68xx::M68xxAlu;
 
 mod binary;
 mod shift;
@@ -7,23 +8,6 @@ mod unary;
 mod word;
 
 impl M6809 {
-    /// Helper to set N, Z, V (cleared) flags for logical operations
-    #[inline]
-    pub(crate) fn set_flags_logical(&mut self, result: u8) {
-        self.set_flag(CcFlag::N, result & 0x80 != 0);
-        self.set_flag(CcFlag::Z, result == 0);
-        self.set_flag(CcFlag::V, false);
-    }
-
-    /// Helper to set N, Z, V, C flags for arithmetic operations
-    #[inline]
-    pub(crate) fn set_flags_arithmetic(&mut self, result: u8, overflow: bool, carry: bool) {
-        self.set_flag(CcFlag::N, result & 0x80 != 0);
-        self.set_flag(CcFlag::Z, result == 0);
-        self.set_flag(CcFlag::V, overflow);
-        self.set_flag(CcFlag::C, carry);
-    }
-
     /// Helper to set N, Z, V, C flags for 16-bit arithmetic
     #[inline]
     pub(crate) fn set_flags_arithmetic16(&mut self, result: u16, overflow: bool, carry: bool) {
@@ -31,14 +15,6 @@ impl M6809 {
         self.set_flag(CcFlag::Z, result == 0);
         self.set_flag(CcFlag::V, overflow);
         self.set_flag(CcFlag::C, carry);
-    }
-
-    /// Helper to set N, Z, V (cleared) flags for 16-bit logical operations
-    #[inline]
-    pub(crate) fn set_flags_logical16(&mut self, result: u16) {
-        self.set_flag(CcFlag::N, result & 0x8000 != 0);
-        self.set_flag(CcFlag::Z, result == 0);
-        self.set_flag(CcFlag::V, false);
     }
 
     /// The alu_imm function is a generic helper method designed to reduce code duplication for Immediate Addressing Mode ALU instructions (like ADDA #$10, ANDB #$FF, etc.).
@@ -189,28 +165,6 @@ impl M6809 {
             }
             _ => {}
         }
-    }
-
-    // --- Shift and Rotate instructions ---
-
-    /// Helper to set N, Z, V, C flags for left-shift/rotate operations (ASL, ROL).
-    /// V = N XOR C (post-operation) per 6809 datasheet.
-    #[inline]
-    pub(crate) fn set_flags_shift(&mut self, result: u8, carry: bool) {
-        let n = result & 0x80 != 0;
-        self.set_flag(CcFlag::N, n);
-        self.set_flag(CcFlag::Z, result == 0);
-        self.set_flag(CcFlag::V, n ^ carry);
-        self.set_flag(CcFlag::C, carry);
-    }
-
-    /// Helper to set N, Z, C flags for right-shift/rotate operations (LSR, ASR, ROR).
-    /// V is not affected by right-shift operations.
-    #[inline]
-    pub(crate) fn set_flags_shift_right(&mut self, result: u8, carry: bool) {
-        self.set_flag(CcFlag::N, result & 0x80 != 0);
-        self.set_flag(CcFlag::Z, result == 0);
-        self.set_flag(CcFlag::C, carry);
     }
 
     // --- Indexed Addressing Mode ---

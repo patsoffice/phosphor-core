@@ -1,4 +1,4 @@
-use super::{CcFlag, ExecState, M6800};
+use super::{ExecState, M6800};
 use crate::core::{Bus, BusMaster};
 
 mod binary;
@@ -6,51 +6,6 @@ mod shift;
 mod unary;
 
 impl M6800 {
-    /// Helper to set N, Z, V (cleared) flags for logical operations
-    #[inline]
-    pub(crate) fn set_flags_logical(&mut self, result: u8) {
-        self.set_flag(CcFlag::N, result & 0x80 != 0);
-        self.set_flag(CcFlag::Z, result == 0);
-        self.set_flag(CcFlag::V, false);
-    }
-
-    /// Helper to set N, Z, V, C flags for arithmetic operations
-    #[inline]
-    pub(crate) fn set_flags_arithmetic(&mut self, result: u8, overflow: bool, carry: bool) {
-        self.set_flag(CcFlag::N, result & 0x80 != 0);
-        self.set_flag(CcFlag::Z, result == 0);
-        self.set_flag(CcFlag::V, overflow);
-        self.set_flag(CcFlag::C, carry);
-    }
-
-    /// Helper to set N, Z, V (cleared) flags for 16-bit logical operations (LDX, LDS)
-    #[inline]
-    pub(crate) fn set_flags_logical16(&mut self, result: u16) {
-        self.set_flag(CcFlag::N, result & 0x8000 != 0);
-        self.set_flag(CcFlag::Z, result == 0);
-        self.set_flag(CcFlag::V, false);
-    }
-
-    /// Helper to set N, Z, V, C flags for left-shift/rotate operations (ASL, ROL).
-    /// V = N XOR C (post-operation) per M6800 datasheet.
-    #[inline]
-    pub(crate) fn set_flags_shift_left(&mut self, result: u8, carry: bool) {
-        let n = result & 0x80 != 0;
-        self.set_flag(CcFlag::N, n);
-        self.set_flag(CcFlag::Z, result == 0);
-        self.set_flag(CcFlag::C, carry);
-        self.set_flag(CcFlag::V, n ^ carry);
-    }
-
-    /// Helper to set N, Z, C flags for right-shift/rotate operations (LSR, ASR, ROR).
-    /// V is not affected by right-shift operations on M6800.
-    #[inline]
-    pub(crate) fn set_flags_shift_right(&mut self, result: u8, carry: bool) {
-        self.set_flag(CcFlag::N, result & 0x80 != 0);
-        self.set_flag(CcFlag::Z, result == 0);
-        self.set_flag(CcFlag::C, carry);
-    }
-
     /// Generic immediate mode helper.
     /// 2 cycles total: 1 fetch + 1 execute (read operand + apply).
     #[inline]

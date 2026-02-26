@@ -1,59 +1,8 @@
 use crate::core::{Bus, BusMaster};
+use crate::cpu::m68xx::M68xxAlu;
 use crate::cpu::m6809::{CcFlag, ExecState, M6809};
 
 impl M6809 {
-    // --- Internal Unary Helpers ---
-
-    #[inline]
-    fn perform_neg(&mut self, val: u8) -> u8 {
-        let (result, borrow) = (0u8).overflowing_sub(val);
-        let overflow = val == 0x80;
-        self.set_flags_arithmetic(result, overflow, borrow);
-        result
-    }
-
-    #[inline]
-    fn perform_com(&mut self, val: u8) -> u8 {
-        let result = !val;
-        self.set_flags_logical(result);
-        self.set_flag(CcFlag::C, true);
-        result
-    }
-
-    #[inline]
-    fn perform_clr(&mut self) -> u8 {
-        self.set_flag(CcFlag::N, false);
-        self.set_flag(CcFlag::Z, true);
-        self.set_flag(CcFlag::V, false);
-        self.set_flag(CcFlag::C, false);
-        0
-    }
-
-    #[inline]
-    fn perform_inc(&mut self, val: u8) -> u8 {
-        let overflow = val == 0x7F;
-        let result = val.wrapping_add(1);
-        self.set_flag(CcFlag::N, result & 0x80 != 0);
-        self.set_flag(CcFlag::Z, result == 0);
-        self.set_flag(CcFlag::V, overflow);
-        result
-    }
-
-    #[inline]
-    fn perform_dec(&mut self, val: u8) -> u8 {
-        let overflow = val == 0x80;
-        let result = val.wrapping_sub(1);
-        self.set_flag(CcFlag::N, result & 0x80 != 0);
-        self.set_flag(CcFlag::Z, result == 0);
-        self.set_flag(CcFlag::V, overflow);
-        result
-    }
-
-    #[inline]
-    fn perform_tst(&mut self, val: u8) {
-        self.set_flags_logical(val);
-    }
-
     /// NEGA inherent (0x40): Negate A (A = 0 - A, two's complement).
     /// N set if result bit 7 is set. Z set if result is zero.
     /// V set if A was 0x80 (-128), since -(-128) overflows signed 8-bit range.
