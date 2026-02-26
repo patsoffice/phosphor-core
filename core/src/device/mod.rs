@@ -1,3 +1,4 @@
+pub mod ay8910;
 pub mod cmos_ram;
 pub mod dac;
 pub mod dkong_discrete;
@@ -8,6 +9,7 @@ pub mod pia6820;
 pub mod pokey;
 pub mod williams_blitter;
 
+pub use ay8910::Ay8910;
 pub use cmos_ram::CmosRam;
 pub use dac::Mc1408Dac;
 pub use dkong_discrete::DkongDiscrete;
