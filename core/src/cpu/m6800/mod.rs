@@ -671,8 +671,7 @@ impl M6800 {
     /// Priority: NMI (edge-triggered) > IRQ (level, masked by I).
     fn handle_interrupts(&mut self, ints: InterruptState) -> bool {
         // NMI is edge-triggered: detect rising edge
-        let nmi_edge = ints.nmi && !self.nmi_previous;
-        self.nmi_previous = ints.nmi;
+        let nmi_edge = crate::cpu::flags::detect_rising_edge(ints.nmi, &mut self.nmi_previous);
 
         if nmi_edge {
             self.interrupt_type = 1; // NMI

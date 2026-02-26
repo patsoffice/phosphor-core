@@ -36,9 +36,11 @@ pub(crate) fn op_anda_imm<B: Bus<Address=u16, Data=u8> + ?Sized>(
 
 1. Create a new module directory in `core/src/cpu/` (e.g., `m6502/`)
 2. Implement `Component`, `BusMasterComponent`, and `Cpu` traits
-3. Define registers and state machine
-4. Add module export in `core/src/cpu/mod.rs`
-5. Create system in `machines/src/`
+3. Define a `#[repr(u8)]` flag enum with `From<Flag> for u8`, and delegate `set_flag()` to `cpu::flags::set_flag()`
+4. Use `cpu::flags::detect_rising_edge()` for NMI edge detection (don't inline the pattern)
+5. Define registers and state machine
+6. Add module export in `core/src/cpu/mod.rs`
+7. Create system in `machines/src/`
 
 ### Adding Peripherals
 

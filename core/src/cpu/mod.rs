@@ -21,6 +21,9 @@ pub use disasm::{Disassemble, DisassembledInstruction};
 pub mod state;
 pub use state::{CpuStateTrait, I8035State, M6502State, M6800State, M6809State, Z80State};
 
+// Shared flag and signal helpers
+pub mod flags;
+
 // Shared M68xx ALU trait
 pub mod m68xx;
 

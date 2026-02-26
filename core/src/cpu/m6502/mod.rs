@@ -30,6 +30,12 @@ pub enum StatusFlag {
     N = 0x80, // Negative
 }
 
+impl From<StatusFlag> for u8 {
+    fn from(f: StatusFlag) -> u8 {
+        f as u8
+    }
+}
+
 pub struct M6502 {
     // Registers
     pub a: u8,
@@ -92,11 +98,7 @@ impl M6502 {
 
     #[inline]
     pub(crate) fn set_flag(&mut self, flag: StatusFlag, set: bool) {
-        if set {
-            self.p |= flag as u8;
-        } else {
-            self.p &= !(flag as u8);
-        }
+        crate::cpu::flags::set_flag(&mut self.p, flag, set);
     }
 
     pub fn execute_cycle<B: Bus<Address = u16, Data = u8> + ?Sized>(
@@ -512,8 +514,7 @@ impl M6502 {
     /// interrupt was taken (state transitions to Interrupt sequence).
     fn handle_interrupts(&mut self, ints: InterruptState) -> bool {
         // NMI is edge-triggered: detect rising edge
-        let nmi_edge = ints.nmi && !self.nmi_previous;
-        self.nmi_previous = ints.nmi;
+        let nmi_edge = crate::cpu::flags::detect_rising_edge(ints.nmi, &mut self.nmi_previous);
 
         if nmi_edge {
             self.interrupt_type = 1; // NMI

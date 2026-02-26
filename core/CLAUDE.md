@@ -12,10 +12,12 @@ CPU implementations, Bus trait, and peripheral devices. Zero external dependenci
 
 ## Flag Conventions
 
-- Use `CcFlag` enum, never raw hex values (0x01, 0x02, etc.)
+- Use each CPU's flag enum (`CcFlag`, `StatusFlag`, `PswFlag`, `Flag`), never raw hex values
 - All instruction doc comments must document flag behavior
 - Use `set_flags_arithmetic()` for add/sub, `set_flags_logical()` for AND/OR/EOR/TST, `set_flags_shift()` for shift/rotate
 - V flag for shift/rotate = N XOR C (post-operation)
+- Per-CPU `set_flag()` wrappers delegate to shared `cpu::flags::set_flag()` — add new CPUs the same way
+- NMI edge detection uses shared `cpu::flags::detect_rising_edge()` — don't inline the pattern
 
 ## CPU-Specific Notes
 

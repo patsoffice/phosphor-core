@@ -17,6 +17,12 @@ pub enum CcFlag {
     E = 0x80, // Entire flag (M6809 only)
 }
 
+impl From<CcFlag> for u8 {
+    fn from(f: CcFlag) -> u8 {
+        f as u8
+    }
+}
+
 /// Shared ALU operations for the M68xx CPU family.
 ///
 /// Implementors provide register accessors; all ALU logic is provided as
@@ -30,12 +36,7 @@ pub trait M68xxAlu {
 
     #[inline]
     fn set_flag(&mut self, flag: CcFlag, set: bool) {
-        let cc = self.reg_cc();
-        if set {
-            *cc |= flag as u8;
-        } else {
-            *cc &= !(flag as u8);
-        }
+        super::flags::set_flag(self.reg_cc(), flag, set);
     }
 
     /// Set N, Z, V (cleared) flags for logical operations.

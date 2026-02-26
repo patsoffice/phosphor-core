@@ -11,6 +11,11 @@
 - `load_store.rs` - LD*, ST*, LEA, transfers
 - `stack.rs` - PUSH, PULL, SWI, RTI, interrupt handling
 
+## Shared Modules
+
+- `flags.rs` - `set_flag()`, `flag_is_set()`, `detect_rising_edge()` — shared by all CPUs
+- `m68xx.rs` - `M68xxAlu` trait — shared ALU operations for M6800/M6809 family
+
 ## Adding a New Instruction
 
 1. Implement the operation in the appropriate `alu/*.rs` or `load_store.rs` file

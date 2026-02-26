@@ -22,6 +22,12 @@ pub enum PswFlag {
     BS = 0x10, // Register bank select
 }
 
+impl From<PswFlag> for u8 {
+    fn from(f: PswFlag) -> u8 {
+        f as u8
+    }
+}
+
 pub struct I8035 {
     // Registers
     pub a: u8,
@@ -114,16 +120,12 @@ impl I8035 {
 
     #[inline]
     pub(crate) fn set_flag(&mut self, flag: PswFlag, set: bool) {
-        if set {
-            self.psw |= flag as u8;
-        } else {
-            self.psw &= !(flag as u8);
-        }
+        crate::cpu::flags::set_flag(&mut self.psw, flag, set);
     }
 
     #[inline]
     pub(crate) fn flag_set(&self, flag: PswFlag) -> bool {
-        self.psw & (flag as u8) != 0
+        crate::cpu::flags::flag_is_set(self.psw, flag)
     }
 
     // --- Register access ---
