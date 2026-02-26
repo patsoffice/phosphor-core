@@ -7,11 +7,13 @@ use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::m6502::M6502;
 use phosphor_core::cpu::state::M6502State;
 use phosphor_core::cpu::{Cpu, CpuStateTrait};
+use phosphor_core::device::output_latch::OutputLatch;
 use phosphor_core::device::pokey::Pokey;
 use phosphor_macros::BusDebug;
 
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
+use crate::set_bit_active_low;
 
 // ---------------------------------------------------------------------------
 // Crystal Castles ROM definitions
@@ -293,13 +295,13 @@ pub struct CrystalCastlesSystem {
     //   Bit 2: NVRAM store low       Bit 3: NVRAM store high
     //   Bit 4: Spare                 Bit 5: Coin counter R
     //   Bit 6: Coin counter L        Bit 7: ROM bank select
-    outlatch0: u8,
+    outlatch0: OutputLatch,
     // Latch 1 (6P) at 0x9F00: bit 0 = (data >> 3) & 1
     //   Bit 0: /AX (auto-X enable)   Bit 1: /AY (auto-Y enable)
     //   Bit 2: /XINC (X direction)    Bit 3: /YINC (Y direction)
     //   Bit 4: PLAYER2 (flip)         Bit 5: /SIRE
     //   Bit 6: BOTHRAM                Bit 7: BUF1/^BUF2 (sprite bank)
-    outlatch1: u8,
+    outlatch1: OutputLatch,
 
     // I/O state
     // IN0 at 0x9600 (active-low except VBLANK):
@@ -355,8 +357,8 @@ impl CrystalCastlesSystem {
             palette_ram: [0; 64],
             palette_rgb: [(0, 0, 0); 32],
 
-            outlatch0: 0,
-            outlatch1: 0,
+            outlatch0: OutputLatch::new(),
+            outlatch1: OutputLatch::new(),
 
             // All active-low bits released (1), VBLANK off (bit 5 = 0)
             in0: 0xDF,
@@ -425,7 +427,7 @@ impl CrystalCastlesSystem {
             0x8E00..=0x8FFF => Some(self.spriteram[(addr - 0x8E00) as usize]),
             0x9000..=0x93FF => Some(self.nvram[(addr & 0xFF) as usize]),
             0xA000..=0xDFFF => {
-                let bank_base = if self.outlatch0 & 0x80 != 0 {
+                let bank_base = if self.outlatch0.bit(7) {
                     0x6000
                 } else {
                     0x0000
@@ -506,8 +508,8 @@ impl CrystalCastlesSystem {
     /// /XINC (bit 2, 0=increment), /YINC (bit 3, 0=increment).
     fn bitmode_autoinc(&mut self) {
         // Auto-increment X if /AX is low (bit 0 = 0)
-        if self.outlatch1 & 0x01 == 0 {
-            if self.outlatch1 & 0x04 == 0 {
+        if !self.outlatch1.bit(0) {
+            if !self.outlatch1.bit(2) {
                 // /XINC low → increment
                 self.bitmode_addr[0] = self.bitmode_addr[0].wrapping_add(1);
             } else {
@@ -515,8 +517,8 @@ impl CrystalCastlesSystem {
             }
         }
         // Auto-increment Y if /AY is low (bit 1 = 0)
-        if self.outlatch1 & 0x02 == 0 {
-            if self.outlatch1 & 0x08 == 0 {
+        if !self.outlatch1.bit(1) {
+            if !self.outlatch1.bit(3) {
                 // /YINC low → increment
                 self.bitmode_addr[1] = self.bitmode_addr[1].wrapping_add(1);
             } else {
@@ -640,12 +642,8 @@ impl CrystalCastlesSystem {
         self.sprite_buffer.fill(0x0F);
 
         // Select active MOB buffer (outlatch1 bit 7: BUF1/BUF2)
-        let buf_offset: usize = if self.outlatch1 & 0x80 != 0 {
-            0x100
-        } else {
-            0x00
-        };
-        let flip = self.outlatch1 & 0x10 != 0;
+        let buf_offset: usize = if self.outlatch1.bit(7) { 0x100 } else { 0x00 };
+        let flip = self.outlatch1.bit(4);
 
         // 40 sprites: 160 bytes / 4 bytes per sprite
         for offs in (0..160).step_by(4) {
@@ -702,11 +700,7 @@ impl CrystalCastlesSystem {
             return;
         }
 
-        let flip: u8 = if self.outlatch1 & 0x10 != 0 {
-            0xFF
-        } else {
-            0x00
-        };
+        let flip: u8 = if self.outlatch1.bit(4) { 0xFF } else { 0x00 };
         let vscroll_val = if flip != 0 { 0u8 } else { self.vscroll };
 
         // Effective Y into the bitmap, with scroll and flip
@@ -884,7 +878,7 @@ impl Bus for CrystalCastlesSystem {
 
             // Banked program ROM (16KB, bank selected by outlatch0 bit 7)
             0xA000..=0xDFFF => {
-                let bank_base = if self.outlatch0 & 0x80 != 0 {
+                let bank_base = if self.outlatch0.bit(7) {
                     0x6000usize // Bank 1
                 } else {
                     0x0000usize // Bank 0
@@ -934,23 +928,13 @@ impl Bus for CrystalCastlesSystem {
 
             // Output latch 0 (0x9E80-0x9EFF): bit = addr & 7, value = data & 1
             0x9E80..=0x9EFF => {
-                let bit = (addr & 7) as u8;
-                if data & 1 != 0 {
-                    self.outlatch0 |= 1 << bit;
-                } else {
-                    self.outlatch0 &= !(1 << bit);
-                }
+                self.outlatch0.write((addr & 7) as u8, data & 1 != 0);
             }
 
             // Output latch 1 / video control (0x9F00-0x9F7F):
             // bit = addr & 7, value = (data >> 3) & 1 (only D3 matters)
             0x9F00..=0x9F7F => {
-                let bit = (addr & 7) as u8;
-                if data & 0x08 != 0 {
-                    self.outlatch1 |= 1 << bit;
-                } else {
-                    self.outlatch1 &= !(1 << bit);
-                }
+                self.outlatch1.write((addr & 7) as u8, data & 0x08 != 0);
             }
 
             // Palette RAM (0x9F80-0x9FFF, 64 addresses → 32 pens)
@@ -1063,8 +1047,8 @@ impl Machine for CrystalCastlesSystem {
     fn reset(&mut self) {
         self.irq_state = false;
         self.watchdog_frame_count = 0;
-        self.outlatch0 = 0;
-        self.outlatch1 = 0;
+        self.outlatch0.reset();
+        self.outlatch1.reset();
         self.bitmode_addr = [0; 2];
         self.hscroll = 0;
         self.vscroll = 0;
@@ -1131,8 +1115,8 @@ impl Machine for CrystalCastlesSystem {
         w.write_u8(self.hscroll);
         w.write_u8(self.vscroll);
         w.write_bytes(&self.palette_ram);
-        w.write_u8(self.outlatch0);
-        w.write_u8(self.outlatch1);
+        self.outlatch0.save_state(&mut w);
+        self.outlatch1.save_state(&mut w);
         w.write_u8(self.in0);
         w.write_bytes(&self.trackball);
         w.write_bool(self.trackball_l_pressed);
@@ -1161,8 +1145,8 @@ impl Machine for CrystalCastlesSystem {
         self.hscroll = r.read_u8()?;
         self.vscroll = r.read_u8()?;
         r.read_bytes_into(&mut self.palette_ram)?;
-        self.outlatch0 = r.read_u8()?;
-        self.outlatch1 = r.read_u8()?;
+        self.outlatch0.load_state(&mut r)?;
+        self.outlatch1.load_state(&mut r)?;
         self.in0 = r.read_u8()?;
         r.read_bytes_into(&mut self.trackball)?;
         self.trackball_l_pressed = r.read_bool()?;
@@ -1183,15 +1167,6 @@ impl Machine for CrystalCastlesSystem {
         self.scanline_buffer_valid = false;
         self.audio_buffer.clear();
         Ok(())
-    }
-}
-
-/// Active-low bit manipulation: clear bit on press, set bit on release.
-fn set_bit_active_low(reg: &mut u8, bit: u8, pressed: bool) {
-    if pressed {
-        *reg &= !(1 << bit);
-    } else {
-        *reg |= 1 << bit;
     }
 }
 
@@ -1226,8 +1201,12 @@ mod tests {
         sys.nvram[0x20] = 0x42;
         sys.hscroll = 0x80;
         sys.vscroll = 0x40;
-        sys.outlatch0 = 0x80;
-        sys.outlatch1 = 0x0F;
+        // Set outlatch0 to 0x80 (bit 7) via latch API
+        sys.outlatch0.write(7, true);
+        // Set outlatch1 to 0x0F (bits 0-3) via latch API
+        for b in 0..4u8 {
+            sys.outlatch1.write(b, true);
+        }
         sys.in0 = 0xBF;
         sys.trackball[1] = 0x55;
         sys.mouse_accum_x = -10;
@@ -1249,8 +1228,8 @@ mod tests {
         assert_eq!(sys2.nvram[0x20], 0x42);
         assert_eq!(sys2.hscroll, 0x80);
         assert_eq!(sys2.vscroll, 0x40);
-        assert_eq!(sys2.outlatch0, 0x80);
-        assert_eq!(sys2.outlatch1, 0x0F);
+        assert_eq!(sys2.outlatch0.value(), 0x80);
+        assert_eq!(sys2.outlatch1.value(), 0x0F);
         assert_eq!(sys2.in0, 0xBF);
         assert_eq!(sys2.trackball[1], 0x55);
         assert_eq!(sys2.mouse_accum_x, -10);
@@ -1268,7 +1247,7 @@ mod tests {
         sys.rom[0x6000..0x8000].fill(0xBB);
 
         // Bank 0 (default, outlatch0 bit 7 = 0)
-        sys.outlatch0 = 0x00;
+        sys.outlatch0.reset();
         assert_eq!(
             Bus::read(&mut sys, BusMaster::Cpu(0), 0xA000),
             0xAA,
@@ -1276,7 +1255,7 @@ mod tests {
         );
 
         // Bank 1 (outlatch0 bit 7 = 1)
-        sys.outlatch0 = 0x80;
+        sys.outlatch0.write(7, true);
         assert_eq!(
             Bus::read(&mut sys, BusMaster::Cpu(0), 0xA000),
             0xBB,
@@ -1308,10 +1287,10 @@ mod tests {
         let mut sys = CrystalCastlesSystem::new();
         // Set bit 7 (ROM bank select) by writing data & 1 = 1 to addr 0x9E87
         Bus::write(&mut sys, BusMaster::Cpu(0), 0x9E87, 0x01);
-        assert_eq!(sys.outlatch0 & 0x80, 0x80);
+        assert!(sys.outlatch0.bit(7));
         // Clear it
         Bus::write(&mut sys, BusMaster::Cpu(0), 0x9E87, 0x00);
-        assert_eq!(sys.outlatch0 & 0x80, 0x00);
+        assert!(!sys.outlatch0.bit(7));
     }
 
     #[test]
@@ -1319,10 +1298,10 @@ mod tests {
         let mut sys = CrystalCastlesSystem::new();
         // Set bit 0 (/AX): data bit 3 must be set
         Bus::write(&mut sys, BusMaster::Cpu(0), 0x9F00, 0x08);
-        assert_eq!(sys.outlatch1 & 0x01, 0x01);
+        assert!(sys.outlatch1.bit(0));
         // Data bit 0 should NOT set the latch (only D3 matters)
         Bus::write(&mut sys, BusMaster::Cpu(0), 0x9F00, 0x01);
-        assert_eq!(sys.outlatch1 & 0x01, 0x00);
+        assert!(!sys.outlatch1.bit(0));
     }
 
     #[test]

@@ -4,7 +4,8 @@ use phosphor_core::core::{Bus, BusMaster};
 
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
-use crate::williams::{self, WilliamsBoard, set_bit};
+use crate::set_bit_active_high;
+use crate::williams::{self, WilliamsBoard};
 
 // Re-export decoder PROM under the game-specific name.
 pub use crate::williams::WILLIAMS_DECODER_PROM as ROBOTRON_DECODER_PROM;
@@ -266,22 +267,22 @@ impl Machine for RobotronSystem {
     fn set_input(&mut self, button: u8, pressed: bool) {
         match button {
             // Move stick → Widget PIA Port A bits 0-3
-            INPUT_MOVE_UP => set_bit(&mut self.widget_port_a, 0, pressed),
-            INPUT_MOVE_DOWN => set_bit(&mut self.widget_port_a, 1, pressed),
-            INPUT_MOVE_LEFT => set_bit(&mut self.widget_port_a, 2, pressed),
-            INPUT_MOVE_RIGHT => set_bit(&mut self.widget_port_a, 3, pressed),
+            INPUT_MOVE_UP => set_bit_active_high(&mut self.widget_port_a, 0, pressed),
+            INPUT_MOVE_DOWN => set_bit_active_high(&mut self.widget_port_a, 1, pressed),
+            INPUT_MOVE_LEFT => set_bit_active_high(&mut self.widget_port_a, 2, pressed),
+            INPUT_MOVE_RIGHT => set_bit_active_high(&mut self.widget_port_a, 3, pressed),
             // Start buttons → Widget PIA Port A bits 4-5
-            INPUT_P1_START => set_bit(&mut self.widget_port_a, 4, pressed),
-            INPUT_P2_START => set_bit(&mut self.widget_port_a, 5, pressed),
+            INPUT_P1_START => set_bit_active_high(&mut self.widget_port_a, 4, pressed),
+            INPUT_P2_START => set_bit_active_high(&mut self.widget_port_a, 5, pressed),
             // Fire stick up/down → Widget PIA Port A bits 6-7
-            INPUT_FIRE_UP => set_bit(&mut self.widget_port_a, 6, pressed),
-            INPUT_FIRE_DOWN => set_bit(&mut self.widget_port_a, 7, pressed),
+            INPUT_FIRE_UP => set_bit_active_high(&mut self.widget_port_a, 6, pressed),
+            INPUT_FIRE_DOWN => set_bit_active_high(&mut self.widget_port_a, 7, pressed),
             // Fire stick left/right → Widget PIA Port B bits 0-1
-            INPUT_FIRE_LEFT => set_bit(&mut self.widget_port_b, 0, pressed),
-            INPUT_FIRE_RIGHT => set_bit(&mut self.widget_port_b, 1, pressed),
+            INPUT_FIRE_LEFT => set_bit_active_high(&mut self.widget_port_b, 0, pressed),
+            INPUT_FIRE_RIGHT => set_bit_active_high(&mut self.widget_port_b, 1, pressed),
             // Coin → ROM PIA Port A bit 4 (Left Coin)
             INPUT_COIN => {
-                set_bit(&mut self.board.rom_pia_input, 4, pressed);
+                set_bit_active_high(&mut self.board.rom_pia_input, 4, pressed);
                 self.board
                     .rom_pia
                     .set_port_a_input(self.board.rom_pia_input);

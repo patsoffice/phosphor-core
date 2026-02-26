@@ -6,7 +6,8 @@ use phosphor_core::cpu::Cpu; // for .reset()
 
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
-use crate::tkg04::{self, Tkg04Board, set_bit_active_high};
+use crate::set_bit_active_high;
+use crate::tkg04::{self, Tkg04Board};
 
 // ---------------------------------------------------------------------------
 // Donkey Kong Jr ROM definitions ("dkongjr2" MAME set — contiguous layout)
@@ -306,11 +307,7 @@ impl Bus for DkongJrSystem {
                 // 0x7C80 also writes gfx bank via dkongjr_gfxbank_w
                 0x7C80..=0x7C87 => {
                     let bit = (addr & 0x07) as u8;
-                    if data & 1 != 0 {
-                        self.board.sound_control_latch_4h |= 1 << bit;
-                    } else {
-                        self.board.sound_control_latch_4h &= !(1 << bit);
-                    }
+                    self.board.sound_control_latch_4h.write(bit, data & 1 != 0);
                     // Bit 0 of ls259.4h is also the gfx bank select
                     if bit == 0 {
                         self.board.gfx_bank = data & 1;
@@ -387,21 +384,21 @@ impl Bus for DkongJrSystem {
                     let mut val = self.board.sound_cpu.p2;
                     // Bit 6: from ls259.4h bit 1
                     val = (val & !0x40)
-                        | if self.board.sound_control_latch_4h & 0x02 != 0 {
+                        | if self.board.sound_control_latch_4h.bit(1) {
                             0x40
                         } else {
                             0x00
                         };
                     // Bit 5: from sound_control_latch (dev_6h) bit 3
                     val = (val & !0x20)
-                        | if self.board.sound_control_latch & 0x08 != 0 {
+                        | if self.board.sound_control_latch.bit(3) {
                             0x20
                         } else {
                             0x00
                         };
                     // Bit 4: from sound_control_latch (dev_6h) bit 6
                     val = (val & !0x10)
-                        | if self.board.sound_control_latch & 0x40 != 0 {
+                        | if self.board.sound_control_latch.bit(6) {
                             0x10
                         } else {
                             0x00
@@ -410,10 +407,10 @@ impl Bus for DkongJrSystem {
                 }
 
                 // T0: inverted bit 5 of sound control latch (same as DK)
-                0x110 => u8::from(self.board.sound_control_latch & 0x20 == 0),
+                0x110 => u8::from(!self.board.sound_control_latch.bit(5)),
 
                 // T1: inverted bit 4 of sound control latch (same as DK)
-                0x111 => u8::from(self.board.sound_control_latch & 0x10 == 0),
+                0x111 => u8::from(!self.board.sound_control_latch.bit(4)),
 
                 _ => 0xFF,
             },

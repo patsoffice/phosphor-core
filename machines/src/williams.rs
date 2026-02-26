@@ -65,19 +65,6 @@ pub static WILLIAMS_SOUND_ROM: RomRegion = RomRegion {
 };
 
 // ---------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------
-
-/// Active-high bit manipulation: set bit on press, clear on release.
-pub(crate) fn set_bit(reg: &mut u8, bit: u8, pressed: bool) {
-    if pressed {
-        *reg |= 1 << bit;
-    } else {
-        *reg &= !(1 << bit);
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Shared macros for Williams gen-1 game wrappers
 // ---------------------------------------------------------------------------
 

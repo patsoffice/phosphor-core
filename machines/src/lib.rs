@@ -1,3 +1,21 @@
+/// Active-high bit manipulation: set bit on press, clear on release.
+pub(crate) fn set_bit_active_high(reg: &mut u8, bit: u8, pressed: bool) {
+    if pressed {
+        *reg |= 1 << bit;
+    } else {
+        *reg &= !(1 << bit);
+    }
+}
+
+/// Active-low bit manipulation: clear bit on press, set bit on release.
+pub(crate) fn set_bit_active_low(reg: &mut u8, bit: u8, pressed: bool) {
+    if pressed {
+        *reg &= !(1 << bit);
+    } else {
+        *reg |= 1 << bit;
+    }
+}
+
 pub mod asteroids;
 pub mod ccastles;
 pub mod donkey_kong;

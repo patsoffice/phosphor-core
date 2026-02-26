@@ -6,7 +6,8 @@ use phosphor_core::cpu::Cpu; // for .reset()
 
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
-use crate::tkg04::{self, Tkg04Board, set_bit_active_high};
+use crate::set_bit_active_high;
+use crate::tkg04::{self, Tkg04Board};
 
 // ---------------------------------------------------------------------------
 // Donkey Kong ROM definitions (TKG-04 / "dkong" MAME set)
@@ -402,7 +403,7 @@ impl Bus for DkongSystem {
                 0x102 => {
                     let mut val = self.board.sound_cpu.p2;
                     val = (val & !0x20)
-                        | if self.board.sound_control_latch & 0x08 != 0 {
+                        | if self.board.sound_control_latch.bit(3) {
                             0x20
                         } else {
                             0x00
@@ -411,10 +412,10 @@ impl Bus for DkongSystem {
                 }
 
                 // T0: inverted bit 5 of sound control latch
-                0x110 => u8::from(self.board.sound_control_latch & 0x20 == 0),
+                0x110 => u8::from(!self.board.sound_control_latch.bit(5)),
 
                 // T1: inverted bit 4 of sound control latch
-                0x111 => u8::from(self.board.sound_control_latch & 0x10 == 0),
+                0x111 => u8::from(!self.board.sound_control_latch.bit(4)),
 
                 _ => 0xFF,
             },
@@ -558,7 +559,11 @@ mod tests {
         sys.board.in1 = 0x0F;
         sys.board.in2 = 0x8C;
         sys.board.sound_latch = 0x42;
-        sys.board.sound_control_latch = 0x33;
+        // Set sound_control_latch to 0x33 via bit writes
+        for bit in 0..8u8 {
+            sys.board
+                .write_sound_control_bit(bit, (0x33 >> bit) & 1 != 0);
+        }
         sys.board.flip_screen = true;
         sys.board.sprite_bank = true;
         sys.board.nmi_mask = true;
@@ -598,7 +603,7 @@ mod tests {
         assert_eq!(sys2.board.in1, 0x0F);
         assert_eq!(sys2.board.in2, 0x8C);
         assert_eq!(sys2.board.sound_latch, 0x42);
-        assert_eq!(sys2.board.sound_control_latch, 0x33);
+        assert_eq!(sys2.board.sound_control_latch.value(), 0x33);
         assert!(sys2.board.flip_screen);
         assert!(sys2.board.sprite_bank);
         assert!(sys2.board.nmi_mask);

@@ -4,7 +4,8 @@ use phosphor_core::core::{Bus, BusMaster};
 
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
-use crate::williams::{self, WILLIAMS_SOUND_ROM, WilliamsBoard, set_bit};
+use crate::set_bit_active_high;
+use crate::williams::{self, WILLIAMS_SOUND_ROM, WilliamsBoard};
 
 // Re-export decoder PROM under the original name for backward compatibility.
 pub use crate::williams::WILLIAMS_DECODER_PROM as JOUST_DECODER_PROM;
@@ -275,18 +276,18 @@ impl Machine for JoustSystem {
             // Player controls go into separate P1/P2 registers.
             // The LS157 mux selects which register appears on Widget PIA
             // Port A bits 0-3 based on CB2 output.
-            INPUT_P1_LEFT => set_bit(&mut self.p1_controls, 0, pressed),
-            INPUT_P1_RIGHT => set_bit(&mut self.p1_controls, 1, pressed),
-            INPUT_P1_FLAP => set_bit(&mut self.p1_controls, 2, pressed),
-            INPUT_P2_LEFT => set_bit(&mut self.p2_controls, 0, pressed),
-            INPUT_P2_RIGHT => set_bit(&mut self.p2_controls, 1, pressed),
-            INPUT_P2_FLAP => set_bit(&mut self.p2_controls, 2, pressed),
+            INPUT_P1_LEFT => set_bit_active_high(&mut self.p1_controls, 0, pressed),
+            INPUT_P1_RIGHT => set_bit_active_high(&mut self.p1_controls, 1, pressed),
+            INPUT_P1_FLAP => set_bit_active_high(&mut self.p1_controls, 2, pressed),
+            INPUT_P2_LEFT => set_bit_active_high(&mut self.p2_controls, 0, pressed),
+            INPUT_P2_RIGHT => set_bit_active_high(&mut self.p2_controls, 1, pressed),
+            INPUT_P2_FLAP => set_bit_active_high(&mut self.p2_controls, 2, pressed),
             // Start buttons are wired directly to Port A (not muxed)
-            INPUT_P1_START => set_bit(&mut self.start_bits, 5, pressed),
-            INPUT_P2_START => set_bit(&mut self.start_bits, 4, pressed),
+            INPUT_P1_START => set_bit_active_high(&mut self.start_bits, 5, pressed),
+            INPUT_P2_START => set_bit_active_high(&mut self.start_bits, 4, pressed),
             // Coin goes to ROM PIA Port A bit 4 (Left Coin)
             INPUT_COIN => {
-                set_bit(&mut self.board.rom_pia_input, 4, pressed);
+                set_bit_active_high(&mut self.board.rom_pia_input, 4, pressed);
                 self.board
                     .rom_pia
                     .set_port_a_input(self.board.rom_pia_input);

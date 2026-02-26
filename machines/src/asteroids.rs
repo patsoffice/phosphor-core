@@ -11,6 +11,7 @@ use phosphor_macros::BusDebug;
 
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
+use crate::set_bit_active_high;
 
 // ---------------------------------------------------------------------------
 // ROM definitions (MAME `asteroid` parent set)
@@ -516,18 +517,6 @@ impl Machine for AsteroidsSystem {
 }
 
 // ---------------------------------------------------------------------------
-// Input helpers
-// ---------------------------------------------------------------------------
-
-/// Active-HIGH bit manipulation: set bit on press, clear on release.
-fn set_bit_active_high(reg: &mut u8, bit: u8, pressed: bool) {
-    if pressed {
-        *reg |= 1 << bit;
-    } else {
-        *reg &= !(1 << bit);
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Vector rasterizer
 // ---------------------------------------------------------------------------

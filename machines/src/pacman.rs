@@ -12,6 +12,7 @@ use phosphor_macros::BusDebug;
 
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
+use crate::set_bit_active_low;
 
 // ---------------------------------------------------------------------------
 // Pac-Man ROM definitions ("pacman" Midway set)
@@ -901,15 +902,6 @@ impl Machine for PacmanSystem {
         self.clock = r.read_u64_le()?;
         self.watchdog_counter = r.read_u32_le()?;
         Ok(())
-    }
-}
-
-/// Active-low bit manipulation: clear bit on press, set bit on release.
-fn set_bit_active_low(reg: &mut u8, bit: u8, pressed: bool) {
-    if pressed {
-        *reg &= !(1 << bit);
-    } else {
-        *reg |= 1 << bit;
     }
 }
 

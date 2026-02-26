@@ -5,6 +5,7 @@ use phosphor_core::cpu::z80::Z80;
 use phosphor_core::device::dac::Mc1408Dac;
 use phosphor_core::device::dkong_discrete::DkongDiscrete;
 use phosphor_core::device::i8257::I8257;
+use phosphor_core::device::output_latch::OutputLatch;
 use phosphor_macros::BusDebug;
 
 // ---------------------------------------------------------------------------
@@ -43,15 +44,6 @@ pub const SCREEN_HEIGHT: u32 = NATIVE_WIDTH as u32; // 256
 // ---------------------------------------------------------------------------
 // Shared helper functions
 // ---------------------------------------------------------------------------
-
-/// Active-high bit manipulation: set bit on press, clear on release.
-pub(crate) fn set_bit_active_high(reg: &mut u8, bit: u8, pressed: bool) {
-    if pressed {
-        *reg |= 1 << bit;
-    } else {
-        *reg &= !(1 << bit);
-    }
-}
 
 /// Darlington amplifier 3-bit resistor network (for R and G channels).
 /// Resistors: 1kΩ, 470Ω, 220Ω with 470Ω pulldown.
@@ -240,7 +232,7 @@ pub struct Tkg04Board {
 
     // Control registers
     pub(crate) sound_latch: u8,
-    pub(crate) sound_control_latch: u8,
+    pub(crate) sound_control_latch: OutputLatch,
     pub(crate) flip_screen: bool,
     pub(crate) sprite_bank: bool,
     pub(crate) nmi_mask: bool,
@@ -248,7 +240,7 @@ pub struct Tkg04Board {
 
     // DK Jr extras (always 0 for DK)
     pub(crate) gfx_bank: u8,
-    pub(crate) sound_control_latch_4h: u8,
+    pub(crate) sound_control_latch_4h: OutputLatch,
 
     // Configuration (set at construction, not saved)
     tile_plane1_offset: usize, // 0x800 for DK (4KB tiles), 0x1000 for DK Jr (8KB)
@@ -304,13 +296,13 @@ impl Tkg04Board {
             in2: 0x00,
             dsw0: 0x80, // default: upright cabinet, 3 lives, 7000 bonus, 1 coin/1 play
             sound_latch: 0,
-            sound_control_latch: 0,
+            sound_control_latch: OutputLatch::new(),
             flip_screen: false,
             sprite_bank: false,
             nmi_mask: false,
             palette_bank: 0,
             gfx_bank: 0,
-            sound_control_latch_4h: 0,
+            sound_control_latch_4h: OutputLatch::new(),
             tile_plane1_offset,
             dma: I8257::new(),
             sound_irq_pending: false,
@@ -601,8 +593,8 @@ impl Tkg04Board {
         self.vblank_nmi_pending = false;
         self.sound_irq_pending = false;
         self.sound_latch = 0;
-        self.sound_control_latch = 0;
-        self.sound_control_latch_4h = 0;
+        self.sound_control_latch.reset();
+        self.sound_control_latch_4h.reset();
         self.flip_screen = false;
         self.sprite_bank = false;
         self.palette_bank = 0;
@@ -650,11 +642,7 @@ impl Tkg04Board {
 
     /// Write a single bit to the 74LS259 sound control latch (0x7D00-0x7D07).
     pub fn write_sound_control_bit(&mut self, bit: u8, value: bool) {
-        if value {
-            self.sound_control_latch |= 1 << bit;
-        } else {
-            self.sound_control_latch &= !(1 << bit);
-        }
+        self.sound_control_latch.write(bit, value);
         // Forward bits 0-2 to discrete sound device
         if bit < 3 {
             self.discrete.write_latch(bit, value);
@@ -719,13 +707,13 @@ impl Tkg04Board {
         w.write_u8(self.in1);
         w.write_u8(self.in2);
         w.write_u8(self.sound_latch);
-        w.write_u8(self.sound_control_latch);
+        self.sound_control_latch.save_state(w);
         w.write_bool(self.flip_screen);
         w.write_bool(self.sprite_bank);
         w.write_bool(self.nmi_mask);
         w.write_u8(self.palette_bank);
         w.write_u8(self.gfx_bank);
-        w.write_u8(self.sound_control_latch_4h);
+        self.sound_control_latch_4h.save_state(w);
         self.dma.save_state(w);
         self.dac.save_state(w);
         self.discrete.save_state(w);
@@ -748,13 +736,13 @@ impl Tkg04Board {
         self.in1 = r.read_u8()?;
         self.in2 = r.read_u8()?;
         self.sound_latch = r.read_u8()?;
-        self.sound_control_latch = r.read_u8()?;
+        self.sound_control_latch.load_state(r)?;
         self.flip_screen = r.read_bool()?;
         self.sprite_bank = r.read_bool()?;
         self.nmi_mask = r.read_bool()?;
         self.palette_bank = r.read_u8()?;
         self.gfx_bank = r.read_u8()?;
-        self.sound_control_latch_4h = r.read_u8()?;
+        self.sound_control_latch_4h.load_state(r)?;
         self.dma.load_state(r)?;
         self.dac.load_state(r)?;
         self.discrete.load_state(r)?;

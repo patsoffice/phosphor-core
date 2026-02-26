@@ -12,6 +12,7 @@ use phosphor_macros::BusDebug;
 
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
+use crate::set_bit_active_low;
 
 // ---------------------------------------------------------------------------
 // Missile Command ROM definitions
@@ -936,15 +937,6 @@ impl Machine for MissileCommandSystem {
         self.scanline_buffer_valid = false;
         self.audio_buffer.clear();
         Ok(())
-    }
-}
-
-/// Active-low bit manipulation: clear bit on press, set bit on release.
-fn set_bit_active_low(reg: &mut u8, bit: u8, pressed: bool) {
-    if pressed {
-        *reg &= !(1 << bit);
-    } else {
-        *reg |= 1 << bit;
     }
 }
 
