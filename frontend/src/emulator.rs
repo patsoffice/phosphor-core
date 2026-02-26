@@ -110,7 +110,8 @@ pub fn run(
     if start_in_debug && has_debug {
         debug_state.active = true;
         debug_state.run_mode = RunMode::Paused;
-        video.resize_window(width * scale + 240, height * scale);
+        let dw = debug_state.debug_panel_width();
+        video.resize_window(width * scale + dw, height * scale);
     }
 
     'main: loop {
@@ -136,11 +137,12 @@ pub fn run(
                     if has_debug {
                         debug_state.active = !debug_state.active;
                         if debug_state.active {
-                            video.resize_window(width * scale + 240, height * scale);
-                            debug_state.run_mode = RunMode::Paused;
                             if let Some(bus) = machine.debug_bus() {
                                 debug_state.refresh(bus);
                             }
+                            let dw = debug_state.debug_panel_width();
+                            video.resize_window(width * scale + dw, height * scale);
+                            debug_state.run_mode = RunMode::Paused;
                         } else {
                             video.resize_window(width * scale, height * scale);
                             debug_state.run_mode = RunMode::Running;
@@ -377,8 +379,9 @@ pub fn run(
             video.update_game_texture(&framebuffer);
 
             if debug_state.active {
+                let bus_ref = machine.debug_bus();
                 video.present_with_debug(|ctx, tex_id, native_size| {
-                    debug_ui::draw_debug_ui(ctx, tex_id, native_size, &mut debug_state);
+                    debug_ui::draw_debug_ui(ctx, tex_id, native_size, &mut debug_state, bus_ref);
                 });
             } else {
                 video.present_game_only();

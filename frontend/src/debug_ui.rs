@@ -1,4 +1,6 @@
-use phosphor_core::core::debug::{BusDebug, DebugRegister};
+use std::collections::HashSet;
+
+use phosphor_core::core::debug::{BusDebug, DebugCpu, DebugRegister};
 use phosphor_core::core::machine::Machine;
 
 /// Execution modes for the debug interface.
@@ -8,6 +10,13 @@ pub enum RunMode {
     Paused,
     StepInstruction,
     StepCycle,
+}
+
+/// Which tab is shown in the bottom half of a CPU column.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BottomTab {
+    Disassembly,
+    Memory,
 }
 
 /// Cached register snapshot for one CPU.
@@ -23,6 +32,10 @@ pub struct DevicePanel {
 }
 
 /// Persistent state for the debug UI across frames.
+///
+/// Layout: multi-column, expanding to the right.
+///   Column 0: step controls, breakpoints, devices
+///   Column 1..N: one per CPU (registers + disassembly/memory)
 pub struct DebugState {
     pub active: bool,
     pub run_mode: RunMode,
@@ -30,6 +43,29 @@ pub struct DebugState {
     pub device_panels: Vec<DevicePanel>,
     pub step_cpu: usize,
     pub cycle_count: u64,
+
+    // Breakpoints
+    /// PC breakpoints per CPU (index = cpu_index).
+    pub breakpoints: Vec<HashSet<u16>>,
+    /// Hex address input buffer for adding PC breakpoints.
+    pub breakpoint_input: String,
+    /// Break when cycle_count reaches this value.
+    pub cycle_breakpoint: Option<u64>,
+    /// Input buffer for cycle breakpoint.
+    pub cycle_bp_input: String,
+
+    // Per-CPU column state
+    /// Which tab (Disassembly/Memory) is selected per CPU column.
+    pub bottom_tabs: Vec<BottomTab>,
+    /// Memory viewer address input buffer per CPU.
+    pub memory_addr_inputs: Vec<String>,
+    /// Pending scroll-to offset per CPU (consumed on next draw).
+    pub memory_scroll_to: Vec<Option<f32>>,
+
+    // Layout alignment
+    /// Max top-section height from the previous frame (controls/registers).
+    /// Used to align the disassembly/memory separator across all columns.
+    pub top_section_height: f32,
 }
 
 impl DebugState {
@@ -41,12 +77,30 @@ impl DebugState {
             device_panels: Vec::new(),
             step_cpu: 0,
             cycle_count: 0,
+            breakpoints: Vec::new(),
+            breakpoint_input: String::new(),
+            cycle_breakpoint: None,
+            cycle_bp_input: String::new(),
+            bottom_tabs: Vec::new(),
+            memory_addr_inputs: Vec::new(),
+            memory_scroll_to: Vec::new(),
+            top_section_height: 0.0,
         }
+    }
+
+    /// True if any PC or cycle breakpoint is set.
+    pub fn has_any_breakpoints(&self) -> bool {
+        self.cycle_breakpoint.is_some() || self.breakpoints.iter().any(|s| !s.is_empty())
+    }
+
+    /// Width (in pixels) needed for the debug panel, based on CPU count.
+    pub fn debug_panel_width(&self) -> u32 {
+        let n_cpus = self.cpu_panels.len().max(1) as u32;
+        260 * (n_cpus + 1)
     }
 
     /// Refresh cached state from the BusDebug interface.
     pub fn refresh(&mut self, bus: &dyn BusDebug) {
-        // Collect CPU names for filtering devices
         let cpus = bus.cpus();
         let cpu_names: Vec<&str> = cpus.iter().map(|(name, _)| *name).collect();
 
@@ -69,7 +123,20 @@ impl DebugState {
             })
             .collect();
 
-        // Clamp step_cpu to valid range
+        // Extend per-CPU vectors to match CPU count
+        while self.breakpoints.len() < cpus.len() {
+            self.breakpoints.push(HashSet::new());
+        }
+        while self.bottom_tabs.len() < cpus.len() {
+            self.bottom_tabs.push(BottomTab::Disassembly);
+        }
+        while self.memory_addr_inputs.len() < cpus.len() {
+            self.memory_addr_inputs.push(String::new());
+        }
+        while self.memory_scroll_to.len() < cpus.len() {
+            self.memory_scroll_to.push(None);
+        }
+
         if self.step_cpu >= self.cpu_panels.len() && !self.cpu_panels.is_empty() {
             self.step_cpu = 0;
         }
@@ -88,9 +155,41 @@ pub fn execute_frame(machine: &mut dyn Machine, state: &mut DebugState) -> bool 
         RunMode::Running => {
             let cpf = machine.cycles_per_frame();
             if cpf > 0 {
+                let check_bp = state.has_any_breakpoints();
                 for _ in 0..cpf {
-                    machine.debug_tick();
+                    let boundaries = machine.debug_tick();
                     state.cycle_count += 1;
+
+                    if check_bp {
+                        // Cycle breakpoint
+                        if let Some(target) = state.cycle_breakpoint
+                            && state.cycle_count >= target
+                        {
+                            state.cycle_breakpoint = None;
+                            state.run_mode = RunMode::Paused;
+                            if let Some(bus) = machine.debug_bus() {
+                                state.refresh(bus);
+                            }
+                            return false;
+                        }
+
+                        // PC breakpoints (only check at instruction boundaries)
+                        if boundaries != 0
+                            && let Some(bus) = machine.debug_bus()
+                        {
+                            let cpus = bus.cpus();
+                            for (i, (_name, cpu)) in cpus.iter().enumerate() {
+                                if (boundaries >> i) & 1 != 0
+                                    && let Some(bp_set) = state.breakpoints.get(i)
+                                    && bp_set.contains(&cpu.debug_pc())
+                                {
+                                    state.refresh(bus);
+                                    state.run_mode = RunMode::Paused;
+                                    return false;
+                                }
+                            }
+                        }
+                    }
                 }
             } else {
                 machine.run_frame();
@@ -132,7 +231,10 @@ pub fn execute_frame(machine: &mut dyn Machine, state: &mut DebugState) -> bool 
     }
 }
 
-/// Draw a register grid for a set of debug registers.
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
+
 fn draw_register_grid(ui: &mut egui::Ui, id: &str, registers: &[DebugRegister]) {
     egui::Grid::new(id)
         .num_columns(2)
@@ -151,89 +253,46 @@ fn draw_register_grid(ui: &mut egui::Ui, id: &str, registers: &[DebugRegister]) 
         });
 }
 
+// ---------------------------------------------------------------------------
+// Main layout
+// ---------------------------------------------------------------------------
+
 /// Build the debug UI layout. Called as the closure argument to Video::present_with_debug().
+///
+/// Layout:
+///   [Game] | [Controls col] | [CPU 0 col] | [CPU 1 col] | ...
+///
+/// Each CPU column shows registers at the top and a tabbed disassembly/memory
+/// viewer below.
 pub fn draw_debug_ui(
     ctx: &egui::Context,
     game_texture_id: egui::TextureId,
     native_size: (u32, u32),
     state: &mut DebugState,
+    bus: Option<&dyn BusDebug>,
 ) {
-    // Right panel: registers and controls
+    let n_cpus = state.cpu_panels.len();
+
+    // Right panel: multi-column debug layout
     egui::SidePanel::right("debug_panel")
-        .default_width(220.0)
+        .default_width(260.0 * (n_cpus + 1).max(2) as f32)
         .resizable(true)
         .show(ctx, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                // CPU panels (collapsible, default open)
-                for (i, panel) in state.cpu_panels.iter().enumerate() {
-                    let id = egui::Id::new(format!("cpu_{i}"));
-                    egui::CollapsingHeader::new(
-                        egui::RichText::new(&panel.name).monospace().strong(),
-                    )
-                    .id_salt(id)
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        draw_register_grid(ui, &format!("cpu_regs_{i}"), &panel.registers);
-                    });
-                }
-
-                // Step-CPU target (only for multi-CPU machines)
-                if state.cpu_panels.len() > 1 {
-                    ui.separator();
-                    ui.label("Step target:");
-                    ui.horizontal(|ui| {
-                        for (i, panel) in state.cpu_panels.iter().enumerate() {
-                            ui.radio_value(&mut state.step_cpu, i, &panel.name);
-                        }
-                    });
-                }
-
-                ui.separator();
-                ui.label(format!("Cycles: {}", state.cycle_count));
-                ui.separator();
-
-                // Step controls
-                let is_paused = state.run_mode == RunMode::Paused;
-
-                ui.horizontal(|ui| {
-                    if state.run_mode == RunMode::Running {
-                        if ui.button("Pause").clicked() {
-                            state.run_mode = RunMode::Paused;
-                        }
-                    } else if ui.button("Continue (F4)").clicked() {
-                        state.run_mode = RunMode::Running;
+            if n_cpus > 0 {
+                ui.columns(n_cpus + 1, |cols| {
+                    // Use the previous frame's max top-section height for alignment
+                    let min_h = state.top_section_height;
+                    let h0 = draw_controls_column(&mut cols[0], state, min_h);
+                    let mut max_h = h0;
+                    for cpu_idx in 0..n_cpus {
+                        let h = draw_cpu_column(&mut cols[cpu_idx + 1], state, bus, cpu_idx, min_h);
+                        max_h = max_h.max(h);
                     }
+                    state.top_section_height = max_h;
                 });
-
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(is_paused, egui::Button::new("Step Instr (F2)"))
-                        .clicked()
-                    {
-                        state.run_mode = RunMode::StepInstruction;
-                    }
-                    if ui
-                        .add_enabled(is_paused, egui::Button::new("Step Cycle (F3)"))
-                        .clicked()
-                    {
-                        state.run_mode = RunMode::StepCycle;
-                    }
-                });
-
-                // Device panels (collapsible, default closed)
-                if !state.device_panels.is_empty() {
-                    ui.separator();
-                    for (i, panel) in state.device_panels.iter().enumerate() {
-                        let id = egui::Id::new(format!("dev_{i}"));
-                        egui::CollapsingHeader::new(egui::RichText::new(&panel.name).monospace())
-                            .id_salt(id)
-                            .default_open(false)
-                            .show(ui, |ui| {
-                                draw_register_grid(ui, &format!("dev_regs_{i}"), &panel.registers);
-                            });
-                    }
-                }
-            });
+            } else {
+                draw_controls_column(ui, state, 0.0);
+            }
         });
 
     // Central panel: game framebuffer with aspect ratio preservation
@@ -249,7 +308,6 @@ pub fn draw_debug_ui(
                 (available.x, available.x / aspect)
             };
 
-            // Center the image
             let offset_x = (available.x - display_w) / 2.0;
             let offset_y = (available.y - display_h) / 2.0;
             ui.add_space(offset_y);
@@ -261,4 +319,414 @@ pub fn draw_debug_ui(
                 ));
             });
         });
+}
+
+// ---------------------------------------------------------------------------
+// Controls column (leftmost debug column)
+// ---------------------------------------------------------------------------
+
+/// Draw the controls column. Returns the natural height of the top section
+/// (controls + breakpoints, before padding).
+fn draw_controls_column(ui: &mut egui::Ui, state: &mut DebugState, min_top_height: f32) -> f32 {
+    let top_y = ui.cursor().top();
+
+    // --- Top section: controls + breakpoints ---
+    ui.label(format!("Cycles: {}", state.cycle_count));
+    ui.separator();
+
+    let is_paused = state.run_mode == RunMode::Paused;
+
+    ui.horizontal(|ui| {
+        if state.run_mode == RunMode::Running {
+            if ui.button("Pause").clicked() {
+                state.run_mode = RunMode::Paused;
+            }
+        } else if ui.button("Continue (F4)").clicked() {
+            state.run_mode = RunMode::Running;
+        }
+    });
+
+    ui.horizontal(|ui| {
+        if ui
+            .add_enabled(is_paused, egui::Button::new("Step Instr (F2)"))
+            .clicked()
+        {
+            state.run_mode = RunMode::StepInstruction;
+        }
+        if ui
+            .add_enabled(is_paused, egui::Button::new("Step Cycle (F3)"))
+            .clicked()
+        {
+            state.run_mode = RunMode::StepCycle;
+        }
+    });
+
+    // Step-CPU target (only for multi-CPU machines)
+    if state.cpu_panels.len() > 1 {
+        ui.separator();
+        ui.label("Step target:");
+        for (i, panel) in state.cpu_panels.iter().enumerate() {
+            ui.radio_value(&mut state.step_cpu, i, &panel.name);
+        }
+    }
+
+    // Breakpoints
+    draw_breakpoints_panel(ui, state);
+
+    let natural_height = ui.cursor().top() - top_y;
+
+    // Pad to align with CPU columns
+    if natural_height < min_top_height {
+        ui.add_space(min_top_height - natural_height);
+    }
+
+    // --- Bottom section: devices ---
+    ui.separator();
+    egui::ScrollArea::vertical()
+        .id_salt("ctrl_scroll")
+        .show(ui, |ui| {
+            for (i, panel) in state.device_panels.iter().enumerate() {
+                let id = egui::Id::new(format!("dev_{i}"));
+                egui::CollapsingHeader::new(egui::RichText::new(&panel.name).monospace())
+                    .id_salt(id)
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        draw_register_grid(ui, &format!("dev_regs_{i}"), &panel.registers);
+                    });
+            }
+        });
+
+    natural_height
+}
+
+// ---------------------------------------------------------------------------
+// Per-CPU column
+// ---------------------------------------------------------------------------
+
+/// Draw a CPU column. Returns the natural height of the register section
+/// (before padding).
+fn draw_cpu_column(
+    ui: &mut egui::Ui,
+    state: &mut DebugState,
+    bus: Option<&dyn BusDebug>,
+    cpu_idx: usize,
+    min_top_height: f32,
+) -> f32 {
+    let top_y = ui.cursor().top();
+
+    // --- Top section: registers ---
+    if let Some(panel) = state.cpu_panels.get(cpu_idx) {
+        egui::CollapsingHeader::new(egui::RichText::new(&panel.name).monospace().strong())
+            .id_salt(egui::Id::new(format!("cpu_{cpu_idx}")))
+            .default_open(true)
+            .show(ui, |ui| {
+                draw_register_grid(ui, &format!("cpu_regs_{cpu_idx}"), &panel.registers);
+            });
+    }
+
+    let natural_height = ui.cursor().top() - top_y;
+
+    // Pad to align with the tallest column
+    if natural_height < min_top_height {
+        ui.add_space(min_top_height - natural_height);
+    }
+
+    // --- Bottom section: disassembly / memory ---
+    ui.separator();
+
+    if cpu_idx < state.bottom_tabs.len() {
+        ui.horizontal(|ui| {
+            ui.selectable_value(
+                &mut state.bottom_tabs[cpu_idx],
+                BottomTab::Disassembly,
+                "Disasm",
+            );
+            ui.selectable_value(&mut state.bottom_tabs[cpu_idx], BottomTab::Memory, "Memory");
+        });
+        ui.separator();
+
+        if let Some(bus) = bus {
+            match state.bottom_tabs[cpu_idx] {
+                BottomTab::Disassembly => draw_disassembly_panel(ui, state, bus, cpu_idx),
+                BottomTab::Memory => draw_memory_panel(ui, state, bus, cpu_idx),
+            }
+        }
+    }
+
+    natural_height
+}
+
+// ---------------------------------------------------------------------------
+// Breakpoints panel (controls column)
+// ---------------------------------------------------------------------------
+
+fn draw_breakpoints_panel(ui: &mut egui::Ui, state: &mut DebugState) {
+    ui.separator();
+    egui::CollapsingHeader::new("Breakpoints")
+        .default_open(true)
+        .show(ui, |ui| {
+            // PC breakpoint entry (scoped to step_cpu)
+            ui.horizontal(|ui| {
+                ui.label("PC $");
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut state.breakpoint_input)
+                        .desired_width(48.0)
+                        .font(egui::TextStyle::Monospace),
+                );
+                let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if (ui.button("Add").clicked() || enter)
+                    && let Ok(addr) =
+                        u16::from_str_radix(state.breakpoint_input.trim_start_matches('$'), 16)
+                {
+                    if let Some(bp_set) = state.breakpoints.get_mut(state.step_cpu) {
+                        bp_set.insert(addr);
+                    }
+                    state.breakpoint_input.clear();
+                }
+            });
+
+            // List active PC breakpoints (sorted)
+            if let Some(bp_set) = state.breakpoints.get(state.step_cpu) {
+                let mut sorted: Vec<u16> = bp_set.iter().copied().collect();
+                sorted.sort();
+                let mut to_remove = None;
+                for addr in &sorted {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(format!("${:04X}", addr)).monospace());
+                        if ui.small_button("\u{2715}").clicked() {
+                            to_remove = Some(*addr);
+                        }
+                    });
+                }
+                if let Some(addr) = to_remove {
+                    state
+                        .breakpoints
+                        .get_mut(state.step_cpu)
+                        .unwrap()
+                        .remove(&addr);
+                }
+            }
+
+            ui.add_space(4.0);
+
+            // Cycle breakpoint
+            ui.horizontal(|ui| {
+                ui.label("Cycle:");
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut state.cycle_bp_input)
+                        .desired_width(80.0)
+                        .font(egui::TextStyle::Monospace),
+                );
+                let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if (ui.button("Set").clicked() || enter)
+                    && let Ok(cycle) = state.cycle_bp_input.trim().parse::<u64>()
+                {
+                    state.cycle_breakpoint = Some(cycle);
+                    state.cycle_bp_input.clear();
+                }
+            });
+
+            if let Some(target) = state.cycle_breakpoint {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(format!("Break @ cycle {}", target)).monospace());
+                    if ui.small_button("\u{2715}").clicked() {
+                        state.cycle_breakpoint = None;
+                    }
+                });
+            }
+        });
+}
+
+// ---------------------------------------------------------------------------
+// Disassembly panel (per-CPU column)
+// ---------------------------------------------------------------------------
+
+/// Disassemble `count` instructions starting at `start_addr`.
+fn disassemble_from(
+    bus: &dyn BusDebug,
+    cpu_index: usize,
+    cpu: &dyn DebugCpu,
+    start_addr: u16,
+    count: usize,
+) -> Vec<(u16, Vec<u8>, String)> {
+    let mut result = Vec::with_capacity(count);
+    let mut addr = start_addr;
+    for _ in 0..count {
+        let mut bytes = [0u8; 6];
+        for (i, b) in bytes.iter_mut().enumerate() {
+            *b = bus
+                .read(cpu_index, addr.wrapping_add(i as u16))
+                .unwrap_or(0);
+        }
+        let insn = cpu.debug_disassemble(addr, &bytes);
+        let text = format!("{insn}");
+        let raw = bytes[..insn.byte_len as usize].to_vec();
+        result.push((addr, raw, text));
+        addr = addr.wrapping_add(insn.byte_len as u16);
+    }
+    result
+}
+
+/// Disassemble a window around `pc`. Returns (lines, index_of_pc_line).
+fn disassemble_around_pc(
+    bus: &dyn BusDebug,
+    cpu_index: usize,
+    cpu: &dyn DebugCpu,
+    pc: u16,
+    before: usize,
+    after: usize,
+) -> (Vec<(u16, Vec<u8>, String)>, usize) {
+    // Try scanning from several start points before PC to find one that aligns
+    let max_instr = before + after + 40;
+    for offset in (48u16..=64).rev() {
+        let scan_start = pc.wrapping_sub(offset);
+        let all = disassemble_from(bus, cpu_index, cpu, scan_start, max_instr);
+        if let Some(pc_idx) = all.iter().position(|(addr, _, _)| *addr == pc) {
+            let start = pc_idx.saturating_sub(before);
+            let end = (pc_idx + after + 1).min(all.len());
+            let slice = all[start..end].to_vec();
+            let pc_offset = pc_idx - start;
+            return (slice, pc_offset);
+        }
+    }
+    // Fallback: just disassemble forward from PC
+    let forward = disassemble_from(bus, cpu_index, cpu, pc, after + 1);
+    (forward, 0)
+}
+
+fn draw_disassembly_panel(
+    ui: &mut egui::Ui,
+    state: &mut DebugState,
+    bus: &dyn BusDebug,
+    cpu_idx: usize,
+) {
+    let cpus = bus.cpus();
+    if cpu_idx >= cpus.len() {
+        ui.label("No CPU available");
+        return;
+    }
+    let (_name, cpu) = &cpus[cpu_idx];
+    let pc = cpu.debug_pc();
+
+    let (lines, pc_idx) = disassemble_around_pc(bus, cpu_idx, *cpu, pc, 8, 16);
+
+    egui::ScrollArea::vertical()
+        .id_salt(format!("disasm_{cpu_idx}"))
+        .auto_shrink([false; 2])
+        .show(ui, |ui| {
+            for (i, (addr, raw_bytes, text)) in lines.iter().enumerate() {
+                let is_pc = i == pc_idx;
+                let is_bp = state
+                    .breakpoints
+                    .get(cpu_idx)
+                    .is_some_and(|bp| bp.contains(addr));
+
+                let bp_marker = if is_bp { "\u{25CF} " } else { "  " };
+                let hex_bytes: String = raw_bytes
+                    .iter()
+                    .map(|b| format!("{:02X}", b))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let line_text = format!("{bp_marker}{:04X}  {:<12} {}", addr, hex_bytes, text);
+
+                let mut label = egui::RichText::new(line_text).monospace();
+                if is_pc {
+                    label = label
+                        .background_color(egui::Color32::from_rgb(60, 60, 120))
+                        .color(egui::Color32::WHITE);
+                } else if is_bp {
+                    label = label.color(egui::Color32::from_rgb(255, 80, 80));
+                }
+
+                if ui
+                    .add(egui::Label::new(label).sense(egui::Sense::click()))
+                    .clicked()
+                    && let Some(bp_set) = state.breakpoints.get_mut(cpu_idx)
+                {
+                    if bp_set.contains(addr) {
+                        bp_set.remove(addr);
+                    } else {
+                        bp_set.insert(*addr);
+                    }
+                }
+            }
+        });
+}
+
+// ---------------------------------------------------------------------------
+// Memory viewer panel (per-CPU column)
+// ---------------------------------------------------------------------------
+
+fn draw_memory_panel(
+    ui: &mut egui::Ui,
+    state: &mut DebugState,
+    bus: &dyn BusDebug,
+    cpu_idx: usize,
+) {
+    let row_height = ui.text_style_height(&egui::TextStyle::Monospace) + 2.0;
+
+    // Navigation bar
+    if cpu_idx < state.memory_addr_inputs.len() {
+        ui.horizontal(|ui| {
+            ui.label("$");
+            let resp = ui.add(
+                egui::TextEdit::singleline(&mut state.memory_addr_inputs[cpu_idx])
+                    .desired_width(48.0)
+                    .font(egui::TextStyle::Monospace),
+            );
+            let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if (ui.button("Go").clicked() || enter)
+                && let Ok(addr) = u16::from_str_radix(
+                    state.memory_addr_inputs[cpu_idx].trim_start_matches('$'),
+                    16,
+                )
+            {
+                let target_row = (addr & 0xFFF0) / 16;
+                state.memory_scroll_to[cpu_idx] = Some(target_row as f32 * row_height);
+            }
+        });
+    }
+
+    ui.separator();
+
+    // Hex dump with virtual scrolling (4096 rows for full 64K address space)
+    let total_rows: usize = 4096;
+
+    let mut scroll = egui::ScrollArea::vertical()
+        .id_salt(format!("mem_{cpu_idx}"))
+        .auto_shrink([false; 2]);
+
+    // Apply pending scroll-to (from Go button), then clear it
+    if let Some(offset) = state
+        .memory_scroll_to
+        .get_mut(cpu_idx)
+        .and_then(|s| s.take())
+    {
+        scroll = scroll.vertical_scroll_offset(offset);
+    }
+
+    scroll.show_rows(ui, row_height, total_rows, |ui, row_range| {
+        for row in row_range {
+            let base_addr = (row as u16).wrapping_mul(16);
+            let mut hex_part = String::with_capacity(52);
+            let mut ascii_part = String::with_capacity(16);
+
+            for col in 0..16u16 {
+                let addr = base_addr.wrapping_add(col);
+                let byte = bus.read(cpu_idx, addr).unwrap_or(0xFF);
+                if col == 8 {
+                    hex_part.push(' ');
+                }
+                hex_part.push_str(&format!("{:02X} ", byte));
+                ascii_part.push(if byte.is_ascii_graphic() || byte == b' ' {
+                    byte as char
+                } else {
+                    '.'
+                });
+            }
+
+            let line = format!("{:04X}  {} |{}|", base_addr, hex_part, ascii_part);
+            ui.label(egui::RichText::new(line).monospace());
+        }
+    });
 }
