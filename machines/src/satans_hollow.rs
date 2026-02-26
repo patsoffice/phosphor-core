@@ -159,11 +159,11 @@ const SHOLLOW_INPUT_MAP: &[InputButton] = &[
     },
     InputButton {
         id: INPUT_START1,
-        name: "1P Start",
+        name: "P1 Start",
     },
     InputButton {
         id: INPUT_START2,
-        name: "2P Start",
+        name: "P2 Start",
     },
     InputButton {
         id: INPUT_TILT,
@@ -175,19 +175,19 @@ const SHOLLOW_INPUT_MAP: &[InputButton] = &[
     },
     InputButton {
         id: INPUT_LEFT,
-        name: "Left",
+        name: "P1 Left",
     },
     InputButton {
         id: INPUT_RIGHT,
-        name: "Right",
+        name: "P1 Right",
     },
     InputButton {
         id: INPUT_SHIELD,
-        name: "Shield",
+        name: "P1 Jump",
     },
     InputButton {
         id: INPUT_FIRE,
-        name: "Fire",
+        name: "P1 Fire",
     },
 ];
 
@@ -227,6 +227,9 @@ impl SatansHollowSystem {
         // Set IP3 to active-high idle (0x00 instead of default 0xFF)
         self.board.ssio.set_input_port(3, 0x00);
 
+        // DIP switches: MAME defaults = 0x81 (Free Play OFF, coinage 1C/1C)
+        self.board.ssio.set_dip_switches(0x81);
+
         Ok(())
     }
 }
@@ -255,33 +258,41 @@ impl Bus for SatansHollowSystem {
                     0xFF
                 }
             }
-            0xC000..=0xC7FF => self.board.nvram[(addr - 0xC000) as usize],
-            0xE000..=0xE1FF => self.board.sprite_ram[(addr - 0xE000) as usize],
-            0xE800..=0xEFFF => self.board.video_ram[(addr - 0xE800) as usize],
-            0xF000..=0xF07F => self.board.palette_ram[(addr - 0xF000) as usize],
-            _ => 0xFF,
+            0xC000..=0xDFFF => self.board.nvram[(addr & 0x7FF) as usize],
+            0xE000..=0xE7FF | 0xF000..=0xF7FF => self.board.sprite_ram[(addr & 0x1FF) as usize],
+            0xE800..=0xEFFF | 0xF800..=0xFFFF => self.board.video_ram[(addr & 0x7FF) as usize],
         }
     }
 
     fn write(&mut self, _master: BusMaster, addr: u16, data: u8) {
         match addr {
-            0xC000..=0xC7FF => self.board.nvram[(addr - 0xC000) as usize] = data,
-            0xE000..=0xE1FF => self.board.sprite_ram[(addr - 0xE000) as usize] = data,
-            0xE800..=0xEFFF => self.board.video_ram[(addr - 0xE800) as usize] = data,
-            0xF000..=0xF07F => {
-                let offset = (addr - 0xF000) as usize;
-                self.board.palette_ram[offset] = data;
-                self.board.update_palette_entry(offset);
+            0x0000..=0xBFFF => {} // ROM — write ignored
+            0xC000..=0xDFFF => self.board.nvram[(addr & 0x7FF) as usize] = data,
+            0xE000..=0xE7FF | 0xF000..=0xF7FF => {
+                self.board.sprite_ram[(addr & 0x1FF) as usize] = data;
             }
-            _ => {} // ROM or unmapped
+            0xE800..=0xEFFF | 0xF800..=0xFFFF => {
+                let offset = (addr & 0x7FF) as usize;
+                self.board.video_ram[offset] = data;
+                if (offset & 0x780) == 0x780 {
+                    self.board.update_palette_from_vram(offset, data);
+                }
+            }
         }
     }
 
     fn io_read(&mut self, _master: BusMaster, addr: u16) -> u8 {
         let port = addr as u8;
         match port {
-            0x00..=0x04 => self.board.ssio.input_port(port as usize),
-            0x07 => self.board.ssio.status_read(),
+            // SSIO range (bits 5-7 clear): mirror(0x18) means bits 3-4 are don't-care
+            0x00..=0x1F => {
+                let base = port & 0x07;
+                match base {
+                    0x00..=0x04 => self.board.ssio.input_port(base as usize),
+                    0x07 => self.board.ssio.status_read(),
+                    _ => 0xFF,
+                }
+            }
             0xF0..=0xF3 => self.board.ctc.read(port - 0xF0),
             _ => 0xFF,
         }
@@ -290,8 +301,11 @@ impl Bus for SatansHollowSystem {
     fn io_write(&mut self, _master: BusMaster, addr: u16, data: u8) {
         let port = addr as u8;
         match port {
+            // SSIO output ports (no custom outputs for Satan's Hollow)
+            0x00..=0x07 => {}
             0x1C..=0x1F => self.board.ssio.latch_write(port - 0x1C, data),
             0xE0 => self.board.watchdog_counter = 0,
+            0xE8 => {} // nop write (MAME: map(0xe8, 0xe8).nopw())
             0xF0..=0xF3 => self.board.ctc.write(port - 0xF0, data),
             _ => {}
         }
@@ -530,6 +544,45 @@ mod tests {
     }
 
     #[test]
+    fn palette_from_vram_write() {
+        let mut sys = SatansHollowSystem::new();
+
+        // Palette is in video RAM at offset 0x780-0x7FF (CPU addr 0xEF80-0xEFFF).
+        // Entry 0 = offsets 0x780 (even) and 0x781 (odd).
+        // Write to odd byte: val9 = 0xFF | (1 << 8) = 0x1FF → all white
+        Bus::write(&mut sys, BusMaster::Cpu(0), 0xEF81, 0xFF);
+        assert_eq!(sys.board.palette_rgb[0], (255, 255, 255));
+
+        // Write to even byte: val9 = 0x00 | (0 << 8) = 0x000 → all black
+        Bus::write(&mut sys, BusMaster::Cpu(0), 0xEF80, 0x00);
+        assert_eq!(sys.board.palette_rgb[0], (0, 0, 0));
+
+        // Entry 1 via mirror at 0xF800 range: 0xF800 + 0x782 = 0xFF82
+        // val9 = 0x49 | (0 << 8) = 0x49 → R=1, G=1, B=1 → (36, 36, 36)
+        Bus::write(&mut sys, BusMaster::Cpu(0), 0xFF82, 0x49);
+        assert_eq!(sys.board.palette_rgb[1], (36, 36, 36));
+    }
+
+    #[test]
+    fn memory_map_mirrors() {
+        let mut sys = SatansHollowSystem::new();
+
+        // NVRAM mirror: 0xC000 and 0xD000 map to same byte
+        Bus::write(&mut sys, BusMaster::Cpu(0), 0xC042, 0xAA);
+        assert_eq!(Bus::read(&mut sys, BusMaster::Cpu(0), 0xD042), 0xAA);
+
+        // Sprite RAM mirror: 0xE000 and 0xF000 map to same byte
+        Bus::write(&mut sys, BusMaster::Cpu(0), 0xE010, 0xBB);
+        assert_eq!(Bus::read(&mut sys, BusMaster::Cpu(0), 0xF010), 0xBB);
+        // Also mirrored within 0xE000-0xE7FF (bit 9)
+        assert_eq!(Bus::read(&mut sys, BusMaster::Cpu(0), 0xE210), 0xBB);
+
+        // Video RAM mirror: 0xE800 and 0xF800 map to same byte
+        Bus::write(&mut sys, BusMaster::Cpu(0), 0xE900, 0xCC);
+        assert_eq!(Bus::read(&mut sys, BusMaster::Cpu(0), 0xF900), 0xCC);
+    }
+
+    #[test]
     fn input_active_low() {
         let mut sys = SatansHollowSystem::new();
 
@@ -556,8 +609,24 @@ mod tests {
         sys.board.ssio.set_input_port(0, 0xAA);
         sys.board.ssio.set_input_port(1, 0xBB);
 
+        // Base addresses
         assert_eq!(Bus::io_read(&mut sys, BusMaster::Cpu(0), 0x00), 0xAA);
         assert_eq!(Bus::io_read(&mut sys, BusMaster::Cpu(0), 0x01), 0xBB);
+
+        // Mirror with bit 3 set (0x08 offset)
+        assert_eq!(Bus::io_read(&mut sys, BusMaster::Cpu(0), 0x08), 0xAA);
+        assert_eq!(Bus::io_read(&mut sys, BusMaster::Cpu(0), 0x09), 0xBB);
+
+        // Mirror with bit 4 set (0x10 offset)
+        assert_eq!(Bus::io_read(&mut sys, BusMaster::Cpu(0), 0x10), 0xAA);
+        assert_eq!(Bus::io_read(&mut sys, BusMaster::Cpu(0), 0x11), 0xBB);
+
+        // Mirror with bits 3+4 set (0x18 offset)
+        assert_eq!(Bus::io_read(&mut sys, BusMaster::Cpu(0), 0x18), 0xAA);
+
+        // Status read at base 0x07 and mirror 0x0F
+        assert_eq!(Bus::io_read(&mut sys, BusMaster::Cpu(0), 0x07), 0x00);
+        assert_eq!(Bus::io_read(&mut sys, BusMaster::Cpu(0), 0x0F), 0x00);
     }
 
     #[test]

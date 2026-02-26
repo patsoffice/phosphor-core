@@ -162,12 +162,13 @@ pub struct Mcr2Board {
     pub(crate) tile_cache: gfx::GfxCache,
     pub(crate) sprite_cache: gfx::GfxCache,
 
-    // Palette (64 entries from 9-bit palette RAM at 0xF000-0xF07F)
+    // Palette (64 entries; 9-bit values embedded in video_ram[0x780..0x800])
+    // palette_ram caches the canonical 2-byte representation for save state.
     pub(crate) palette_ram: [u8; 0x80],
     pub(crate) palette_rgb: [(u8, u8, u8); 64],
 
-    // Framebuffers
-    pub(crate) scanline_buffer: Vec<u8>, // 512×480×3 RGB24
+    // Framebuffers (indexed — palette lookup deferred to rotation pass)
+    pub(crate) pixel_buffer: Vec<u8>, // 512×480 palette index (u8)
     pub(crate) priority_buffer: Vec<u8>, // 512×480 (sprite palette bank per pixel)
 
     // CTC interrupt handling (Cell for immutable check_interrupts)
@@ -194,7 +195,7 @@ impl Mcr2Board {
             sprite_cache: gfx::GfxCache::new(0, 32, 32),
             palette_ram: [0; 0x80],
             palette_rgb: [(0, 0, 0); 64],
-            scanline_buffer: vec![0u8; NATIVE_WIDTH * NATIVE_HEIGHT * 3],
+            pixel_buffer: vec![0u8; NATIVE_WIDTH * NATIVE_HEIGHT],
             priority_buffer: vec![0u8; NATIVE_WIDTH * NATIVE_HEIGHT],
             ctc_ack_needed: Cell::new(false),
             ctc_vector_latch: Cell::new(0),
@@ -217,22 +218,24 @@ impl Mcr2Board {
     // Palette
     // -----------------------------------------------------------------------
 
-    /// Rebuild a single palette entry after a palette RAM write.
-    pub fn update_palette_entry(&mut self, offset: usize) {
-        let entry = offset / 2;
-        if entry >= 64 {
-            return;
-        }
-        let low = self.palette_ram[entry * 2] as u16;
-        let high = self.palette_ram[entry * 2 + 1] as u16;
-        let val9 = low | ((high & 1) << 8);
+    /// Update palette entry from a video RAM write in the palette range.
+    ///
+    /// On real 90010 hardware, the palette occupies the upper 128 bytes of
+    /// video RAM (offset 0x780-0x7FF). Each byte write immediately sets the
+    /// 9-bit colour value: `val9 = data | (addr_bit0 << 8)`.
+    pub fn update_palette_from_vram(&mut self, vram_offset: usize, data: u8) {
+        let entry = (vram_offset / 2) & 0x3F;
+        let val9 = data as u16 | (((vram_offset & 1) as u16) << 8);
+        // Cache canonical bytes for save state (rebuild_palette reads these)
+        self.palette_ram[entry * 2] = val9 as u8;
+        self.palette_ram[entry * 2 + 1] = (val9 >> 8) as u8;
         let r = pal3bit((val9 >> 6) as u8);
         let g = pal3bit(val9 as u8);
         let b = pal3bit((val9 >> 3) as u8);
         self.palette_rgb[entry] = (r, g, b);
     }
 
-    /// Rebuild the entire palette from RAM (used after state load).
+    /// Rebuild the entire palette from the cached palette_ram (used after state load).
     pub fn rebuild_palette(&mut self) {
         for entry in 0..64 {
             let low = self.palette_ram[entry * 2] as u16;
@@ -299,22 +302,18 @@ impl Mcr2Board {
     // Frame rendering
     // -----------------------------------------------------------------------
 
-    /// Render the full frame into the internal scanline buffer.
+    /// Render the full frame into the indexed pixel buffer.
     /// Called once per frame from the game wrapper's run_frame().
     pub fn render_frame_internal(&mut self) {
-        // Clear buffers
-        self.scanline_buffer.fill(0);
-        self.priority_buffer.fill(0);
-
-        // Render tiles (32×30 tilemap, 8×8 tiles doubled to 16×16)
+        // No buffer clears needed — tiles cover every pixel.
         self.render_tiles();
-
-        // Render sprites (overlaid on tiles)
         self.render_sprites();
     }
 
-    /// Render all tiles from video RAM into the scanline buffer.
+    /// Render all tiles from video RAM into the indexed pixel buffer.
     fn render_tiles(&mut self) {
+        let tile_count = self.tile_cache.count().max(1);
+
         for tile_row in 0..TILE_ROWS {
             for tile_col in 0..TILE_COLS {
                 let vram_offset = (tile_row * TILE_COLS + tile_col) * 2;
@@ -322,11 +321,12 @@ impl Mcr2Board {
                 let high = self.video_ram[vram_offset + 1] as u16;
                 let data = low | (high << 8);
 
-                let code = (data & 0x1FF) as usize;
+                let code = (data & 0x1FF) as usize % tile_count;
                 let hflip = (data >> 9) & 1 != 0;
                 let vflip = (data >> 10) & 1 != 0;
                 let color = ((data >> 11) & 3) as u8;
                 let spr_bank = ((data >> 14) & 3) as u8;
+                let pri_val = spr_bank << 4;
 
                 // Each 8×8 tile is rendered at 16×16 (2× in both dimensions)
                 for py in 0..16usize {
@@ -336,31 +336,20 @@ impl Mcr2Board {
                     if screen_y >= NATIVE_HEIGHT {
                         continue;
                     }
+                    let row_base = screen_y * NATIVE_WIDTH;
 
                     for px in 0..16usize {
                         let src_px = px / 2;
                         let actual_px = if hflip { 7 - src_px } else { src_px };
                         let screen_x = tile_col * 16 + px;
+                        let buf_idx = row_base + screen_x;
 
-                        let pixel = self.tile_cache.pixel(
-                            code % self.tile_cache.count().max(1),
-                            actual_px,
-                            actual_py,
-                        );
+                        let pixel = self.tile_cache.pixel(code, actual_px, actual_py);
 
-                        let buf_idx = (screen_y * NATIVE_WIDTH + screen_x) * 3;
-
-                        if pixel != 0 {
-                            let pal_idx = ((color as usize) << 4) | pixel as usize;
-                            let (r, g, b) = self.palette_rgb[pal_idx & 63];
-                            self.scanline_buffer[buf_idx] = r;
-                            self.scanline_buffer[buf_idx + 1] = g;
-                            self.scanline_buffer[buf_idx + 2] = b;
-                        }
-                        // else: leave black (already zeroed)
-
-                        // Write sprite priority bank
-                        self.priority_buffer[screen_y * NATIVE_WIDTH + screen_x] = spr_bank << 4;
+                        // Write every pixel (including 0 = black) so no clear is needed
+                        self.pixel_buffer[buf_idx] =
+                            if pixel != 0 { (color << 4) | pixel } else { 0 };
+                        self.priority_buffer[buf_idx] = pri_val;
                     }
                 }
             }
@@ -396,22 +385,18 @@ impl Mcr2Board {
                     }
 
                     for x in 0..32usize {
-                        let fx = x ^ hflip;
-                        let tx = ((sx + fx as i32) & 0x1FF) as usize;
+                        let tx = ((sx + (x ^ hflip) as i32) & 0x1FF) as usize;
                         if tx >= NATIVE_WIDTH {
                             continue;
                         }
 
-                        let src_pixel = self.sprite_cache.pixel(code, fx, y ^ vflip);
-                        let pri = self.priority_buffer[ty * NATIVE_WIDTH + tx];
-                        let pix = pri | src_pixel;
+                        // Source pixel is always (x, y) — flip only affects destination
+                        let src_pixel = self.sprite_cache.pixel(code, x, y);
+                        let buf_idx = ty * NATIVE_WIDTH + tx;
+                        let pix = self.priority_buffer[buf_idx] | src_pixel;
 
                         if pix & 0x07 != 0 {
-                            let (r, g, b) = self.palette_rgb[pix as usize & 63];
-                            let idx = (ty * NATIVE_WIDTH + tx) * 3;
-                            self.scanline_buffer[idx] = r;
-                            self.scanline_buffer[idx + 1] = g;
-                            self.scanline_buffer[idx + 2] = b;
+                            self.pixel_buffer[buf_idx] = pix;
                         }
                     }
                 }
@@ -424,19 +409,20 @@ impl Mcr2Board {
         }
     }
 
-    /// Rotate 90° CW from native (512w × 480h) to output (480w × 512h).
+    /// Rotate 90° CW from native (512w × 480h) to output (480w × 512h),
+    /// converting palette indices to RGB in a single pass.
     pub fn render_frame(&self, buffer: &mut [u8]) {
         let out_w = SCREEN_WIDTH as usize; // 480
         for oy in 0..SCREEN_HEIGHT as usize {
+            let nx = oy;
             for ox in 0..out_w {
-                // ROT90 CW: output(ox, oy) ← native(oy, (NATIVE_HEIGHT-1) - ox)
-                let nx = oy;
                 let ny = (NATIVE_HEIGHT - 1) - ox;
-                let src = (ny * NATIVE_WIDTH + nx) * 3;
+                let idx = self.pixel_buffer[ny * NATIVE_WIDTH + nx];
+                let (r, g, b) = self.palette_rgb[idx as usize & 63];
                 let dst = (oy * out_w + ox) * 3;
-                buffer[dst] = self.scanline_buffer[src];
-                buffer[dst + 1] = self.scanline_buffer[src + 1];
-                buffer[dst + 2] = self.scanline_buffer[src + 2];
+                buffer[dst] = r;
+                buffer[dst + 1] = g;
+                buffer[dst + 2] = b;
             }
         }
     }
@@ -460,7 +446,7 @@ impl Mcr2Board {
         self.video_ram.fill(0);
         self.palette_ram.fill(0);
         self.rebuild_palette();
-        self.scanline_buffer.fill(0);
+        self.pixel_buffer.fill(0);
         self.priority_buffer.fill(0);
         self.clock = 0;
         self.ssio_clock.reset();
@@ -485,22 +471,25 @@ impl Mcr2Board {
     fn main_memory_read(&self, addr: u16) -> Option<u8> {
         match addr {
             0x0000..=0xBFFF if (addr as usize) < self.rom.len() => Some(self.rom[addr as usize]),
-            0xC000..=0xC7FF => Some(self.nvram[(addr - 0xC000) as usize]),
-            0xE000..=0xE1FF => Some(self.sprite_ram[(addr - 0xE000) as usize]),
-            0xE800..=0xEFFF => Some(self.video_ram[(addr - 0xE800) as usize]),
-            0xF000..=0xF07F => Some(self.palette_ram[(addr - 0xF000) as usize]),
+            0xC000..=0xDFFF => Some(self.nvram[(addr & 0x7FF) as usize]),
+            0xE000..=0xE7FF | 0xF000..=0xF7FF => Some(self.sprite_ram[(addr & 0x1FF) as usize]),
+            0xE800..=0xEFFF | 0xF800..=0xFFFF => Some(self.video_ram[(addr & 0x7FF) as usize]),
             _ => None,
         }
     }
 
     fn main_memory_write(&mut self, addr: u16, data: u8) {
         match addr {
-            0xC000..=0xC7FF => self.nvram[(addr - 0xC000) as usize] = data,
-            0xE000..=0xE1FF => self.sprite_ram[(addr - 0xE000) as usize] = data,
-            0xE800..=0xEFFF => self.video_ram[(addr - 0xE800) as usize] = data,
-            0xF000..=0xF07F => {
-                self.palette_ram[(addr - 0xF000) as usize] = data;
-                self.update_palette_entry((addr - 0xF000) as usize);
+            0xC000..=0xDFFF => self.nvram[(addr & 0x7FF) as usize] = data,
+            0xE000..=0xE7FF | 0xF000..=0xF7FF => {
+                self.sprite_ram[(addr & 0x1FF) as usize] = data;
+            }
+            0xE800..=0xEFFF | 0xF800..=0xFFFF => {
+                let offset = (addr & 0x7FF) as usize;
+                self.video_ram[offset] = data;
+                if (offset & 0x780) == 0x780 {
+                    self.update_palette_from_vram(offset, data);
+                }
             }
             _ => {}
         }

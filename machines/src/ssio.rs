@@ -55,11 +55,12 @@ const IRQ_INTERVAL: u32 = 2560;
 /// Duty-cycle volume lookup table.
 ///
 /// Maps 4-bit duty-cycle register values (0–15) to an 8-bit gain (0–255).
-/// Derived from the SSIO PROM volume mapping. Index 0 = maximum volume,
-/// index 15 = minimum (near-silence). The PROM encodes an approximately
-/// logarithmic taper.
+/// Computed from the 82S123 PROM at U12D using MAME's
+/// `compute_ay8910_modulation()` algorithm: for each register value, count
+/// high→low transitions in the PROM's 160-bit waveform to determine the
+/// duty-cycle fraction. Index 0 = maximum volume, index 15 = silence.
 const DUTY_CYCLE_VOLUME: [u8; 16] = [
-    255, 223, 191, 159, 131, 107, 87, 71, 57, 47, 39, 31, 25, 19, 15, 0,
+    255, 255, 255, 255, 244, 241, 236, 231, 223, 214, 199, 179, 151, 115, 65, 0,
 ];
 
 /// Midway SSIO sound board.
@@ -264,13 +265,15 @@ impl SsioBoard {
             self.mute = port_b & 0x80 != 0;
         }
 
-        // Apply gains to each channel
+        // Gain comes purely from the PROM-derived duty-cycle table + mute flag.
+        // Overall volume is stored but NOT used (matches MAME behavior).
         for ch in 0..3 {
-            let duty_gain = DUTY_CYCLE_VOLUME[self.duty_cycle[ay_idx][ch] as usize];
-            // Scale by overall volume (0–7, where 7 = full)
-            let overall_scale = (self.overall[ay_idx] as u16 * 255 / 7) as u8;
-            let combined = (duty_gain as u16 * overall_scale as u16 / 255) as u8;
-            self.ay[ay_idx].set_channel_gain(ch, combined);
+            let gain = if self.mute {
+                0
+            } else {
+                DUTY_CYCLE_VOLUME[self.duty_cycle[ay_idx][ch] as usize]
+            };
+            self.ay[ay_idx].set_channel_gain(ch, gain);
         }
     }
 }
@@ -323,10 +326,6 @@ impl Bus for SsioBoard {
                 0 => self.ay[0].address_write(data),
                 2 => {
                     self.ay[0].data_write(data);
-                    // Check if port A or B was written (registers 14/15)
-                    // to update duty-cycle volumes
-                    let latch = self.ay[0].port_a_read(); // trigger re-read
-                    let _ = latch;
                     self.update_duty_cycle_volumes(0);
                 }
                 _ => {}

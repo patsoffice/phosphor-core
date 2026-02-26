@@ -217,16 +217,18 @@ pub fn decode_mcr_tiles(rom: &[u8], count: usize) -> GfxCache {
         for py in 0..8usize {
             for px in 0..8usize {
                 let byte_off = code * 16 + py * 2 + px / 4;
-                let bit_pos = (px % 4) * 2;
+                let local_px = px % 4;
 
                 let lo_byte = rom[byte_off]; // first half
                 let hi_byte = rom[half + byte_off]; // second half
 
-                // Plane ordering: planeoffs[0]=half (MSB), [1]=half+1, [2]=0, [3]=1 (LSB)
-                let p0 = (hi_byte >> bit_pos) & 1; // plane 0 → pixel bit 3
-                let p1 = (hi_byte >> (bit_pos + 1)) & 1; // plane 1 → pixel bit 2
-                let p2 = (lo_byte >> bit_pos) & 1; // plane 2 → pixel bit 1
-                let p3 = (lo_byte >> (bit_pos + 1)) & 1; // plane 3 → pixel bit 0
+                // MSB-first bit ordering (matching MAME readbit: 0x80 >> bitnum)
+                // Plane ordering: planeoffs {half, half+1, 0, 1}
+                // Plane 0,1 from second half; Plane 2,3 from first half
+                let p0 = (hi_byte >> (7 - local_px * 2)) & 1; // plane 0 → pixel bit 3
+                let p1 = (hi_byte >> (6 - local_px * 2)) & 1; // plane 1 → pixel bit 2
+                let p2 = (lo_byte >> (7 - local_px * 2)) & 1; // plane 2 → pixel bit 1
+                let p3 = (lo_byte >> (6 - local_px * 2)) & 1; // plane 3 → pixel bit 0
 
                 cache.set_pixel(code, px, py, (p0 << 3) | (p1 << 2) | (p2 << 1) | p3);
             }
@@ -263,14 +265,10 @@ pub fn decode_mcr_sprites(rom: &[u8], count: usize) -> GfxCache {
                 let rom_offset = rom_idx * quarter;
                 let byte_off = code * 128 + py * 4 + group;
                 let byte = rom[rom_offset + byte_off];
-                let nibble = (byte >> (sub_pixel * 4)) & 0x0F;
 
-                // Reverse nibble: MAME planeoffs {0,1,2,3} means
-                // bit 0 of nibble is MSB of pixel value
-                let pixel = ((nibble & 1) << 3)
-                    | ((nibble & 2) << 1)
-                    | ((nibble & 4) >> 1)
-                    | ((nibble & 8) >> 3);
+                // MSB-first: even px = high nibble, odd px = low nibble.
+                // Plane bits map directly to pixel bits (no reversal).
+                let pixel = (byte >> ((1 - sub_pixel) * 4)) & 0x0F;
 
                 cache.set_pixel(code, px, py, pixel);
             }
@@ -356,14 +354,14 @@ mod tests {
     #[test]
     fn decode_mcr_tiles_known_pattern() {
         // 1 tile, 32 bytes total (16 bytes first half + 16 bytes second half).
-        // Tile data: 16 bytes per tile per half.
-        // For px=0, py=0: bit_pos=0, byte_off=0
-        //   lo_byte (first half, byte 0): set bits 0,1 -> p2=1, p3=1
-        //   hi_byte (second half, byte 0): set bit 0 only -> p0=1, p1=0
+        // MSB-first: px=0 reads bits 7,6 of each byte.
+        // For px=0, py=0: byte_off=0, local_px=0
+        //   hi_byte (second half, byte 0) = 0x80: bit7=1 -> p0=1, bit6=0 -> p1=0
+        //   lo_byte (first half, byte 0) = 0xC0: bit7=1 -> p2=1, bit6=1 -> p3=1
         //   pixel = (1<<3)|(0<<2)|(1<<1)|1 = 0b1011 = 11
         let mut rom = vec![0u8; 32]; // 16 bytes per half
-        rom[0] = 0x03; // first half, tile 0, row 0: bits 0,1 set
-        rom[16] = 0x01; // second half, tile 0, row 0: bit 0 set
+        rom[0] = 0xC0; // first half, tile 0, row 0: bits 7,6 set
+        rom[16] = 0x80; // second half, tile 0, row 0: bit 7 set
 
         let cache = decode_mcr_tiles(&rom, 1);
         assert_eq!(cache.pixel(0, 0, 0), 0b1011); // px=0: p0=1,p1=0,p2=1,p3=1
@@ -377,38 +375,34 @@ mod tests {
         rom[16] = 0xFF; // second half: p0=1, p1=1 for all 4 pixels
 
         let cache = decode_mcr_tiles(&rom, 1);
-        // px=0: bit_pos=0, all 4 planes = 1 -> pixel = 0x0F
+        // px=0: MSB bits 7,6 all set -> pixel = 0x0F
         assert_eq!(cache.pixel(0, 0, 0), 0x0F);
-        // px=1: bit_pos=2, all 4 planes = 1 -> pixel = 0x0F
+        // px=1: MSB bits 5,4 all set -> pixel = 0x0F
         assert_eq!(cache.pixel(0, 1, 0), 0x0F);
     }
 
     #[test]
     fn decode_mcr_sprites_known_pattern() {
         // 1 sprite, 4 ROM quarters of 128 bytes each = 512 bytes total.
-        // Sprite 0, row 0, ROM 0 (columns 0-1), group 0 (byte 0 of row).
-        // Byte value 0x0F: low nibble = 0xF (sub_pixel=0), high nibble = 0x0 (sub_pixel=1)
-        // Low nibble 0xF = 0b1111:
-        //   reverse: bit0(1)<<3 | bit1(1)<<1 | bit2(1)>>1 ... wait
-        //   0xF reversed = 0xF (symmetric)
-        // High nibble 0x0: pixel = 0
+        // MSB-first: even px = high nibble, odd px = low nibble.
+        // Byte value 0xF0: high nibble = 0xF (px=0), low nibble = 0x0 (px=1)
         let mut rom = vec![0u8; 512]; // 4 quarters of 128 bytes
-        rom[0] = 0x0F; // ROM 0, sprite 0, row 0, group 0
+        rom[0] = 0xF0; // ROM 0, sprite 0, row 0, group 0
 
         let cache = decode_mcr_sprites(&rom, 1);
-        assert_eq!(cache.pixel(0, 0, 0), 0x0F); // px=0: ROM0, sub_pixel=0, nibble=0xF
-        assert_eq!(cache.pixel(0, 1, 0), 0x00); // px=1: ROM0, sub_pixel=1, nibble=0x0
+        assert_eq!(cache.pixel(0, 0, 0), 0x0F); // px=0: high nibble = 0xF
+        assert_eq!(cache.pixel(0, 1, 0), 0x00); // px=1: low nibble = 0x0
     }
 
     #[test]
-    fn decode_mcr_sprites_nibble_reversal() {
-        // Test that nibble bit reversal works correctly.
-        // Nibble 0x01 = 0b0001 should become 0b1000 = 0x08
+    fn decode_mcr_sprites_direct_nibble() {
+        // Test that nibble value maps directly to pixel (no bit reversal).
+        // Byte 0x10: high nibble = 0x1, low nibble = 0x0
         let mut rom = vec![0u8; 512];
-        rom[0] = 0x01; // ROM 0, low nibble = 1
+        rom[0] = 0x10; // ROM 0, high nibble = 1
 
         let cache = decode_mcr_sprites(&rom, 1);
-        assert_eq!(cache.pixel(0, 0, 0), 0x08); // reversed: bit0=1 -> pixel bit 3
+        assert_eq!(cache.pixel(0, 0, 0), 0x01); // direct: nibble 1 = pixel 1
     }
 
     #[test]
@@ -416,28 +410,25 @@ mod tests {
         // Verify columns are distributed across ROMs correctly.
         // px=0,1 -> ROM 0; px=2,3 -> ROM 1; px=4,5 -> ROM 2; px=6,7 -> ROM 3
         // Then px=8,9 -> ROM 0 again (group 1), etc.
+        // MSB-first: even px = high nibble, odd px = low nibble.
         let mut rom = vec![0u8; 512]; // 4 x 128
-        // Set ROM 0 byte to 0x11 (low nibble=1, high nibble=1)
-        rom[0] = 0x11;
-        // Set ROM 1 byte to 0x22
-        rom[128] = 0x22;
-        // Set ROM 2 byte to 0x33
-        rom[256] = 0x33;
-        // Set ROM 3 byte to 0x44
-        rom[384] = 0x44;
+        rom[0] = 0x11; // ROM 0: high=1, low=1
+        rom[128] = 0x22; // ROM 1: high=2, low=2
+        rom[256] = 0x33; // ROM 2: high=3, low=3
+        rom[384] = 0x44; // ROM 3: high=4, low=4
 
         let cache = decode_mcr_sprites(&rom, 1);
-        // px=0: ROM0, sub_pixel=0, nibble=0x1 -> reversed=0x8
-        assert_eq!(cache.pixel(0, 0, 0), 0x08);
-        // px=1: ROM0, sub_pixel=1, nibble=0x1 -> reversed=0x8
-        assert_eq!(cache.pixel(0, 1, 0), 0x08);
-        // px=2: ROM1, sub_pixel=0, nibble=0x2 -> reversed=0x4
-        assert_eq!(cache.pixel(0, 2, 0), 0x04);
-        // px=3: ROM1, sub_pixel=1, nibble=0x2 -> reversed=0x4
-        assert_eq!(cache.pixel(0, 3, 0), 0x04);
-        // px=4: ROM2, sub_pixel=0, nibble=0x3 -> reversed=0xC
-        assert_eq!(cache.pixel(0, 4, 0), 0x0C);
-        // px=6: ROM3, sub_pixel=0, nibble=0x4 -> reversed=0x2
-        assert_eq!(cache.pixel(0, 6, 0), 0x02);
+        // px=0: ROM0, even -> high nibble = 0x1
+        assert_eq!(cache.pixel(0, 0, 0), 0x01);
+        // px=1: ROM0, odd -> low nibble = 0x1
+        assert_eq!(cache.pixel(0, 1, 0), 0x01);
+        // px=2: ROM1, even -> high nibble = 0x2
+        assert_eq!(cache.pixel(0, 2, 0), 0x02);
+        // px=3: ROM1, odd -> low nibble = 0x2
+        assert_eq!(cache.pixel(0, 3, 0), 0x02);
+        // px=4: ROM2, even -> high nibble = 0x3
+        assert_eq!(cache.pixel(0, 4, 0), 0x03);
+        // px=6: ROM3, even -> high nibble = 0x4
+        assert_eq!(cache.pixel(0, 6, 0), 0x04);
     }
 }
