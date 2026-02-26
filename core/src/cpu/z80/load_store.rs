@@ -117,26 +117,9 @@ impl Z80 {
                 }
             } else {
                 // LD r, (IX+d) — 19 T: cycles 1-12
-                // 1=pad, 2=read d, 3=pad, 4-8=internal, 9=pad, 10=read (IX+d), 11=pad, 12=done
-                match cycle {
-                    1 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 11 => {
-                        self.state = ExecState::Execute(opcode, cycle + 1);
-                    }
-                    2 => {
-                        self.temp_data = bus.read(master, self.pc);
-                        self.pc = self.pc.wrapping_add(1);
-                        self.state = ExecState::Execute(opcode, 3);
-                    }
-                    10 => {
-                        let addr = self.get_index_addr();
-                        let val = bus.read(master, addr);
-                        self.memptr = addr;
-                        self.set_reg8(dst, val);
-                        self.state = ExecState::Execute(opcode, 11);
-                    }
-                    12 => self.state = ExecState::Fetch,
-                    _ => unreachable!(),
-                }
+                self.indexed_read(opcode, cycle, bus, master, |cpu, val| {
+                    cpu.set_reg8(dst, val);
+                });
             }
         } else if dst == 6 {
             if self.index_mode == IndexMode::HL {
@@ -183,16 +166,20 @@ impl Z80 {
         }
     }
 
-    /// LD rr, nn — 10 T: M1(4) + MR(3) + MR(3). No flags affected.
-    /// Opcode mask: 00 rr0 001 (rr: 0=BC, 1=DE, 2=HL/IX/IY, 3=SP)
-    pub fn op_ld_rr_nn<B: Bus<Address = u16, Data = u8> + ?Sized>(
+    /// Generic 10T 16-bit immediate read helper: M1(4) + MR(3) + MR(3).
+    /// Reads a 16-bit value from PC (low byte first) and passes it to the closure.
+    /// Used by LD rr,nn / JP nn / JP cc,nn.
+    #[inline]
+    pub(super) fn read16_imm<B: Bus<Address = u16, Data = u8> + ?Sized, F>(
         &mut self,
         opcode: u8,
         cycle: u8,
         bus: &mut B,
         master: BusMaster,
-    ) {
-        let rp = (opcode >> 4) & 0x03;
+        operation: F,
+    ) where
+        F: FnOnce(&mut Self, u16),
+    {
         // cycles 1=T4, 2=MR1 read low, 3-4=MR1 pad, 5=MR2 read high, 6-7=MR2 pad
         match cycle {
             1 | 3 | 4 | 6 => self.state = ExecState::Execute(opcode, cycle + 1),
@@ -205,12 +192,27 @@ impl Z80 {
                 let high = bus.read(master, self.pc);
                 self.pc = self.pc.wrapping_add(1);
                 let val = ((high as u16) << 8) | self.temp_data as u16;
-                self.set_rp(rp, val);
+                operation(self, val);
                 self.state = ExecState::Execute(opcode, 6);
             }
             7 => self.state = ExecState::Fetch,
             _ => unreachable!(),
         }
+    }
+
+    /// LD rr, nn — 10 T: M1(4) + MR(3) + MR(3). No flags affected.
+    /// Opcode mask: 00 rr0 001 (rr: 0=BC, 1=DE, 2=HL/IX/IY, 3=SP)
+    pub fn op_ld_rr_nn<B: Bus<Address = u16, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let rp = (opcode >> 4) & 0x03;
+        self.read16_imm(opcode, cycle, bus, master, |cpu, val| {
+            cpu.set_rp(rp, val);
+        });
     }
 
     /// LD A, (BC) — 7 T: M1(4) + MR(3). No flags affected.

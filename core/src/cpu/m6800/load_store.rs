@@ -1,6 +1,6 @@
 use crate::core::{Bus, BusMaster};
 use crate::cpu::m68xx::M68xxAlu;
-use crate::cpu::m6800::{CcFlag, ExecState, M6800};
+use crate::cpu::m6800::{CcFlag, M6800};
 
 impl M6800 {
     // ---- 8-bit Load immediate ----
@@ -203,22 +203,7 @@ impl M6800 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        match cycle {
-            0 => {
-                let high = bus.read(master, self.pc) as u16;
-                self.pc = self.pc.wrapping_add(1);
-                self.temp_addr = high << 8;
-                self.state = ExecState::Execute(self.opcode, 1);
-            }
-            1 => {
-                let low = bus.read(master, self.pc) as u16;
-                self.pc = self.pc.wrapping_add(1);
-                let operand = self.temp_addr | low;
-                self.perform_cpx(operand);
-                self.state = ExecState::Fetch;
-            }
-            _ => self.state = ExecState::Fetch,
-        }
+        self.alu16_imm(cycle, bus, master, |cpu, op| cpu.perform_cpx(op));
     }
 
     /// LDS immediate (0x8E): Load SP with 16-bit immediate.
@@ -229,23 +214,10 @@ impl M6800 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        match cycle {
-            0 => {
-                let high = bus.read(master, self.pc) as u16;
-                self.pc = self.pc.wrapping_add(1);
-                self.temp_addr = high << 8;
-                self.state = ExecState::Execute(self.opcode, 1);
-            }
-            1 => {
-                let low = bus.read(master, self.pc) as u16;
-                self.pc = self.pc.wrapping_add(1);
-                let val = self.temp_addr | low;
-                self.sp = val;
-                self.set_flags_logical16(val);
-                self.state = ExecState::Fetch;
-            }
-            _ => self.state = ExecState::Fetch,
-        }
+        self.alu16_imm(cycle, bus, master, |cpu, val| {
+            cpu.sp = val;
+            cpu.set_flags_logical16(val);
+        });
     }
 
     /// LDX immediate (0xCE): Load X with 16-bit immediate.
@@ -256,23 +228,10 @@ impl M6800 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        match cycle {
-            0 => {
-                let high = bus.read(master, self.pc) as u16;
-                self.pc = self.pc.wrapping_add(1);
-                self.temp_addr = high << 8;
-                self.state = ExecState::Execute(self.opcode, 1);
-            }
-            1 => {
-                let low = bus.read(master, self.pc) as u16;
-                self.pc = self.pc.wrapping_add(1);
-                let val = self.temp_addr | low;
-                self.x = val;
-                self.set_flags_logical16(val);
-                self.state = ExecState::Fetch;
-            }
-            _ => self.state = ExecState::Fetch,
-        }
+        self.alu16_imm(cycle, bus, master, |cpu, val| {
+            cpu.x = val;
+            cpu.set_flags_logical16(val);
+        });
     }
 
     // ---- 16-bit Load direct/indexed/extended ----

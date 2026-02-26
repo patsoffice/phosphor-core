@@ -26,6 +26,36 @@ impl M6800 {
         }
     }
 
+    /// Generic 16-bit immediate mode helper.
+    /// 3 cycles total: 1 fetch + 1 read hi + 1 read lo + apply.
+    #[inline]
+    pub(crate) fn alu16_imm<B: Bus<Address = u16, Data = u8> + ?Sized, F>(
+        &mut self,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+        operation: F,
+    ) where
+        F: FnOnce(&mut Self, u16),
+    {
+        match cycle {
+            0 => {
+                let high = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                self.temp_addr = high << 8;
+                self.state = ExecState::Execute(self.opcode, 1);
+            }
+            1 => {
+                let low = bus.read(master, self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+                let operand = self.temp_addr | low;
+                operation(self, operand);
+                self.state = ExecState::Fetch;
+            }
+            _ => self.state = ExecState::Fetch,
+        }
+    }
+
     /// Generic direct mode helper (page 0 only, no DP register).
     /// 3 cycles total: 1 fetch + 1 read addr + 1 read operand.
     #[inline]

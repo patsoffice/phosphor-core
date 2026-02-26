@@ -149,6 +149,44 @@ impl Z80 {
         }
     }
 
+    // --- Addressing Mode Helpers ---
+
+    /// Generic 19T indexed read helper for (IX+d)/(IY+d) operations.
+    /// 12 handler cycles: 1=pad, 2=read displacement, 3-9=pad/internal,
+    /// 10=read from (IX/IY+d) + apply, 11=pad, 12=done.
+    /// Used by ALU A,(IX+d) and LD r,(IX+d).
+    #[inline]
+    pub(super) fn indexed_read<B: Bus<Address = u16, Data = u8> + ?Sized, F>(
+        &mut self,
+        opcode: u8,
+        cycle: u8,
+        bus: &mut B,
+        master: BusMaster,
+        operation: F,
+    ) where
+        F: FnOnce(&mut Self, u8),
+    {
+        match cycle {
+            1 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 11 => {
+                self.state = ExecState::Execute(opcode, cycle + 1);
+            }
+            2 => {
+                self.temp_data = bus.read(master, self.pc);
+                self.pc = self.pc.wrapping_add(1);
+                self.state = ExecState::Execute(opcode, 3);
+            }
+            10 => {
+                let addr = self.get_index_addr();
+                self.memptr = addr;
+                let val = bus.read(master, addr);
+                operation(self, val);
+                self.state = ExecState::Execute(opcode, 11);
+            }
+            12 => self.state = ExecState::Fetch,
+            _ => unreachable!(),
+        }
+    }
+
     // --- Instructions ---
 
     /// ALU A, r — 4 T (reg) or 7 T ((HL)) or 19 T ((IX+d))
@@ -182,26 +220,9 @@ impl Z80 {
                 }
             } else {
                 // ALU A, (IX+d) — 19 T: cycles 1-12
-                // 1=pad, 2=read d, 3=pad, 4-8=internal, 9=pad, 10=read (IX+d), 11=pad, 12=done
-                match cycle {
-                    1 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 11 => {
-                        self.state = ExecState::Execute(opcode, cycle + 1);
-                    }
-                    2 => {
-                        self.temp_data = bus.read(master, self.pc);
-                        self.pc = self.pc.wrapping_add(1);
-                        self.state = ExecState::Execute(opcode, 3);
-                    }
-                    10 => {
-                        let addr = self.get_index_addr();
-                        let val = bus.read(master, addr);
-                        self.memptr = addr;
-                        self.perform_alu_op(alu_op, val);
-                        self.state = ExecState::Execute(opcode, 11);
-                    }
-                    12 => self.state = ExecState::Fetch,
-                    _ => unreachable!(),
-                }
+                self.indexed_read(opcode, cycle, bus, master, |cpu, val| {
+                    cpu.perform_alu_op(alu_op, val);
+                });
             }
         } else {
             // ALU A, r — 4 T: M1 only

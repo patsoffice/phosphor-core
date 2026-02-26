@@ -26,25 +26,10 @@ impl Z80 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        // cycles: 1=pad, 2=read low, 3=pad, 4=pad, 5=read high, 6=pad, 7=done
-        match cycle {
-            1 | 3 | 4 | 6 => self.state = ExecState::Execute(opcode, cycle + 1),
-            2 => {
-                self.temp_data = bus.read(master, self.pc);
-                self.pc = self.pc.wrapping_add(1);
-                self.state = ExecState::Execute(opcode, 3);
-            }
-            5 => {
-                let high = bus.read(master, self.pc);
-                self.pc = self.pc.wrapping_add(1);
-                let addr = ((high as u16) << 8) | self.temp_data as u16;
-                self.memptr = addr;
-                self.pc = addr;
-                self.state = ExecState::Execute(opcode, 6);
-            }
-            7 => self.state = ExecState::Fetch,
-            _ => unreachable!(),
-        }
+        self.read16_imm(opcode, cycle, bus, master, |cpu, addr| {
+            cpu.memptr = addr;
+            cpu.pc = addr;
+        });
     }
 
     /// JP cc,nn — 10 T: M1(4) + MR(3) + MR(3). No flags affected. Always 10T whether taken or not.
@@ -56,26 +41,12 @@ impl Z80 {
         master: BusMaster,
     ) {
         let cc = (opcode >> 3) & 0x07;
-        match cycle {
-            1 | 3 | 4 | 6 => self.state = ExecState::Execute(opcode, cycle + 1),
-            2 => {
-                self.temp_data = bus.read(master, self.pc);
-                self.pc = self.pc.wrapping_add(1);
-                self.state = ExecState::Execute(opcode, 3);
+        self.read16_imm(opcode, cycle, bus, master, |cpu, addr| {
+            cpu.memptr = addr;
+            if cpu.eval_condition(cc) {
+                cpu.pc = addr;
             }
-            5 => {
-                let high = bus.read(master, self.pc);
-                self.pc = self.pc.wrapping_add(1);
-                let addr = ((high as u16) << 8) | self.temp_data as u16;
-                self.memptr = addr;
-                if self.eval_condition(cc) {
-                    self.pc = addr;
-                }
-                self.state = ExecState::Execute(opcode, 6);
-            }
-            7 => self.state = ExecState::Fetch,
-            _ => unreachable!(),
-        }
+        });
     }
 
     /// JR e — 12 T: M1(4) + MR(3) + internal(5). No flags affected.
