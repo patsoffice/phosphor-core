@@ -17,18 +17,14 @@ pub struct AnalogInput {
 use super::debug::BusDebug;
 use super::save_state::SaveError;
 
-/// Machine-agnostic interface for emulated systems.
-///
-/// Each machine (Joust, Robotron, etc.) implements this trait to provide
-/// a uniform interface for the frontend. The frontend is a pure rendering
-/// engine that does not know about specific hardware (PIAs, blitters,
-/// palette formats, etc.).
-pub trait Machine {
+// ---------------------------------------------------------------------------
+// Sub-traits
+// ---------------------------------------------------------------------------
+
+/// Video output capabilities: display size and frame rendering.
+pub trait Renderable {
     /// Native display resolution as (width, height) in pixels.
     fn display_size(&self) -> (u32, u32);
-
-    /// Run one frame of emulation (advance the clock by one frame's worth of cycles).
-    fn run_frame(&mut self);
 
     /// Render the current video state into an RGB24 pixel buffer.
     ///
@@ -38,7 +34,27 @@ pub trait Machine {
     /// The machine is responsible for converting its internal video representation
     /// (e.g., 4bpp column-major video RAM + palette) into this standard format.
     fn render_frame(&self, buffer: &mut [u8]);
+}
 
+/// Audio output capabilities: PCM sample generation.
+///
+/// Machines without audio hardware can skip implementing this trait
+/// (defaults produce silence with a zero sample rate).
+pub trait AudioSource {
+    /// Fill the buffer with mono i16 PCM samples at the machine's native
+    /// sample rate. Returns the number of samples written.
+    fn fill_audio(&mut self, _buffer: &mut [i16]) -> usize {
+        0 // default: silence
+    }
+
+    /// Native audio sample rate in Hz (e.g., 894886 / some divisor).
+    fn audio_sample_rate(&self) -> u32 {
+        0
+    }
+}
+
+/// Input handling: buttons and analog axes.
+pub trait InputReceiver {
     /// Handle an input event. `button` is a machine-defined ID from `input_map()`.
     /// `pressed` is true for key-down, false for key-up.
     ///
@@ -62,28 +78,54 @@ pub trait Machine {
     fn analog_map(&self) -> &[AnalogInput] {
         &[]
     }
+}
 
-    /// Reset the machine to its initial power-on state.
-    fn reset(&mut self);
-
-    /// Return battery-backed RAM contents for saving, or None if this machine has none.
-    fn save_nvram(&self) -> Option<&[u8]> {
+/// Debug/inspection capabilities for interactive debugging.
+///
+/// Machines without debug support can skip implementing this trait
+/// (defaults return None / 0, disabling the debugger).
+pub trait MachineDebug {
+    /// Access bus debug capabilities (shared ref — reads, device/CPU discovery).
+    fn debug_bus(&self) -> Option<&dyn BusDebug> {
         None
     }
 
-    /// Load battery-backed RAM contents from a previous save.
-    fn load_nvram(&mut self, _data: &[u8]) {}
-
-    /// Fill the buffer with mono i16 PCM samples at the machine's native
-    /// sample rate. Returns the number of samples written.
-    fn fill_audio(&mut self, _buffer: &mut [i16]) -> usize {
-        0 // default: silence
+    /// Access bus debug capabilities (mutable ref — writes).
+    fn debug_bus_mut(&mut self) -> Option<&mut dyn BusDebug> {
+        None
     }
 
-    /// Native audio sample rate in Hz (e.g., 894886 / some divisor).
-    fn audio_sample_rate(&self) -> u32 {
+    /// Number of clock ticks per frame (used by debug UI for cycle counting in run mode).
+    fn cycles_per_frame(&self) -> u64 {
         0
     }
+
+    /// Advance one cycle. Returns bitmask of CPUs at instruction boundaries.
+    /// Bit 0 = CPU 0, bit 1 = CPU 1, etc.
+    fn debug_tick(&mut self) -> u32 {
+        0
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Machine trait
+// ---------------------------------------------------------------------------
+
+/// Machine-agnostic interface for emulated systems.
+///
+/// Each machine (Joust, Robotron, etc.) implements this trait to provide
+/// a uniform interface for the frontend. The frontend is a pure rendering
+/// engine that does not know about specific hardware (PIAs, blitters,
+/// palette formats, etc.).
+///
+/// Composed from sub-traits: [`Renderable`], [`AudioSource`],
+/// [`InputReceiver`], and [`MachineDebug`].
+pub trait Machine: Renderable + AudioSource + InputReceiver + MachineDebug {
+    /// Run one frame of emulation (advance the clock by one frame's worth of cycles).
+    fn run_frame(&mut self);
+
+    /// Reset the machine to its initial power-on state.
+    fn reset(&mut self);
 
     /// Native frame rate in Hz (e.g., 60.10 for Joust, 61.04 for Missile Command).
     /// Used by the frontend for real-time frame throttling.
@@ -108,24 +150,11 @@ pub trait Machine {
         Err(SaveError::InvalidFormat("save states not supported".into()))
     }
 
-    /// Access bus debug capabilities (shared ref — reads, device/CPU discovery).
-    fn debug_bus(&self) -> Option<&dyn BusDebug> {
+    /// Return battery-backed RAM contents for saving, or None if this machine has none.
+    fn save_nvram(&self) -> Option<&[u8]> {
         None
     }
 
-    /// Access bus debug capabilities (mutable ref — writes).
-    fn debug_bus_mut(&mut self) -> Option<&mut dyn BusDebug> {
-        None
-    }
-
-    /// Number of clock ticks per frame (used by debug UI for cycle counting in run mode).
-    fn cycles_per_frame(&self) -> u64 {
-        0
-    }
-
-    /// Advance one cycle. Returns bitmask of CPUs at instruction boundaries.
-    /// Bit 0 = CPU 0, bit 1 = CPU 1, etc.
-    fn debug_tick(&mut self) -> u32 {
-        0
-    }
+    /// Load battery-backed RAM contents from a previous save.
+    fn load_nvram(&mut self, _data: &[u8]) {}
 }

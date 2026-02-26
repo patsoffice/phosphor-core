@@ -1,7 +1,9 @@
 use phosphor_core::bus_split;
 use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::debug::BusDebug;
-use phosphor_core::core::machine::{InputButton, Machine};
+use phosphor_core::core::machine::{
+    AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
+};
 use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::state::Z80State;
@@ -653,15 +655,9 @@ impl Bus for PacmanSystem {
     }
 }
 
-impl Machine for PacmanSystem {
+impl Renderable for PacmanSystem {
     fn display_size(&self) -> (u32, u32) {
         (SCREEN_WIDTH, SCREEN_HEIGHT) // 224×288 (rotated)
-    }
-
-    fn run_frame(&mut self) {
-        for _ in 0..CYCLES_PER_FRAME {
-            self.tick();
-        }
     }
 
     fn render_frame(&self, buffer: &mut [u8]) {
@@ -681,7 +677,19 @@ impl Machine for PacmanSystem {
             }
         }
     }
+}
 
+impl AudioSource for PacmanSystem {
+    fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
+        self.wsg.fill_audio(buffer)
+    }
+
+    fn audio_sample_rate(&self) -> u32 {
+        44100
+    }
+}
+
+impl InputReceiver for PacmanSystem {
     fn set_input(&mut self, button: u8, pressed: bool) {
         match button {
             // IN0 (active-low: clear bit when pressed, set when released)
@@ -705,6 +713,37 @@ impl Machine for PacmanSystem {
 
     fn input_map(&self) -> &[InputButton] {
         PACMAN_INPUT_MAP
+    }
+}
+
+impl MachineDebug for PacmanSystem {
+    fn debug_bus(&self) -> Option<&dyn BusDebug> {
+        Some(self)
+    }
+
+    fn debug_bus_mut(&mut self) -> Option<&mut dyn BusDebug> {
+        Some(self)
+    }
+
+    fn cycles_per_frame(&self) -> u64 {
+        CYCLES_PER_FRAME
+    }
+
+    fn debug_tick(&mut self) -> u32 {
+        self.tick();
+        if self.cpu.at_instruction_boundary() {
+            1
+        } else {
+            0
+        }
+    }
+}
+
+impl Machine for PacmanSystem {
+    fn run_frame(&mut self) {
+        for _ in 0..CYCLES_PER_FRAME {
+            self.tick();
+        }
     }
 
     fn reset(&mut self) {
@@ -730,43 +769,8 @@ impl Machine for PacmanSystem {
         });
     }
 
-    fn save_nvram(&self) -> Option<&[u8]> {
-        None // No battery-backed RAM on Pac-Man
-    }
-
-    fn load_nvram(&mut self, _data: &[u8]) {}
-
-    fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
-        self.wsg.fill_audio(buffer)
-    }
-
-    fn audio_sample_rate(&self) -> u32 {
-        44100
-    }
-
     fn frame_rate_hz(&self) -> f64 {
         CPU_CLOCK_HZ as f64 / CYCLES_PER_FRAME as f64
-    }
-
-    fn cycles_per_frame(&self) -> u64 {
-        CYCLES_PER_FRAME
-    }
-
-    fn debug_bus(&self) -> Option<&dyn BusDebug> {
-        Some(self)
-    }
-
-    fn debug_bus_mut(&mut self) -> Option<&mut dyn BusDebug> {
-        Some(self)
-    }
-
-    fn debug_tick(&mut self) -> u32 {
-        self.tick();
-        if self.cpu.at_instruction_boundary() {
-            1
-        } else {
-            0
-        }
     }
 
     fn machine_id(&self) -> &str {

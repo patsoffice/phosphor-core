@@ -1,4 +1,6 @@
-use phosphor_core::core::machine::{InputButton, Machine};
+use phosphor_core::core::machine::{
+    AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
+};
 use phosphor_core::core::save_state::{self, SaveError, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
 
@@ -253,17 +255,15 @@ impl Bus for RobotronSystem {
 // Machine trait — delegates to WilliamsBoard with Robotron input wiring
 // ---------------------------------------------------------------------------
 
-impl Machine for RobotronSystem {
-    williams::impl_williams_machine_common!();
-    williams::impl_williams_debug!();
+impl Renderable for RobotronSystem {
+    williams::impl_williams_renderable!();
+}
 
-    fn run_frame(&mut self) {
-        // Update PIA inputs before running the frame
-        self.board.widget_pia.set_port_a_input(self.widget_port_a);
-        self.board.widget_pia.set_port_b_input(self.widget_port_b);
-        self.board.run_frame();
-    }
+impl AudioSource for RobotronSystem {
+    williams::impl_williams_audio!();
+}
 
+impl InputReceiver for RobotronSystem {
     fn set_input(&mut self, button: u8, pressed: bool) {
         match button {
             // Move stick → Widget PIA Port A bits 0-3
@@ -297,18 +297,33 @@ impl Machine for RobotronSystem {
     fn input_map(&self) -> &[InputButton] {
         ROBOTRON_INPUT_MAP
     }
+}
 
-    fn reset(&mut self) {
-        self.board.reset();
-        self.widget_port_a = 0;
-        self.widget_port_b = 0;
-    }
+impl MachineDebug for RobotronSystem {
+    williams::impl_williams_debug!();
 
     fn debug_tick(&mut self) -> u32 {
         self.board.widget_pia.set_port_a_input(self.widget_port_a);
         self.board.widget_pia.set_port_b_input(self.widget_port_b);
         self.board.tick();
         self.board.debug_tick_boundaries()
+    }
+}
+
+impl Machine for RobotronSystem {
+    williams::impl_williams_machine_common!();
+
+    fn run_frame(&mut self) {
+        // Update PIA inputs before running the frame
+        self.board.widget_pia.set_port_a_input(self.widget_port_a);
+        self.board.widget_pia.set_port_b_input(self.widget_port_b);
+        self.board.run_frame();
+    }
+
+    fn reset(&mut self) {
+        self.board.reset();
+        self.widget_port_a = 0;
+        self.widget_port_b = 0;
     }
 
     fn machine_id(&self) -> &str {

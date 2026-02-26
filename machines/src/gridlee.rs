@@ -1,7 +1,9 @@
 use phosphor_core::bus_split;
 use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::debug::BusDebug;
-use phosphor_core::core::machine::{AnalogInput, InputButton, Machine};
+use phosphor_core::core::machine::{
+    AnalogInput, AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
+};
 use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
 use phosphor_core::core::{Bus, BusMaster, ClockDivider};
 use phosphor_core::cpu::m6809::M6809;
@@ -824,21 +826,17 @@ impl Bus for GridleeSystem {
 // Machine trait
 // ---------------------------------------------------------------------------
 
-impl Machine for GridleeSystem {
+impl Renderable for GridleeSystem {
     fn display_size(&self) -> (u32, u32) {
         (SCREEN_WIDTH, SCREEN_HEIGHT)
     }
 
-    fn run_frame(&mut self) {
-        for _ in 0..CYCLES_PER_FRAME {
-            self.tick();
-        }
-
-        // Watchdog: We keep the frame counter for documentation but
-        //don't reset.
-        self.watchdog_frame_count += 1;
+    fn render_frame(&self, buffer: &mut [u8]) {
+        buffer.copy_from_slice(&self.scanline_buffer);
     }
+}
 
+impl AudioSource for GridleeSystem {
     fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
         let n = buffer.len().min(self.audio_buffer.len());
         buffer[..n].copy_from_slice(&self.audio_buffer[..n]);
@@ -849,11 +847,9 @@ impl Machine for GridleeSystem {
     fn audio_sample_rate(&self) -> u32 {
         44100
     }
+}
 
-    fn render_frame(&self, buffer: &mut [u8]) {
-        buffer.copy_from_slice(&self.scanline_buffer);
-    }
-
+impl InputReceiver for GridleeSystem {
     fn set_input(&mut self, button: u8, pressed: bool) {
         match button {
             INPUT_TRACK_U => self.track_u_pressed = pressed,
@@ -915,6 +911,41 @@ impl Machine for GridleeSystem {
 
     fn analog_map(&self) -> &[AnalogInput] {
         GRIDLEE_ANALOG_MAP
+    }
+}
+
+impl MachineDebug for GridleeSystem {
+    fn debug_bus(&self) -> Option<&dyn BusDebug> {
+        Some(self)
+    }
+
+    fn debug_bus_mut(&mut self) -> Option<&mut dyn BusDebug> {
+        Some(self)
+    }
+
+    fn cycles_per_frame(&self) -> u64 {
+        CYCLES_PER_FRAME
+    }
+
+    fn debug_tick(&mut self) -> u32 {
+        self.tick();
+        if self.cpu.at_instruction_boundary() {
+            1
+        } else {
+            0
+        }
+    }
+}
+
+impl Machine for GridleeSystem {
+    fn run_frame(&mut self) {
+        for _ in 0..CYCLES_PER_FRAME {
+            self.tick();
+        }
+
+        // Watchdog: We keep the frame counter for documentation but
+        //don't reset.
+        self.watchdog_frame_count += 1;
     }
 
     fn reset(&mut self) {
@@ -1013,27 +1044,6 @@ impl Machine for GridleeSystem {
         self.cpu_cycles = r.read_u64_le()?;
         self.watchdog_frame_count = r.read_u8()?;
         Ok(())
-    }
-
-    fn cycles_per_frame(&self) -> u64 {
-        CYCLES_PER_FRAME
-    }
-
-    fn debug_bus(&self) -> Option<&dyn BusDebug> {
-        Some(self)
-    }
-
-    fn debug_bus_mut(&mut self) -> Option<&mut dyn BusDebug> {
-        Some(self)
-    }
-
-    fn debug_tick(&mut self) -> u32 {
-        self.tick();
-        if self.cpu.at_instruction_boundary() {
-            1
-        } else {
-            0
-        }
     }
 }
 

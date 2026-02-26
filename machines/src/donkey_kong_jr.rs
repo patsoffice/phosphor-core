@@ -1,5 +1,7 @@
 use phosphor_core::bus_split;
-use phosphor_core::core::machine::{InputButton, Machine};
+use phosphor_core::core::machine::{
+    AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
+};
 use phosphor_core::core::save_state::{self, SaveError, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::Cpu; // for .reset()
@@ -445,18 +447,15 @@ impl Bus for DkongJrSystem {
 // Machine implementation
 // ---------------------------------------------------------------------------
 
-impl Machine for DkongJrSystem {
-    tkg04::impl_tkg04_machine_common!();
-    tkg04::impl_tkg04_debug!();
+impl Renderable for DkongJrSystem {
+    tkg04::impl_tkg04_renderable!();
+}
 
-    fn run_frame(&mut self) {
-        bus_split!(self, bus => {
-            for _ in 0..tkg04::CYCLES_PER_FRAME {
-                self.board.tick(bus);
-            }
-        });
-    }
+impl AudioSource for DkongJrSystem {
+    tkg04::impl_tkg04_audio!();
+}
 
+impl InputReceiver for DkongJrSystem {
     fn set_input(&mut self, button: u8, pressed: bool) {
         match button {
             INPUT_P1_RIGHT => set_bit_active_high(&mut self.board.in0, 0, pressed),
@@ -481,6 +480,29 @@ impl Machine for DkongJrSystem {
 
     fn input_map(&self) -> &[InputButton] {
         DKONGJR_INPUT_MAP
+    }
+}
+
+impl MachineDebug for DkongJrSystem {
+    tkg04::impl_tkg04_debug!();
+
+    fn debug_tick(&mut self) -> u32 {
+        bus_split!(self, bus => {
+            self.board.tick(bus);
+        });
+        self.board.debug_tick_boundaries()
+    }
+}
+
+impl Machine for DkongJrSystem {
+    tkg04::impl_tkg04_machine_common!();
+
+    fn run_frame(&mut self) {
+        bus_split!(self, bus => {
+            for _ in 0..tkg04::CYCLES_PER_FRAME {
+                self.board.tick(bus);
+            }
+        });
     }
 
     fn reset(&mut self) {
@@ -507,13 +529,6 @@ impl Machine for DkongJrSystem {
         let mut r = save_state::read_header(data, self.machine_id())?;
         self.board.load_board_state(&mut r)?;
         Ok(())
-    }
-
-    fn debug_tick(&mut self) -> u32 {
-        bus_split!(self, bus => {
-            self.board.tick(bus);
-        });
-        self.board.debug_tick_boundaries()
     }
 }
 

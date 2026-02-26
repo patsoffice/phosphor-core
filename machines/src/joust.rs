@@ -1,4 +1,6 @@
-use phosphor_core::core::machine::{InputButton, Machine};
+use phosphor_core::core::machine::{
+    AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
+};
 use phosphor_core::core::save_state::{self, SaveError, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
 
@@ -257,20 +259,15 @@ impl Bus for JoustSystem {
 // Machine trait — delegates to WilliamsBoard with Joust input wiring
 // ---------------------------------------------------------------------------
 
-impl Machine for JoustSystem {
-    williams::impl_williams_machine_common!();
-    williams::impl_williams_debug!();
+impl Renderable for JoustSystem {
+    williams::impl_williams_renderable!();
+}
 
-    fn run_frame(&mut self) {
-        self.board
-            .rom_pia
-            .set_port_a_input(self.board.rom_pia_input);
-        for _ in 0..williams::CYCLES_PER_FRAME {
-            self.update_widget_mux();
-            self.board.tick();
-        }
-    }
+impl AudioSource for JoustSystem {
+    williams::impl_williams_audio!();
+}
 
+impl InputReceiver for JoustSystem {
     fn set_input(&mut self, button: u8, pressed: bool) {
         match button {
             // Player controls go into separate P1/P2 registers.
@@ -300,18 +297,36 @@ impl Machine for JoustSystem {
     fn input_map(&self) -> &[InputButton] {
         JOUST_INPUT_MAP
     }
+}
+
+impl MachineDebug for JoustSystem {
+    williams::impl_williams_debug!();
+
+    fn debug_tick(&mut self) -> u32 {
+        self.update_widget_mux();
+        self.board.tick();
+        self.board.debug_tick_boundaries()
+    }
+}
+
+impl Machine for JoustSystem {
+    williams::impl_williams_machine_common!();
+
+    fn run_frame(&mut self) {
+        self.board
+            .rom_pia
+            .set_port_a_input(self.board.rom_pia_input);
+        for _ in 0..williams::CYCLES_PER_FRAME {
+            self.update_widget_mux();
+            self.board.tick();
+        }
+    }
 
     fn reset(&mut self) {
         self.board.reset();
         self.p1_controls = 0;
         self.p2_controls = 0;
         self.start_bits = 0;
-    }
-
-    fn debug_tick(&mut self) -> u32 {
-        self.update_widget_mux();
-        self.board.tick();
-        self.board.debug_tick_boundaries()
     }
 
     fn machine_id(&self) -> &str {

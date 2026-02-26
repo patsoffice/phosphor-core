@@ -77,12 +77,10 @@ pub(crate) fn emitter_2bit(bit0: f64, bit1: f64) -> u8 {
 // Shared macros for DK-family game wrappers
 // ---------------------------------------------------------------------------
 
-/// Implements the Machine methods that are identical across all DK-family
-/// games: display_size, render_frame, save_nvram, load_nvram, fill_audio,
-/// audio_sample_rate, frame_rate_hz, cycles_per_frame.
+/// Implements `Renderable` methods for DK-family games: display_size, render_frame.
 ///
 /// The implementing type must have a `board: Tkg04Board` field.
-macro_rules! impl_tkg04_machine_common {
+macro_rules! impl_tkg04_renderable {
     () => {
         fn display_size(&self) -> (u32, u32) {
             (crate::tkg04::SCREEN_WIDTH, crate::tkg04::SCREEN_HEIGHT)
@@ -91,13 +89,14 @@ macro_rules! impl_tkg04_machine_common {
         fn render_frame(&self, buffer: &mut [u8]) {
             self.board.render_frame(buffer);
         }
+    };
+}
 
-        fn save_nvram(&self) -> Option<&[u8]> {
-            None // DK hardware has no battery-backed RAM
-        }
-
-        fn load_nvram(&mut self, _data: &[u8]) {}
-
+/// Implements `AudioSource` methods for DK-family games: fill_audio, audio_sample_rate.
+///
+/// The implementing type must have a `board: Tkg04Board` field.
+macro_rules! impl_tkg04_audio {
+    () => {
         fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
             self.board.fill_audio(buffer)
         }
@@ -105,13 +104,42 @@ macro_rules! impl_tkg04_machine_common {
         fn audio_sample_rate(&self) -> u32 {
             44100
         }
+    };
+}
 
-        fn frame_rate_hz(&self) -> f64 {
-            crate::tkg04::CPU_CLOCK_HZ as f64 / crate::tkg04::CYCLES_PER_FRAME as f64
+/// Implements `MachineDebug` methods for DK-family games:
+/// debug_bus, debug_bus_mut, cycles_per_frame.
+///
+/// The implementing type must have a `board: Tkg04Board` field.
+/// Note: `debug_tick()` is game-specific and must be provided separately.
+macro_rules! impl_tkg04_debug {
+    () => {
+        fn debug_bus(&self) -> Option<&dyn phosphor_core::core::debug::BusDebug> {
+            Some(&self.board)
+        }
+
+        fn debug_bus_mut(&mut self) -> Option<&mut dyn phosphor_core::core::debug::BusDebug> {
+            Some(&mut self.board)
         }
 
         fn cycles_per_frame(&self) -> u64 {
             crate::tkg04::CYCLES_PER_FRAME
+        }
+    };
+}
+
+/// Implements remaining `Machine` methods shared across DK-family games:
+/// save_nvram, load_nvram, frame_rate_hz.
+macro_rules! impl_tkg04_machine_common {
+    () => {
+        fn save_nvram(&self) -> Option<&[u8]> {
+            None // DK hardware has no battery-backed RAM
+        }
+
+        fn load_nvram(&mut self, _data: &[u8]) {}
+
+        fn frame_rate_hz(&self) -> f64 {
+            crate::tkg04::CPU_CLOCK_HZ as f64 / crate::tkg04::CYCLES_PER_FRAME as f64
         }
     };
 }
@@ -156,22 +184,11 @@ macro_rules! impl_tkg04_bus_common {
     };
 }
 
-/// Implements debug_bus and debug_bus_mut on Machine, returning the board.
-macro_rules! impl_tkg04_debug {
-    () => {
-        fn debug_bus(&self) -> Option<&dyn phosphor_core::core::debug::BusDebug> {
-            Some(&self.board)
-        }
-
-        fn debug_bus_mut(&mut self) -> Option<&mut dyn phosphor_core::core::debug::BusDebug> {
-            Some(&mut self.board)
-        }
-    };
-}
-
+pub(crate) use impl_tkg04_audio;
 pub(crate) use impl_tkg04_bus_common;
 pub(crate) use impl_tkg04_debug;
 pub(crate) use impl_tkg04_machine_common;
+pub(crate) use impl_tkg04_renderable;
 
 // ---------------------------------------------------------------------------
 // Tkg04Board — shared Nintendo TKG/TRS arcade hardware

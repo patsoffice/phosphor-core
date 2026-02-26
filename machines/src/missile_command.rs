@@ -1,7 +1,9 @@
 use phosphor_core::bus_split;
 use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::debug::BusDebug;
-use phosphor_core::core::machine::{AnalogInput, InputButton, Machine};
+use phosphor_core::core::machine::{
+    AnalogInput, AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
+};
 use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::m6502::M6502;
@@ -751,32 +753,21 @@ impl Bus for MissileCommandSystem {
     }
 }
 
-impl Machine for MissileCommandSystem {
+impl Renderable for MissileCommandSystem {
     fn display_size(&self) -> (u32, u32) {
         (256, 231)
     }
 
-    fn run_frame(&mut self) {
-        for _ in 0..CYCLES_PER_FRAME {
-            self.tick();
+    fn render_frame(&self, buffer: &mut [u8]) {
+        if self.scanline_buffer_valid {
+            buffer.copy_from_slice(&self.scanline_buffer);
+        } else {
+            self.render_frame_from_vram(buffer);
         }
-        self.scanline_buffer_valid = true;
-
-        // Watchdog: 8-VBLANK timeout. If the game hasn't written
-        // to 0x4C00 within 8 frames, reset the machine.
-        self.watchdog_frame_count += 1;
-        if self.watchdog_frame_count >= 8 {
-            self.reset();
-            return;
-        }
-
-        // Drain POKEY's resampled f32 buffer and convert to i16 PCM.
-        // POKEY outputs unipolar [0.0, 1.0]; center around zero for signed PCM.
-        let samples = self.pokey.drain_audio();
-        self.audio_buffer
-            .extend(samples.iter().map(|&s| ((s * 2.0 - 1.0) * 32767.0) as i16));
     }
+}
 
+impl AudioSource for MissileCommandSystem {
     fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
         let n = buffer.len().min(self.audio_buffer.len());
         buffer[..n].copy_from_slice(&self.audio_buffer[..n]);
@@ -787,15 +778,9 @@ impl Machine for MissileCommandSystem {
     fn audio_sample_rate(&self) -> u32 {
         44100
     }
+}
 
-    fn render_frame(&self, buffer: &mut [u8]) {
-        if self.scanline_buffer_valid {
-            buffer.copy_from_slice(&self.scanline_buffer);
-        } else {
-            self.render_frame_from_vram(buffer);
-        }
-    }
-
+impl InputReceiver for MissileCommandSystem {
     fn set_input(&mut self, button: u8, pressed: bool) {
         match button {
             // IN0 switches (active-low: clear bit when pressed, set when released)
@@ -834,6 +819,52 @@ impl Machine for MissileCommandSystem {
     fn analog_map(&self) -> &[AnalogInput] {
         MISSILE_ANALOG_MAP
     }
+}
+
+impl MachineDebug for MissileCommandSystem {
+    fn debug_bus(&self) -> Option<&dyn BusDebug> {
+        Some(self)
+    }
+
+    fn debug_bus_mut(&mut self) -> Option<&mut dyn BusDebug> {
+        Some(self)
+    }
+
+    fn cycles_per_frame(&self) -> u64 {
+        CYCLES_PER_FRAME
+    }
+
+    fn debug_tick(&mut self) -> u32 {
+        self.tick();
+        if self.cpu.at_instruction_boundary() {
+            1
+        } else {
+            0
+        }
+    }
+}
+
+impl Machine for MissileCommandSystem {
+    fn run_frame(&mut self) {
+        for _ in 0..CYCLES_PER_FRAME {
+            self.tick();
+        }
+        self.scanline_buffer_valid = true;
+
+        // Watchdog: 8-VBLANK timeout. If the game hasn't written
+        // to 0x4C00 within 8 frames, reset the machine.
+        self.watchdog_frame_count += 1;
+        if self.watchdog_frame_count >= 8 {
+            self.reset();
+            return;
+        }
+
+        // Drain POKEY's resampled f32 buffer and convert to i16 PCM.
+        // POKEY outputs unipolar [0.0, 1.0]; center around zero for signed PCM.
+        let samples = self.pokey.drain_audio();
+        self.audio_buffer
+            .extend(samples.iter().map(|&s| ((s * 2.0 - 1.0) * 32767.0) as i16));
+    }
 
     fn reset(&mut self) {
         self.irq_state = false;
@@ -849,35 +880,9 @@ impl Machine for MissileCommandSystem {
         });
     }
 
-    fn save_nvram(&self) -> Option<&[u8]> {
-        None
-    }
-    fn load_nvram(&mut self, _data: &[u8]) {}
-
     fn frame_rate_hz(&self) -> f64 {
         // 1.25 MHz CPU clock / (256 scanlines * 80 cycles/scanline) = 61.035 Hz
         1_250_000.0 / CYCLES_PER_FRAME as f64
-    }
-
-    fn cycles_per_frame(&self) -> u64 {
-        CYCLES_PER_FRAME
-    }
-
-    fn debug_bus(&self) -> Option<&dyn BusDebug> {
-        Some(self)
-    }
-
-    fn debug_bus_mut(&mut self) -> Option<&mut dyn BusDebug> {
-        Some(self)
-    }
-
-    fn debug_tick(&mut self) -> u32 {
-        self.tick();
-        if self.cpu.at_instruction_boundary() {
-            1
-        } else {
-            0
-        }
     }
 
     fn machine_id(&self) -> &str {

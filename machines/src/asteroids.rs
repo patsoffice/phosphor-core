@@ -1,7 +1,9 @@
 use phosphor_core::bus_split;
 use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::debug::BusDebug;
-use phosphor_core::core::machine::{InputButton, Machine};
+use phosphor_core::core::machine::{
+    AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
+};
 use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::Cpu;
@@ -396,30 +398,19 @@ impl Bus for AsteroidsSystem {
 // Machine implementation
 // ---------------------------------------------------------------------------
 
-impl Machine for AsteroidsSystem {
+impl Renderable for AsteroidsSystem {
     fn display_size(&self) -> (u32, u32) {
         (DISPLAY_WIDTH, DISPLAY_HEIGHT)
-    }
-
-    fn run_frame(&mut self) {
-        for _ in 0..CYCLES_PER_FRAME {
-            self.tick();
-        }
-
-        // Clear NMI at frame boundary to avoid stale edges.
-        self.nmi_pending = false;
-
-        // Watchdog
-        self.watchdog_frame_count += 1;
-        if self.watchdog_frame_count >= 8 {
-            self.reset();
-        }
     }
 
     fn render_frame(&self, buffer: &mut [u8]) {
         rasterize_vectors(&self.display_list, buffer);
     }
+}
 
+impl AudioSource for AsteroidsSystem {} // no audio hardware emulated yet
+
+impl InputReceiver for AsteroidsSystem {
     fn set_input(&mut self, button: u8, pressed: bool) {
         match button {
             // IN1 (active-HIGH: set bit on press, clear on release)
@@ -441,6 +432,46 @@ impl Machine for AsteroidsSystem {
     fn input_map(&self) -> &[InputButton] {
         ASTEROIDS_INPUT_MAP
     }
+}
+
+impl MachineDebug for AsteroidsSystem {
+    fn debug_bus(&self) -> Option<&dyn BusDebug> {
+        Some(self)
+    }
+
+    fn debug_bus_mut(&mut self) -> Option<&mut dyn BusDebug> {
+        Some(self)
+    }
+
+    fn cycles_per_frame(&self) -> u64 {
+        CYCLES_PER_FRAME
+    }
+
+    fn debug_tick(&mut self) -> u32 {
+        self.tick();
+        if self.cpu.at_instruction_boundary() {
+            1
+        } else {
+            0
+        }
+    }
+}
+
+impl Machine for AsteroidsSystem {
+    fn run_frame(&mut self) {
+        for _ in 0..CYCLES_PER_FRAME {
+            self.tick();
+        }
+
+        // Clear NMI at frame boundary to avoid stale edges.
+        self.nmi_pending = false;
+
+        // Watchdog
+        self.watchdog_frame_count += 1;
+        if self.watchdog_frame_count >= 8 {
+            self.reset();
+        }
+    }
 
     fn reset(&mut self) {
         self.dvg.reset();
@@ -452,14 +483,6 @@ impl Machine for AsteroidsSystem {
         bus_split!(self, bus => {
             self.cpu.reset(bus, BusMaster::Cpu(0));
         });
-    }
-
-    fn frame_rate_hz(&self) -> f64 {
-        60.0
-    }
-
-    fn cycles_per_frame(&self) -> u64 {
-        CYCLES_PER_FRAME
     }
 
     fn machine_id(&self) -> &str {
@@ -496,23 +519,6 @@ impl Machine for AsteroidsSystem {
         self.watchdog_frame_count = r.read_u8()?;
         self.display_list.clear();
         Ok(())
-    }
-
-    fn debug_bus(&self) -> Option<&dyn BusDebug> {
-        Some(self)
-    }
-
-    fn debug_bus_mut(&mut self) -> Option<&mut dyn BusDebug> {
-        Some(self)
-    }
-
-    fn debug_tick(&mut self) -> u32 {
-        self.tick();
-        if self.cpu.at_instruction_boundary() {
-            1
-        } else {
-            0
-        }
     }
 }
 

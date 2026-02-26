@@ -69,12 +69,10 @@ pub static WILLIAMS_SOUND_ROM: RomRegion = RomRegion {
 // Shared macros for Williams gen-1 game wrappers
 // ---------------------------------------------------------------------------
 
-/// Implements the 7 Machine methods that are identical across all Williams
-/// gen-1 games: display_size, render_frame, save_nvram, load_nvram,
-/// fill_audio, audio_sample_rate, frame_rate_hz.
+/// Implements `Renderable` methods for Williams gen-1 games: display_size, render_frame.
 ///
 /// The implementing type must have a `board: WilliamsBoard` field.
-macro_rules! impl_williams_machine_common {
+macro_rules! impl_williams_renderable {
     () => {
         fn display_size(&self) -> (u32, u32) {
             (
@@ -86,7 +84,51 @@ macro_rules! impl_williams_machine_common {
         fn render_frame(&self, buffer: &mut [u8]) {
             self.board.render_frame(buffer);
         }
+    };
+}
 
+/// Implements `AudioSource` methods for Williams gen-1 games: fill_audio, audio_sample_rate.
+///
+/// The implementing type must have a `board: WilliamsBoard` field.
+macro_rules! impl_williams_audio {
+    () => {
+        fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
+            self.board.fill_audio(buffer)
+        }
+
+        fn audio_sample_rate(&self) -> u32 {
+            44100
+        }
+    };
+}
+
+/// Implements `MachineDebug` methods for Williams gen-1 games:
+/// debug_bus, debug_bus_mut, cycles_per_frame.
+///
+/// The implementing type must have a `board: WilliamsBoard` field.
+/// Note: `debug_tick()` is game-specific and must be provided separately.
+macro_rules! impl_williams_debug {
+    () => {
+        fn debug_bus(&self) -> Option<&dyn phosphor_core::core::debug::BusDebug> {
+            Some(&self.board)
+        }
+
+        fn debug_bus_mut(&mut self) -> Option<&mut dyn phosphor_core::core::debug::BusDebug> {
+            Some(&mut self.board)
+        }
+
+        fn cycles_per_frame(&self) -> u64 {
+            crate::williams::CYCLES_PER_FRAME
+        }
+    };
+}
+
+/// Implements remaining `Machine` methods shared across Williams gen-1 games:
+/// save_nvram, load_nvram, frame_rate_hz.
+///
+/// The implementing type must have a `board: WilliamsBoard` field.
+macro_rules! impl_williams_machine_common {
+    () => {
         fn save_nvram(&self) -> Option<&[u8]> {
             Some(self.board.save_cmos())
         }
@@ -95,20 +137,8 @@ macro_rules! impl_williams_machine_common {
             self.board.load_cmos(data);
         }
 
-        fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
-            self.board.fill_audio(buffer)
-        }
-
-        fn audio_sample_rate(&self) -> u32 {
-            44100
-        }
-
         fn frame_rate_hz(&self) -> f64 {
             1_000_000.0 / crate::williams::CYCLES_PER_FRAME as f64
-        }
-
-        fn cycles_per_frame(&self) -> u64 {
-            crate::williams::CYCLES_PER_FRAME
         }
     };
 }
@@ -134,22 +164,11 @@ macro_rules! impl_williams_bus_common {
     };
 }
 
-/// Implements debug_bus and debug_bus_mut on Machine, returning the board.
-macro_rules! impl_williams_debug {
-    () => {
-        fn debug_bus(&self) -> Option<&dyn phosphor_core::core::debug::BusDebug> {
-            Some(&self.board)
-        }
-
-        fn debug_bus_mut(&mut self) -> Option<&mut dyn phosphor_core::core::debug::BusDebug> {
-            Some(&mut self.board)
-        }
-    };
-}
-
+pub(crate) use impl_williams_audio;
 pub(crate) use impl_williams_bus_common;
 pub(crate) use impl_williams_debug;
 pub(crate) use impl_williams_machine_common;
+pub(crate) use impl_williams_renderable;
 
 // ---------------------------------------------------------------------------
 // WilliamsBoard
