@@ -1,0 +1,269 @@
+//! Pre-decoded graphics cache for tile and sprite pixel data.
+//!
+//! ROM graphics data comes in many different planar layouts across arcade
+//! hardware. Rather than parameterising these layouts at render time, we
+//! decode once at ROM load into a uniform `[code][py][px] -> palette_index`
+//! representation. Each game provides a decode function matching its ROM
+//! format; the scanline renderer then uses the resulting cache via a simple
+//! array lookup.
+
+/// Pre-decoded tile or sprite pixel cache.
+///
+/// Pixels are stored as palette indices in a flat array indexed by
+/// `code * height * width + py * width + px`. Each element is an N-bit
+/// value (0-3 for 2bpp, 0-7 for 3bpp, etc.).
+pub struct GfxCache {
+    pixels: Vec<u8>,
+    width: usize,
+    height: usize,
+    count: usize,
+    stride: usize, // width * height, cached for fast indexing
+}
+
+impl GfxCache {
+    /// Create an empty cache with the given element dimensions.
+    pub fn new(count: usize, width: usize, height: usize) -> Self {
+        let stride = width * height;
+        Self {
+            pixels: vec![0; count * stride],
+            width,
+            height,
+            count,
+            stride,
+        }
+    }
+
+    /// Look up a single pixel value.
+    #[inline]
+    pub fn pixel(&self, code: usize, px: usize, py: usize) -> u8 {
+        self.pixels[code * self.stride + py * self.width + px]
+    }
+
+    /// Set a single pixel value (used during decode).
+    #[inline]
+    pub fn set_pixel(&mut self, code: usize, px: usize, py: usize, value: u8) {
+        self.pixels[code * self.stride + py * self.width + px] = value;
+    }
+
+    pub fn count(&self) -> usize {
+        self.count
+    }
+
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    pub fn height(&self) -> usize {
+        self.height
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pac-Man / Pengo family ROM layouts
+// ---------------------------------------------------------------------------
+
+/// Decode Pac-Man style tiles: 8x8, 2bpp.
+///
+/// ROM layout (planeoffset {0, 4}, MSB-first):
+///   16 bytes per tile. Within each byte, bits 7-4 are plane 0 (high bit
+///   of pixel) and bits 3-0 are plane 1 (low bit). Pixel X mapping is
+///   non-sequential: px 0-3 come from byte offset +8, px 4-7 from offset +0.
+///   Y offset is simply row * 1 byte.
+pub fn decode_pacman_tiles(rom: &[u8], base: usize, count: usize) -> GfxCache {
+    let mut cache = GfxCache::new(count, 8, 8);
+    for code in 0..count {
+        let tile_base = base + code * 16;
+        for py in 0..8usize {
+            for px in 0..8usize {
+                let (byte_off, bit) = if px < 4 {
+                    (8, px) // px 0-3 from second half
+                } else {
+                    (0, px - 4) // px 4-7 from first half
+                };
+                let byte_addr = tile_base + byte_off + py;
+                if byte_addr >= rom.len() {
+                    continue;
+                }
+                let byte = rom[byte_addr];
+                let plane_hi = (byte >> (7 - bit)) & 1;
+                let plane_lo = (byte >> (3 - bit)) & 1;
+                cache.set_pixel(code, px, py, plane_lo | (plane_hi << 1));
+            }
+        }
+    }
+    cache
+}
+
+/// Decode Pac-Man style sprites: 16x16, 2bpp.
+///
+/// Same plane interleaving as tiles ({0, 4} within each byte). 64 bytes per
+/// sprite. X mapping uses 4 groups of 4 pixels at byte offsets [8, 16, 24, 0].
+/// Y mapping splits at row 8: rows 0-7 at offset +0, rows 8-15 at offset +32.
+pub fn decode_pacman_sprites(rom: &[u8], base: usize, count: usize) -> GfxCache {
+    let mut cache = GfxCache::new(count, 16, 16);
+    for code in 0..count {
+        let spr_base = base + code * 64;
+        for py in 0..16usize {
+            for px in 0..16usize {
+                let (x_byte_off, bit) = match px {
+                    0..=3 => (8, px),
+                    4..=7 => (16, px - 4),
+                    8..=11 => (24, px - 8),
+                    12..=15 => (0, px - 12),
+                    _ => unreachable!(),
+                };
+                let y_byte_off = if py < 8 { py } else { 32 + (py - 8) };
+                let byte_addr = spr_base + x_byte_off + y_byte_off;
+                if byte_addr >= rom.len() {
+                    continue;
+                }
+                let byte = rom[byte_addr];
+                let plane_hi = (byte >> (7 - bit)) & 1;
+                let plane_lo = (byte >> (3 - bit)) & 1;
+                cache.set_pixel(code, px, py, plane_lo | (plane_hi << 1));
+            }
+        }
+    }
+    cache
+}
+
+// ---------------------------------------------------------------------------
+// Donkey Kong / TKG-04 family ROM layouts
+// ---------------------------------------------------------------------------
+
+/// Decode separated-plane 2bpp tiles: 8x8.
+///
+/// Plane 0 is at `base`, plane 1 is at `base + plane1_offset`. Each plane
+/// stores 8 bytes per tile (one byte per row), MSB-first (bit 7 = leftmost
+/// pixel). 8 bytes per tile per plane.
+pub fn decode_planar_2bpp_tiles(
+    rom: &[u8],
+    base: usize,
+    plane1_offset: usize,
+    count: usize,
+) -> GfxCache {
+    let mut cache = GfxCache::new(count, 8, 8);
+    for code in 0..count {
+        let tile_offset = base + code * 8;
+        for py in 0..8usize {
+            let addr0 = tile_offset + py;
+            let addr1 = tile_offset + plane1_offset + py;
+            let plane0 = if addr0 < rom.len() { rom[addr0] } else { 0 };
+            let plane1 = if addr1 < rom.len() { rom[addr1] } else { 0 };
+            for px in 0..8usize {
+                let bit_mask = 0x80 >> px;
+                let p0 = u8::from(plane0 & bit_mask != 0);
+                let p1 = u8::from(plane1 & bit_mask != 0);
+                cache.set_pixel(code, px, py, p0 | (p1 << 1));
+            }
+        }
+    }
+    cache
+}
+
+/// Decode Donkey Kong family sprites: 16x16, 2bpp, 4-ROM interleaved.
+///
+/// 4 ROM regions of 2KB each store left/right halves of planes 0/1:
+///   - `base + 0x0000`: plane 0, left half (px 0-7)
+///   - `base + 0x0800`: plane 0, right half (px 8-15)
+///   - `base + 0x1000`: plane 1, left half (px 0-7)
+///   - `base + 0x1800`: plane 1, right half (px 8-15)
+///
+/// Within each region: 16 bytes per sprite (one byte per row), MSB-first.
+pub fn decode_dkong_sprites(rom: &[u8], base: usize, count: usize) -> GfxCache {
+    let mut cache = GfxCache::new(count, 16, 16);
+    for code in 0..count {
+        let spr_offset = base + code * 16;
+        for py in 0..16usize {
+            for px in 0..16usize {
+                let (p0_base, p1_base) = if px < 8 {
+                    (spr_offset, 0x1000 + spr_offset)
+                } else {
+                    (0x0800 + spr_offset, 0x1800 + spr_offset)
+                };
+                let addr0 = p0_base + py;
+                let addr1 = p1_base + py;
+                let byte0 = if addr0 < rom.len() { rom[addr0] } else { 0 };
+                let byte1 = if addr1 < rom.len() { rom[addr1] } else { 0 };
+                let bit_mask = 0x80 >> (px & 7);
+                let p0 = u8::from(byte0 & bit_mask != 0);
+                let p1 = u8::from(byte1 & bit_mask != 0);
+                cache.set_pixel(code, px, py, p0 | (p1 << 1));
+            }
+        }
+    }
+    cache
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gfx_cache_basic() {
+        let mut cache = GfxCache::new(2, 8, 8);
+        assert_eq!(cache.count(), 2);
+        assert_eq!(cache.width(), 8);
+        assert_eq!(cache.height(), 8);
+        assert_eq!(cache.pixel(0, 0, 0), 0);
+
+        cache.set_pixel(0, 3, 5, 2);
+        assert_eq!(cache.pixel(0, 3, 5), 2);
+        assert_eq!(cache.pixel(1, 3, 5), 0); // different code, still 0
+    }
+
+    #[test]
+    fn decode_pacman_tiles_known_pattern() {
+        // Construct a minimal 1-tile ROM with a known bit pattern.
+        // Tile layout: 16 bytes per tile.
+        // Byte at offset 8 (for px 0-3, py=0): test value 0xA5 = 10100101
+        //   px=0 (bit=0): hi=(byte>>7)&1=1, lo=(byte>>3)&1=0 -> pixel=2
+        //   px=1 (bit=1): hi=(byte>>6)&1=0, lo=(byte>>2)&1=1 -> pixel=1
+        //   px=2 (bit=2): hi=(byte>>5)&1=1, lo=(byte>>1)&1=0 -> pixel=2
+        //   px=3 (bit=3): hi=(byte>>4)&1=0, lo=(byte>>0)&1=1 -> pixel=1
+        let mut rom = [0u8; 16];
+        rom[8] = 0xA5; // py=0, px 0-3
+
+        let cache = decode_pacman_tiles(&rom, 0, 1);
+        assert_eq!(cache.pixel(0, 0, 0), 2); // px=0, py=0
+        assert_eq!(cache.pixel(0, 1, 0), 1); // px=1, py=0
+        assert_eq!(cache.pixel(0, 2, 0), 2); // px=2, py=0
+        assert_eq!(cache.pixel(0, 3, 0), 1); // px=3, py=0
+    }
+
+    #[test]
+    fn decode_planar_2bpp_tiles_known_pattern() {
+        // 1 tile, plane1 offset = 8.
+        // Plane 0, row 0: 0b11000000 -> px0=1, px1=1, rest 0
+        // Plane 1, row 0: 0b10000000 -> px0=1, rest 0
+        // pixel = p0 | (p1 << 1): px0 = 1|2 = 3, px1 = 1|0 = 1
+        let mut rom = [0u8; 16];
+        rom[0] = 0xC0; // plane 0, row 0
+        rom[8] = 0x80; // plane 1, row 0
+
+        let cache = decode_planar_2bpp_tiles(&rom, 0, 8, 1);
+        assert_eq!(cache.pixel(0, 0, 0), 3); // px=0, py=0
+        assert_eq!(cache.pixel(0, 1, 0), 1); // px=1, py=0
+        assert_eq!(cache.pixel(0, 2, 0), 0); // px=2, py=0
+    }
+
+    #[test]
+    fn decode_dkong_sprites_known_pattern() {
+        // 1 sprite. Plane 0 left (offset 0), plane 1 left (offset 0x1000).
+        // Sprite code 0, row 0, left half.
+        // Plane 0 byte: 0xFF -> all 8 left pixels have p0=1
+        // Plane 1 byte: 0x00 -> all 8 left pixels have p1=0
+        // pixel = 1 | 0 = 1 for all left pixels
+        let mut rom = vec![0u8; 0x2000];
+        rom[0] = 0xFF; // plane 0, code 0, row 0
+        // plane 1 at 0x1000 stays 0
+
+        let cache = decode_dkong_sprites(&rom, 0, 1);
+        for px in 0..8 {
+            assert_eq!(cache.pixel(0, px, 0), 1, "px={px}");
+        }
+        for px in 8..16 {
+            assert_eq!(cache.pixel(0, px, 0), 0, "px={px}");
+        }
+    }
+}

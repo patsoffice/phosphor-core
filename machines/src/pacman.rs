@@ -8,6 +8,7 @@ use phosphor_core::cpu::state::Z80State;
 use phosphor_core::cpu::z80::Z80;
 use phosphor_core::cpu::{Cpu, CpuStateTrait};
 use phosphor_core::device::namco_wsg::NamcoWsg;
+use phosphor_core::gfx;
 use phosphor_macros::BusDebug;
 
 use crate::registry::MachineEntry;
@@ -210,8 +211,9 @@ pub struct PacmanSystem {
     #[debug_device("NamcoWSG")]
     wsg: NamcoWsg,
 
-    // GFX ROM
-    gfx_rom: [u8; 0x2000],
+    // Pre-decoded GFX caches (from GFX ROM)
+    tile_cache: gfx::GfxCache,
+    sprite_cache: gfx::GfxCache,
 
     // PROMs
     palette_prom: [u8; 32],
@@ -253,7 +255,8 @@ impl PacmanSystem {
             ram: [0; 0x400],
             sprite_coords: [0; 0x10],
             wsg: NamcoWsg::new(CPU_CLOCK_HZ),
-            gfx_rom: [0; 0x2000],
+            tile_cache: gfx::GfxCache::new(256, 8, 8),
+            sprite_cache: gfx::GfxCache::new(64, 16, 16),
             palette_prom: [0; 32],
             color_lut_prom: [0; 256],
             palette_rgb: [(0, 0, 0); 32],
@@ -345,7 +348,8 @@ impl PacmanSystem {
         self.rom.copy_from_slice(&rom_data);
 
         let gfx_data = PACMAN_GFX_ROM.load(rom_set)?;
-        self.gfx_rom.copy_from_slice(&gfx_data);
+        self.tile_cache = gfx::decode::decode_pacman_tiles(&gfx_data, 0x0000, 256);
+        self.sprite_cache = gfx::decode::decode_pacman_sprites(&gfx_data, 0x1000, 64);
 
         let color_data = PACMAN_COLOR_PROMS.load(rom_set)?;
         self.palette_prom.copy_from_slice(&color_data[0..32]);
@@ -366,89 +370,6 @@ impl PacmanSystem {
         self.clock
     }
 
-    /// Decode a single tile pixel from the GFX ROM.
-    /// Returns a 2-bit pixel value (0-3).
-    ///
-    /// Tile layout (planeoffset { 0, 4 }, MSB-first bit ordering):
-    ///   8×8 pixels, 2 bits per pixel, 16 bytes per tile.
-    ///   xoffset: { 8*8+0, 8*8+1, 8*8+2, 8*8+3, 0, 1, 2, 3 }
-    ///   yoffset: { 0*8, 1*8, 2*8, 3*8, 4*8, 5*8, 6*8, 7*8 }
-    ///
-    /// Bit extraction uses 0x80 >> (bitnum % 8), i.e. MSB-first within each byte.
-    /// Plane 0 (offset 0) maps to the HIGH bit of the 2-bit pixel value.
-    fn decode_tile_pixel(&self, tile_code: u16, px: u8, py: u8) -> u8 {
-        let base = (tile_code as usize) * 16;
-        // Pixel X mapping: pixels 0-3 come from byte offset 8, pixels 4-7 from byte 0
-        let (byte_off, bit) = if px < 4 {
-            (8, px) // First 4 pixels from second half
-        } else {
-            (0, px - 4) // Last 4 pixels from first half
-        };
-        let byte_addr = base + byte_off + py as usize;
-        if byte_addr >= self.gfx_rom.len() {
-            return 0;
-        }
-        let byte = self.gfx_rom[byte_addr];
-        // MSB-first: layout bit N within a byte reads actual bit (7 - N)
-        // Plane 0 (planeoffset=0, bits 7-4) → pixel bit 1 (high)
-        // Plane 1 (planeoffset=4, bits 3-0) → pixel bit 0 (low)
-        let plane_hi = (byte >> (7 - bit)) & 1;
-        let plane_lo = (byte >> (3 - bit)) & 1;
-        plane_lo | (plane_hi << 1)
-    }
-
-    /// Decode a single sprite pixel from the GFX ROM.
-    /// Returns a 2-bit pixel value (0-3).
-    ///
-    /// Sprite layout (planeoffset { 0, 4 }, MSB-first bit ordering):
-    ///   16×16 pixels, 2 bits per pixel, 64 bytes per sprite.
-    ///   xoffset: { 8*8, 8*8+1, 8*8+2, 8*8+3, 16*8, 16*8+1, 16*8+2, 16*8+3,
-    ///              24*8, 24*8+1, 24*8+2, 24*8+3, 0, 1, 2, 3 }
-    ///   yoffset: { 0*8, 1*8, ..., 7*8, 32*8, 33*8, ..., 39*8 }
-    fn decode_sprite_pixel(&self, sprite_code: u16, px: u8, py: u8) -> u8 {
-        let base = 0x1000 + (sprite_code as usize) * 64;
-
-        // X mapping: 4 groups of 4 pixels, each from different byte offsets
-        let (x_byte_off, bit) = match px {
-            0..=3 => (8, px),        // 8*8 + bit
-            4..=7 => (16, px - 4),   // 16*8 + bit
-            8..=11 => (24, px - 8),  // 24*8 + bit
-            12..=15 => (0, px - 12), // 0 + bit
-            _ => unreachable!(),
-        };
-
-        // Y mapping: rows 0-7 at offset 0, rows 8-15 at offset 32
-        let y_byte_off = if py < 8 {
-            py as usize
-        } else {
-            32 + (py as usize - 8)
-        };
-
-        let byte_addr = base + x_byte_off + y_byte_off;
-        if byte_addr >= self.gfx_rom.len() {
-            return 0;
-        }
-        let byte = self.gfx_rom[byte_addr];
-        // MSB-first: layout bit N within a byte reads actual bit (7 - N)
-        let plane_hi = (byte >> (7 - bit)) & 1;
-        let plane_lo = (byte >> (3 - bit)) & 1;
-        plane_lo | (plane_hi << 1)
-    }
-
-    /// Resolve a 2-bit pixel value to an RGB color using the palette system.
-    ///
-    /// The color lookup chain:
-    ///   attribute (5 bits) → 4 entries in color_lut_prom → palette index → RGB
-    fn resolve_color(&self, attribute: u8, pixel_value: u8) -> (u8, u8, u8) {
-        let lut_index = ((attribute & 0x1F) as usize) * 4 + pixel_value as usize;
-        let palette_index = if lut_index < 256 {
-            (self.color_lut_prom[lut_index] & 0x0F) as usize
-        } else {
-            0
-        };
-        self.palette_rgb[palette_index]
-    }
-
     /// Map a tile index in the 36×28 tilemap to a VRAM offset.
     ///
     /// The Pac-Man tilemap uses a non-linear address mapping:
@@ -465,66 +386,70 @@ impl PacmanSystem {
         }
     }
 
-    /// Compute sprite transparency mask. Returns a 4-bit mask where bit N
-    /// is set if pixel value N maps to palette index 0 (transparent)
-    /// through the color LUT PROM.
-    fn sprite_trans_mask(&self, attribute: u8) -> u8 {
-        let base = (attribute as usize & 0x1F) * 4;
-        let mut mask: u8 = 0;
-        for pv in 0..4u8 {
-            let lut_index = base + pv as usize;
-            if (self.color_lut_prom[lut_index] & 0x0F) == 0 {
-                mask |= 1 << pv;
-            }
-        }
-        mask
-    }
-
     /// Render a single scanline from current VRAM/sprite state into the scanline buffer.
     /// Composites tiles then sprites for native scanline Y (0-223).
     fn render_scanline(&mut self, scanline: usize) {
         let row_offset = scanline * 288 * 3;
 
+        // Split borrows: immutable refs for closures, mutable ref for buffer
+        let video_ram = &self.video_ram;
+        let color_ram = &self.color_ram;
+        let color_lut_prom = &self.color_lut_prom;
+        let palette_rgb = &self.palette_rgb;
+        let tile_cache = &self.tile_cache;
+        let sprite_cache = &self.sprite_cache;
+        let buf = &mut self.scanline_buffer[row_offset..row_offset + 288 * 3];
+
+        // Inline color resolution (captures split borrows, not &self)
+        let resolve = |attribute: u8, pixel_value: u8| -> (u8, u8, u8) {
+            let lut_index = ((attribute & 0x1F) as usize) * 4 + pixel_value as usize;
+            let palette_index = if lut_index < 256 {
+                (color_lut_prom[lut_index] & 0x0F) as usize
+            } else {
+                0
+            };
+            palette_rgb[palette_index]
+        };
+
         // Fill scanline with background color
-        let bg = self.resolve_color(0, 0);
+        let bg = resolve(0, 0);
         for x in 0..288 {
-            let off = row_offset + x * 3;
-            self.scanline_buffer[off] = bg.0;
-            self.scanline_buffer[off + 1] = bg.1;
-            self.scanline_buffer[off + 2] = bg.2;
+            let off = x * 3;
+            buf[off] = bg.0;
+            buf[off + 1] = bg.1;
+            buf[off + 2] = bg.2;
         }
 
-        // Tiles: determine which tile row and pixel row within tile
-        let tile_row = (scanline / 8) as i32;
-        let py = (scanline % 8) as u8;
-        for tile_col in 0..36i32 {
-            let offset = Self::tilemap_offset(tile_col, tile_row);
-            let tile_code = if offset < 0x400 {
-                self.video_ram[offset] as u16
-            } else {
-                0
-            };
-            let attribute = if offset < 0x400 {
-                self.color_ram[offset]
-            } else {
-                0
-            };
-            let screen_x = (tile_col * 8) as usize;
+        // Tiles: use shared tilemap renderer
+        let config = gfx::TilemapConfig {
+            cols: 36,
+            rows: 28,
+            tile_width: 8,
+            tile_height: 8,
+        };
 
-            for px in 0..8u8 {
-                let nx = screen_x + px as usize;
-                let pixel_value = self.decode_tile_pixel(tile_code, px, py);
-                let (r, g, b) = self.resolve_color(attribute, pixel_value);
-                let off = row_offset + nx * 3;
-                self.scanline_buffer[off] = r;
-                self.scanline_buffer[off + 1] = g;
-                self.scanline_buffer[off + 2] = b;
-            }
-        }
+        gfx::tilemap::render_tilemap_scanline(
+            &config,
+            tile_cache,
+            scanline,
+            |col, row| {
+                let offset = Self::tilemap_offset(col as i32, row as i32);
+                let tile_code = if offset < 0x400 {
+                    video_ram[offset] as u16
+                } else {
+                    0
+                };
+                let attribute = if offset < 0x400 { color_ram[offset] } else { 0 };
+                (tile_code, attribute)
+            },
+            resolve,
+            buf,
+            0,
+        );
 
         // Sprites: draw in priority order (7→3, then 2→0 with +1 Y offset)
-        let clip_x_min = 16i32;
-        let clip_x_max = 272i32;
+        let ram = &self.ram;
+        let sprite_coords = &self.sprite_coords;
         let y = scanline as i32;
 
         for pass in 0..2 {
@@ -536,61 +461,46 @@ impl PacmanSystem {
                 let attr_base = 0x3F0 + offs * 2;
                 let coord_base = offs * 2;
 
-                let sprite_byte0 = self.ram[attr_base];
-                let sprite_byte1 = self.ram[attr_base + 1];
+                let sprite_byte0 = ram[attr_base];
+                let sprite_byte1 = ram[attr_base + 1];
 
                 let sprite_code = (sprite_byte0 >> 2) as u16;
                 let x_flip = (sprite_byte0 & 1) != 0;
                 let y_flip = (sprite_byte0 & 2) != 0;
                 let attribute = sprite_byte1 & 0x1F;
 
-                let sx = 272i32 - self.sprite_coords[coord_base + 1] as i32;
-                let sy = self.sprite_coords[coord_base] as i32 - 31 + y_offset;
+                let sx = 272i32 - sprite_coords[coord_base + 1] as i32;
+                let sy = sprite_coords[coord_base] as i32 - 31 + y_offset;
 
-                // Check if this scanline intersects the sprite's 16-pixel height
                 if y >= sy && y < sy + 16 {
-                    let trans_mask = self.sprite_trans_mask(attribute);
                     let spy = (y - sy) as u8;
                     let src_py = if y_flip { 15 - spy } else { spy };
 
-                    // Draw sprite row at primary position
-                    for px in 0..16u8 {
-                        let draw_x = sx + px as i32;
-                        if draw_x < clip_x_min || draw_x >= clip_x_max {
-                            continue;
+                    // Pre-compute transparency mask for this sprite's attribute
+                    let trans_base = (attribute as usize & 0x1F) * 4;
+                    let mut trans_mask: u8 = 0;
+                    for pv in 0..4u8 {
+                        if (color_lut_prom[trans_base + pv as usize] & 0x0F) == 0 {
+                            trans_mask |= 1 << pv;
                         }
-                        let src_px = if x_flip { 15 - px } else { px };
-                        let pixel_value = self.decode_sprite_pixel(sprite_code, src_px, src_py);
-                        if (trans_mask >> pixel_value) & 1 != 0 {
-                            continue;
-                        }
-                        let (r, g, b) = self.resolve_color(attribute, pixel_value);
-                        let off = row_offset + draw_x as usize * 3;
-                        self.scanline_buffer[off] = r;
-                        self.scanline_buffer[off + 1] = g;
-                        self.scanline_buffer[off + 2] = b;
                     }
 
-                    // Draw with X-256 wraparound (tunnel effect)
-                    let sx_wrap = sx - 256;
-                    if sx_wrap + 16 > clip_x_min && sx_wrap < clip_x_max {
-                        for px in 0..16u8 {
-                            let draw_x = sx_wrap + px as i32;
-                            if draw_x < clip_x_min || draw_x >= clip_x_max {
-                                continue;
-                            }
-                            let src_px = if x_flip { 15 - px } else { px };
-                            let pixel_value = self.decode_sprite_pixel(sprite_code, src_px, src_py);
-                            if (trans_mask >> pixel_value) & 1 != 0 {
-                                continue;
-                            }
-                            let (r, g, b) = self.resolve_color(attribute, pixel_value);
-                            let off = row_offset + draw_x as usize * 3;
-                            self.scanline_buffer[off] = r;
-                            self.scanline_buffer[off + 1] = g;
-                            self.scanline_buffer[off + 2] = b;
-                        }
-                    }
+                    let clip = gfx::sprite::SpriteClip {
+                        x_min: 16,
+                        x_max: 272,
+                        wrap_offset: Some(-256), // tunnel wraparound
+                    };
+                    gfx::sprite::draw_sprite_row(
+                        sprite_cache,
+                        sprite_code,
+                        src_py as usize,
+                        sx,
+                        x_flip,
+                        |pv| (trans_mask >> pv) & 1 != 0,
+                        |pv| resolve(attribute, pv),
+                        buf,
+                        &clip,
+                    );
                 }
 
                 if offs == end {
@@ -1018,7 +928,7 @@ mod tests {
     fn save_does_not_include_rom() {
         let mut sys = PacmanSystem::new();
         sys.rom[0] = 0xDE;
-        sys.gfx_rom[0] = 0xAD;
+        sys.tile_cache.set_pixel(0, 0, 0, 3);
 
         let data = sys.save_state().unwrap();
 
@@ -1026,8 +936,8 @@ mod tests {
         let mut sys2 = PacmanSystem::new();
         sys2.load_state(&data).unwrap();
 
-        // ROMs should remain at their default (zeroed), not overwritten
+        // ROMs and GFX caches should remain at their default, not overwritten
         assert_eq!(sys2.rom[0], 0x00);
-        assert_eq!(sys2.gfx_rom[0], 0x00);
+        assert_eq!(sys2.tile_cache.pixel(0, 0, 0), 0);
     }
 }

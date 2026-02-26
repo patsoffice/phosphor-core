@@ -6,6 +6,7 @@ use phosphor_core::device::dac::Mc1408Dac;
 use phosphor_core::device::dkong_discrete::DkongDiscrete;
 use phosphor_core::device::i8257::I8257;
 use phosphor_core::device::output_latch::OutputLatch;
+use phosphor_core::gfx;
 use phosphor_macros::BusDebug;
 
 // ---------------------------------------------------------------------------
@@ -242,6 +243,10 @@ pub struct Tkg04Board {
     pub(crate) gfx_bank: u8,
     pub(crate) sound_control_latch_4h: OutputLatch,
 
+    // Pre-decoded GFX caches (from tile_rom / sprite_rom)
+    pub(crate) tile_cache: gfx::GfxCache,
+    pub(crate) sprite_cache: gfx::GfxCache,
+
     // Configuration (set at construction, not saved)
     tile_plane1_offset: usize, // 0x800 for DK (4KB tiles), 0x1000 for DK Jr (8KB)
 
@@ -303,6 +308,8 @@ impl Tkg04Board {
             palette_bank: 0,
             gfx_bank: 0,
             sound_control_latch_4h: OutputLatch::new(),
+            tile_cache: gfx::GfxCache::new(0, 8, 8),
+            sprite_cache: gfx::GfxCache::new(0, 16, 16),
             tile_plane1_offset,
             dma: I8257::new(),
             sound_irq_pending: false,
@@ -316,6 +323,22 @@ impl Tkg04Board {
             vblank_nmi_pending: false,
             discrete: DkongDiscrete::new(),
         }
+    }
+
+    /// Pre-decode tile and sprite ROMs into GFX caches.
+    /// Call after loading tile_rom and sprite_rom.
+    pub fn decode_gfx(&mut self) {
+        // tile_plane1_offset bytes per plane, 8 bytes per tile
+        let tile_count = self.tile_plane1_offset / 8; // DK: 256, DK Jr: 512
+        self.tile_cache = gfx::decode::decode_planar_2bpp_tiles(
+            &self.tile_rom,
+            0,
+            self.tile_plane1_offset,
+            tile_count,
+        );
+        // 4 interleaved ROM regions, each tile_plane1_offset bytes, 16 bytes per sprite
+        let sprite_count = self.sprite_rom.len() / 4 / 16; // 128
+        self.sprite_cache = gfx::decode::decode_dkong_sprites(&self.sprite_rom, 0, sprite_count);
     }
 
     // -----------------------------------------------------------------------
@@ -359,43 +382,6 @@ impl Tkg04Board {
     }
 
     // -----------------------------------------------------------------------
-    // GFX decoding
-    // -----------------------------------------------------------------------
-
-    /// Resolve a 2-bit pixel value to an RGB color using the palette system.
-    fn resolve_color(&self, color: u8, pixel_value: u8) -> (u8, u8, u8) {
-        let palette_index = (color as usize & 0x3F) * 4 + (pixel_value as usize & 0x03);
-        self.palette_rgb[palette_index & 0xFF]
-    }
-
-    /// Decode a single tile pixel from the GFX ROM.
-    /// 8×8 tiles, 2bpp planar: plane 0 at base, plane 1 at base + tile_plane1_offset.
-    fn decode_tile_pixel(&self, tile_code: u16, px: u8, py: u8) -> u8 {
-        let tile_offset = (tile_code as usize) * 8 + py as usize;
-        let plane0 = self.tile_rom[tile_offset];
-        let plane1 = self.tile_rom[self.tile_plane1_offset + tile_offset];
-        let bit_mask = 0x80 >> px; // MSB = leftmost pixel (hardware shift register)
-        let p0 = u8::from(plane0 & bit_mask != 0);
-        let p1 = u8::from(plane1 & bit_mask != 0);
-        p0 | (p1 << 1)
-    }
-
-    /// Decode a single sprite pixel from the GFX ROM.
-    /// 16×16 sprites, 2bpp, 4-ROM interleaved layout.
-    fn decode_sprite_pixel(&self, spr_code: u16, px: u8, py: u8) -> u8 {
-        let base = (spr_code as usize) * 16 + py as usize;
-        let (plane0_addr, plane1_addr) = if px < 8 {
-            (base, 0x1000 + base)
-        } else {
-            (0x0800 + base, 0x1800 + base)
-        };
-        let bit_mask = 0x80 >> (px & 7);
-        let p0 = u8::from(self.sprite_rom[plane0_addr] & bit_mask != 0);
-        let p1 = u8::from(self.sprite_rom[plane1_addr] & bit_mask != 0);
-        p0 | (p1 << 1)
-    }
-
-    // -----------------------------------------------------------------------
     // Scanline rendering
     // -----------------------------------------------------------------------
 
@@ -403,35 +389,55 @@ impl Tkg04Board {
     pub fn render_scanline(&mut self, scanline: usize) {
         let row_offset = scanline * NATIVE_WIDTH * 3;
 
-        // --- Background tiles: 32×32 tilemap, 8×8 tiles ---
-        let tile_row = scanline / 8;
-        let py = (scanline % 8) as u8;
-        for tile_col in 0..32 {
-            let vram_offset = tile_row * 32 + tile_col;
-            let tile_code = self.video_ram[vram_offset] as u16 + 256 * self.gfx_bank as u16;
-            let attribute =
-                (self.color_prom[tile_col + 32 * (tile_row / 4)] & 0x0F) + 0x10 * self.palette_bank;
+        // Split borrows: immutable refs for closures, mutable ref for buffer
+        let video_ram = &self.video_ram;
+        let color_prom = &self.color_prom;
+        let palette_rgb = &self.palette_rgb;
+        let tile_cache = &self.tile_cache;
+        let sprite_cache = &self.sprite_cache;
+        let gfx_bank = self.gfx_bank;
+        let palette_bank = self.palette_bank;
+        let buf = &mut self.scanline_buffer[row_offset..row_offset + NATIVE_WIDTH * 3];
 
-            for px in 0..8u8 {
-                let screen_x = tile_col * 8 + px as usize;
-                let pixel_value = self.decode_tile_pixel(tile_code, px, py);
-                let (r, g, b) = self.resolve_color(attribute, pixel_value);
-                let off = row_offset + screen_x * 3;
-                self.scanline_buffer[off] = r;
-                self.scanline_buffer[off + 1] = g;
-                self.scanline_buffer[off + 2] = b;
-            }
-        }
+        // Inline color resolution (captures split borrows, not &self)
+        let resolve = |color: u8, pixel_value: u8| -> (u8, u8, u8) {
+            let palette_index = (color as usize & 0x3F) * 4 + (pixel_value as usize & 0x03);
+            palette_rgb[palette_index & 0xFF]
+        };
+
+        // --- Background tiles: 32×32 tilemap, 8×8 tiles ---
+        let config = gfx::TilemapConfig {
+            cols: 32,
+            rows: 32,
+            tile_width: 8,
+            tile_height: 8,
+        };
+
+        gfx::tilemap::render_tilemap_scanline(
+            &config,
+            tile_cache,
+            scanline,
+            |col, row| {
+                let vram_offset = row * 32 + col;
+                let tile_code = video_ram[vram_offset] as u16 + 256 * gfx_bank as u16;
+                let attribute = (color_prom[col + 32 * (row / 4)] & 0x0F) + 0x10 * palette_bank;
+                (tile_code, attribute)
+            },
+            resolve,
+            buf,
+            0,
+        );
 
         // --- Sprites ---
         // Iterate forward: later sprites overwrite earlier ones.
+        let sprite_ram = &self.sprite_ram;
         let sprite_base = if self.sprite_bank { 0x200 } else { 0x000 };
         let mut offs = sprite_base;
         while offs < sprite_base + 0x200 {
-            let y_byte = self.sprite_ram[offs];
-            let code_byte = self.sprite_ram[offs + 1];
-            let attr_byte = self.sprite_ram[offs + 2];
-            let x_byte = self.sprite_ram[offs + 3];
+            let y_byte = sprite_ram[offs];
+            let code_byte = sprite_ram[offs + 1];
+            let attr_byte = sprite_ram[offs + 2];
+            let x_byte = sprite_ram[offs + 3];
 
             let test = y_byte.wrapping_add(0xF9).wrapping_add(scanline as u8);
             if (test & 0xF0) == 0xF0 {
@@ -440,7 +446,7 @@ impl Tkg04Board {
                 let spr_code = (code_byte & 0x7F) as u16 | (((attr_byte & 0x40) as u16) << 1);
                 let flip_y = (code_byte & 0x80) != 0;
                 let flip_x = (attr_byte & 0x80) != 0;
-                let color_attr = (attr_byte & 0x0F) + 0x10 * self.palette_bank;
+                let color_attr = (attr_byte & 0x0F) + 0x10 * palette_bank;
 
                 let src_py = if flip_y {
                     15 - row_in_sprite
@@ -450,42 +456,22 @@ impl Tkg04Board {
 
                 let sprite_x = x_byte.wrapping_add(0xF8) as i32;
 
-                for px in 0..16i32 {
-                    let draw_x = (sprite_x + px) & 0xFF;
-                    if draw_x >= NATIVE_WIDTH as i32 {
-                        continue;
-                    }
-                    let src_px = if flip_x { 15 - px as u8 } else { px as u8 };
-                    let pixel_value = self.decode_sprite_pixel(spr_code, src_px, src_py);
-                    if pixel_value == 0 {
-                        continue;
-                    }
-                    let (r, g, b) = self.resolve_color(color_attr, pixel_value);
-                    let off = row_offset + draw_x as usize * 3;
-                    self.scanline_buffer[off] = r;
-                    self.scanline_buffer[off + 1] = g;
-                    self.scanline_buffer[off + 2] = b;
-                }
-
-                // Sprite X wraparound
-                if sprite_x >= 240 {
-                    for px in 0..16i32 {
-                        let draw_x = sprite_x + px - 256;
-                        if draw_x < 0 || draw_x >= NATIVE_WIDTH as i32 {
-                            continue;
-                        }
-                        let src_px = if flip_x { 15 - px as u8 } else { px as u8 };
-                        let pixel_value = self.decode_sprite_pixel(spr_code, src_px, src_py);
-                        if pixel_value == 0 {
-                            continue;
-                        }
-                        let (r, g, b) = self.resolve_color(color_attr, pixel_value);
-                        let off = row_offset + draw_x as usize * 3;
-                        self.scanline_buffer[off] = r;
-                        self.scanline_buffer[off + 1] = g;
-                        self.scanline_buffer[off + 2] = b;
-                    }
-                }
+                let clip = gfx::sprite::SpriteClip {
+                    x_min: 0,
+                    x_max: NATIVE_WIDTH as i32,
+                    wrap_offset: Some(-256), // X wraparound
+                };
+                gfx::sprite::draw_sprite_row(
+                    sprite_cache,
+                    spr_code,
+                    src_py as usize,
+                    sprite_x,
+                    flip_x,
+                    |pv| pv == 0,
+                    |pv| resolve(color_attr, pv),
+                    buf,
+                    &clip,
+                );
             }
 
             offs += 4;
