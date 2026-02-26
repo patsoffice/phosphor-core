@@ -220,6 +220,21 @@ impl NamcoWsg {
     }
 }
 
+impl super::Device for NamcoWsg {
+    fn name(&self) -> &'static str {
+        "Namco WSG"
+    }
+    fn reset(&mut self) {
+        self.reset();
+    }
+    fn write(&mut self, offset: u8, data: u8) {
+        self.write(offset, data);
+    }
+    fn tick(&mut self) {
+        self.tick();
+    }
+}
+
 use crate::core::debug::{DebugRegister, Debuggable};
 
 impl Debuggable for NamcoWsg {

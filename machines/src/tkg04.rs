@@ -599,7 +599,7 @@ impl Tkg04Board {
         self.sprite_bank = false;
         self.palette_bank = 0;
         self.gfx_bank = 0;
-        self.dma = I8257::new();
+        self.dma.reset();
 
         self.clock = 0;
         self.sound_phase_accum = 0;
@@ -607,7 +607,7 @@ impl Tkg04Board {
         self.sample_count = 0;
         self.sample_phase = 0;
         self.audio_buffer.clear();
-        self.dac = Mc1408Dac::new();
+        self.dac.reset();
 
         self.in0 = 0x00;
         self.in1 = 0x00;

@@ -4,7 +4,7 @@
 
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-2177%20passing-brightgreen.svg)](core/tests/)
+[![Tests](https://img.shields.io/badge/tests-2203%20passing-brightgreen.svg)](core/tests/)
 
 A modular emulator framework for retro CPUs, designed for extensibility and educational purposes. Features a trait-based architecture that allows easy addition of new CPUs, peripherals, and complete systems.
 
@@ -28,7 +28,7 @@ cargo build
 cargo test
 
 # Expected output:
-#   test result: ok. 2177 passed; 0 failed
+#   test result: ok. 2203 passed; 0 failed
 ```
 
 ### Running the Emulator
@@ -84,7 +84,16 @@ ROMs are matched by CRC32 checksum, so any MAME ROM naming convention works. All
 | **M6502 CPU** | Complete | 151 opcodes, cycle-accurate with bus-level traces. [Details](core/src/cpu/m6502/README.md) |
 | **Z80 CPU** | Complete | 1604 opcodes, cycle-accurate, all prefix groups (CB/DD/ED/FD/DDCB/FDCB). [Details](core/src/cpu/z80/README.md) |
 | **MC6821 PIA** | Complete | Full register set, interrupts, edge detection, control lines |
-| **Williams SC1 Blitter** | Complete | DMA block copy/fill, mask, shift, foreground-only modes |
+| **Williams SC1/SC2 Blitter** | Complete | DMA block copy/fill, mask, shift, foreground-only modes |
+| **AY-8910 PSG** | Complete | 3-channel square wave + noise + envelope, dual I/O ports |
+| **POKEY** | Complete | 4-channel audio, polynomial counters, timer/IRQ, pot scanning |
+| **Namco WSG** | Complete | 3-voice wavetable synthesizer (Pac-Man, Dig Dug) |
+| **Z80 CTC** | Complete | 4-channel counter/timer, IM2 vectored interrupts, cascading |
+| **Intel 8257 DMA** | Complete | 4-channel DMA controller with auto-load and rotating priority |
+| **Atari DVG** | Complete | Digital Vector Generator: 8 opcodes, 7497 BRM, hardware clipping |
+| **MC1408 DAC** | Complete | 8-bit digital-to-analog converter for sound output |
+| **74LS259 Latch** | Complete | 8-bit addressable output latch for control signals |
+| **DK Discrete** | Complete | Donkey Kong analog sound effects (walk, jump, stomp) |
 | **CMOS RAM** | Complete | 1KB battery-backed RAM with save/load persistence |
 | **ROM Loader** | Complete | MAME ZIP support, CRC32-based ROM matching, multi-variant support |
 | **Joust System** | Complete | Williams board: CPU + video RAM + PIAs + blitter + CMOS + ROM |
@@ -92,7 +101,8 @@ ROMs are matched by CRC32 checksum, so any MAME ROM naming convention works. All
 | **Atari DVG** | Complete | Digital Vector Generator: 8 opcodes, 7497 BRM drawing, hardware clipping |
 | **CPU Validation** | Complete | M6809: 266K vectors (100%), M6800: 192K vectors (99.998%), M6502: 1.51M vectors (100%), Z80: 1.60M vectors (100%) |
 | **Crystal Castles System** | Complete | Atari arcade: M6502 + 2×POKEY + bitmap video + sprites + trackball |
-| **Test Suite** | Complete | 2177 tests across core, devices, and machine integration |
+| **Device Trait** | Complete | Common interface for all peripherals: reset, read/write, tick, debug |
+| **Test Suite** | Complete | 2203 tests across core, devices, and machine integration |
 
 ## Workspace Architecture
 
@@ -105,8 +115,9 @@ Contains all reusable components — zero external dependencies:
 - CPU implementations (M6800, M6809, M6502, Z80, I8035)
 - Bus and component abstractions
 - Machine trait (frontend-agnostic display/input/render interface)
-- Debug traits (Debuggable, DebugCpu, BusDebug) for interactive inspection
-- Peripheral devices (MC6821 PIA, Williams SC1 blitter, CMOS RAM, MC1408 DAC, DVG)
+- Device trait (common interface for all peripherals: reset, read/write, tick)
+- Debug traits (Debuggable, DebugCpu, BusDebug) for interactive inspection and device register writes
+- Peripheral devices (MC6821 PIA, AY-8910, POKEY, Namco WSG, Z80 CTC, Williams SC1/SC2 blitter, DVG, I8257 DMA, MC1408 DAC, 74LS259 latch, CMOS RAM)
 
 ### Machines Crate (`phosphor-machines`)
 
@@ -120,11 +131,12 @@ Complete system implementations that wire core components together:
 - **MissileCommandSystem** — Atari raster arcade (M6502 + POKEY + bitmap video)
 - **PacmanSystem** — Namco arcade (Z80 + WSG + tile/sprite video)
 - **RobotronSystem** — Williams twin-stick arcade (M6809 + blitter + PIAs)
+- **GridleeSystem** — Videa arcade (M6809 + bitmap video + trackball — freely distributable ROMs)
 - Simple6502System, Simple6800System, Simple6809System, SimpleZ80System (test harnesses)
 
 ### Macros Crate (`phosphor-macros`)
 
-Proc macro crate providing `#[derive(BusDebug)]` — auto-generates bus-level debug discovery from struct annotations (`#[debug_cpu(...)]`, `#[debug_device(...)]`).
+Proc macro crate providing `#[derive(BusDebug)]` — auto-generates bus-level debug discovery, device register writes, and device reset dispatch from struct annotations (`#[debug_cpu(...)]`, `#[debug_device(...)]`).
 
 ### Frontend Crate (`phosphor-frontend`)
 
@@ -181,13 +193,20 @@ phosphor-core/
 │   │   │   ├── m6502/              # M6502 CPU (151 opcodes) — see [README](core/src/cpu/m6502/README.md)
 │   │   │   ├── z80/                # Z80 CPU (1604 opcodes) — see [README](core/src/cpu/z80/README.md)
 │   │   │   └── i8035/              # I8035 CPU (229 opcodes, MCS-48) — see [README](core/src/cpu/i8035/README.md)
-│   │   └── device/                 # Peripheral devices
-│   │       ├── pia6820.rs          # MC6821 PIA (full: registers, interrupts, edge detection)
-│   │       ├── williams_blitter.rs # Williams SC1 DMA blitter (copy/fill/shift/mask)
-│   │       ├── cmos_ram.rs         # 1KB battery-backed CMOS RAM
-│   │       ├── dac.rs              # MC1408 8-bit DAC
+│   │   └── device/                 # Peripheral devices (all implement Device trait)
+│   │       ├── mod.rs              # Device trait + module exports
+│   │       ├── pia6820.rs          # MC6821 PIA (registers, interrupts, edge detection)
+│   │       ├── ay8910.rs           # AY-8910 PSG (3-ch square + noise + envelope)
+│   │       ├── pokey.rs            # Atari POKEY (4-ch audio, timers, pot scanning)
+│   │       ├── namco_wsg.rs        # Namco WSG (3-voice wavetable synthesizer)
+│   │       ├── z80ctc.rs           # Z80 CTC (4-ch counter/timer, IM2 interrupts)
+│   │       ├── williams_blitter.rs # Williams SC1/SC2 DMA blitter (copy/fill/shift/mask)
 │   │       ├── dvg.rs              # Atari Digital Vector Generator
-│   │       └── mod.rs              # Module exports
+│   │       ├── i8257.rs            # Intel 8257 DMA controller (4-channel)
+│   │       ├── dac.rs              # MC1408 8-bit DAC
+│   │       ├── output_latch.rs     # 74LS259 8-bit addressable latch
+│   │       ├── dkong_discrete.rs   # Donkey Kong discrete analog sounds
+│   │       └── cmos_ram.rs         # 1KB battery-backed CMOS RAM
 │   └── tests/                      # Integration tests
 │       ├── common/mod.rs           # TestBus harness
 │       ├── m6809_*_test.rs         # M6809 tests
@@ -205,6 +224,7 @@ phosphor-core/
 │   ├── Cargo.toml
 │   ├── src/
 │   │   ├── lib.rs                  # Exports system types
+│   │   ├── registry.rs             # Machine registry (name → constructor mapping)
 │   │   ├── williams.rs             # Shared Williams gen-1 board (M6809 + M6800 + PIAs + blitter)
 │   │   ├── joust.rs                # Joust arcade board (Williams gen-1)
 │   │   ├── robotron.rs             # Robotron 2084 arcade board (Williams gen-1)
@@ -212,7 +232,10 @@ phosphor-core/
 │   │   ├── donkey_kong.rs          # Donkey Kong (TKG-04, 16KB ROM)
 │   │   ├── donkey_kong_jr.rs       # Donkey Kong Junior (TKG-04, 24KB ROM, gfx bank)
 │   │   ├── asteroids.rs            # Asteroids (Atari: M6502 + DVG vector display)
+│   │   ├── missile_command.rs      # Missile Command (Atari: M6502 + POKEY + trackball)
 │   │   ├── ccastles.rs             # Crystal Castles (Atari: M6502 + 2×POKEY + bitmap + sprites)
+│   │   ├── pacman.rs               # Pac-Man (Namco: Z80 + WSG + tile/sprite video)
+│   │   ├── gridlee.rs              # Gridlee (Videa: M6809 + bitmap video + trackball)
 │   │   ├── rom_loader.rs           # ROM loading with CRC32 matching, multi-variant support
 │   │   ├── simple6800.rs           # M6800 + RAM/ROM
 │   │   ├── simple6809.rs           # M6809 + RAM/ROM
@@ -220,7 +243,8 @@ phosphor-core/
 │   │   └── simplez80.rs            # Z80 + flat memory
 │   └── tests/
 │       ├── joust_test.rs           # Joust system integration tests (39 tests)
-│       └── robotron_test.rs        # Robotron system integration tests
+│       ├── robotron_test.rs        # Robotron system integration tests
+│       └── missile_command_test.rs # Missile Command system integration tests
 ├── cpu-validation/                 # phosphor-cpu-validation crate
 │   ├── Cargo.toml                  # Deps: phosphor-core, serde, rand
 │   ├── README_6809.md              # M6809 cross-validation details
@@ -412,8 +436,15 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 
 ### Phase 4: Peripherals & Systems
 
+- [x] Device trait (common peripheral interface: reset, read/write, tick, debug integration)
 - [x] MC6821 PIA (full register set, interrupts, edge detection)
-- [x] Williams SC1 blitter (DMA copy/fill, mask, shift, foreground-only)
+- [x] AY-8910 PSG (3-ch square wave + noise + envelope, I/O ports)
+- [x] POKEY (4-ch audio, polynomial counters, timer/IRQ, pot scanning)
+- [x] Namco WSG (3-voice wavetable synthesizer)
+- [x] Z80 CTC (4-ch counter/timer, IM2 vectored interrupts, cascading)
+- [x] Williams SC1/SC2 blitter (DMA copy/fill, mask, shift, foreground-only)
+- [x] Intel 8257 DMA controller (4-channel, rotating priority, auto-load)
+- [x] MC1408 DAC, 74LS259 output latch, DK discrete analog sounds
 - [x] CMOS RAM (1KB battery-backed, save/load persistence)
 - [x] ROM loader (MAME ZIP support, CRC32-based matching, multi-variant ROM sets)
 - [x] Machine trait (frontend-agnostic display/input/render interface)
@@ -432,7 +463,7 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 - [x] SDL2 frontend (renders any Machine impl, keyboard input, VSync timing)
 - [x] Joypad, mouse and trackball input
 - [x] Debug panel with CPU/device register inspection and step execution (F1 toggle, `--debug` flag)
-- [ ] Debugger: breakpoints, memory viewer/editor, disassembly viewer
+- [x] Debugger: breakpoints, memory viewer, disassembly viewer
 - [ ] Performance profiler
 
 ### Phase 6: More Games

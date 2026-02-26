@@ -1,3 +1,35 @@
+use crate::core::debug::Debuggable;
+use crate::core::save_state::Saveable;
+
+/// Common interface for emulated hardware peripheral devices.
+///
+/// Every peripheral device (PIA, sound chip, blitter, etc.) implements
+/// this trait to establish a uniform contract for debug inspection,
+/// save/load state, power-on reset, and optional register access.
+///
+/// Devices are owned as concrete types by board structs and used via
+/// direct method calls (inherent methods shadow trait methods in normal
+/// calls, so no existing call sites need updating).
+pub trait Device: Debuggable + Saveable {
+    /// Human-readable device type name (e.g., "AY-8910", "PIA 6820").
+    fn name(&self) -> &'static str;
+
+    /// Reset to power-on state. Configuration (clock rates, ROM data,
+    /// variant selection) is preserved; only runtime state is cleared.
+    fn reset(&mut self);
+
+    /// Read a device register by offset. Default returns 0xFF (no register file).
+    fn read(&mut self, _offset: u8) -> u8 {
+        0xFF
+    }
+
+    /// Write a device register by offset. Default is a no-op.
+    fn write(&mut self, _offset: u8, _data: u8) {}
+
+    /// Advance the device by one clock tick. Default is a no-op.
+    fn tick(&mut self) {}
+}
+
 pub mod ay8910;
 pub mod cmos_ram;
 pub mod dac;

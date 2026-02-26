@@ -655,6 +655,57 @@ impl Pokey {
     pub fn read_serout(&self) -> u8 {
         self.serout
     }
+
+    /// Reset the POKEY to power-on state, preserving clock configuration.
+    pub fn reset(&mut self) {
+        self.audf = [0; 4];
+        self.audc = [0; 4];
+        self.audctl = 0;
+        self.divider = [0; 4];
+        self.div_out = [false; 4];
+        self.channel_out = [false; 4];
+        self.hp_ff = [false; 2];
+        self.poly4 = 0x0F;
+        self.poly5 = 0x1F;
+        self.poly9 = 0x1FF;
+        self.poly17 = 0x1FFFF;
+        self.base_div28 = 28;
+        self.base_div114 = 114;
+        self.pot_input = [0; 8];
+        self.pot_counter = [0; 8];
+        self.pot_done = 0xFF;
+        self.pot_scanning = false;
+        self.pot_scan_count = 0;
+        self.kbcode = 0xFF;
+        self.serin = 0;
+        self.serout = 0;
+        self.skctl = 0;
+        self.skstat = 0xFF;
+        self.irqen = 0;
+        self.irqst = 0xFF;
+        self.sample_buffer.clear();
+        self.sample_accum = 0.0;
+        self.sample_count = 0;
+        self.sample_phase = 0;
+    }
+}
+
+impl super::Device for Pokey {
+    fn name(&self) -> &'static str {
+        "POKEY"
+    }
+    fn reset(&mut self) {
+        self.reset();
+    }
+    fn read(&mut self, offset: u8) -> u8 {
+        self.read(offset)
+    }
+    fn write(&mut self, offset: u8, data: u8) {
+        self.write(offset, data);
+    }
+    fn tick(&mut self) {
+        self.tick();
+    }
 }
 
 use crate::core::debug::{DebugRegister, Debuggable};

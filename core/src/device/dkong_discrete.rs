@@ -167,6 +167,15 @@ impl DkongDiscrete {
     }
 }
 
+impl super::Device for DkongDiscrete {
+    fn name(&self) -> &'static str {
+        "DK Discrete"
+    }
+    fn reset(&mut self) {
+        self.reset();
+    }
+}
+
 use crate::core::debug::{DebugRegister, Debuggable};
 
 impl Debuggable for DkongDiscrete {

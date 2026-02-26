@@ -298,11 +298,47 @@ impl Pia6820 {
         self.port_b_written = false;
         was_written
     }
+
+    /// Reset the PIA to its power-on state (all registers zeroed, all pins input).
+    pub fn reset(&mut self) {
+        self.output_a = 0;
+        self.ddr_a = 0;
+        self.ctrl_a = 0;
+        self.input_a = 0;
+        self.output_b = 0;
+        self.ddr_b = 0;
+        self.ctrl_b = 0;
+        self.input_b = 0;
+        self.irq_a1 = false;
+        self.irq_a2 = false;
+        self.irq_b1 = false;
+        self.irq_b2 = false;
+        self.ca1 = false;
+        self.ca2 = false;
+        self.cb1 = false;
+        self.cb2 = false;
+        self.port_b_written = false;
+    }
 }
 
 impl Default for Pia6820 {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl super::Device for Pia6820 {
+    fn name(&self) -> &'static str {
+        "PIA 6820"
+    }
+    fn reset(&mut self) {
+        self.reset();
+    }
+    fn read(&mut self, offset: u8) -> u8 {
+        self.read(offset)
+    }
+    fn write(&mut self, offset: u8, data: u8) {
+        self.write(offset, data);
     }
 }
 

@@ -279,6 +279,24 @@ impl Z80Ctc {
     }
 }
 
+impl super::Device for Z80Ctc {
+    fn name(&self) -> &'static str {
+        "Z80 CTC"
+    }
+    fn reset(&mut self) {
+        self.reset();
+    }
+    fn read(&mut self, offset: u8) -> u8 {
+        Z80Ctc::read(self, offset)
+    }
+    fn write(&mut self, offset: u8, data: u8) {
+        self.write(offset, data);
+    }
+    fn tick(&mut self) {
+        self.tick();
+    }
+}
+
 impl Default for Z80Ctc {
     fn default() -> Self {
         Self::new()

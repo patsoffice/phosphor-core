@@ -71,4 +71,13 @@ pub trait BusDebug {
 
     /// Debug memory write into a CPU's address space.
     fn write(&mut self, cpu_index: usize, addr: u16, data: u8);
+
+    /// Write to a device register by device index and register offset.
+    /// Device indices match the order returned by `devices()`.
+    /// Only `#[debug_device]` fields respond; CPU indices are ignored.
+    fn write_device_register(&mut self, _device_index: usize, _offset: u8, _data: u8) {}
+
+    /// Reset an individual device by index.
+    /// Device indices match the order returned by `devices()`.
+    fn reset_device(&mut self, _device_index: usize) {}
 }

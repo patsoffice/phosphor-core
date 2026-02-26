@@ -41,6 +41,15 @@ impl OutputLatch {
     }
 }
 
+impl super::Device for OutputLatch {
+    fn name(&self) -> &'static str {
+        "74LS259"
+    }
+    fn reset(&mut self) {
+        self.reset();
+    }
+}
+
 use crate::core::debug::{DebugRegister, Debuggable};
 
 impl Debuggable for OutputLatch {

@@ -515,12 +515,12 @@ impl WilliamsBoard {
 
     pub fn reset(&mut self) {
         // Reset peripherals first so bus is in a known state
-        self.widget_pia = Pia6820::new();
-        self.rom_pia = Pia6820::new();
-        self.sound_pia = Pia6820::new();
-        self.blitter = WilliamsBlitter::new();
+        self.widget_pia.reset();
+        self.rom_pia.reset();
+        self.sound_pia.reset();
+        self.blitter.reset();
         self.rom_bank = 0;
-        self.dac = Mc1408Dac::new();
+        self.dac.reset();
         self.audio_buffer.clear();
         self.sample_accum = 0;
         self.sample_count = 0;

@@ -24,6 +24,20 @@ impl Mc1408Dac {
     pub fn sample_i16(&self) -> i16 {
         ((self.value as i16) - 128) * 256
     }
+
+    /// Reset the DAC to mid-range (silence).
+    pub fn reset(&mut self) {
+        self.value = 0x80;
+    }
+}
+
+impl super::Device for Mc1408Dac {
+    fn name(&self) -> &'static str {
+        "MC1408 DAC"
+    }
+    fn reset(&mut self) {
+        self.reset();
+    }
 }
 
 use crate::core::debug::{DebugRegister, Debuggable};

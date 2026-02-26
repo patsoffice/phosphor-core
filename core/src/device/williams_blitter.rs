@@ -417,6 +417,41 @@ impl WilliamsBlitter {
         self.dxadv = dxadv;
         self.shift_reg = 0;
     }
+
+    /// Reset the blitter to idle state, preserving SC1/SC2 variant configuration.
+    pub fn reset(&mut self) {
+        self.control = 0;
+        self.solid_color = 0;
+        self.src_addr = 0;
+        self.dst_addr = 0;
+        self.width = 0;
+        self.height = 0;
+        // size_xor preserved (SC1 vs SC2 configuration)
+        self.active = false;
+        self.x = 0;
+        self.w = 0;
+        self.h = 0;
+        self.rows_done = 0;
+        self.sstart = 0;
+        self.dstart = 0;
+        self.cur_src = 0;
+        self.cur_dst = 0;
+        self.sxadv = 0;
+        self.dxadv = 0;
+        self.shift_reg = 0;
+    }
+}
+
+impl super::Device for WilliamsBlitter {
+    fn name(&self) -> &'static str {
+        "Williams Blitter"
+    }
+    fn reset(&mut self) {
+        self.reset();
+    }
+    fn write(&mut self, offset: u8, data: u8) {
+        self.write_register(offset, data);
+    }
 }
 
 impl Default for WilliamsBlitter {

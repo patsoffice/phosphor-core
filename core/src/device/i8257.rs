@@ -325,6 +325,32 @@ impl I8257 {
             }
         }
     }
+
+    /// Reset the DMA controller to power-on state.
+    pub fn reset(&mut self) {
+        self.channels = [DmaChannel::default(); 4];
+        self.flip_flop = false;
+        self.mode = 0;
+        self.tc_flags = 0;
+        self.update_flag = false;
+        self.dreq = [false; 4];
+        self.last_serviced = 0;
+    }
+}
+
+impl super::Device for I8257 {
+    fn name(&self) -> &'static str {
+        "i8257 DMA"
+    }
+    fn reset(&mut self) {
+        self.reset();
+    }
+    fn read(&mut self, offset: u8) -> u8 {
+        self.read(offset)
+    }
+    fn write(&mut self, offset: u8, data: u8) {
+        self.write(offset, data);
+    }
 }
 
 use crate::core::debug::{DebugRegister, Debuggable};

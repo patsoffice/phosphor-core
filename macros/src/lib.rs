@@ -5,12 +5,14 @@ use syn::{DeriveInput, Fields, parse_macro_input};
 /// Derive macro that generates a `BusDebug` implementation for a struct.
 ///
 /// Annotate fields with:
-/// - `#[debug_device("Name")]` — field implements `Debuggable`, listed in `devices()`
+/// - `#[debug_device("Name")]` — field implements `Device`, listed in `devices()`.
+///   Also generates `write_device_register()` and `reset_device()` dispatch.
 /// - `#[debug_cpu("Name", read = "method", write = "method")]` — field implements
 ///   `DebugCpu`, listed in both `devices()` AND `cpus()`. The `read`/`write` name
 ///   existing `&self` / `&mut self` methods on the struct for side-effect-free memory access.
 ///
 /// CPU index assignment is positional: first `#[debug_cpu]` is index 0, etc.
+/// Device indices for `write_device_register` / `reset_device` match `devices()` order.
 #[proc_macro_derive(BusDebug, attributes(debug_device, debug_cpu))]
 pub fn derive_bus_debug(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -24,7 +26,7 @@ pub fn derive_bus_debug(input: TokenStream) -> TokenStream {
         _ => panic!("BusDebug can only be derived on structs"),
     };
 
-    let mut device_entries = Vec::new(); // (name, field_ident) for all annotated fields
+    let mut device_entries = Vec::new(); // (name, field_ident, is_device) for all annotated fields
     let mut cpu_entries = Vec::new(); // (name, field_ident, read_method, write_method)
 
     for field in fields {
@@ -32,25 +34,25 @@ pub fn derive_bus_debug(input: TokenStream) -> TokenStream {
 
         for attr in &field.attrs {
             if attr.path().is_ident("debug_device") {
-                // #[debug_device("Name")]
+                // #[debug_device("Name")] — field implements Device
                 let name: syn::LitStr = attr
                     .parse_args()
                     .expect("debug_device expects a string literal: #[debug_device(\"Name\")]");
-                device_entries.push((name, field_ident.clone()));
+                device_entries.push((name, field_ident.clone(), true));
             } else if attr.path().is_ident("debug_cpu") {
                 // #[debug_cpu("Name", read = "method", write = "method")]
                 let args: CpuArgs = attr
                     .parse_args()
                     .expect("debug_cpu expects: (\"Name\", read = \"method\", write = \"method\")");
                 // CPUs appear in both devices() and cpus()
-                device_entries.push((args.name.clone(), field_ident.clone()));
+                device_entries.push((args.name.clone(), field_ident.clone(), false));
                 cpu_entries.push((args.name, field_ident.clone(), args.read, args.write));
             }
         }
     }
 
     // Generate devices() body
-    let device_items = device_entries.iter().map(|(name, ident)| {
+    let device_items = device_entries.iter().map(|(name, ident, _)| {
         quote! { (#name, &self.#ident as &dyn phosphor_core::core::debug::Debuggable) }
     });
 
@@ -79,6 +81,38 @@ pub fn derive_bus_debug(input: TokenStream) -> TokenStream {
             quote! { #idx => self.#write_ident(addr, data) }
         });
 
+    // Generate write_device_register() match arms (only #[debug_device] fields)
+    let device_write_arms =
+        device_entries
+            .iter()
+            .enumerate()
+            .filter_map(|(i, (_, ident, is_device))| {
+                if *is_device {
+                    let idx = i;
+                    Some(quote! {
+                        #idx => phosphor_core::device::Device::write(&mut self.#ident, offset, data)
+                    })
+                } else {
+                    None
+                }
+            });
+
+    // Generate reset_device() match arms (only #[debug_device] fields)
+    let device_reset_arms =
+        device_entries
+            .iter()
+            .enumerate()
+            .filter_map(|(i, (_, ident, is_device))| {
+                if *is_device {
+                    let idx = i;
+                    Some(quote! {
+                        #idx => phosphor_core::device::Device::reset(&mut self.#ident)
+                    })
+                } else {
+                    None
+                }
+            });
+
     let expanded = quote! {
         impl phosphor_core::core::debug::BusDebug for #struct_name {
             fn devices(&self) -> Vec<(&str, &dyn phosphor_core::core::debug::Debuggable)> {
@@ -99,6 +133,20 @@ pub fn derive_bus_debug(input: TokenStream) -> TokenStream {
             fn write(&mut self, cpu_index: usize, addr: u16, data: u8) {
                 match cpu_index {
                     #(#write_arms,)*
+                    _ => {}
+                }
+            }
+
+            fn write_device_register(&mut self, device_index: usize, offset: u8, data: u8) {
+                match device_index {
+                    #(#device_write_arms,)*
+                    _ => {}
+                }
+            }
+
+            fn reset_device(&mut self, device_index: usize) {
+                match device_index {
+                    #(#device_reset_arms,)*
                     _ => {}
                 }
             }

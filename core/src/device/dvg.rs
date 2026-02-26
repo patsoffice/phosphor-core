@@ -452,6 +452,15 @@ impl Dvg {
     }
 }
 
+impl super::Device for Dvg {
+    fn name(&self) -> &'static str {
+        "DVG"
+    }
+    fn reset(&mut self) {
+        self.reset();
+    }
+}
+
 impl Default for Dvg {
     fn default() -> Self {
         Self::new()

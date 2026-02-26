@@ -387,6 +387,18 @@ impl Ay8910 {
     }
 }
 
+impl super::Device for Ay8910 {
+    fn name(&self) -> &'static str {
+        "AY-8910"
+    }
+    fn reset(&mut self) {
+        self.reset();
+    }
+    fn tick(&mut self) {
+        self.tick();
+    }
+}
+
 // -- Debug support -----------------------------------------------------------
 
 use crate::core::debug::{DebugRegister, Debuggable};
