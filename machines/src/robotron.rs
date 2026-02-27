@@ -1,3 +1,4 @@
+use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::machine::{
     AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
 };
@@ -248,7 +249,17 @@ impl Bus for RobotronSystem {
         self.board.read(master, addr)
     }
 
-    williams::impl_williams_bus_common!();
+    fn write(&mut self, master: BusMaster, addr: u16, data: u8) {
+        self.board.write(master, addr, data);
+    }
+
+    fn is_halted_for(&self, master: BusMaster) -> bool {
+        self.board.is_halted_for(master)
+    }
+
+    fn check_interrupts(&mut self, target: BusMaster) -> InterruptState {
+        self.board.check_interrupts(target)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -256,11 +267,23 @@ impl Bus for RobotronSystem {
 // ---------------------------------------------------------------------------
 
 impl Renderable for RobotronSystem {
-    williams::impl_williams_renderable!();
+    fn display_size(&self) -> (u32, u32) {
+        (williams::DISPLAY_WIDTH, williams::DISPLAY_HEIGHT)
+    }
+
+    fn render_frame(&self, buffer: &mut [u8]) {
+        self.board.render_frame(buffer);
+    }
 }
 
 impl AudioSource for RobotronSystem {
-    williams::impl_williams_audio!();
+    fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
+        self.board.fill_audio(buffer)
+    }
+
+    fn audio_sample_rate(&self) -> u32 {
+        44100
+    }
 }
 
 impl InputReceiver for RobotronSystem {
@@ -300,7 +323,17 @@ impl InputReceiver for RobotronSystem {
 }
 
 impl MachineDebug for RobotronSystem {
-    williams::impl_williams_debug!();
+    fn debug_bus(&self) -> Option<&dyn phosphor_core::core::debug::BusDebug> {
+        Some(&self.board)
+    }
+
+    fn debug_bus_mut(&mut self) -> Option<&mut dyn phosphor_core::core::debug::BusDebug> {
+        Some(&mut self.board)
+    }
+
+    fn cycles_per_frame(&self) -> u64 {
+        williams::CYCLES_PER_FRAME
+    }
 
     fn debug_tick(&mut self) -> u32 {
         self.board.widget_pia.set_port_a_input(self.widget_port_a);
@@ -311,7 +344,17 @@ impl MachineDebug for RobotronSystem {
 }
 
 impl Machine for RobotronSystem {
-    williams::impl_williams_machine_common!();
+    fn save_nvram(&self) -> Option<&[u8]> {
+        Some(self.board.save_cmos())
+    }
+
+    fn load_nvram(&mut self, data: &[u8]) {
+        self.board.load_cmos(data);
+    }
+
+    fn frame_rate_hz(&self) -> f64 {
+        williams::CPU_CLOCK_HZ as f64 / williams::CYCLES_PER_FRAME as f64
+    }
 
     fn run_frame(&mut self) {
         // Update PIA inputs before running the frame

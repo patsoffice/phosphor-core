@@ -367,23 +367,51 @@ impl Bus for MsPacmanSystem {
 }
 
 // ---------------------------------------------------------------------------
-// Trait implementations (shared via macros)
+// Trait implementations
 // ---------------------------------------------------------------------------
 
 impl Renderable for MsPacmanSystem {
-    namco_pac::impl_namco_pac_renderable!();
+    fn display_size(&self) -> (u32, u32) {
+        (namco_pac::SCREEN_WIDTH, namco_pac::SCREEN_HEIGHT)
+    }
+
+    fn render_frame(&self, buffer: &mut [u8]) {
+        self.board.render_frame(buffer);
+    }
 }
 
 impl AudioSource for MsPacmanSystem {
-    namco_pac::impl_namco_pac_audio!();
+    fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
+        self.board.fill_audio(buffer)
+    }
+
+    fn audio_sample_rate(&self) -> u32 {
+        44100
+    }
 }
 
 impl InputReceiver for MsPacmanSystem {
-    namco_pac::impl_namco_pac_input!();
+    fn set_input(&mut self, button: u8, pressed: bool) {
+        self.board.handle_input(button, pressed);
+    }
+
+    fn input_map(&self) -> &[phosphor_core::core::machine::InputButton] {
+        namco_pac::NAMCO_PAC_INPUT_MAP
+    }
 }
 
 impl MachineDebug for MsPacmanSystem {
-    namco_pac::impl_namco_pac_debug!();
+    fn debug_bus(&self) -> Option<&dyn phosphor_core::core::debug::BusDebug> {
+        Some(&self.board)
+    }
+
+    fn debug_bus_mut(&mut self) -> Option<&mut dyn phosphor_core::core::debug::BusDebug> {
+        Some(&mut self.board)
+    }
+
+    fn cycles_per_frame(&self) -> u64 {
+        namco_pac::CYCLES_PER_FRAME
+    }
 
     fn debug_tick(&mut self) -> u32 {
         bus_split!(self, bus => {
@@ -394,7 +422,9 @@ impl MachineDebug for MsPacmanSystem {
 }
 
 impl Machine for MsPacmanSystem {
-    namco_pac::impl_namco_pac_machine_common!();
+    fn frame_rate_hz(&self) -> f64 {
+        namco_pac::CPU_CLOCK_HZ as f64 / namco_pac::CYCLES_PER_FRAME as f64
+    }
 
     fn run_frame(&mut self) {
         bus_split!(self, bus => {

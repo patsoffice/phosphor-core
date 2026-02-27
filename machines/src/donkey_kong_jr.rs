@@ -1,4 +1,5 @@
 use phosphor_core::bus_split;
+use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::machine::{
     AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
 };
@@ -460,7 +461,13 @@ impl Bus for DkongJrSystem {
         }
     }
 
-    tkg04::impl_tkg04_bus_common!();
+    fn is_halted_for(&self, _master: BusMaster) -> bool {
+        false
+    }
+
+    fn check_interrupts(&mut self, target: BusMaster) -> InterruptState {
+        self.board.check_interrupts(target)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -468,11 +475,23 @@ impl Bus for DkongJrSystem {
 // ---------------------------------------------------------------------------
 
 impl Renderable for DkongJrSystem {
-    tkg04::impl_tkg04_renderable!();
+    fn display_size(&self) -> (u32, u32) {
+        (tkg04::SCREEN_WIDTH, tkg04::SCREEN_HEIGHT)
+    }
+
+    fn render_frame(&self, buffer: &mut [u8]) {
+        self.board.render_frame(buffer);
+    }
 }
 
 impl AudioSource for DkongJrSystem {
-    tkg04::impl_tkg04_audio!();
+    fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
+        self.board.fill_audio(buffer)
+    }
+
+    fn audio_sample_rate(&self) -> u32 {
+        44100
+    }
 }
 
 impl InputReceiver for DkongJrSystem {
@@ -504,7 +523,17 @@ impl InputReceiver for DkongJrSystem {
 }
 
 impl MachineDebug for DkongJrSystem {
-    tkg04::impl_tkg04_debug!();
+    fn debug_bus(&self) -> Option<&dyn phosphor_core::core::debug::BusDebug> {
+        Some(&self.board)
+    }
+
+    fn debug_bus_mut(&mut self) -> Option<&mut dyn phosphor_core::core::debug::BusDebug> {
+        Some(&mut self.board)
+    }
+
+    fn cycles_per_frame(&self) -> u64 {
+        tkg04::CYCLES_PER_FRAME
+    }
 
     fn debug_tick(&mut self) -> u32 {
         bus_split!(self, bus => {
@@ -515,7 +544,9 @@ impl MachineDebug for DkongJrSystem {
 }
 
 impl Machine for DkongJrSystem {
-    tkg04::impl_tkg04_machine_common!();
+    fn frame_rate_hz(&self) -> f64 {
+        tkg04::CPU_CLOCK_HZ as f64 / tkg04::CYCLES_PER_FRAME as f64
+    }
 
     fn run_frame(&mut self) {
         bus_split!(self, bus => {

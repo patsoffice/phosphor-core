@@ -644,6 +644,25 @@ impl NamcoPacBoard {
         self.watchdog_counter = r.read_u32_le()?;
         Ok(())
     }
+
+    /// Dispatch an input event to the appropriate port bit (active-low).
+    /// Called from game wrapper `InputReceiver` impls.
+    pub fn handle_input(&mut self, button: u8, pressed: bool) {
+        match button {
+            INPUT_P1_UP => crate::set_bit_active_low(&mut self.in0, 0, pressed),
+            INPUT_P1_LEFT => crate::set_bit_active_low(&mut self.in0, 1, pressed),
+            INPUT_P1_RIGHT => crate::set_bit_active_low(&mut self.in0, 2, pressed),
+            INPUT_P1_DOWN => crate::set_bit_active_low(&mut self.in0, 3, pressed),
+            INPUT_COIN => crate::set_bit_active_low(&mut self.in0, 5, pressed),
+            INPUT_P2_UP => crate::set_bit_active_low(&mut self.in1, 0, pressed),
+            INPUT_P2_LEFT => crate::set_bit_active_low(&mut self.in1, 1, pressed),
+            INPUT_P2_RIGHT => crate::set_bit_active_low(&mut self.in1, 2, pressed),
+            INPUT_P2_DOWN => crate::set_bit_active_low(&mut self.in1, 3, pressed),
+            INPUT_P1_START => crate::set_bit_active_low(&mut self.in1, 5, pressed),
+            INPUT_P2_START => crate::set_bit_active_low(&mut self.in1, 6, pressed),
+            _ => {}
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -667,111 +686,3 @@ fn combine_weights_2(scale: &[f64], bit0: u8, bit1: u8) -> u8 {
     let val = bit0 as f64 * scale[0] + bit1 as f64 * scale[1];
     (val * 255.0).round().min(255.0) as u8
 }
-
-// ---------------------------------------------------------------------------
-// Shared trait implementation macros (game wrappers must have `pub board: NamcoPacBoard`)
-// ---------------------------------------------------------------------------
-
-macro_rules! impl_namco_pac_renderable {
-    () => {
-        fn display_size(&self) -> (u32, u32) {
-            (
-                crate::namco_pac::SCREEN_WIDTH,
-                crate::namco_pac::SCREEN_HEIGHT,
-            )
-        }
-
-        fn render_frame(&self, buffer: &mut [u8]) {
-            self.board.render_frame(buffer);
-        }
-    };
-}
-
-macro_rules! impl_namco_pac_audio {
-    () => {
-        fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
-            self.board.fill_audio(buffer)
-        }
-
-        fn audio_sample_rate(&self) -> u32 {
-            44100
-        }
-    };
-}
-
-macro_rules! impl_namco_pac_debug {
-    () => {
-        fn debug_bus(&self) -> Option<&dyn phosphor_core::core::debug::BusDebug> {
-            Some(&self.board)
-        }
-
-        fn debug_bus_mut(&mut self) -> Option<&mut dyn phosphor_core::core::debug::BusDebug> {
-            Some(&mut self.board)
-        }
-
-        fn cycles_per_frame(&self) -> u64 {
-            crate::namco_pac::CYCLES_PER_FRAME
-        }
-    };
-}
-
-macro_rules! impl_namco_pac_machine_common {
-    () => {
-        fn frame_rate_hz(&self) -> f64 {
-            crate::namco_pac::CPU_CLOCK_HZ as f64 / crate::namco_pac::CYCLES_PER_FRAME as f64
-        }
-    };
-}
-
-macro_rules! impl_namco_pac_input {
-    () => {
-        fn set_input(&mut self, button: u8, pressed: bool) {
-            match button {
-                crate::namco_pac::INPUT_P1_UP => {
-                    crate::set_bit_active_low(&mut self.board.in0, 0, pressed)
-                }
-                crate::namco_pac::INPUT_P1_LEFT => {
-                    crate::set_bit_active_low(&mut self.board.in0, 1, pressed)
-                }
-                crate::namco_pac::INPUT_P1_RIGHT => {
-                    crate::set_bit_active_low(&mut self.board.in0, 2, pressed)
-                }
-                crate::namco_pac::INPUT_P1_DOWN => {
-                    crate::set_bit_active_low(&mut self.board.in0, 3, pressed)
-                }
-                crate::namco_pac::INPUT_COIN => {
-                    crate::set_bit_active_low(&mut self.board.in0, 5, pressed)
-                }
-                crate::namco_pac::INPUT_P2_UP => {
-                    crate::set_bit_active_low(&mut self.board.in1, 0, pressed)
-                }
-                crate::namco_pac::INPUT_P2_LEFT => {
-                    crate::set_bit_active_low(&mut self.board.in1, 1, pressed)
-                }
-                crate::namco_pac::INPUT_P2_RIGHT => {
-                    crate::set_bit_active_low(&mut self.board.in1, 2, pressed)
-                }
-                crate::namco_pac::INPUT_P2_DOWN => {
-                    crate::set_bit_active_low(&mut self.board.in1, 3, pressed)
-                }
-                crate::namco_pac::INPUT_P1_START => {
-                    crate::set_bit_active_low(&mut self.board.in1, 5, pressed)
-                }
-                crate::namco_pac::INPUT_P2_START => {
-                    crate::set_bit_active_low(&mut self.board.in1, 6, pressed)
-                }
-                _ => {}
-            }
-        }
-
-        fn input_map(&self) -> &[phosphor_core::core::machine::InputButton] {
-            crate::namco_pac::NAMCO_PAC_INPUT_MAP
-        }
-    };
-}
-
-pub(crate) use impl_namco_pac_audio;
-pub(crate) use impl_namco_pac_debug;
-pub(crate) use impl_namco_pac_input;
-pub(crate) use impl_namco_pac_machine_common;
-pub(crate) use impl_namco_pac_renderable;

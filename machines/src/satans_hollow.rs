@@ -345,11 +345,31 @@ impl Bus for SatansHollowSystem {
 // ---------------------------------------------------------------------------
 
 impl Renderable for SatansHollowSystem {
-    mcr2::impl_mcr2_renderable!();
+    fn display_size(&self) -> (u32, u32) {
+        (mcr2::SCREEN_WIDTH, mcr2::SCREEN_HEIGHT)
+    }
+
+    fn render_frame(&self, buffer: &mut [u8]) {
+        self.board.render_frame(buffer);
+    }
+
+    fn overlay_stats(&self) -> Option<String> {
+        let total = mcr2::TILE_ROWS * mcr2::TILE_COLS;
+        Some(format!(
+            "tile dirty: {}/{}",
+            self.board.tiles_redrawn, total
+        ))
+    }
 }
 
 impl AudioSource for SatansHollowSystem {
-    mcr2::impl_mcr2_audio!();
+    fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
+        self.board.fill_audio(buffer)
+    }
+
+    fn audio_sample_rate(&self) -> u32 {
+        44100
+    }
 }
 
 impl InputReceiver for SatansHollowSystem {
@@ -380,7 +400,17 @@ impl InputReceiver for SatansHollowSystem {
 }
 
 impl MachineDebug for SatansHollowSystem {
-    mcr2::impl_mcr2_debug!();
+    fn debug_bus(&self) -> Option<&dyn phosphor_core::core::debug::BusDebug> {
+        Some(&self.board)
+    }
+
+    fn debug_bus_mut(&mut self) -> Option<&mut dyn phosphor_core::core::debug::BusDebug> {
+        Some(&mut self.board)
+    }
+
+    fn cycles_per_frame(&self) -> u64 {
+        mcr2::CYCLES_PER_FRAME
+    }
 
     fn debug_tick(&mut self) -> u32 {
         bus_split!(self, bus => {
@@ -391,7 +421,19 @@ impl MachineDebug for SatansHollowSystem {
 }
 
 impl Machine for SatansHollowSystem {
-    mcr2::impl_mcr2_machine_common!();
+    fn save_nvram(&self) -> Option<&[u8]> {
+        Some(self.board.map.region_data(mcr2::Region::Nvram))
+    }
+
+    fn load_nvram(&mut self, data: &[u8]) {
+        let nvram = self.board.map.region_data_mut(mcr2::Region::Nvram);
+        let len = data.len().min(nvram.len());
+        nvram[..len].copy_from_slice(&data[..len]);
+    }
+
+    fn frame_rate_hz(&self) -> f64 {
+        mcr2::CPU_CLOCK_HZ as f64 / mcr2::CYCLES_PER_FRAME as f64
+    }
 
     fn run_frame(&mut self) {
         bus_split!(self, bus => {
