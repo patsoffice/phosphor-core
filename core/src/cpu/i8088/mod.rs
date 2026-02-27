@@ -103,7 +103,6 @@ pub struct I8088 {
     pub(crate) rep_prefix: Option<RepPrefix>,
     #[save_skip(default)]
     pub(crate) irq_line: bool,
-
     // Cycle counter (total bus cycles executed, not serialized, keeps current value)
     #[save_skip]
     pub(crate) clock: u64,
@@ -185,8 +184,17 @@ impl I8088 {
             ExecState::Halted => {
                 // Check for interrupts that can wake us
                 let ints = bus.check_interrupts(master);
-                if ints.nmi || (ints.irq && flags::get(self.flags, flags::Flag::IF)) {
+                let nmi_edge = crate::cpu::flags::detect_rising_edge(ints.nmi, &mut self.nmi_prev);
+                if nmi_edge {
+                    self.nmi_pending = true;
+                }
+                if self.nmi_pending {
+                    self.nmi_pending = false;
                     self.state = ExecState::Fetch;
+                    self.interrupt(bus, master, 2);
+                } else if ints.irq && flags::get(self.flags, flags::Flag::IF) {
+                    self.state = ExecState::Fetch;
+                    self.interrupt(bus, master, ints.irq_vector);
                 }
             }
         }
@@ -196,8 +204,8 @@ impl I8088 {
     fn handle_interrupts<B: Bus<Address = u32, Data = u8> + ?Sized>(
         &mut self,
         ints: InterruptState,
-        _bus: &mut B,
-        _master: BusMaster,
+        bus: &mut B,
+        master: BusMaster,
     ) -> bool {
         // NMI is edge-triggered
         let nmi_edge = crate::cpu::flags::detect_rising_edge(ints.nmi, &mut self.nmi_prev);
@@ -205,11 +213,17 @@ impl I8088 {
             self.nmi_pending = true;
         }
 
-        // TODO: actually execute interrupt sequence (Step 1.8)
-        // For now, just clear the pending flag
+        // NMI takes priority over IRQ
         if self.nmi_pending {
             self.nmi_pending = false;
-            return false; // Will be true once interrupt handling is implemented
+            self.interrupt(bus, master, 2); // NMI = vector 2
+            return true;
+        }
+
+        // IRQ: level-triggered, masked by IF
+        if ints.irq && flags::get(self.flags, flags::Flag::IF) {
+            self.interrupt(bus, master, ints.irq_vector);
+            return true;
         }
 
         false

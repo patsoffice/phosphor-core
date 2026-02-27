@@ -19,16 +19,10 @@ fn should_skip(filename: &str) -> bool {
         stem,
         // Prefixes (no standalone execution)
         "26" | "2E" | "36" | "3E" | "F0" | "F1" | "F2" | "F3"
-        // PUSHF/POPF (0x9C-0x9D) — not yet implemented
-        | "9C" | "9D"
-        // INT3 (0xCC), INT imm8 (0xCD), INTO (0xCE), IRET (0xCF)
-        | "CC" | "CD" | "CE" | "CF"
-        // IN/OUT (0xE4-0xE7, 0xEC-0xEF)
-        | "E4" | "E5" | "E6" | "E7" | "EC" | "ED" | "EE" | "EF"
-        // Flag control: CLC(F8) STC(F9) CLI(FA) STI(FB) CLD(FC) STD(FD) CMC(F5)
-        | "F5" | "F8" | "F9" | "FA" | "FB" | "FC" | "FD"
-        // HLT (0xF4) — blocks forever in our model
+        // HLT (0xF4) — blocks forever in test harness (no interrupts)
         | "F4"
+        // IN/OUT — test vectors embed I/O data in cycles array, not initial RAM
+        | "E4" | "E5" | "E6" | "E7" | "EC" | "ED" | "EE" | "EF"
         // FPU ESC opcodes (0xD8-0xDF)
         | "D8" | "D9" | "DA" | "DB" | "DC" | "DD" | "DE" | "DF"
         // SALC / undocumented (0xD6)
@@ -48,8 +42,6 @@ fn should_skip(filename: &str) -> bool {
         | "0F"
         // FF.7 — undefined sub-opcode
         | "FF.7"
-        // AAM 0 / DIV / IDIV overflow — these trigger INT 0 (not yet implemented)
-        | "D4" | "F6.6" | "F6.7" | "F7.6" | "F7.7"
     )
 }
 
@@ -140,10 +132,42 @@ fn run_test_case(tc: &I8088TestCase, flags_mask: u16) -> Option<String> {
     let exp_flags = expected!(flags) & flags_mask;
     check!(got_flags, exp_flags, "FLAGS");
 
+    // Detect divide error: if flags have undefined bits and SP decreased by 6,
+    // the instruction fired INT 0 and pushed FLAGS/CS/IP. The pushed FLAGS on
+    // the stack include "undefined" flag bits that the 8088's internal division
+    // microcode sets unpredictably. Mask those bytes like we mask the register.
+    let flags_push_addrs: Option<(u32, u32)> = if flags_mask != 0xFFFF {
+        let exp_sp = expected!(sp);
+        if init.sp.wrapping_sub(exp_sp) == 6 {
+            // FLAGS were pushed at SS:(init_SP - 2), physical = SS*16 + init_SP - 2
+            let base = (init.ss as u32) * 16 + init.sp.wrapping_sub(2) as u32;
+            Some((base & 0xF_FFFF, (base + 1) & 0xF_FFFF))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     // Check memory (final ram contains only changed locations)
     for &(addr, expected) in &tc.final_state.ram {
-        let actual = bus.memory[(addr & 0xF_FFFF) as usize];
+        let phys = addr & 0xF_FFFF;
+        let actual = bus.memory[phys as usize];
         if actual != expected {
+            // If this is a pushed-FLAGS byte, apply the flags mask
+            if let Some((lo_addr, hi_addr)) = flags_push_addrs {
+                if phys == lo_addr {
+                    let mask_lo = (flags_mask & 0xFF) as u8;
+                    if (actual & mask_lo) == (expected & mask_lo) {
+                        continue;
+                    }
+                } else if phys == hi_addr {
+                    let mask_hi = ((flags_mask >> 8) & 0xFF) as u8;
+                    if (actual & mask_hi) == (expected & mask_hi) {
+                        continue;
+                    }
+                }
+            }
             return Some(format!(
                 "{}: RAM[0x{:05X}] (got 0x{:02X} exp 0x{:02X})",
                 tc.name, addr, actual, expected

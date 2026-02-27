@@ -8,7 +8,7 @@ use super::addressing::Operand;
 use super::alu;
 use super::flags::{self, Flag};
 use super::registers::SegReg;
-use super::{I8088, RepPrefix};
+use super::{ExecState, I8088, RepPrefix};
 use crate::core::{Bus, BusMaster};
 
 impl I8088 {
@@ -393,9 +393,21 @@ impl I8088 {
             }
 
             // =============================================================
+            // WAIT (0x9B): wait for TEST pin — no coprocessor, so NOP
+            // PUSHF (0x9C): push FLAGS register
+            // POPF (0x9D): pop FLAGS register
             // SAHF (0x9E): AH → FLAGS low byte (SF, ZF, AF, PF, CF)
             // LAHF (0x9F): FLAGS low byte → AH
             // =============================================================
+            0x9B => {} // WAIT: no-op
+            0x9C => {
+                // PUSHF: push FLAGS with always-one bits
+                self.push16(bus, master, self.flags);
+            }
+            0x9D => {
+                // POPF: pop FLAGS, normalize to enforce always-one and clear undefined
+                self.flags = flags::normalize(self.pop16(bus, master));
+            }
             0x9E => {
                 // SAHF: load SF, ZF, AF, PF, CF from AH
                 // Defined flag bits in low byte: bits 7,6,4,2,0 = mask 0xD5
@@ -554,6 +566,29 @@ impl I8088 {
             }
 
             // =============================================================
+            // INT 3 (0xCC), INT imm8 (0xCD), INTO (0xCE), IRET (0xCF)
+            // =============================================================
+            0xCC => {
+                self.interrupt(bus, master, 3);
+            }
+            0xCD => {
+                let vector = self.fetch_byte(bus, master);
+                self.interrupt(bus, master, vector);
+            }
+            0xCE => {
+                // INTO: interrupt if OF is set (vector 4)
+                if flags::get(self.flags, Flag::OF) {
+                    self.interrupt(bus, master, 4);
+                }
+            }
+            0xCF => {
+                // IRET: pop IP, CS, FLAGS
+                self.ip = self.pop16(bus, master);
+                self.cs = self.pop16(bus, master);
+                self.flags = flags::normalize(self.pop16(bus, master));
+            }
+
+            // =============================================================
             // Shift/Rotate group (0xD0-0xD3)
             //   0xD0: r/m8, 1    0xD1: r/m16, 1
             //   0xD2: r/m8, CL   0xD3: r/m16, CL
@@ -601,8 +636,12 @@ impl I8088 {
                     self.set_al(al % base);
                     let result_al = self.al();
                     flags::update_szp8(&mut self.flags, result_al);
+                } else {
+                    // AAM with base=0: divide error (INT 0)
+                    // The 8088 updates SZP flags as if the result were 0.
+                    flags::update_szp8(&mut self.flags, 0);
+                    self.divide_error(bus, master);
                 }
-                // Division by zero: undefined on 8088 (no INT 0 for AAM)
             }
             0xD5 => {
                 let base = self.fetch_byte(bus, master);
@@ -658,6 +697,32 @@ impl I8088 {
             }
 
             // =============================================================
+            // IN/OUT with immediate port (0xE4-0xE7)
+            // =============================================================
+            0xE4 => {
+                // IN AL, imm8
+                let port = self.fetch_byte(bus, master) as u32;
+                self.set_al(bus.io_read(master, port));
+            }
+            0xE5 => {
+                // IN AX, imm8
+                let port = self.fetch_byte(bus, master) as u32;
+                self.set_al(bus.io_read(master, port));
+                self.set_ah(bus.io_read(master, port.wrapping_add(1)));
+            }
+            0xE6 => {
+                // OUT imm8, AL
+                let port = self.fetch_byte(bus, master) as u32;
+                bus.io_write(master, port, self.al());
+            }
+            0xE7 => {
+                // OUT imm8, AX
+                let port = self.fetch_byte(bus, master) as u32;
+                bus.io_write(master, port, self.al());
+                bus.io_write(master, port.wrapping_add(1), self.ah());
+            }
+
+            // =============================================================
             // CALL near (0xE8): push IP, IP += disp16
             // =============================================================
             0xE8 => {
@@ -690,6 +755,44 @@ impl I8088 {
             0xEB => {
                 let disp = self.fetch_byte(bus, master) as i8;
                 self.ip = self.ip.wrapping_add(disp as u16);
+            }
+
+            // =============================================================
+            // IN/OUT with DX port (0xEC-0xEF)
+            // =============================================================
+            0xEC => {
+                // IN AL, DX
+                let port = self.dx as u32;
+                self.set_al(bus.io_read(master, port));
+            }
+            0xED => {
+                // IN AX, DX
+                let port = self.dx as u32;
+                self.set_al(bus.io_read(master, port));
+                self.set_ah(bus.io_read(master, port.wrapping_add(1)));
+            }
+            0xEE => {
+                // OUT DX, AL
+                let port = self.dx as u32;
+                bus.io_write(master, port, self.al());
+            }
+            0xEF => {
+                // OUT DX, AX
+                let port = self.dx as u32;
+                bus.io_write(master, port, self.al());
+                bus.io_write(master, port.wrapping_add(1), self.ah());
+            }
+
+            // =============================================================
+            // HLT (0xF4): halt until interrupt
+            // CMC (0xF5): complement carry flag
+            // =============================================================
+            0xF4 => {
+                self.state = ExecState::Halted;
+            }
+            0xF5 => {
+                let cf = flags::get(self.flags, Flag::CF);
+                flags::set(&mut self.flags, Flag::CF, !cf);
             }
 
             // =============================================================
@@ -744,22 +847,34 @@ impl I8088 {
                                 let remainder = self.ax % val;
                                 self.set_al(quotient as u8);
                                 self.set_ah(remainder as u8);
+                            } else {
+                                self.divide_error(bus, master);
                             }
-                            // quotient > 0xFF: divide overflow (INT 0, Step 1.8)
+                        } else {
+                            self.divide_error(bus, master);
                         }
-                        // val == 0: divide by zero (INT 0, Step 1.8)
                     }
                     7 => {
                         // IDIV r/m8: AL = AX / r/m8, AH = AX % r/m8 (signed)
+                        // 8088 quirk: REP/REPNE prefix negates the quotient.
+                        // 8088 quirk: quotient = -128 triggers divide error
+                        // (valid range is -127..=127, not -128..=127).
                         let val = self.read_operand8(operand, bus, master) as i8;
                         if val != 0 {
                             let dividend = self.ax as i16;
-                            let quotient = dividend / val as i16;
-                            if (-128..=127).contains(&quotient) {
+                            let mut quotient = dividend / val as i16;
+                            if self.rep_prefix.is_some() {
+                                quotient = quotient.wrapping_neg();
+                            }
+                            if (-127..=127).contains(&quotient) {
                                 let remainder = dividend % val as i16;
                                 self.set_al(quotient as u8);
                                 self.set_ah(remainder as u8);
+                            } else {
+                                self.divide_error(bus, master);
                             }
+                        } else {
+                            self.divide_error(bus, master);
                         }
                     }
                     _ => {}
@@ -821,20 +936,33 @@ impl I8088 {
                                 let remainder = dividend % val;
                                 self.ax = quotient as u16;
                                 self.dx = remainder as u16;
+                            } else {
+                                self.divide_error(bus, master);
                             }
+                        } else {
+                            self.divide_error(bus, master);
                         }
                     }
                     7 => {
                         // IDIV r/m16: AX = DX:AX / r/m16, DX = DX:AX % r/m16 (signed)
+                        // 8088 quirk: REP/REPNE prefix negates the quotient.
+                        // 8088 quirk: quotient = -32768 triggers divide error.
                         let val = self.read_operand16(operand, bus, master) as i16;
                         if val != 0 {
                             let dividend = (((self.dx as u32) << 16) | self.ax as u32) as i32;
-                            let quotient = dividend / val as i32;
-                            if (-32768..=32767).contains(&quotient) {
+                            let mut quotient = dividend / val as i32;
+                            if self.rep_prefix.is_some() {
+                                quotient = quotient.wrapping_neg();
+                            }
+                            if (-32767..=32767).contains(&quotient) {
                                 let remainder = dividend % val as i32;
                                 self.ax = quotient as u16;
                                 self.dx = remainder as u16;
+                            } else {
+                                self.divide_error(bus, master);
                             }
+                        } else {
+                            self.divide_error(bus, master);
                         }
                     }
                     _ => {}
@@ -930,10 +1058,54 @@ impl I8088 {
             }
 
             // =============================================================
+            // Flag control (0xF8-0xFD)
+            // =============================================================
+            0xF8 => flags::set(&mut self.flags, Flag::CF, false), // CLC
+            0xF9 => flags::set(&mut self.flags, Flag::CF, true),  // STC
+            0xFA => flags::set(&mut self.flags, Flag::IF, false), // CLI
+            0xFB => flags::set(&mut self.flags, Flag::IF, true),  // STI
+            0xFC => flags::set(&mut self.flags, Flag::DF, false), // CLD
+            0xFD => flags::set(&mut self.flags, Flag::DF, true),  // STD
+
+            // =============================================================
             // Unimplemented opcode — silently skip
             // =============================================================
             _ => {}
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Interrupt helper
+    // -----------------------------------------------------------------
+
+    /// Execute an interrupt to the given vector number.
+    /// Pushes FLAGS, CS, IP; clears IF and TF; loads CS:IP from IVT at 0000:vector*4.
+    pub(crate) fn interrupt<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+        vector: u8,
+    ) {
+        self.push16(bus, master, self.flags);
+        flags::set(&mut self.flags, Flag::IF, false);
+        flags::set(&mut self.flags, Flag::TF, false);
+        self.push16(bus, master, self.cs);
+        self.push16(bus, master, self.ip);
+        // IVT: 4 bytes per vector at physical 0000:(vector*4)
+        let ivt_addr = (vector as u16).wrapping_mul(4);
+        self.ip = self.read_word(bus, master, 0, ivt_addr);
+        self.cs = self.read_word(bus, master, 0, ivt_addr.wrapping_add(2));
+    }
+
+    /// Trigger a divide-error exception (INT 0).
+    /// On the 8088, the pushed IP is the current IP (past the instruction),
+    /// not the faulting instruction address. Registers are not modified.
+    fn divide_error<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.interrupt(bus, master, 0);
     }
 
     // -----------------------------------------------------------------
@@ -4359,5 +4531,259 @@ mod tests {
         cpu.execute(0xAE, &mut bus, M); // SCASB
         assert!(fl::get(cpu.flags, Flag::ZF));
         assert_eq!(cpu.di, 0x000F); // decremented
+    }
+
+    // =====================================================================
+    // Flag control instructions
+    // =====================================================================
+
+    #[test]
+    fn flag_control_clc_stc_cmc() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+
+        fl::set(&mut cpu.flags, Flag::CF, true);
+        cpu.execute(0xF8, &mut bus, M); // CLC
+        assert!(!fl::get(cpu.flags, Flag::CF));
+
+        cpu.execute(0xF9, &mut bus, M); // STC
+        assert!(fl::get(cpu.flags, Flag::CF));
+
+        cpu.execute(0xF5, &mut bus, M); // CMC
+        assert!(!fl::get(cpu.flags, Flag::CF));
+        cpu.execute(0xF5, &mut bus, M); // CMC again
+        assert!(fl::get(cpu.flags, Flag::CF));
+    }
+
+    #[test]
+    fn flag_control_cli_sti() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+
+        fl::set(&mut cpu.flags, Flag::IF, true);
+        cpu.execute(0xFA, &mut bus, M); // CLI
+        assert!(!fl::get(cpu.flags, Flag::IF));
+
+        cpu.execute(0xFB, &mut bus, M); // STI
+        assert!(fl::get(cpu.flags, Flag::IF));
+    }
+
+    #[test]
+    fn flag_control_cld_std() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+
+        fl::set(&mut cpu.flags, Flag::DF, true);
+        cpu.execute(0xFC, &mut bus, M); // CLD
+        assert!(!fl::get(cpu.flags, Flag::DF));
+
+        cpu.execute(0xFD, &mut bus, M); // STD
+        assert!(fl::get(cpu.flags, Flag::DF));
+    }
+
+    // =====================================================================
+    // PUSHF / POPF
+    // =====================================================================
+
+    #[test]
+    fn pushf_popf_round_trip() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+
+        // Set some flags
+        fl::set(&mut cpu.flags, Flag::CF, true);
+        fl::set(&mut cpu.flags, Flag::ZF, true);
+        fl::set(&mut cpu.flags, Flag::SF, true);
+        fl::set(&mut cpu.flags, Flag::IF, true);
+        let saved_flags = cpu.flags;
+
+        cpu.execute(0x9C, &mut bus, M); // PUSHF
+
+        // Clear the flags
+        fl::set(&mut cpu.flags, Flag::CF, false);
+        fl::set(&mut cpu.flags, Flag::ZF, false);
+        fl::set(&mut cpu.flags, Flag::SF, false);
+        fl::set(&mut cpu.flags, Flag::IF, false);
+
+        cpu.execute(0x9D, &mut bus, M); // POPF
+        assert_eq!(cpu.flags, saved_flags);
+    }
+
+    // =====================================================================
+    // INT / IRET
+    // =====================================================================
+
+    #[test]
+    fn int_n_vectors_correctly() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+
+        // Set up IVT for vector 0x21 at physical 0x0084 (0x21 * 4)
+        bus.mem[0x0084] = 0x00; // IP low
+        bus.mem[0x0085] = 0x10; // IP high = 0x1000
+        bus.mem[0x0086] = 0x00; // CS low
+        bus.mem[0x0087] = 0xF0; // CS high = 0xF000
+
+        let old_cs = cpu.cs;
+        fl::set(&mut cpu.flags, Flag::IF, true);
+        fl::set(&mut cpu.flags, Flag::TF, true);
+        let flags_before = cpu.flags;
+
+        // INT 0x21
+        bus.mem[0x100] = 0x21; // vector number
+        cpu.execute(0xCD, &mut bus, M);
+
+        // CS:IP should be loaded from IVT
+        assert_eq!(cpu.ip, 0x1000);
+        assert_eq!(cpu.cs, 0xF000);
+        // IF and TF should be cleared
+        assert!(!fl::get(cpu.flags, Flag::IF));
+        assert!(!fl::get(cpu.flags, Flag::TF));
+
+        // Stack should have: FLAGS, old CS, old IP (return addr = 0x0101)
+        // SP was 0x200, now should be 0x200 - 6 = 0x1FA
+        assert_eq!(cpu.sp, 0x01FA);
+        // Check pushed values (SS:SP base = 0x30000)
+        let pushed_ip = cpu.read_word(&mut bus, M, cpu.ss, cpu.sp);
+        let pushed_cs = cpu.read_word(&mut bus, M, cpu.ss, cpu.sp.wrapping_add(2));
+        let pushed_flags = cpu.read_word(&mut bus, M, cpu.ss, cpu.sp.wrapping_add(4));
+        assert_eq!(pushed_ip, 0x0101); // IP after fetching imm8
+        assert_eq!(pushed_cs, old_cs);
+        assert_eq!(pushed_flags, flags_before);
+    }
+
+    #[test]
+    fn int3_breakpoint() {
+        let (mut cpu, mut bus) = setup();
+        // Set up IVT for vector 3 at physical 0x000C
+        bus.mem[0x000C] = 0x50;
+        bus.mem[0x000D] = 0x00; // IP = 0x0050
+        bus.mem[0x000E] = 0x00;
+        bus.mem[0x000F] = 0x80; // CS = 0x8000
+
+        cpu.execute(0xCC, &mut bus, M); // INT 3
+        assert_eq!(cpu.ip, 0x0050);
+        assert_eq!(cpu.cs, 0x8000);
+    }
+
+    #[test]
+    fn iret_restores_state() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+
+        // Simulate an interrupt: push FLAGS, CS, IP
+        let orig_flags = cpu.flags | Flag::CF as u16 | Flag::IF as u16;
+        cpu.push16(&mut bus, M, orig_flags); // FLAGS
+        cpu.push16(&mut bus, M, 0xABCD); // CS
+        cpu.push16(&mut bus, M, 0x1234); // IP
+
+        cpu.execute(0xCF, &mut bus, M); // IRET
+        assert_eq!(cpu.ip, 0x1234);
+        assert_eq!(cpu.cs, 0xABCD);
+        assert_eq!(cpu.flags, fl::normalize(orig_flags));
+    }
+
+    #[test]
+    fn into_fires_when_of_set() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+
+        // Set up IVT for vector 4 (overflow) at physical 0x0010
+        bus.mem[0x0010] = 0x00;
+        bus.mem[0x0011] = 0x20; // IP = 0x2000
+        bus.mem[0x0012] = 0x00;
+        bus.mem[0x0013] = 0x50; // CS = 0x5000
+
+        // INTO with OF clear — should NOT fire
+        fl::set(&mut cpu.flags, Flag::OF, false);
+        cpu.execute(0xCE, &mut bus, M);
+        assert_eq!(cpu.cs, 0x0000); // unchanged
+
+        // INTO with OF set — should fire
+        fl::set(&mut cpu.flags, Flag::OF, true);
+        cpu.execute(0xCE, &mut bus, M);
+        assert_eq!(cpu.ip, 0x2000);
+        assert_eq!(cpu.cs, 0x5000);
+    }
+
+    // =====================================================================
+    // IN / OUT
+    // =====================================================================
+
+    #[test]
+    fn in_al_imm8() {
+        let (mut cpu, mut bus) = setup();
+        // io_read defaults to memory read, so set up a value at addr 0x42
+        bus.mem[0x42] = 0xAB;
+        bus.mem[0x100] = 0x42; // port number
+        cpu.execute(0xE4, &mut bus, M); // IN AL, 0x42
+        assert_eq!(cpu.al(), 0xAB);
+    }
+
+    #[test]
+    fn out_imm8_al() {
+        let (mut cpu, mut bus) = setup();
+        cpu.set_al(0xCD);
+        bus.mem[0x100] = 0x80; // port number
+        cpu.execute(0xE6, &mut bus, M); // OUT 0x80, AL
+        // io_write defaults to memory write
+        assert_eq!(bus.mem[0x80], 0xCD);
+    }
+
+    #[test]
+    fn in_al_dx() {
+        let (mut cpu, mut bus) = setup();
+        cpu.dx = 0x0060;
+        bus.mem[0x60] = 0x77;
+        cpu.execute(0xEC, &mut bus, M); // IN AL, DX
+        assert_eq!(cpu.al(), 0x77);
+    }
+
+    #[test]
+    fn out_dx_al() {
+        let (mut cpu, mut bus) = setup();
+        cpu.dx = 0x0061;
+        cpu.set_al(0xEE);
+        cpu.execute(0xEE, &mut bus, M); // OUT DX, AL
+        assert_eq!(bus.mem[0x61], 0xEE);
+    }
+
+    // =====================================================================
+    // DIV overflow → INT 0
+    // =====================================================================
+
+    #[test]
+    fn div_by_zero_triggers_int0() {
+        let (mut cpu, mut bus) = setup();
+        // Set up IVT for vector 0 at physical 0x0000
+        bus.mem[0x0000] = 0x00;
+        bus.mem[0x0001] = 0x30; // IP = 0x3000
+        bus.mem[0x0002] = 0x00;
+        bus.mem[0x0003] = 0x70; // CS = 0x7000
+
+        cpu.ax = 0x1234;
+        // modrm = 0x36: mod=0, reg=6 (DIV), rm=6 (direct address)
+        bus.mem[0x100] = 0x36;
+        bus.mem[0x101] = 0x00; // address low
+        bus.mem[0x102] = 0x50; // address high = 0x5000
+        // Memory at DS:0x5000 = 0 (default) -> divide by zero
+        cpu.execute(0xF6, &mut bus, M);
+
+        // Should have vectored to INT 0 handler
+        assert_eq!(cpu.ip, 0x3000);
+        assert_eq!(cpu.cs, 0x7000);
+        // AX should be unchanged (instruction didn't complete)
+        assert_eq!(cpu.ax, 0x1234);
+    }
+
+    // =====================================================================
+    // HLT
+    // =====================================================================
+
+    #[test]
+    fn hlt_enters_halted_state() {
+        let (mut cpu, mut bus) = setup();
+        cpu.execute(0xF4, &mut bus, M); // HLT
+        assert!(matches!(cpu.state, super::ExecState::Halted));
     }
 }
