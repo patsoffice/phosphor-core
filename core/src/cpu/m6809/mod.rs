@@ -14,6 +14,17 @@ use crate::cpu::{
 pub use super::m68xx::CcFlag;
 use super::m68xx::M68xxAlu;
 
+/// Interrupt type being processed by the M6809 interrupt state machine.
+/// SWI/SWI2/SWI3 have their own handlers and do not use this enum.
+#[repr(u8)]
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub(crate) enum InterruptType {
+    None = 0,
+    Nmi = 1,
+    Firq = 2,
+    Irq = 3,
+}
+
 pub struct M6809 {
     // Registers (a,b,x,y,u,s,pc,cc)
     pub a: u8,
@@ -30,8 +41,8 @@ pub struct M6809 {
     pub(crate) state: ExecState,
     pub(crate) opcode: u8,
     pub(crate) temp_addr: u16,
-    /// Interrupt type being processed: 0=none, 1=NMI, 2=FIRQ, 3=IRQ
-    pub(crate) interrupt_type: u8,
+    /// Interrupt type being processed
+    pub(crate) interrupt_type: InterruptType,
     /// Previous NMI line state for edge detection
     pub(crate) nmi_previous: bool,
     /// Countdown for internal cycles during indexed addressing
@@ -77,7 +88,7 @@ impl M6809 {
             state: ExecState::Fetch,
             opcode: 0,
             temp_addr: 0,
-            interrupt_type: 0,
+            interrupt_type: InterruptType::None,
             nmi_previous: false,
             indexed_internal: 0,
             halted: false,
@@ -553,21 +564,21 @@ impl M6809 {
         let nmi_edge = crate::cpu::flags::detect_rising_edge(ints.nmi, &mut self.nmi_previous);
 
         if nmi_edge {
-            self.interrupt_type = 1; // NMI
+            self.interrupt_type = InterruptType::Nmi;
             self.state = ExecState::Interrupt(0);
             return true;
         }
 
         // FIRQ: level-sensitive, masked by F flag
         if ints.firq && (self.cc & CcFlag::F as u8) == 0 {
-            self.interrupt_type = 2; // FIRQ
+            self.interrupt_type = InterruptType::Firq;
             self.state = ExecState::Interrupt(0);
             return true;
         }
 
         // IRQ: level-sensitive, masked by I flag
         if ints.irq && (self.cc & CcFlag::I as u8) == 0 {
-            self.interrupt_type = 3; // IRQ
+            self.interrupt_type = InterruptType::Irq;
             self.state = ExecState::Interrupt(0);
             return true;
         }
@@ -687,7 +698,7 @@ impl Saveable for M6809 {
         w.write_u8(self.cc);
         // Internal state
         w.write_bool(self.nmi_previous);
-        w.write_u8(self.interrupt_type);
+        w.write_u8(self.interrupt_type as u8);
         w.write_bool(self.halted);
         // ExecState tag
         let tag = match self.state {
@@ -710,7 +721,12 @@ impl Saveable for M6809 {
         self.pc = r.read_u16_le()?;
         self.cc = r.read_u8()?;
         self.nmi_previous = r.read_bool()?;
-        self.interrupt_type = r.read_u8()?;
+        self.interrupt_type = match r.read_u8()? {
+            1 => InterruptType::Nmi,
+            2 => InterruptType::Firq,
+            3 => InterruptType::Irq,
+            _ => InterruptType::None,
+        };
         self.halted = r.read_bool()?;
         let tag = r.read_u8()?;
         self.state = match tag {

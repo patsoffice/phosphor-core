@@ -32,6 +32,16 @@ impl From<StatusFlag> for u8 {
     }
 }
 
+/// Interrupt type being processed by the M6502 interrupt state machine.
+/// BRK (software interrupt) has its own handler and does not use this enum.
+#[repr(u8)]
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub(crate) enum InterruptType {
+    None = 0,
+    Nmi = 1,
+    Irq = 2,
+}
+
 pub struct M6502 {
     // Registers
     pub a: u8,
@@ -47,8 +57,8 @@ pub struct M6502 {
     pub(crate) temp_addr: u16,
     /// Temporary data storage for multi-cycle operations (RMW operand, address bytes)
     pub(crate) temp_data: u8,
-    /// Interrupt type being processed: 0=none, 1=NMI, 2=IRQ, 3=BRK
-    pub(crate) interrupt_type: u8,
+    /// Interrupt type being processed (BRK has its own handler)
+    pub(crate) interrupt_type: InterruptType,
     /// Previous NMI line state for edge detection
     pub(crate) nmi_previous: bool,
 }
@@ -80,7 +90,7 @@ impl M6502 {
             opcode: 0,
             temp_addr: 0,
             temp_data: 0,
-            interrupt_type: 0,
+            interrupt_type: InterruptType::None,
             nmi_previous: false,
         }
     }
@@ -513,14 +523,14 @@ impl M6502 {
         let nmi_edge = crate::cpu::flags::detect_rising_edge(ints.nmi, &mut self.nmi_previous);
 
         if nmi_edge {
-            self.interrupt_type = 1; // NMI
+            self.interrupt_type = InterruptType::Nmi;
             self.state = ExecState::Interrupt(0);
             return true;
         }
 
         // IRQ is level-triggered, masked by I flag
         if ints.irq && (self.p & StatusFlag::I as u8) == 0 {
-            self.interrupt_type = 2; // IRQ
+            self.interrupt_type = InterruptType::Irq;
             self.state = ExecState::Interrupt(0);
             return true;
         }
@@ -565,7 +575,7 @@ impl M6502 {
                 // Set I flag, read vector low byte
                 self.set_flag(StatusFlag::I, true);
                 let vector_addr = match self.interrupt_type {
-                    1 => 0xFFFA, // NMI
+                    InterruptType::Nmi => 0xFFFA,
                     _ => 0xFFFE, // IRQ
                 };
                 self.pc = bus.read(master, vector_addr) as u16;
@@ -574,11 +584,11 @@ impl M6502 {
             5 => {
                 // Read vector high byte
                 let vector_addr = match self.interrupt_type {
-                    1 => 0xFFFB, // NMI
+                    InterruptType::Nmi => 0xFFFB,
                     _ => 0xFFFF, // IRQ
                 };
                 self.pc |= (bus.read(master, vector_addr) as u16) << 8;
-                self.interrupt_type = 0;
+                self.interrupt_type = InterruptType::None;
                 self.state = ExecState::Fetch;
             }
             _ => self.state = ExecState::Fetch,
@@ -676,7 +686,7 @@ impl Saveable for M6502 {
         w.write_u8(self.sp);
         w.write_u8(self.p);
         w.write_bool(self.nmi_previous);
-        w.write_u8(self.interrupt_type);
+        w.write_u8(self.interrupt_type as u8);
     }
 
     fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
@@ -688,7 +698,11 @@ impl Saveable for M6502 {
         self.sp = r.read_u8()?;
         self.p = r.read_u8()?;
         self.nmi_previous = r.read_bool()?;
-        self.interrupt_type = r.read_u8()?;
+        self.interrupt_type = match r.read_u8()? {
+            1 => InterruptType::Nmi,
+            2 => InterruptType::Irq,
+            _ => InterruptType::None,
+        };
         self.state = ExecState::Fetch;
         self.opcode = 0;
         self.temp_addr = 0;

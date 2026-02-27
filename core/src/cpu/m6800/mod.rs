@@ -16,6 +16,16 @@ use super::m68xx::M68xxAlu;
 /// Bits 6-7 of the CC register are unused on the M6800 and always read as 1.
 const CC_UNUSED_BITS: u8 = 0xC0;
 
+/// Interrupt type being processed by the M6800 interrupt state machine.
+#[repr(u8)]
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub(crate) enum InterruptType {
+    None = 0,
+    Nmi = 1,
+    Irq = 2,
+    Swi = 3,
+}
+
 pub struct M6800 {
     // Registers
     pub a: u8,
@@ -31,8 +41,8 @@ pub struct M6800 {
     pub(crate) temp_addr: u16,
     /// Temporary data storage for multi-cycle operations (RMW operand, 16-bit hi byte)
     pub(crate) temp_data: u8,
-    /// Interrupt type being processed: 0=none, 1=NMI, 2=IRQ, 3=SWI
-    pub(crate) interrupt_type: u8,
+    /// Interrupt type being processed
+    pub(crate) interrupt_type: InterruptType,
     /// Previous NMI line state for edge detection
     pub(crate) nmi_previous: bool,
     /// True when the bus HALT line is asserted (TSC logic)
@@ -90,7 +100,7 @@ impl M6800 {
             opcode: 0,
             temp_addr: 0,
             temp_data: 0,
-            interrupt_type: 0,
+            interrupt_type: InterruptType::None,
             nmi_previous: false,
             halted: false,
         }
@@ -660,14 +670,14 @@ impl M6800 {
         let nmi_edge = crate::cpu::flags::detect_rising_edge(ints.nmi, &mut self.nmi_previous);
 
         if nmi_edge {
-            self.interrupt_type = 1; // NMI
+            self.interrupt_type = InterruptType::Nmi;
             self.state = ExecState::Interrupt(0);
             return true;
         }
 
         // IRQ: level-sensitive, masked by I flag
         if ints.irq && (self.cc & CcFlag::I as u8) == 0 {
-            self.interrupt_type = 2; // IRQ
+            self.interrupt_type = InterruptType::Irq;
             self.state = ExecState::Interrupt(0);
             return true;
         }
@@ -770,7 +780,7 @@ impl Saveable for M6800 {
         w.write_u16_le(self.pc);
         w.write_u8(self.cc);
         w.write_bool(self.nmi_previous);
-        w.write_u8(self.interrupt_type);
+        w.write_u8(self.interrupt_type as u8);
         w.write_bool(self.halted);
         let tag = match self.state {
             ExecState::WaitForInterrupt => STATE_TAG_WAIT,
@@ -788,7 +798,12 @@ impl Saveable for M6800 {
         self.pc = r.read_u16_le()?;
         self.cc = r.read_u8()?;
         self.nmi_previous = r.read_bool()?;
-        self.interrupt_type = r.read_u8()?;
+        self.interrupt_type = match r.read_u8()? {
+            1 => InterruptType::Nmi,
+            2 => InterruptType::Irq,
+            3 => InterruptType::Swi,
+            _ => InterruptType::None,
+        };
         self.halted = r.read_bool()?;
         let tag = r.read_u8()?;
         self.state = match tag {

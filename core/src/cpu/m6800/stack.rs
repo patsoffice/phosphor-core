@@ -1,4 +1,4 @@
-use super::{CcFlag, ExecState, M6800};
+use super::{CcFlag, ExecState, InterruptType, M6800};
 use crate::core::{Bus, BusMaster};
 use crate::cpu::m68xx::M68xxAlu;
 
@@ -106,7 +106,7 @@ impl M6800 {
                 self.state = ExecState::Execute(self.opcode, 1);
             }
             1 => {
-                self.interrupt_type = 3; // SWI
+                self.interrupt_type = InterruptType::Swi;
                 self.state = ExecState::Interrupt(0);
             }
             _ => self.state = ExecState::Fetch,
@@ -299,10 +299,10 @@ impl M6800 {
             7 => {
                 self.set_flag(CcFlag::I, true);
                 let vector_addr = match self.interrupt_type {
-                    1 => 0xFFFC, // NMI
-                    2 => 0xFFF8, // IRQ
-                    3 => 0xFFFA, // SWI
-                    _ => 0xFFFE, // RESET
+                    InterruptType::Nmi => 0xFFFC,
+                    InterruptType::Irq => 0xFFF8,
+                    InterruptType::Swi => 0xFFFA,
+                    InterruptType::None => unreachable!(),
                 };
                 self.temp_addr = (bus.read(master, vector_addr) as u16) << 8;
                 self.state = ExecState::Interrupt(8);
@@ -310,14 +310,14 @@ impl M6800 {
             // Read vector low byte
             8 => {
                 let vector_addr = match self.interrupt_type {
-                    1 => 0xFFFD, // NMI
-                    2 => 0xFFF9, // IRQ
-                    3 => 0xFFFB, // SWI
-                    _ => 0xFFFF, // RESET
+                    InterruptType::Nmi => 0xFFFD,
+                    InterruptType::Irq => 0xFFF9,
+                    InterruptType::Swi => 0xFFFB,
+                    InterruptType::None => unreachable!(),
                 };
                 self.temp_addr |= bus.read(master, vector_addr) as u16;
                 self.pc = self.temp_addr;
-                self.interrupt_type = 0;
+                self.interrupt_type = InterruptType::None;
                 self.state = ExecState::Fetch;
             }
             _ => self.state = ExecState::Fetch,
@@ -336,7 +336,7 @@ impl M6800 {
         let nmi_edge = crate::cpu::flags::detect_rising_edge(ints.nmi, &mut self.nmi_previous);
 
         if nmi_edge {
-            self.interrupt_type = 1;
+            self.interrupt_type = InterruptType::Nmi;
             // Skip pushing (already done by WAI), go straight to vector fetch
             self.set_flag(CcFlag::I, true);
             self.state = ExecState::Interrupt(7);
@@ -344,7 +344,7 @@ impl M6800 {
         }
 
         if ints.irq && (self.cc & CcFlag::I as u8) == 0 {
-            self.interrupt_type = 2;
+            self.interrupt_type = InterruptType::Irq;
             self.set_flag(CcFlag::I, true);
             self.state = ExecState::Interrupt(7);
         }

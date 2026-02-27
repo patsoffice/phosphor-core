@@ -1,4 +1,4 @@
-use super::{CcFlag, ExecState, M6809};
+use super::{CcFlag, ExecState, InterruptType, M6809};
 use crate::core::{Bus, BusMaster};
 
 impl M6809 {
@@ -471,7 +471,7 @@ impl M6809 {
 
     /// Execute hardware interrupt push+vector sequence.
     /// Called from execute_cycle when state is Interrupt(cycle).
-    /// interrupt_type: 1=NMI, 2=FIRQ, 3=IRQ (stored in self.interrupt_type).
+    /// Dispatches by self.interrupt_type: Nmi/Irq → interrupt_full, Firq → interrupt_firq.
     pub(crate) fn execute_interrupt<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
         cycle: u8,
@@ -494,9 +494,11 @@ impl M6809 {
             }
             // Full interrupt response (dispatched by type)
             _ => match self.interrupt_type {
-                1 | 3 => self.interrupt_full(cycle, bus, master), // NMI or IRQ
-                2 => self.interrupt_firq(cycle, bus, master),     // FIRQ
-                _ => {
+                InterruptType::Nmi | InterruptType::Irq => {
+                    self.interrupt_full(cycle, bus, master);
+                }
+                InterruptType::Firq => self.interrupt_firq(cycle, bus, master),
+                InterruptType::None => {
                     self.state = ExecState::Fetch;
                 }
             },
@@ -538,8 +540,8 @@ impl M6809 {
             14 => {
                 // Internal: set mask flags (matches SWI cycle 14)
                 let mask = match self.interrupt_type {
-                    1 => CcFlag::I as u8 | CcFlag::F as u8, // NMI
-                    _ => CcFlag::I as u8,                   // IRQ
+                    InterruptType::Nmi => CcFlag::I as u8 | CcFlag::F as u8,
+                    _ => CcFlag::I as u8, // IRQ (FIRQ doesn't reach here)
                 };
                 self.cc |= mask;
                 self.state = ExecState::Interrupt(15);
@@ -547,7 +549,7 @@ impl M6809 {
             15 => {
                 // Read vector high byte (matches SWI cycle 15)
                 let vector = match self.interrupt_type {
-                    1 => 0xFFFC_u16, // NMI
+                    InterruptType::Nmi => 0xFFFC_u16,
                     _ => 0xFFF8_u16, // IRQ
                 };
                 let hi = bus.read(master, vector);
@@ -557,7 +559,7 @@ impl M6809 {
             16 => {
                 // Read vector low byte (matches SWI cycle 16)
                 let vector_lo = match self.interrupt_type {
-                    1 => 0xFFFD_u16, // NMI
+                    InterruptType::Nmi => 0xFFFD_u16,
                     _ => 0xFFF9_u16, // IRQ
                 };
                 let lo = bus.read(master, vector_lo);
@@ -692,13 +694,13 @@ impl M6809 {
 
         // Determine if the interrupt can be taken (not masked)
         if nmi_edge {
-            self.interrupt_type = 1;
+            self.interrupt_type = InterruptType::Nmi;
             self.state = ExecState::Interrupt(0);
         } else if ints.firq && (self.cc & CcFlag::F as u8) == 0 {
-            self.interrupt_type = 2;
+            self.interrupt_type = InterruptType::Firq;
             self.state = ExecState::Interrupt(0);
         } else if ints.irq && (self.cc & CcFlag::I as u8) == 0 {
-            self.interrupt_type = 3;
+            self.interrupt_type = InterruptType::Irq;
             self.state = ExecState::Interrupt(0);
         } else {
             // Interrupt is masked: just wake up, continue to next instruction

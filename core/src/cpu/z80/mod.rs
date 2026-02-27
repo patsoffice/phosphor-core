@@ -83,6 +83,15 @@ pub enum IndexMode {
     IY,
 }
 
+/// Z80 interrupt response type, stored in ExecState::Interrupt.
+#[repr(u8)]
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub(crate) enum InterruptType {
+    Nmi = 0,
+    IrqIm01 = 1,
+    IrqIm2 = 2,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) enum ExecState {
     Fetch,           // M1 T1: address on bus, reset prefix state
@@ -101,8 +110,8 @@ pub(crate) enum ExecState {
     PrefixIndexCB_FetchOp(u8),
     ExecuteIndexCB(u8, u8),
 
-    // Interrupt response (int_type, cycle). int_type: 0=NMI, 1=IRQ IM0/1, 2=IRQ IM2.
-    Interrupt(u8, u8),
+    /// Interrupt response sequence (type, cycle counter).
+    Interrupt(InterruptType, u8),
 }
 
 impl Default for Z80 {
@@ -330,7 +339,7 @@ impl Z80 {
                             if self.halted {
                                 self.halted = false;
                             }
-                            self.state = ExecState::Interrupt(0, 0); // NMI
+                            self.state = ExecState::Interrupt(InterruptType::Nmi, 0);
                             return;
                         }
 
@@ -339,7 +348,11 @@ impl Z80 {
                             if self.halted {
                                 self.halted = false;
                             }
-                            let int_type = if self.im == 2 { 2 } else { 1 };
+                            let int_type = if self.im == 2 {
+                                InterruptType::IrqIm2
+                            } else {
+                                InterruptType::IrqIm01
+                            };
                             self.state = ExecState::Interrupt(int_type, 0);
                             return;
                         }
@@ -444,39 +457,39 @@ impl Z80 {
         }
     }
 
-    /// Interrupt response handler. int_type: 0=NMI, 1=IRQ IM0/1, 2=IRQ IM2.
+    /// Interrupt response handler.
     /// The Fetch cycle that detected the interrupt counts as T1, so handler cycles
     /// are T2..Tn: NMI 10 cycles (11T), IRQ IM1 12 cycles (13T), IRQ IM2 18 cycles (19T).
     fn execute_interrupt<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
-        int_type: u8,
+        int_type: InterruptType,
         cycle: u8,
         bus: &mut B,
         master: BusMaster,
     ) {
         match int_type {
             // NMI — 11T total (1 Fetch + 10 handler cycles 0-9)
-            0 => match cycle {
+            InterruptType::Nmi => match cycle {
                 0 => {
                     // Acknowledge + disable IFF1 (IFF2 preserved for RETN)
                     self.iff1 = false;
                     self.r = (self.r & 0x80) | (self.r.wrapping_add(1) & 0x7F);
-                    self.state = ExecState::Interrupt(0, 1);
+                    self.state = ExecState::Interrupt(int_type, 1);
                 }
                 1 | 2 | 4 | 5 | 7 | 8 => {
-                    self.state = ExecState::Interrupt(0, cycle + 1);
+                    self.state = ExecState::Interrupt(int_type, cycle + 1);
                 }
                 3 => {
                     // Push PC high
                     self.sp = self.sp.wrapping_sub(1);
                     bus.write(master, self.sp, (self.pc >> 8) as u8);
-                    self.state = ExecState::Interrupt(0, 4);
+                    self.state = ExecState::Interrupt(int_type, 4);
                 }
                 6 => {
                     // Push PC low
                     self.sp = self.sp.wrapping_sub(1);
                     bus.write(master, self.sp, self.pc as u8);
-                    self.state = ExecState::Interrupt(0, 7);
+                    self.state = ExecState::Interrupt(int_type, 7);
                 }
                 9 => {
                     // Jump to NMI vector
@@ -487,28 +500,28 @@ impl Z80 {
                 _ => unreachable!(),
             },
             // IRQ IM0/IM1 — 13T total (1 Fetch + 12 handler cycles 0-11)
-            1 => match cycle {
+            InterruptType::IrqIm01 => match cycle {
                 0 => {
                     // Acknowledge + disable interrupts
                     self.iff1 = false;
                     self.iff2 = false;
                     self.r = (self.r & 0x80) | (self.r.wrapping_add(1) & 0x7F);
-                    self.state = ExecState::Interrupt(1, 1);
+                    self.state = ExecState::Interrupt(int_type, 1);
                 }
                 1 | 2 | 3 | 4 | 6 | 7 | 8 | 10 => {
-                    self.state = ExecState::Interrupt(1, cycle + 1);
+                    self.state = ExecState::Interrupt(int_type, cycle + 1);
                 }
                 5 => {
                     // Push PC high
                     self.sp = self.sp.wrapping_sub(1);
                     bus.write(master, self.sp, (self.pc >> 8) as u8);
-                    self.state = ExecState::Interrupt(1, 6);
+                    self.state = ExecState::Interrupt(int_type, 6);
                 }
                 9 => {
                     // Push PC low
                     self.sp = self.sp.wrapping_sub(1);
                     bus.write(master, self.sp, self.pc as u8);
-                    self.state = ExecState::Interrupt(1, 10);
+                    self.state = ExecState::Interrupt(int_type, 10);
                 }
                 11 => {
                     // Jump to IM1 vector (0x0038)
@@ -520,27 +533,27 @@ impl Z80 {
                 _ => unreachable!(),
             },
             // IRQ IM2 — 19T total (1 Fetch + 18 handler cycles 0-17)
-            2 => match cycle {
+            InterruptType::IrqIm2 => match cycle {
                 0 => {
                     self.iff1 = false;
                     self.iff2 = false;
                     self.r = (self.r & 0x80) | (self.r.wrapping_add(1) & 0x7F);
-                    self.state = ExecState::Interrupt(2, 1);
+                    self.state = ExecState::Interrupt(int_type, 1);
                 }
                 1 | 2 | 3 | 4 | 6 | 7 | 8 | 10 | 11 | 13 | 14 | 16 => {
-                    self.state = ExecState::Interrupt(2, cycle + 1);
+                    self.state = ExecState::Interrupt(int_type, cycle + 1);
                 }
                 5 => {
                     // Push PC high
                     self.sp = self.sp.wrapping_sub(1);
                     bus.write(master, self.sp, (self.pc >> 8) as u8);
-                    self.state = ExecState::Interrupt(2, 6);
+                    self.state = ExecState::Interrupt(int_type, 6);
                 }
                 9 => {
                     // Push PC low
                     self.sp = self.sp.wrapping_sub(1);
                     bus.write(master, self.sp, self.pc as u8);
-                    self.state = ExecState::Interrupt(2, 10);
+                    self.state = ExecState::Interrupt(int_type, 10);
                 }
                 12 => {
                     // Read vector low byte: Z80 places I on upper address bus,
@@ -548,21 +561,20 @@ impl Z80 {
                     let ints = bus.check_interrupts(master);
                     self.temp_addr = ((self.i as u16) << 8) | (ints.irq_vector as u16);
                     self.temp_data = bus.read(master, self.temp_addr);
-                    self.state = ExecState::Interrupt(2, 13);
+                    self.state = ExecState::Interrupt(int_type, 13);
                 }
                 15 => {
                     // Read vector high byte
                     let high = bus.read(master, self.temp_addr.wrapping_add(1));
                     self.pc = ((high as u16) << 8) | self.temp_data as u16;
                     self.memptr = self.pc;
-                    self.state = ExecState::Interrupt(2, 16);
+                    self.state = ExecState::Interrupt(int_type, 16);
                 }
                 17 => {
                     self.state = ExecState::Fetch;
                 }
                 _ => unreachable!(),
             },
-            _ => unreachable!(),
         }
     }
 
