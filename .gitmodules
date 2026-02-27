@@ -11,3 +11,6 @@
 	path = cross-validation/mame4all
 	url = https://github.com/ValveSoftware/steamlink-sdk.git
 	ignore = dirty
+[submodule "cpu-validation/test_data/8088"]
+	path = cpu-validation/test_data/8088
+	url = https://github.com/SingleStepTests/8088

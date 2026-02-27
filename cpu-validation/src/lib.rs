@@ -258,3 +258,175 @@ pub struct I8035CpuState {
     /// Internal CPU RAM (64 bytes for 8035). Sparse (addr, value) pairs.
     pub internal_ram: Vec<(u8, u8)>,
 }
+
+// --- I8088 JSON test vector types (SingleStepTests/8088 v2 format) ---
+//
+// The 8088 test format uses 20-bit physical addresses and a sparse final
+// state: only *changed* registers appear in the final state. We deserialize
+// final regs as `Option<T>` and fall back to the initial value for comparison.
+
+/// A single 8088 test vector.
+#[derive(Debug, Clone, Deserialize)]
+pub struct I8088TestCase {
+    pub name: String,
+    pub bytes: Vec<u8>,
+    pub initial: I8088InitialState,
+    #[serde(rename = "final")]
+    pub final_state: I8088FinalState,
+    // cycles, hash, idx are present but not used for functional validation
+}
+
+/// Full initial CPU state (all registers present).
+#[derive(Debug, Clone, Deserialize)]
+pub struct I8088InitialState {
+    pub regs: I8088Regs,
+    pub ram: Vec<(u32, u8)>,
+    #[serde(default)]
+    pub queue: Vec<u8>,
+}
+
+/// Sparse final CPU state (only changed registers present).
+#[derive(Debug, Clone, Deserialize)]
+pub struct I8088FinalState {
+    pub regs: I8088SparseRegs,
+    pub ram: Vec<(u32, u8)>,
+    #[serde(default)]
+    pub queue: Vec<u8>,
+}
+
+/// Full register set for initial state.
+#[derive(Debug, Clone, Deserialize)]
+pub struct I8088Regs {
+    pub ax: u16,
+    pub bx: u16,
+    pub cx: u16,
+    pub dx: u16,
+    pub cs: u16,
+    pub ss: u16,
+    pub ds: u16,
+    pub es: u16,
+    pub sp: u16,
+    pub bp: u16,
+    pub si: u16,
+    pub di: u16,
+    pub ip: u16,
+    pub flags: u16,
+}
+
+/// Sparse register set for final state — only changed values present.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct I8088SparseRegs {
+    pub ax: Option<u16>,
+    pub bx: Option<u16>,
+    pub cx: Option<u16>,
+    pub dx: Option<u16>,
+    pub cs: Option<u16>,
+    pub ss: Option<u16>,
+    pub ds: Option<u16>,
+    pub es: Option<u16>,
+    pub sp: Option<u16>,
+    pub bp: Option<u16>,
+    pub si: Option<u16>,
+    pub di: Option<u16>,
+    pub ip: Option<u16>,
+    pub flags: Option<u16>,
+}
+
+/// Per-opcode metadata from metadata.json.
+/// Some opcodes have nested `reg` sub-keys for ModR/M group opcodes.
+#[derive(Debug, Clone, Deserialize)]
+pub struct I8088OpcodeMetadata {
+    pub status: Option<String>,
+    #[serde(default)]
+    pub flags: Option<String>,
+    #[serde(default, rename = "flags-mask")]
+    pub flags_mask: Option<u16>,
+    /// Nested per-reg metadata for group opcodes (80, D0, F6, etc.)
+    #[serde(default)]
+    pub reg: Option<std::collections::HashMap<String, I8088SubOpcodeMetadata>>,
+}
+
+/// Sub-opcode metadata within a ModR/M group.
+#[derive(Debug, Clone, Deserialize)]
+pub struct I8088SubOpcodeMetadata {
+    pub status: Option<String>,
+    #[serde(default)]
+    pub flags: Option<String>,
+    #[serde(default, rename = "flags-mask")]
+    pub flags_mask: Option<u16>,
+}
+
+/// Top-level metadata.json structure.
+#[derive(Debug, Clone, Deserialize)]
+pub struct I8088Metadata {
+    pub version: String,
+    pub cpu: String,
+    pub opcodes: std::collections::HashMap<String, I8088OpcodeMetadata>,
+}
+
+impl I8088Metadata {
+    /// Look up the flags mask for a given opcode file stem (e.g. "D0.4", "00").
+    /// Returns 0xFFFF if no mask is specified (all flags defined).
+    pub fn flags_mask_for(&self, file_stem: &str) -> u16 {
+        // File stems like "D0.4" → opcode "D0", sub "4"
+        if let Some((opcode, sub)) = file_stem.split_once('.') {
+            if let Some(meta) = self.opcodes.get(opcode) {
+                // Check nested reg metadata first
+                if let Some(reg_map) = &meta.reg {
+                    if let Some(sub_meta) = reg_map.get(sub) {
+                        return sub_meta.flags_mask.unwrap_or(0xFFFF);
+                    }
+                }
+                // Fall back to parent flags_mask
+                return meta.flags_mask.unwrap_or(0xFFFF);
+            }
+        }
+        // Simple opcode like "00"
+        if let Some(meta) = self.opcodes.get(file_stem) {
+            return meta.flags_mask.unwrap_or(0xFFFF);
+        }
+        0xFFFF
+    }
+}
+
+// --- 1MB TracingBus for 8088 (20-bit address space) ---
+
+/// A bus with 1MB of memory for 8088 validation (20-bit physical addresses).
+pub struct TracingBus20 {
+    pub memory: Box<[u8; 0x10_0000]>,
+}
+
+impl TracingBus20 {
+    pub fn new() -> Self {
+        Self {
+            memory: Box::new([0; 0x10_0000]),
+        }
+    }
+}
+
+impl Default for TracingBus20 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Bus for TracingBus20 {
+    type Address = u32;
+    type Data = u8;
+
+    fn read(&mut self, _master: BusMaster, addr: u32) -> u8 {
+        self.memory[(addr & 0xF_FFFF) as usize]
+    }
+
+    fn write(&mut self, _master: BusMaster, addr: u32, data: u8) {
+        self.memory[(addr & 0xF_FFFF) as usize] = data;
+    }
+
+    fn is_halted_for(&self, _master: BusMaster) -> bool {
+        false
+    }
+
+    fn check_interrupts(&mut self, _target: BusMaster) -> InterruptState {
+        InterruptState::default()
+    }
+}

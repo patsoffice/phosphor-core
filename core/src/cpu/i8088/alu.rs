@@ -250,9 +250,8 @@ fn rol8(flags: &mut u16, val: u8, count: u8) -> u8 {
     let result = val.rotate_left(if eff == 0 { 8 } else { eff });
     let cf = result & 1 != 0;
     flags::set(flags, Flag::CF, cf);
-    if count == 1 {
-        flags::set(flags, Flag::OF, ((result >> 7) != 0) ^ cf);
-    }
+    // OF = MSB XOR CF after final rotation (defined for all counts on 8088)
+    flags::set(flags, Flag::OF, ((result >> 7) != 0) ^ cf);
     result
 }
 
@@ -261,9 +260,7 @@ fn rol16(flags: &mut u16, val: u16, count: u8) -> u16 {
     let result = val.rotate_left(if eff == 0 { 16 } else { eff });
     let cf = result & 1 != 0;
     flags::set(flags, Flag::CF, cf);
-    if count == 1 {
-        flags::set(flags, Flag::OF, ((result >> 15) != 0) ^ cf);
-    }
+    flags::set(flags, Flag::OF, ((result >> 15) != 0) ^ cf);
     result
 }
 
@@ -272,9 +269,8 @@ fn ror8(flags: &mut u16, val: u8, count: u8) -> u8 {
     let result = val.rotate_right(if eff == 0 { 8 } else { eff });
     let cf = result & 0x80 != 0;
     flags::set(flags, Flag::CF, cf);
-    if count == 1 {
-        flags::set(flags, Flag::OF, ((result >> 7) ^ (result >> 6)) & 1 != 0);
-    }
+    // OF = XOR of two MSBs of result (defined for all counts on 8088)
+    flags::set(flags, Flag::OF, ((result >> 7) ^ (result >> 6)) & 1 != 0);
     result
 }
 
@@ -283,16 +279,17 @@ fn ror16(flags: &mut u16, val: u16, count: u8) -> u16 {
     let result = val.rotate_right(if eff == 0 { 16 } else { eff });
     let cf = result & 0x8000 != 0;
     flags::set(flags, Flag::CF, cf);
-    if count == 1 {
-        flags::set(flags, Flag::OF, ((result >> 15) ^ (result >> 14)) & 1 != 0);
-    }
+    flags::set(flags, Flag::OF, ((result >> 15) ^ (result >> 14)) & 1 != 0);
     result
 }
 
 fn rcl8(flags: &mut u16, val: u8, count: u8) -> u8 {
     let eff = (count as u32) % 9;
     if eff == 0 {
-        return val; // full 9-bit cycle: value and CF unchanged
+        // Full 9-bit cycle(s): value and CF unchanged, but OF is still set
+        let cf = flags::get(*flags, Flag::CF);
+        flags::set(flags, Flag::OF, ((val >> 7) & 1 != 0) ^ cf);
+        return val;
     }
     let cf_in = flags::get(*flags, Flag::CF) as u16;
     let wide = (val as u16) | (cf_in << 8);
@@ -300,15 +297,15 @@ fn rcl8(flags: &mut u16, val: u8, count: u8) -> u8 {
     let result = rotated as u8;
     let cf = (rotated >> 8) & 1 != 0;
     flags::set(flags, Flag::CF, cf);
-    if count == 1 {
-        flags::set(flags, Flag::OF, ((result >> 7) & 1 != 0) ^ cf);
-    }
+    flags::set(flags, Flag::OF, ((result >> 7) & 1 != 0) ^ cf);
     result
 }
 
 fn rcl16(flags: &mut u16, val: u16, count: u8) -> u16 {
     let eff = (count as u32) % 17;
     if eff == 0 {
+        let cf = flags::get(*flags, Flag::CF);
+        flags::set(flags, Flag::OF, ((val >> 15) & 1 != 0) ^ cf);
         return val;
     }
     let cf_in = flags::get(*flags, Flag::CF) as u32;
@@ -317,15 +314,14 @@ fn rcl16(flags: &mut u16, val: u16, count: u8) -> u16 {
     let result = rotated as u16;
     let cf = (rotated >> 16) & 1 != 0;
     flags::set(flags, Flag::CF, cf);
-    if count == 1 {
-        flags::set(flags, Flag::OF, ((result >> 15) & 1 != 0) ^ cf);
-    }
+    flags::set(flags, Flag::OF, ((result >> 15) & 1 != 0) ^ cf);
     result
 }
 
 fn rcr8(flags: &mut u16, val: u8, count: u8) -> u8 {
     let eff = (count as u32) % 9;
     if eff == 0 {
+        flags::set(flags, Flag::OF, ((val >> 7) ^ (val >> 6)) & 1 != 0);
         return val;
     }
     let cf_in = flags::get(*flags, Flag::CF) as u16;
@@ -334,15 +330,14 @@ fn rcr8(flags: &mut u16, val: u8, count: u8) -> u8 {
     let result = rotated as u8;
     let cf = (rotated >> 8) & 1 != 0;
     flags::set(flags, Flag::CF, cf);
-    if count == 1 {
-        flags::set(flags, Flag::OF, ((result >> 7) ^ (result >> 6)) & 1 != 0);
-    }
+    flags::set(flags, Flag::OF, ((result >> 7) ^ (result >> 6)) & 1 != 0);
     result
 }
 
 fn rcr16(flags: &mut u16, val: u16, count: u8) -> u16 {
     let eff = (count as u32) % 17;
     if eff == 0 {
+        flags::set(flags, Flag::OF, ((val >> 15) ^ (val >> 14)) & 1 != 0);
         return val;
     }
     let cf_in = flags::get(*flags, Flag::CF) as u32;
@@ -351,9 +346,7 @@ fn rcr16(flags: &mut u16, val: u16, count: u8) -> u16 {
     let result = rotated as u16;
     let cf = (rotated >> 16) & 1 != 0;
     flags::set(flags, Flag::CF, cf);
-    if count == 1 {
-        flags::set(flags, Flag::OF, ((result >> 15) ^ (result >> 14)) & 1 != 0);
-    }
+    flags::set(flags, Flag::OF, ((result >> 15) ^ (result >> 14)) & 1 != 0);
     result
 }
 
@@ -369,9 +362,8 @@ fn shl8(flags: &mut u16, val: u8, count: u8) -> u8 {
     };
     flags::set(flags, Flag::CF, cf);
     flags::update_szp8(flags, result);
-    if count == 1 {
-        flags::set(flags, Flag::OF, ((result >> 7) & 1 != 0) ^ cf);
-    }
+    // OF = MSB XOR CF (same as last single-bit SHL step)
+    flags::set(flags, Flag::OF, ((result >> 7) & 1 != 0) ^ cf);
     result
 }
 
@@ -386,9 +378,7 @@ fn shl16(flags: &mut u16, val: u16, count: u8) -> u16 {
     };
     flags::set(flags, Flag::CF, cf);
     flags::update_szp16(flags, result);
-    if count == 1 {
-        flags::set(flags, Flag::OF, ((result >> 15) & 1 != 0) ^ cf);
-    }
+    flags::set(flags, Flag::OF, ((result >> 15) & 1 != 0) ^ cf);
     result
 }
 
@@ -404,8 +394,17 @@ fn shr8(flags: &mut u16, val: u8, count: u8) -> u8 {
     };
     flags::set(flags, Flag::CF, cf);
     flags::update_szp8(flags, result);
-    if count == 1 {
-        flags::set(flags, Flag::OF, val & 0x80 != 0);
+    // OF = MSB of value before last shift step (XOR of two MSBs = MSB since new MSB=0)
+    // For count=1: OF = MSB of val. For count>1: OF = MSB of (val >> (count-1)).
+    // Since SHR always shifts in 0, OF after last step = MSB of intermediate.
+    // More simply: result has MSB=0 (for SHR), so OF = MSB XOR 0 = MSB of result
+    // before the last shift. That's (val >> (count-1)) & 0x80.
+    // But for count >= 8, intermediate is 0, so OF = 0.
+    if count <= 8 {
+        let before_last = if count == 1 { val } else { val >> (count - 1) };
+        flags::set(flags, Flag::OF, before_last & 0x80 != 0);
+    } else {
+        flags::set(flags, Flag::OF, false);
     }
     result
 }
@@ -422,8 +421,11 @@ fn shr16(flags: &mut u16, val: u16, count: u8) -> u16 {
     };
     flags::set(flags, Flag::CF, cf);
     flags::update_szp16(flags, result);
-    if count == 1 {
-        flags::set(flags, Flag::OF, val & 0x8000 != 0);
+    if count <= 16 {
+        let before_last = if count == 1 { val } else { val >> (count - 1) };
+        flags::set(flags, Flag::OF, before_last & 0x8000 != 0);
+    } else {
+        flags::set(flags, Flag::OF, false);
     }
     result
 }
@@ -443,9 +445,8 @@ fn sar8(flags: &mut u16, val: u8, count: u8) -> u8 {
     };
     flags::set(flags, Flag::CF, cf);
     flags::update_szp8(flags, result);
-    if count == 1 {
-        flags::set(flags, Flag::OF, false); // sign never changes
-    }
+    // SAR preserves the sign bit, so OF is always 0 (MSB XOR MSB = 0)
+    flags::set(flags, Flag::OF, false);
     result
 }
 
@@ -463,9 +464,7 @@ fn sar16(flags: &mut u16, val: u16, count: u8) -> u16 {
     };
     flags::set(flags, Flag::CF, cf);
     flags::update_szp16(flags, result);
-    if count == 1 {
-        flags::set(flags, Flag::OF, false);
-    }
+    flags::set(flags, Flag::OF, false);
     result
 }
 

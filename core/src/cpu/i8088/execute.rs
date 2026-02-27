@@ -74,9 +74,10 @@ impl I8088 {
                 // DAA: Decimal Adjust AL after Addition
                 let old_al = self.al();
                 let old_cf = flags::get(self.flags, Flag::CF);
+                let old_af = flags::get(self.flags, Flag::AF);
                 flags::set(&mut self.flags, Flag::CF, false);
                 let mut al = old_al;
-                if (al & 0x0F) > 9 || flags::get(self.flags, Flag::AF) {
+                if (al & 0x0F) > 9 || old_af {
                     let (new_al, carry) = al.overflowing_add(6);
                     al = new_al;
                     flags::set(&mut self.flags, Flag::CF, old_cf || carry);
@@ -84,7 +85,8 @@ impl I8088 {
                 } else {
                     flags::set(&mut self.flags, Flag::AF, false);
                 }
-                if old_al > 0x99 || old_cf {
+                // 8088 quirk: threshold is > 0x9F when AF was set and low nibble > 9
+                if old_cf || old_al > 0x9F || (old_al > 0x99 && !old_af) {
                     al = al.wrapping_add(0x60);
                     flags::set(&mut self.flags, Flag::CF, true);
                 }
@@ -97,19 +99,20 @@ impl I8088 {
                 // DAS: Decimal Adjust AL after Subtraction
                 let old_al = self.al();
                 let old_cf = flags::get(self.flags, Flag::CF);
-                flags::set(&mut self.flags, Flag::CF, false);
+                let old_af = flags::get(self.flags, Flag::AF);
                 let mut al = old_al;
-                if (al & 0x0F) > 9 || flags::get(self.flags, Flag::AF) {
-                    let (new_al, borrow) = al.overflowing_sub(6);
-                    al = new_al;
-                    flags::set(&mut self.flags, Flag::CF, old_cf || borrow);
+                if (al & 0x0F) > 9 || old_af {
+                    al = al.wrapping_sub(6);
                     flags::set(&mut self.flags, Flag::AF, true);
                 } else {
                     flags::set(&mut self.flags, Flag::AF, false);
                 }
-                if old_al > 0x99 || old_cf {
+                // CF set only by the high nibble check (borrow from low adj ignored)
+                if old_cf || old_al > 0x9F || (old_al > 0x99 && !old_af) {
                     al = al.wrapping_sub(0x60);
                     flags::set(&mut self.flags, Flag::CF, true);
+                } else {
+                    flags::set(&mut self.flags, Flag::CF, false);
                 }
                 self.set_al(al);
                 flags::update_szp8(&mut self.flags, al);
@@ -165,11 +168,18 @@ impl I8088 {
 
             // =============================================================
             // PUSH reg16 (0x50-0x57)
+            // 8088 quirk: PUSH SP pushes the already-decremented SP value.
             // =============================================================
             0x50..=0x57 => {
                 let reg = opcode & 7;
-                let val = self.get_reg16(reg);
-                self.push16(bus, master, val);
+                if reg == 4 {
+                    // PUSH SP: decrement first, then write the new SP
+                    self.sp = self.sp.wrapping_sub(2);
+                    self.write_word(bus, master, self.ss, self.sp, self.sp);
+                } else {
+                    let val = self.get_reg16(reg);
+                    self.push16(bus, master, val);
+                }
             }
 
             // =============================================================
@@ -230,6 +240,24 @@ impl I8088 {
                 if modrm.reg != 7 {
                     self.write_operand16(operand, bus, master, result);
                 }
+            }
+
+            // =============================================================
+            // TEST r/m8, reg8 (0x84) | TEST r/m16, reg16 (0x85)
+            // =============================================================
+            0x84 => {
+                let modrm = self.fetch_modrm(bus, master);
+                let operand = self.resolve_modrm(modrm, bus, master);
+                let a = self.read_operand8(operand, bus, master);
+                let b = self.get_reg8(modrm.reg);
+                alu::and8(&mut self.flags, a, b);
+            }
+            0x85 => {
+                let modrm = self.fetch_modrm(bus, master);
+                let operand = self.resolve_modrm(modrm, bus, master);
+                let a = self.read_operand16(operand, bus, master);
+                let b = self.get_reg16(modrm.reg);
+                alu::and16(&mut self.flags, a, b);
             }
 
             // =============================================================
@@ -506,27 +534,23 @@ impl I8088 {
             }
 
             // =============================================================
-            // MOV r/m8, imm8 (0xC6 /0)
+            // MOV r/m8, imm8 (0xC6) — reg field ignored on 8088
             // =============================================================
             0xC6 => {
                 let modrm = self.fetch_modrm(bus, master);
                 let operand = self.resolve_modrm(modrm, bus, master);
                 let imm = self.fetch_byte(bus, master);
-                if modrm.reg == 0 {
-                    self.write_operand8(operand, bus, master, imm);
-                }
+                self.write_operand8(operand, bus, master, imm);
             }
 
             // =============================================================
-            // MOV r/m16, imm16 (0xC7 /0)
+            // MOV r/m16, imm16 (0xC7) — reg field ignored on 8088
             // =============================================================
             0xC7 => {
                 let modrm = self.fetch_modrm(bus, master);
                 let operand = self.resolve_modrm(modrm, bus, master);
                 let imm = self.fetch_word(bus, master);
-                if modrm.reg == 0 {
-                    self.write_operand16(operand, bus, master, imm);
-                }
+                self.write_operand16(operand, bus, master, imm);
             }
 
             // =============================================================
@@ -892,8 +916,14 @@ impl I8088 {
                     }
                     6 => {
                         // PUSH r/m16
-                        let val = self.read_operand16(operand, bus, master);
-                        self.push16(bus, master, val);
+                        // 8088 quirk: if operand is SP, push the decremented value
+                        if operand == Operand::Register(4) {
+                            self.sp = self.sp.wrapping_sub(2);
+                            self.write_word(bus, master, self.ss, self.sp, self.sp);
+                        } else {
+                            let val = self.read_operand16(operand, bus, master);
+                            self.push16(bus, master, val);
+                        }
                     }
                     _ => {}
                 }
@@ -1703,13 +1733,14 @@ mod tests {
     }
 
     #[test]
-    fn push_sp_pushes_old_value() {
+    fn push_sp_pushes_decremented_value() {
         let (mut cpu, mut bus) = setup();
-        // On 8088, PUSH SP pushes the value of SP before decrement
+        // 8088 quirk: PUSH SP pushes the already-decremented SP value
         let old_sp = cpu.sp;
         cpu.execute(0x54, &mut bus, M); // PUSH SP
         let pushed_val = cpu.read_word(&mut bus, M, cpu.ss, cpu.sp);
-        assert_eq!(pushed_val, old_sp);
+        assert_eq!(cpu.sp, old_sp.wrapping_sub(2));
+        assert_eq!(pushed_val, cpu.sp);
     }
 
     // =====================================================================

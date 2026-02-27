@@ -610,6 +610,7 @@ dependencies = [
 name = "phosphor-cpu-validation"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "phosphor-core",
  "rand",
  "serde",
