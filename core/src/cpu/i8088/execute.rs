@@ -6,6 +6,8 @@
 
 use super::I8088;
 use super::addressing::Operand;
+use super::alu;
+use super::flags::{self, Flag};
 use super::registers::SegReg;
 use crate::core::{Bus, BusMaster};
 
@@ -21,24 +23,78 @@ impl I8088 {
     ) {
         match opcode {
             // =============================================================
-            // PUSH segment register: ES=0x06, CS=0x0E, SS=0x16, DS=0x1E
+            // 0x00-0x3F: ALU (ADD/OR/ADC/SBB/AND/SUB/XOR/CMP) + segment
+            // push/pop + BCD adjust
+            //
+            // Layout per group of 8 opcodes (bits 5:3 = operation):
+            //   +0: ALU r/m8, reg8    +1: ALU r/m16, reg16
+            //   +2: ALU reg8, r/m8    +3: ALU reg16, r/m16
+            //   +4: ALU AL, imm8      +5: ALU AX, imm16
+            //   +6: PUSH/POP seg      +7: POP seg / BCD adjust
             // =============================================================
-            0x06 | 0x0E | 0x16 | 0x1E => {
-                let seg = I8088::decode_seg((opcode >> 3) & 3);
-                let val = self.get_seg(seg);
+            0x00..=0x05 => self.alu_dispatch(opcode, 0, bus, master),
+            0x06 => {
+                let val = self.get_seg(SegReg::ES);
                 self.push16(bus, master, val);
             }
+            0x07 => {
+                let val = self.pop16(bus, master);
+                self.es = val;
+            }
+            0x08..=0x0D => self.alu_dispatch(opcode, 1, bus, master),
+            0x0E => {
+                let val = self.get_seg(SegReg::CS);
+                self.push16(bus, master, val);
+            }
+            0x0F => {
+                let val = self.pop16(bus, master);
+                self.cs = val;
+            }
+            0x10..=0x15 => self.alu_dispatch(opcode, 2, bus, master),
+            0x16 => {
+                let val = self.get_seg(SegReg::SS);
+                self.push16(bus, master, val);
+            }
+            0x17 => {
+                let val = self.pop16(bus, master);
+                self.ss = val;
+            }
+            0x18..=0x1D => self.alu_dispatch(opcode, 3, bus, master),
+            0x1E => {
+                let val = self.get_seg(SegReg::DS);
+                self.push16(bus, master, val);
+            }
+            0x1F => {
+                let val = self.pop16(bus, master);
+                self.ds = val;
+            }
+            0x20..=0x25 => self.alu_dispatch(opcode, 4, bus, master),
+            // 0x26 = ES: prefix (consumed by consume_prefixes)
+            // 0x27 = DAA (Step 1.6)
+            0x28..=0x2D => self.alu_dispatch(opcode, 5, bus, master),
+            // 0x2E = CS: prefix (consumed by consume_prefixes)
+            // 0x2F = DAS (Step 1.6)
+            0x30..=0x35 => self.alu_dispatch(opcode, 6, bus, master),
+            // 0x36 = SS: prefix (consumed by consume_prefixes)
+            // 0x37 = AAA (Step 1.6)
+            0x38..=0x3D => self.alu_dispatch(opcode, 7, bus, master),
+            // 0x3E = DS: prefix (consumed by consume_prefixes)
+            // 0x3F = AAS (Step 1.6)
 
             // =============================================================
-            // POP segment register: ES=0x07, CS=0x0F, SS=0x17, DS=0x1F
-            // (POP CS is valid on 8088, removed in 286+)
+            // INC reg16 (0x40-0x47) / DEC reg16 (0x48-0x4F)
             // =============================================================
-            0x07 | 0x0F | 0x17 | 0x1F => {
-                let seg = I8088::decode_seg((opcode >> 3) & 3);
-                let val = self.pop16(bus, master);
-                self.set_seg(seg, val);
-                // TODO: MOV/POP to SS inhibits interrupts until after next
-                // instruction (Step 1.8)
+            0x40..=0x47 => {
+                let reg = opcode & 7;
+                let val = self.get_reg16(reg);
+                let result = alu::inc16(&mut self.flags, val);
+                self.set_reg16(reg, result);
+            }
+            0x48..=0x4F => {
+                let reg = opcode & 7;
+                let val = self.get_reg16(reg);
+                let result = alu::dec16(&mut self.flags, val);
+                self.set_reg16(reg, result);
             }
 
             // =============================================================
@@ -57,6 +113,46 @@ impl I8088 {
                 let reg = opcode & 7;
                 let val = self.pop16(bus, master);
                 self.set_reg16(reg, val);
+            }
+
+            // =============================================================
+            // Immediate ALU group (0x80-0x83)
+            //   0x80: ALU r/m8, imm8
+            //   0x81: ALU r/m16, imm16
+            //   0x82: ALU r/m8, imm8 (same as 0x80)
+            //   0x83: ALU r/m16, imm8 (sign-extended to 16-bit)
+            // =============================================================
+            0x80 | 0x82 => {
+                let modrm = self.fetch_modrm(bus, master);
+                let operand = self.resolve_modrm(modrm, bus, master);
+                let imm = self.fetch_byte(bus, master);
+                let val = self.read_operand8(operand, bus, master);
+                let result = self.alu_op8(modrm.reg, val, imm);
+                // CMP (7) and TEST are compare-only — don't store result
+                if modrm.reg != 7 {
+                    self.write_operand8(operand, bus, master, result);
+                }
+            }
+            0x81 => {
+                let modrm = self.fetch_modrm(bus, master);
+                let operand = self.resolve_modrm(modrm, bus, master);
+                let imm = self.fetch_word(bus, master);
+                let val = self.read_operand16(operand, bus, master);
+                let result = self.alu_op16(modrm.reg, val, imm);
+                if modrm.reg != 7 {
+                    self.write_operand16(operand, bus, master, result);
+                }
+            }
+            0x83 => {
+                let modrm = self.fetch_modrm(bus, master);
+                let operand = self.resolve_modrm(modrm, bus, master);
+                // Sign-extend imm8 to 16-bit
+                let imm = self.fetch_byte(bus, master) as i8 as u16;
+                let val = self.read_operand16(operand, bus, master);
+                let result = self.alu_op16(modrm.reg, val, imm);
+                if modrm.reg != 7 {
+                    self.write_operand16(operand, bus, master, result);
+                }
             }
 
             // =============================================================
@@ -208,6 +304,20 @@ impl I8088 {
             }
 
             // =============================================================
+            // TEST AL, imm8 (0xA8) | TEST AX, imm16 (0xA9)
+            // =============================================================
+            0xA8 => {
+                let imm = self.fetch_byte(bus, master);
+                let al = self.al();
+                alu::and8(&mut self.flags, al, imm);
+            }
+            0xA9 => {
+                let imm = self.fetch_word(bus, master);
+                let ax = self.ax;
+                alu::and16(&mut self.flags, ax, imm);
+            }
+
+            // =============================================================
             // MOV reg8, imm8 (0xB0-0xB7)
             // =============================================================
             0xB0..=0xB7 => {
@@ -279,23 +389,230 @@ impl I8088 {
             }
 
             // =============================================================
-            // 0xFF group — only /6 (PUSH r/m16) in this step
+            // Unary group 0xF6 (byte): /0=TEST, /2=NOT, /3=NEG
+            // MUL/IMUL/DIV/IDIV (/4-/7) in Step 1.6
+            // =============================================================
+            0xF6 => {
+                let modrm = self.fetch_modrm(bus, master);
+                let operand = self.resolve_modrm(modrm, bus, master);
+                match modrm.reg {
+                    0 => {
+                        // TEST r/m8, imm8
+                        let imm = self.fetch_byte(bus, master);
+                        let val = self.read_operand8(operand, bus, master);
+                        alu::and8(&mut self.flags, val, imm);
+                    }
+                    2 => {
+                        // NOT r/m8
+                        let val = self.read_operand8(operand, bus, master);
+                        self.write_operand8(operand, bus, master, alu::not8(val));
+                    }
+                    3 => {
+                        // NEG r/m8
+                        let val = self.read_operand8(operand, bus, master);
+                        let result = alu::neg8(&mut self.flags, val);
+                        self.write_operand8(operand, bus, master, result);
+                    }
+                    _ => {} // MUL/IMUL/DIV/IDIV (Step 1.6)
+                }
+            }
+
+            // =============================================================
+            // Unary group 0xF7 (word): /0=TEST, /2=NOT, /3=NEG
+            // MUL/IMUL/DIV/IDIV (/4-/7) in Step 1.6
+            // =============================================================
+            0xF7 => {
+                let modrm = self.fetch_modrm(bus, master);
+                let operand = self.resolve_modrm(modrm, bus, master);
+                match modrm.reg {
+                    0 => {
+                        // TEST r/m16, imm16
+                        let imm = self.fetch_word(bus, master);
+                        let val = self.read_operand16(operand, bus, master);
+                        alu::and16(&mut self.flags, val, imm);
+                    }
+                    2 => {
+                        // NOT r/m16
+                        let val = self.read_operand16(operand, bus, master);
+                        self.write_operand16(operand, bus, master, alu::not16(val));
+                    }
+                    3 => {
+                        // NEG r/m16
+                        let val = self.read_operand16(operand, bus, master);
+                        let result = alu::neg16(&mut self.flags, val);
+                        self.write_operand16(operand, bus, master, result);
+                    }
+                    _ => {} // MUL/IMUL/DIV/IDIV (Step 1.6)
+                }
+            }
+
+            // =============================================================
+            // 0xFE group (byte): /0=INC r/m8, /1=DEC r/m8
+            // =============================================================
+            0xFE => {
+                let modrm = self.fetch_modrm(bus, master);
+                let operand = self.resolve_modrm(modrm, bus, master);
+                match modrm.reg {
+                    0 => {
+                        let val = self.read_operand8(operand, bus, master);
+                        let result = alu::inc8(&mut self.flags, val);
+                        self.write_operand8(operand, bus, master, result);
+                    }
+                    1 => {
+                        let val = self.read_operand8(operand, bus, master);
+                        let result = alu::dec8(&mut self.flags, val);
+                        self.write_operand8(operand, bus, master, result);
+                    }
+                    _ => {}
+                }
+            }
+
+            // =============================================================
+            // 0xFF group: /0=INC r/m16, /1=DEC r/m16, /6=PUSH r/m16
+            // CALL/JMP (/2-/5) in Step 1.5
             // =============================================================
             0xFF => {
                 let modrm = self.fetch_modrm(bus, master);
                 let operand = self.resolve_modrm(modrm, bus, master);
-                if modrm.reg == 6 {
-                    // PUSH r/m16
-                    let val = self.read_operand16(operand, bus, master);
-                    self.push16(bus, master, val);
+                match modrm.reg {
+                    0 => {
+                        let val = self.read_operand16(operand, bus, master);
+                        let result = alu::inc16(&mut self.flags, val);
+                        self.write_operand16(operand, bus, master, result);
+                    }
+                    1 => {
+                        let val = self.read_operand16(operand, bus, master);
+                        let result = alu::dec16(&mut self.flags, val);
+                        self.write_operand16(operand, bus, master, result);
+                    }
+                    6 => {
+                        // PUSH r/m16
+                        let val = self.read_operand16(operand, bus, master);
+                        self.push16(bus, master, val);
+                    }
+                    _ => {} // CALL/JMP (Step 1.5)
                 }
-                // INC/DEC/CALL/JMP handled in later steps
             }
 
             // =============================================================
             // Unimplemented opcode — silently skip
             // =============================================================
             _ => {}
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // ALU helpers
+    // -----------------------------------------------------------------
+
+    /// Dispatch a standard ALU opcode from the 0x00-0x3D range.
+    /// `op` is the ALU operation (0=ADD, 1=OR, 2=ADC, 3=SBB, 4=AND, 5=SUB,
+    /// 6=XOR, 7=CMP). The low 3 bits of `opcode` select the operand form.
+    fn alu_dispatch<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        opcode: u8,
+        op: u8,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let sub = opcode & 7;
+        match sub {
+            // r/m8, reg8
+            0 => {
+                let modrm = self.fetch_modrm(bus, master);
+                let operand = self.resolve_modrm(modrm, bus, master);
+                let a = self.read_operand8(operand, bus, master);
+                let b = self.get_reg8(modrm.reg);
+                let result = self.alu_op8(op, a, b);
+                if op != 7 {
+                    // not CMP
+                    self.write_operand8(operand, bus, master, result);
+                }
+            }
+            // r/m16, reg16
+            1 => {
+                let modrm = self.fetch_modrm(bus, master);
+                let operand = self.resolve_modrm(modrm, bus, master);
+                let a = self.read_operand16(operand, bus, master);
+                let b = self.get_reg16(modrm.reg);
+                let result = self.alu_op16(op, a, b);
+                if op != 7 {
+                    self.write_operand16(operand, bus, master, result);
+                }
+            }
+            // reg8, r/m8
+            2 => {
+                let modrm = self.fetch_modrm(bus, master);
+                let operand = self.resolve_modrm(modrm, bus, master);
+                let a = self.get_reg8(modrm.reg);
+                let b = self.read_operand8(operand, bus, master);
+                let result = self.alu_op8(op, a, b);
+                if op != 7 {
+                    self.set_reg8(modrm.reg, result);
+                }
+            }
+            // reg16, r/m16
+            3 => {
+                let modrm = self.fetch_modrm(bus, master);
+                let operand = self.resolve_modrm(modrm, bus, master);
+                let a = self.get_reg16(modrm.reg);
+                let b = self.read_operand16(operand, bus, master);
+                let result = self.alu_op16(op, a, b);
+                if op != 7 {
+                    self.set_reg16(modrm.reg, result);
+                }
+            }
+            // AL, imm8
+            4 => {
+                let imm = self.fetch_byte(bus, master);
+                let result = self.alu_op8(op, self.al(), imm);
+                if op != 7 {
+                    self.set_al(result);
+                }
+            }
+            // AX, imm16
+            5 => {
+                let imm = self.fetch_word(bus, master);
+                let result = self.alu_op16(op, self.ax, imm);
+                if op != 7 {
+                    self.ax = result;
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// Execute an 8-bit ALU operation by op code (0-7).
+    #[inline]
+    fn alu_op8(&mut self, op: u8, a: u8, b: u8) -> u8 {
+        let cf = flags::get(self.flags, Flag::CF);
+        match op & 7 {
+            0 => alu::add8(&mut self.flags, a, b, false),
+            1 => alu::or8(&mut self.flags, a, b),
+            2 => alu::add8(&mut self.flags, a, b, cf),
+            3 => alu::sub8(&mut self.flags, a, b, cf),
+            4 => alu::and8(&mut self.flags, a, b),
+            5 => alu::sub8(&mut self.flags, a, b, false),
+            6 => alu::xor8(&mut self.flags, a, b),
+            7 => alu::sub8(&mut self.flags, a, b, false), // CMP
+            _ => unreachable!(),
+        }
+    }
+
+    /// Execute a 16-bit ALU operation by op code (0-7).
+    #[inline]
+    fn alu_op16(&mut self, op: u8, a: u16, b: u16) -> u16 {
+        let cf = flags::get(self.flags, Flag::CF);
+        match op & 7 {
+            0 => alu::add16(&mut self.flags, a, b, false),
+            1 => alu::or16(&mut self.flags, a, b),
+            2 => alu::add16(&mut self.flags, a, b, cf),
+            3 => alu::sub16(&mut self.flags, a, b, cf),
+            4 => alu::and16(&mut self.flags, a, b),
+            5 => alu::sub16(&mut self.flags, a, b, false),
+            6 => alu::xor16(&mut self.flags, a, b),
+            7 => alu::sub16(&mut self.flags, a, b, false), // CMP
+            _ => unreachable!(),
         }
     }
 }
@@ -906,5 +1223,567 @@ mod tests {
         cpu.execute(0xC7, &mut bus, M); // MOV WORD [0x0050], 0xBEEF
         assert_eq!(bus.mem[0x20050], 0xEF);
         assert_eq!(bus.mem[0x20051], 0xBE);
+    }
+
+    // =====================================================================
+    // ADD r/m8, reg8 (0x00) and ADD reg8, r/m8 (0x02)
+    // =====================================================================
+
+    #[test]
+    fn add_rm8_reg8() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.set_al(0x10);
+        cpu.set_bl(0x20);
+        // ModR/M: mod=11 reg=000(AL) rm=011(BL) = 0xC3
+        bus.mem[0x100] = 0xC3;
+        cpu.execute(0x00, &mut bus, M); // ADD BL, AL
+        assert_eq!(cpu.bl(), 0x30);
+        assert!(!fl::get(cpu.flags, Flag::CF));
+        assert!(!fl::get(cpu.flags, Flag::OF));
+    }
+
+    #[test]
+    fn add_reg8_rm8_carry() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.set_al(0xFF);
+        cpu.set_cl(0x01);
+        // ModR/M: mod=11 reg=000(AL) rm=001(CL) = 0xC1
+        bus.mem[0x100] = 0xC1;
+        cpu.execute(0x02, &mut bus, M); // ADD AL, CL
+        assert_eq!(cpu.al(), 0x00);
+        assert!(fl::get(cpu.flags, Flag::CF));
+        assert!(fl::get(cpu.flags, Flag::ZF));
+    }
+
+    // =====================================================================
+    // ADD r/m16, reg16 (0x01) and ADD reg16, r/m16 (0x03)
+    // =====================================================================
+
+    #[test]
+    fn add_rm16_reg16() {
+        let (mut cpu, mut bus) = setup();
+        cpu.ax = 0x1000;
+        cpu.bx = 0x0050;
+        cpu.cx = 0x2000;
+        bus.mem[0x20050] = 0x34;
+        bus.mem[0x20051] = 0x12;
+        // ModR/M: mod=00 reg=010(DX) rm=111([BX]) = 0x17; actually we use AX
+        // ModR/M: mod=00 reg=000(AX) rm=111([BX]) = 0x07
+        bus.mem[0x100] = 0x07;
+        cpu.execute(0x01, &mut bus, M); // ADD [BX], AX
+        assert_eq!(bus.mem[0x20050], 0x34); // 0x1234 + 0x1000 = 0x2234
+        // Read back the result
+        let lo = bus.mem[0x20050] as u16;
+        let hi = bus.mem[0x20051] as u16;
+        assert_eq!((hi << 8) | lo, 0x2234);
+    }
+
+    // =====================================================================
+    // ADD AL, imm8 (0x04) and ADD AX, imm16 (0x05)
+    // =====================================================================
+
+    #[test]
+    fn add_al_imm8() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.set_al(0x40);
+        bus.mem[0x100] = 0x02; // imm8
+        cpu.execute(0x04, &mut bus, M); // ADD AL, 0x02
+        assert_eq!(cpu.al(), 0x42);
+        assert!(!fl::get(cpu.flags, Flag::CF));
+    }
+
+    #[test]
+    fn add_ax_imm16() {
+        let (mut cpu, mut bus) = setup();
+        cpu.ax = 0x1000;
+        bus.mem[0x100] = 0x34;
+        bus.mem[0x101] = 0x02;
+        cpu.execute(0x05, &mut bus, M); // ADD AX, 0x0234
+        assert_eq!(cpu.ax, 0x1234);
+    }
+
+    // =====================================================================
+    // ADC (0x10-0x15)
+    // =====================================================================
+
+    #[test]
+    fn adc_al_imm8_with_carry() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        fl::set(&mut cpu.flags, Flag::CF, true);
+        cpu.set_al(0x10);
+        bus.mem[0x100] = 0x20;
+        cpu.execute(0x14, &mut bus, M); // ADC AL, 0x20
+        assert_eq!(cpu.al(), 0x31); // 0x10 + 0x20 + CF(1) = 0x31
+    }
+
+    // =====================================================================
+    // SUB (0x28-0x2D)
+    // =====================================================================
+
+    #[test]
+    fn sub_al_imm8() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.set_al(0x30);
+        bus.mem[0x100] = 0x10;
+        cpu.execute(0x2C, &mut bus, M); // SUB AL, 0x10
+        assert_eq!(cpu.al(), 0x20);
+        assert!(!fl::get(cpu.flags, Flag::CF));
+    }
+
+    #[test]
+    fn sub_al_imm8_borrow() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.set_al(0x00);
+        bus.mem[0x100] = 0x01;
+        cpu.execute(0x2C, &mut bus, M); // SUB AL, 0x01
+        assert_eq!(cpu.al(), 0xFF);
+        assert!(fl::get(cpu.flags, Flag::CF));
+        assert!(fl::get(cpu.flags, Flag::SF));
+    }
+
+    // =====================================================================
+    // SBB (0x18-0x1D)
+    // =====================================================================
+
+    #[test]
+    fn sbb_al_imm8_with_borrow() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        fl::set(&mut cpu.flags, Flag::CF, true);
+        cpu.set_al(0x30);
+        bus.mem[0x100] = 0x10;
+        cpu.execute(0x1C, &mut bus, M); // SBB AL, 0x10
+        assert_eq!(cpu.al(), 0x1F); // 0x30 - 0x10 - CF(1) = 0x1F
+    }
+
+    // =====================================================================
+    // CMP (0x38-0x3D)
+    // =====================================================================
+
+    #[test]
+    fn cmp_al_imm8_equal() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.set_al(0x42);
+        bus.mem[0x100] = 0x42;
+        cpu.execute(0x3C, &mut bus, M); // CMP AL, 0x42
+        assert!(fl::get(cpu.flags, Flag::ZF));
+        assert!(!fl::get(cpu.flags, Flag::CF));
+        assert_eq!(cpu.al(), 0x42); // AL unchanged
+    }
+
+    #[test]
+    fn cmp_al_imm8_less() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.set_al(0x10);
+        bus.mem[0x100] = 0x20;
+        cpu.execute(0x3C, &mut bus, M); // CMP AL, 0x20
+        assert!(!fl::get(cpu.flags, Flag::ZF));
+        assert!(fl::get(cpu.flags, Flag::CF)); // borrow
+        assert_eq!(cpu.al(), 0x10); // unchanged
+    }
+
+    #[test]
+    fn cmp_ax_imm16() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.ax = 0x1234;
+        bus.mem[0x100] = 0x34;
+        bus.mem[0x101] = 0x12;
+        cpu.execute(0x3D, &mut bus, M); // CMP AX, 0x1234
+        assert!(fl::get(cpu.flags, Flag::ZF));
+        assert_eq!(cpu.ax, 0x1234);
+    }
+
+    // =====================================================================
+    // AND (0x20-0x25)
+    // =====================================================================
+
+    #[test]
+    fn and_al_imm8() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.set_al(0xFF);
+        bus.mem[0x100] = 0x0F;
+        cpu.execute(0x24, &mut bus, M); // AND AL, 0x0F
+        assert_eq!(cpu.al(), 0x0F);
+        assert!(!fl::get(cpu.flags, Flag::CF));
+        assert!(!fl::get(cpu.flags, Flag::OF));
+    }
+
+    // =====================================================================
+    // OR (0x08-0x0D)
+    // =====================================================================
+
+    #[test]
+    fn or_al_imm8() {
+        let (mut cpu, mut bus) = setup();
+        cpu.set_al(0xF0);
+        bus.mem[0x100] = 0x0F;
+        cpu.execute(0x0C, &mut bus, M); // OR AL, 0x0F
+        assert_eq!(cpu.al(), 0xFF);
+    }
+
+    // =====================================================================
+    // XOR (0x30-0x35)
+    // =====================================================================
+
+    #[test]
+    fn xor_al_imm8() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.set_al(0xFF);
+        bus.mem[0x100] = 0xFF;
+        cpu.execute(0x34, &mut bus, M); // XOR AL, 0xFF
+        assert_eq!(cpu.al(), 0x00);
+        assert!(fl::get(cpu.flags, Flag::ZF));
+    }
+
+    // =====================================================================
+    // INC reg16 (0x40-0x47) / DEC reg16 (0x48-0x4F)
+    // =====================================================================
+
+    #[test]
+    fn inc_reg16() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.ax = 0x00FF;
+        cpu.execute(0x40, &mut bus, M); // INC AX
+        assert_eq!(cpu.ax, 0x0100);
+        assert!(!fl::get(cpu.flags, Flag::ZF));
+    }
+
+    #[test]
+    fn inc_reg16_overflow() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.ax = 0x7FFF;
+        cpu.execute(0x40, &mut bus, M); // INC AX
+        assert_eq!(cpu.ax, 0x8000);
+        assert!(fl::get(cpu.flags, Flag::OF));
+        assert!(fl::get(cpu.flags, Flag::SF));
+    }
+
+    #[test]
+    fn inc_preserves_cf() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        fl::set(&mut cpu.flags, Flag::CF, true);
+        cpu.ax = 0x0001;
+        cpu.execute(0x40, &mut bus, M); // INC AX
+        assert_eq!(cpu.ax, 0x0002);
+        assert!(fl::get(cpu.flags, Flag::CF)); // CF preserved
+    }
+
+    #[test]
+    fn dec_reg16() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.cx = 0x0001;
+        cpu.execute(0x49, &mut bus, M); // DEC CX
+        assert_eq!(cpu.cx, 0x0000);
+        assert!(fl::get(cpu.flags, Flag::ZF));
+    }
+
+    #[test]
+    fn dec_all_reg16() {
+        let (mut cpu, mut bus) = setup();
+        for reg in 0..8u8 {
+            cpu.set_reg16(reg, 0x1000);
+            cpu.execute(0x48 + reg, &mut bus, M);
+            assert_eq!(cpu.get_reg16(reg), 0x0FFF);
+        }
+    }
+
+    // =====================================================================
+    // Immediate ALU group (0x80-0x83)
+    // =====================================================================
+
+    #[test]
+    fn imm_add_rm8() {
+        let (mut cpu, mut bus) = setup();
+        cpu.set_al(0x10);
+        // ModR/M: mod=11 reg=000(/0=ADD) rm=000(AL) = 0xC0
+        bus.mem[0x100] = 0xC0;
+        bus.mem[0x101] = 0x20; // imm8
+        cpu.execute(0x80, &mut bus, M); // ADD AL, 0x20
+        assert_eq!(cpu.al(), 0x30);
+    }
+
+    #[test]
+    fn imm_sub_rm16() {
+        let (mut cpu, mut bus) = setup();
+        cpu.ax = 0x1234;
+        // ModR/M: mod=11 reg=101(/5=SUB) rm=000(AX) = 0xE8
+        bus.mem[0x100] = 0xE8;
+        bus.mem[0x101] = 0x34;
+        bus.mem[0x102] = 0x02; // imm16 = 0x0234
+        cpu.execute(0x81, &mut bus, M); // SUB AX, 0x0234
+        assert_eq!(cpu.ax, 0x1000);
+    }
+
+    #[test]
+    fn imm_cmp_rm8() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.set_bl(0x42);
+        // ModR/M: mod=11 reg=111(/7=CMP) rm=011(BL) = 0xFB
+        bus.mem[0x100] = 0xFB;
+        bus.mem[0x101] = 0x42; // imm8
+        cpu.execute(0x80, &mut bus, M); // CMP BL, 0x42
+        assert!(fl::get(cpu.flags, Flag::ZF));
+        assert_eq!(cpu.bl(), 0x42); // unchanged
+    }
+
+    #[test]
+    fn imm_add_rm16_sign_ext() {
+        let (mut cpu, mut bus) = setup();
+        cpu.ax = 0x0100;
+        // ModR/M: mod=11 reg=000(/0=ADD) rm=000(AX) = 0xC0
+        bus.mem[0x100] = 0xC0;
+        bus.mem[0x101] = 0xFE; // imm8 = -2 sign-extended = 0xFFFE
+        cpu.execute(0x83, &mut bus, M); // ADD AX, -2
+        assert_eq!(cpu.ax, 0x00FE);
+    }
+
+    #[test]
+    fn imm_sub_rm16_sign_ext() {
+        let (mut cpu, mut bus) = setup();
+        cpu.ax = 0x0100;
+        // ModR/M: mod=11 reg=101(/5=SUB) rm=000(AX) = 0xE8
+        bus.mem[0x100] = 0xE8;
+        bus.mem[0x101] = 0x02; // imm8 = +2 sign-extended = 0x0002
+        cpu.execute(0x83, &mut bus, M); // SUB AX, 2
+        assert_eq!(cpu.ax, 0x00FE);
+    }
+
+    // =====================================================================
+    // TEST AL/AX, imm (0xA8-0xA9)
+    // =====================================================================
+
+    #[test]
+    fn test_al_imm8() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.set_al(0xF0);
+        bus.mem[0x100] = 0x0F;
+        cpu.execute(0xA8, &mut bus, M); // TEST AL, 0x0F
+        assert!(fl::get(cpu.flags, Flag::ZF)); // 0xF0 & 0x0F = 0
+        assert!(!fl::get(cpu.flags, Flag::CF));
+        assert_eq!(cpu.al(), 0xF0); // unchanged
+    }
+
+    #[test]
+    fn test_ax_imm16() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.ax = 0xFF00;
+        bus.mem[0x100] = 0x00;
+        bus.mem[0x101] = 0xFF;
+        cpu.execute(0xA9, &mut bus, M); // TEST AX, 0xFF00
+        assert!(!fl::get(cpu.flags, Flag::ZF)); // 0xFF00 & 0xFF00 != 0
+        assert!(fl::get(cpu.flags, Flag::SF));
+        assert_eq!(cpu.ax, 0xFF00); // unchanged
+    }
+
+    // =====================================================================
+    // TEST r/m, imm (0xF6 /0, 0xF7 /0)
+    // =====================================================================
+
+    #[test]
+    fn test_rm8_imm8() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.set_al(0xAA);
+        // ModR/M: mod=11 reg=000(/0=TEST) rm=000(AL) = 0xC0
+        bus.mem[0x100] = 0xC0;
+        bus.mem[0x101] = 0x55; // imm8
+        cpu.execute(0xF6, &mut bus, M); // TEST AL, 0x55
+        assert!(fl::get(cpu.flags, Flag::ZF)); // 0xAA & 0x55 = 0
+        assert_eq!(cpu.al(), 0xAA); // unchanged
+    }
+
+    // =====================================================================
+    // NOT (0xF6 /2, 0xF7 /2)
+    // =====================================================================
+
+    #[test]
+    fn not_rm8() {
+        let (mut cpu, mut bus) = setup();
+        cpu.set_al(0xA5);
+        // ModR/M: mod=11 reg=010(/2=NOT) rm=000(AL) = 0xD0
+        bus.mem[0x100] = 0xD0;
+        cpu.execute(0xF6, &mut bus, M); // NOT AL
+        assert_eq!(cpu.al(), 0x5A);
+    }
+
+    #[test]
+    fn not_rm16() {
+        let (mut cpu, mut bus) = setup();
+        cpu.ax = 0xFF00;
+        // ModR/M: mod=11 reg=010(/2=NOT) rm=000(AX) = 0xD0
+        bus.mem[0x100] = 0xD0;
+        cpu.execute(0xF7, &mut bus, M); // NOT AX
+        assert_eq!(cpu.ax, 0x00FF);
+    }
+
+    // =====================================================================
+    // NEG (0xF6 /3, 0xF7 /3)
+    // =====================================================================
+
+    #[test]
+    fn neg_rm8() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.set_al(0x01);
+        // ModR/M: mod=11 reg=011(/3=NEG) rm=000(AL) = 0xD8
+        bus.mem[0x100] = 0xD8;
+        cpu.execute(0xF6, &mut bus, M); // NEG AL
+        assert_eq!(cpu.al(), 0xFF);
+        assert!(fl::get(cpu.flags, Flag::CF));
+        assert!(fl::get(cpu.flags, Flag::SF));
+    }
+
+    #[test]
+    fn neg_rm8_zero() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.set_al(0x00);
+        bus.mem[0x100] = 0xD8;
+        cpu.execute(0xF6, &mut bus, M); // NEG AL
+        assert_eq!(cpu.al(), 0x00);
+        assert!(!fl::get(cpu.flags, Flag::CF));
+        assert!(fl::get(cpu.flags, Flag::ZF));
+    }
+
+    #[test]
+    fn neg_rm16() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.ax = 0x0001;
+        bus.mem[0x100] = 0xD8;
+        cpu.execute(0xF7, &mut bus, M); // NEG AX
+        assert_eq!(cpu.ax, 0xFFFF);
+        assert!(fl::get(cpu.flags, Flag::CF));
+    }
+
+    // =====================================================================
+    // INC/DEC r/m8 (0xFE /0, /1)
+    // =====================================================================
+
+    #[test]
+    fn inc_rm8() {
+        let (mut cpu, mut bus) = setup();
+        cpu.set_al(0x7F);
+        // ModR/M: mod=11 reg=000(/0=INC) rm=000(AL) = 0xC0
+        bus.mem[0x100] = 0xC0;
+        cpu.execute(0xFE, &mut bus, M); // INC AL
+        assert_eq!(cpu.al(), 0x80);
+    }
+
+    #[test]
+    fn dec_rm8() {
+        let (mut cpu, mut bus) = setup();
+        cpu.set_al(0x01);
+        // ModR/M: mod=11 reg=001(/1=DEC) rm=000(AL) = 0xC8
+        bus.mem[0x100] = 0xC8;
+        cpu.execute(0xFE, &mut bus, M); // DEC AL
+        assert_eq!(cpu.al(), 0x00);
+    }
+
+    // =====================================================================
+    // INC/DEC r/m16 (0xFF /0, /1)
+    // =====================================================================
+
+    #[test]
+    fn inc_rm16_mem() {
+        let (mut cpu, mut bus) = setup();
+        cpu.bx = 0x0050;
+        bus.mem[0x20050] = 0xFF;
+        bus.mem[0x20051] = 0x00; // [BX] = 0x00FF
+        // ModR/M: mod=00 reg=000(/0=INC) rm=111([BX]) = 0x07
+        bus.mem[0x100] = 0x07;
+        cpu.execute(0xFF, &mut bus, M); // INC WORD [BX]
+        assert_eq!(bus.mem[0x20050], 0x00);
+        assert_eq!(bus.mem[0x20051], 0x01); // 0x00FF → 0x0100
+    }
+
+    #[test]
+    fn dec_rm16_reg() {
+        let (mut cpu, mut bus) = setup();
+        cpu.ax = 0x0100;
+        // ModR/M: mod=11 reg=001(/1=DEC) rm=000(AX) = 0xC8
+        bus.mem[0x100] = 0xC8;
+        cpu.execute(0xFF, &mut bus, M); // DEC AX
+        assert_eq!(cpu.ax, 0x00FF);
+    }
+
+    // =====================================================================
+    // ALU with memory operand
+    // =====================================================================
+
+    #[test]
+    fn add_mem_reg8() {
+        let (mut cpu, mut bus) = setup();
+        cpu.bx = 0x0050;
+        cpu.set_al(0x10);
+        bus.mem[0x20050] = 0x20; // [DS:BX] = 0x20
+        // ModR/M: mod=00 reg=000(AL) rm=111([BX]) = 0x07
+        bus.mem[0x100] = 0x07;
+        cpu.execute(0x00, &mut bus, M); // ADD [BX], AL
+        assert_eq!(bus.mem[0x20050], 0x30);
+    }
+
+    #[test]
+    fn cmp_reg16_rm16() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.ax = 0x5000;
+        cpu.bx = 0x0060;
+        bus.mem[0x20060] = 0x00;
+        bus.mem[0x20061] = 0x50; // [BX] = 0x5000
+        // ModR/M: mod=00 reg=000(AX) rm=111([BX]) = 0x07
+        bus.mem[0x100] = 0x07;
+        cpu.execute(0x3B, &mut bus, M); // CMP AX, [BX]
+        assert!(fl::get(cpu.flags, Flag::ZF));
+        assert_eq!(cpu.ax, 0x5000); // unchanged
+    }
+
+    // =====================================================================
+    // ADD overflow edge case: signed boundary
+    // =====================================================================
+
+    #[test]
+    fn add8_signed_overflow_positive() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        // 0x7F + 0x01 = 0x80 (127 + 1 = -128 in signed)
+        cpu.set_al(0x7F);
+        bus.mem[0x100] = 0x01;
+        cpu.execute(0x04, &mut bus, M); // ADD AL, 0x01
+        assert_eq!(cpu.al(), 0x80);
+        assert!(fl::get(cpu.flags, Flag::OF));
+        assert!(fl::get(cpu.flags, Flag::SF));
+        assert!(fl::get(cpu.flags, Flag::AF));
+    }
+
+    #[test]
+    fn sub8_signed_overflow_negative() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        // 0x80 - 0x01 = 0x7F (-128 - 1 = 127 in signed)
+        cpu.set_al(0x80);
+        bus.mem[0x100] = 0x01;
+        cpu.execute(0x2C, &mut bus, M); // SUB AL, 0x01
+        assert_eq!(cpu.al(), 0x7F);
+        assert!(fl::get(cpu.flags, Flag::OF));
+        assert!(fl::get(cpu.flags, Flag::AF));
     }
 }

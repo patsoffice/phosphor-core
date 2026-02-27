@@ -11,6 +11,7 @@
 //! physical addresses and `Data = u8` for the 8-bit external data bus.
 
 pub mod addressing;
+pub mod alu;
 pub mod decode;
 pub mod execute;
 pub mod flags;
