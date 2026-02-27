@@ -87,7 +87,7 @@ ROMs are matched by CRC32 checksum, so any MAME ROM naming convention works. All
 | **Williams SC1/SC2 Blitter** | Complete | DMA block copy/fill, mask, shift, foreground-only modes |
 | **AY-8910 PSG** | Complete | 3-channel square wave + noise + envelope, dual I/O ports |
 | **POKEY** | Complete | 4-channel audio, polynomial counters, timer/IRQ, pot scanning |
-| **Namco WSG** | Complete | 3-voice wavetable synthesizer (Pac-Man, Dig Dug) |
+| **Namco WSG** | Complete | 3-voice wavetable synthesizer (Pac-Man, Ms. Pac-Man, Dig Dug) |
 | **Z80 CTC** | Complete | 4-channel counter/timer, IM2 vectored interrupts, cascading |
 | **Intel 8257 DMA** | Complete | 4-channel DMA controller with auto-load and rotating priority |
 | **Atari DVG** | Complete | Digital Vector Generator: 8 opcodes, 7497 BRM, hardware clipping |
@@ -134,7 +134,8 @@ Complete system implementations that wire core components together:
 - **JoustSystem** — Williams arcade board (M6809 + 48KB video RAM + two PIAs + blitter + CMOS + 12KB ROM)
 - **CrystalCastlesSystem** — Atari arcade (M6502 + 2×POKEY + bitmap video + sprites + trackball)
 - **MissileCommandSystem** — Atari raster arcade (M6502 + POKEY + bitmap video)
-- **PacmanSystem** — Namco arcade (Z80 + WSG + tile/sprite video)
+- **PacmanSystem** — Pac-Man on shared Namco Pac board (Z80 + WSG + tile/sprite video)
+- **MsPacmanSystem** — Ms. Pac-Man on shared Namco Pac board (auxiliary decode latch + ROM encryption)
 - **RobotronSystem** — Williams twin-stick arcade (M6809 + blitter + PIAs)
 - **GridleeSystem** — Videa arcade (M6809 + bitmap video + trackball — freely distributable ROMs)
 - Simple6502System, Simple6800System, Simple6809System, SimpleZ80System (test harnesses)
@@ -243,7 +244,9 @@ phosphor-core/
 │   │   ├── asteroids.rs            # Asteroids (Atari: M6502 + DVG vector display)
 │   │   ├── missile_command.rs      # Missile Command (Atari: M6502 + POKEY + trackball)
 │   │   ├── ccastles.rs             # Crystal Castles (Atari: M6502 + 2×POKEY + bitmap + sprites)
-│   │   ├── pacman.rs               # Pac-Man (Namco: Z80 + WSG + tile/sprite video)
+│   │   ├── namco_pac.rs             # Shared Namco Pac-Man board (Z80 + WSG + tile/sprite video)
+│   │   ├── pacman.rs               # Pac-Man (Namco Pac board)
+│   │   ├── mspacman.rs             # Ms. Pac-Man (Namco Pac board + auxiliary decode latch)
 │   │   ├── gridlee.rs              # Gridlee (Videa: M6809 + bitmap video + trackball)
 │   │   ├── rom_loader.rs           # ROM loading with CRC32 matching, multi-variant support
 │   │   ├── simple6800.rs           # M6800 + RAM/ROM
@@ -479,7 +482,8 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 
 - [x] Robotron 2084 (Williams: twin-stick M6809 + blitter)
 - [x] Missile Command (Atari: M6502 + POKEY + trackball)
-- [x] Pac-Man (Namco: Z80 + WSG + tile/sprite video)
+- [x] Pac-Man (Namco Pac board: Z80 + WSG + tile/sprite video)
+- [x] Ms. Pac-Man (Namco Pac board: auxiliary decode latch + ROM encryption)
 - [x] Donkey Kong (Nintendo TKG-04: Z80 + I8035 + I8257 DMA + tile/sprite video)
 - [x] Donkey Kong Junior (Nintendo TKG-04: shared board, 24KB ROM, gfx bank)
 - [ ] Radar Scope (Nintendo TKG-04: shared board, star field + grid overlay)

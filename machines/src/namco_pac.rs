@@ -1,0 +1,802 @@
+use phosphor_core::core::machine::InputButton;
+use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
+use phosphor_core::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
+use phosphor_core::core::{Bus, BusMaster};
+use phosphor_core::cpu::CpuStateTrait;
+use phosphor_core::cpu::state::Z80State;
+use phosphor_core::cpu::z80::Z80;
+use phosphor_core::device::namco_wsg::NamcoWsg;
+use phosphor_core::gfx;
+use phosphor_macros::BusDebug;
+
+// ---------------------------------------------------------------------------
+// Memory map region IDs (shared across all Namco Pac-Man hardware games)
+// ---------------------------------------------------------------------------
+
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Region {
+    Rom = 1,
+    VideoRam = 2,
+    ColorRam = 3,
+    Ram = 4,
+    Io = 5,
+}
+
+impl Region {
+    pub const ROM: u8 = Self::Rom as u8;
+    pub const VIDEO_RAM: u8 = Self::VideoRam as u8;
+    pub const COLOR_RAM: u8 = Self::ColorRam as u8;
+    pub const RAM: u8 = Self::Ram as u8;
+    pub const IO: u8 = Self::Io as u8;
+}
+
+impl From<Region> for u8 {
+    fn from(r: Region) -> u8 {
+        r as u8
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Input button IDs (shared across Pac-Man family)
+// ---------------------------------------------------------------------------
+pub const INPUT_P1_UP: u8 = 0;
+pub const INPUT_P1_LEFT: u8 = 1;
+pub const INPUT_P1_RIGHT: u8 = 2;
+pub const INPUT_P1_DOWN: u8 = 3;
+pub const INPUT_COIN: u8 = 4;
+pub const INPUT_P1_START: u8 = 5;
+pub const INPUT_P2_START: u8 = 6;
+pub const INPUT_P2_UP: u8 = 7;
+pub const INPUT_P2_LEFT: u8 = 8;
+pub const INPUT_P2_RIGHT: u8 = 9;
+pub const INPUT_P2_DOWN: u8 = 10;
+
+pub const NAMCO_PAC_INPUT_MAP: &[InputButton] = &[
+    InputButton {
+        id: INPUT_P1_UP,
+        name: "P1 Up",
+    },
+    InputButton {
+        id: INPUT_P1_LEFT,
+        name: "P1 Left",
+    },
+    InputButton {
+        id: INPUT_P1_RIGHT,
+        name: "P1 Right",
+    },
+    InputButton {
+        id: INPUT_P1_DOWN,
+        name: "P1 Down",
+    },
+    InputButton {
+        id: INPUT_COIN,
+        name: "Coin",
+    },
+    InputButton {
+        id: INPUT_P1_START,
+        name: "P1 Start",
+    },
+    InputButton {
+        id: INPUT_P2_START,
+        name: "P2 Start",
+    },
+    InputButton {
+        id: INPUT_P2_UP,
+        name: "P2 Up",
+    },
+    InputButton {
+        id: INPUT_P2_LEFT,
+        name: "P2 Left",
+    },
+    InputButton {
+        id: INPUT_P2_RIGHT,
+        name: "P2 Right",
+    },
+    InputButton {
+        id: INPUT_P2_DOWN,
+        name: "P2 Down",
+    },
+];
+
+// ---------------------------------------------------------------------------
+// Timing constants
+// ---------------------------------------------------------------------------
+// Master clock:  18.432 MHz
+// CPU clock:     18.432 / 6 = 3.072 MHz
+// Pixel clock:   18.432 / 3 = 6.144 MHz
+// HTOTAL:        384 pixels = 192 CPU cycles per scanline
+// VTOTAL:        264 lines
+// VBSTART:       224 (visible height)
+// Frame:         192 × 264 = 50688 CPU cycles per frame
+// Frame rate:    3072000 / 50688 ≈ 60.61 Hz
+
+pub const CYCLES_PER_SCANLINE: u64 = 192;
+pub const VISIBLE_LINES: u64 = 224;
+pub const TOTAL_LINES: u64 = 264;
+pub const CYCLES_PER_FRAME: u64 = TOTAL_LINES * CYCLES_PER_SCANLINE;
+
+pub const CPU_CLOCK_HZ: u64 = 3_072_000;
+
+// Screen dimensions: Pac-Man's native 288×224 is rotated 90° CCW
+pub const SCREEN_WIDTH: u32 = 224;
+pub const SCREEN_HEIGHT: u32 = 288;
+
+// Resistor weights for palette PROM
+// 3-bit RGB channels with 1K/470/220 ohm resistors
+const R_WEIGHTS: [f64; 3] = [1000.0, 470.0, 220.0];
+const G_WEIGHTS: [f64; 3] = [1000.0, 470.0, 220.0];
+const B_WEIGHTS: [f64; 2] = [470.0, 220.0];
+
+// ---------------------------------------------------------------------------
+// NamcoPacBoard — shared hardware for the Namco Pac-Man platform
+// ---------------------------------------------------------------------------
+
+/// Namco Pac-Man hardware base (Z80 @ 3.072 MHz, Namco WSG 3-voice, tilemap + sprites).
+///
+/// Shared by Pac-Man, Ms. Pac-Man, and other games on identical hardware.
+/// Game wrappers compose this struct and implement Bus to route memory accesses.
+#[derive(BusDebug)]
+pub struct NamcoPacBoard {
+    #[debug_cpu("Z80")]
+    pub(crate) cpu: Z80,
+
+    #[debug_map(cpu = 0)]
+    pub(crate) map: MemoryMap,
+
+    pub(crate) sprite_coords: [u8; 0x10], // 0x5060-0x506F: sprite X/Y positions
+
+    // Sound
+    #[debug_device("NamcoWSG")]
+    pub(crate) wsg: NamcoWsg,
+
+    // Pre-decoded GFX caches (from GFX ROM)
+    pub(crate) tile_cache: gfx::GfxCache,
+    pub(crate) sprite_cache: gfx::GfxCache,
+
+    // PROMs
+    pub(crate) palette_prom: [u8; 32],
+    pub(crate) color_lut_prom: [u8; 256],
+
+    // Pre-computed palette (32 RGB entries from PROM resistor weighting)
+    pub(crate) palette_rgb: [(u8, u8, u8); 32],
+
+    // Scanline-rendered framebuffer (288 x 224 x RGB24 = 193,536 bytes).
+    // Native orientation, populated incrementally during run_frame().
+    pub(crate) scanline_buffer: Vec<u8>,
+
+    // I/O state (active-low: 0xFF = all released)
+    pub(crate) in0: u8,
+    pub(crate) in1: u8,
+    pub(crate) dip_switches: u8,
+
+    // 74LS259 addressable latch outputs
+    pub(crate) irq_enabled: bool,
+    pub(crate) sound_enabled: bool,
+    pub(crate) flip_screen: bool,
+
+    // Interrupt
+    pub(crate) interrupt_vector: u8,
+    pub(crate) vblank_irq_pending: bool,
+
+    // Timing
+    pub(crate) clock: u64,
+    pub(crate) watchdog_counter: u32,
+}
+
+impl Default for NamcoPacBoard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl NamcoPacBoard {
+    pub fn new() -> Self {
+        Self {
+            cpu: Z80::new(),
+            map: Self::build_map(),
+            sprite_coords: [0; 0x10],
+            wsg: NamcoWsg::new(CPU_CLOCK_HZ),
+            tile_cache: gfx::GfxCache::new(256, 8, 8),
+            sprite_cache: gfx::GfxCache::new(64, 16, 16),
+            palette_prom: [0; 32],
+            color_lut_prom: [0; 256],
+            palette_rgb: [(0, 0, 0); 32],
+            scanline_buffer: vec![0u8; 288 * 224 * 3],
+            in0: 0xFF,
+            in1: 0xFF,
+            // Default DIP: 1 coin/1 credit, 3 lives, 10000 bonus, normal difficulty, normal ghosts
+            dip_switches: 0xC9,
+            irq_enabled: false,
+            sound_enabled: false,
+            flip_screen: false,
+            interrupt_vector: 0,
+            vblank_irq_pending: false,
+            clock: 0,
+            watchdog_counter: 0,
+        }
+    }
+
+    fn build_map() -> MemoryMap {
+        let mut map = MemoryMap::new();
+        map.region(
+            Region::Rom,
+            "Program ROM",
+            0x0000,
+            0x4000,
+            AccessKind::ReadOnly,
+        )
+        .region(
+            Region::VideoRam,
+            "Video RAM",
+            0x4000,
+            0x0400,
+            AccessKind::ReadWrite,
+        )
+        .region(
+            Region::ColorRam,
+            "Color RAM",
+            0x4400,
+            0x0400,
+            AccessKind::ReadWrite,
+        )
+        .region(Region::Ram, "RAM", 0x4C00, 0x0400, AccessKind::ReadWrite)
+        .region(Region::Io, "I/O", 0x5000, 0x0100, AccessKind::Io);
+        map
+    }
+
+    // -----------------------------------------------------------------------
+    // Core tick — called from game wrappers via bus_split!
+    // -----------------------------------------------------------------------
+
+    pub fn tick(&mut self, bus: &mut dyn Bus<Address = u16, Data = u8>) {
+        let frame_cycle = self.clock % CYCLES_PER_FRAME;
+
+        // Per-scanline rendering: at each scanline boundary, render the current
+        // scanline from VRAM + sprites before the CPU processes it, matching
+        // hardware CRT read timing.
+        if frame_cycle.is_multiple_of(CYCLES_PER_SCANLINE) {
+            let scanline = (frame_cycle / CYCLES_PER_SCANLINE) as u16;
+            if scanline < VISIBLE_LINES as u16 {
+                self.render_scanline(scanline as usize);
+            }
+        }
+
+        // VBLANK interrupt: fire at the start of VBLANK (scanline 224)
+        let vblank_cycle = VISIBLE_LINES * CYCLES_PER_SCANLINE;
+        if frame_cycle == vblank_cycle {
+            self.vblank_irq_pending = true;
+        }
+
+        // WSG tick (runs at CPU clock rate)
+        self.wsg.tick();
+
+        self.cpu.execute_cycle(bus, BusMaster::Cpu(0));
+
+        self.clock += 1;
+        self.watchdog_counter += 1;
+    }
+
+    // -----------------------------------------------------------------------
+    // Bus dispatch helpers — called from game wrapper Bus impls
+    // -----------------------------------------------------------------------
+
+    /// Shared memory read logic for all Namco Pac hardware.
+    /// Caller is responsible for address masking (e.g. A15 mirror).
+    pub fn bus_read_common(&mut self, addr: u16) -> u8 {
+        let data = match self.map.page(addr).region_id {
+            Region::ROM | Region::VIDEO_RAM | Region::COLOR_RAM | Region::RAM => {
+                self.map.read_backing(addr)
+            }
+
+            Region::IO => match addr {
+                0x5000..=0x503F => self.in0,
+                0x5040..=0x507F => self.in1,
+                0x5080..=0x50BF => self.dip_switches,
+                _ => 0xFF,
+            },
+
+            _ => {
+                // Bus float at 0x4800-0x4BFF (no device responds)
+                if (0x4800..0x4C00).contains(&addr) {
+                    0xBF
+                } else {
+                    0xFF
+                }
+            }
+        };
+
+        self.map.check_read_watch(addr, data);
+        data
+    }
+
+    /// Shared memory write logic for all Namco Pac hardware.
+    /// Caller is responsible for address masking (e.g. A15 mirror).
+    pub fn bus_write_common(&mut self, addr: u16, data: u8) {
+        self.map.check_write_watch(addr, data);
+
+        match self.map.page(addr).region_id {
+            Region::VIDEO_RAM | Region::COLOR_RAM | Region::RAM => {
+                self.map.write_backing(addr, data);
+            }
+
+            Region::IO => match addr {
+                // 74LS259 addressable latch: address bits 0-2 select output, data bit 0 is value
+                0x5000..=0x5007 => {
+                    let bit = (addr & 7) as u8;
+                    let value = (data & 1) != 0;
+                    match bit {
+                        0 => {
+                            self.irq_enabled = value;
+                            if !value {
+                                self.vblank_irq_pending = false;
+                            }
+                        }
+                        1 => {
+                            self.sound_enabled = value;
+                            self.wsg.set_sound_enabled(value);
+                        }
+                        3 => self.flip_screen = value,
+                        // 2: unused, 4-5: LEDs (not connected), 6: coin lockout, 7: coin counter
+                        _ => {}
+                    }
+                }
+
+                // Namco WSG sound registers (32 nibble registers)
+                0x5040..=0x505F => self.wsg.write(addr - 0x5040, data),
+
+                // Sprite coordinates
+                0x5060..=0x506F => self.sprite_coords[(addr - 0x5060) as usize] = data,
+
+                // Watchdog reset
+                0x50C0..=0x50FF => self.watchdog_counter = 0,
+
+                _ => {}
+            },
+
+            _ => { /* ROM or unmapped: ignored */ }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Palette
+    // -----------------------------------------------------------------------
+
+    /// Pre-compute the 32-entry RGB palette from the palette PROM using
+    /// resistor-weighted DAC values.
+    pub fn build_palette(&mut self) {
+        let r_scale = compute_resistor_scale(&R_WEIGHTS);
+        let g_scale = compute_resistor_scale(&G_WEIGHTS);
+        let b_scale = compute_resistor_scale(&B_WEIGHTS);
+
+        for i in 0..32 {
+            let entry = self.palette_prom[i];
+
+            // Red: bits 0-2
+            let r = combine_weights_3(&r_scale, entry & 1, (entry >> 1) & 1, (entry >> 2) & 1);
+            // Green: bits 3-5
+            let g = combine_weights_3(
+                &g_scale,
+                (entry >> 3) & 1,
+                (entry >> 4) & 1,
+                (entry >> 5) & 1,
+            );
+            // Blue: bits 6-7
+            let b = combine_weights_2(&b_scale, (entry >> 6) & 1, (entry >> 7) & 1);
+
+            self.palette_rgb[i] = (r, g, b);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // ROM loading helpers
+    // -----------------------------------------------------------------------
+
+    pub fn load_program_rom(&mut self, data: &[u8]) {
+        self.map.load_region(Region::Rom, data);
+    }
+
+    pub fn load_gfx_rom(&mut self, gfx_data: &[u8]) {
+        self.tile_cache = gfx::decode::decode_pacman_tiles(gfx_data, 0x0000, 256);
+        self.sprite_cache = gfx::decode::decode_pacman_sprites(gfx_data, 0x1000, 64);
+    }
+
+    pub fn load_color_proms(&mut self, color_data: &[u8]) {
+        self.palette_prom.copy_from_slice(&color_data[0..32]);
+        self.color_lut_prom.copy_from_slice(&color_data[32..288]);
+        self.build_palette();
+    }
+
+    pub fn load_sound_prom(&mut self, sound_data: &[u8]) {
+        self.wsg.load_waveform_rom(sound_data);
+    }
+
+    // -----------------------------------------------------------------------
+    // CPU state accessors
+    // -----------------------------------------------------------------------
+
+    pub fn get_cpu_state(&self) -> Z80State {
+        self.cpu.snapshot()
+    }
+
+    pub fn clock(&self) -> u64 {
+        self.clock
+    }
+
+    // -----------------------------------------------------------------------
+    // Video rendering
+    // -----------------------------------------------------------------------
+
+    /// Map a tile index in the 36×28 tilemap to a VRAM offset.
+    ///
+    /// The Pac-Man tilemap uses a non-linear address mapping:
+    ///   row += 2; col -= 2;
+    ///   if (col & 0x20) return row + ((col & 0x1f) << 5);
+    ///   else return col + (row << 5);
+    fn tilemap_offset(col: i32, row: i32) -> usize {
+        let r = row + 2;
+        let c = col - 2;
+        if c & 0x20 != 0 {
+            (r + ((c & 0x1F) << 5)) as usize
+        } else {
+            (c + (r << 5)) as usize
+        }
+    }
+
+    /// Render a single scanline from current VRAM/sprite state into the scanline buffer.
+    /// Composites tiles then sprites for native scanline Y (0-223).
+    fn render_scanline(&mut self, scanline: usize) {
+        let row_offset = scanline * 288 * 3;
+
+        // Split borrows: immutable refs for closures, mutable ref for buffer
+        let video_ram = self.map.region_data(Region::VideoRam);
+        let color_ram = self.map.region_data(Region::ColorRam);
+        let color_lut_prom = &self.color_lut_prom;
+        let palette_rgb = &self.palette_rgb;
+        let tile_cache = &self.tile_cache;
+        let sprite_cache = &self.sprite_cache;
+        let buf = &mut self.scanline_buffer[row_offset..row_offset + 288 * 3];
+
+        // Inline color resolution (captures split borrows, not &self)
+        let resolve = |attribute: u8, pixel_value: u8| -> (u8, u8, u8) {
+            let lut_index = ((attribute & 0x1F) as usize) * 4 + pixel_value as usize;
+            let palette_index = if lut_index < 256 {
+                (color_lut_prom[lut_index] & 0x0F) as usize
+            } else {
+                0
+            };
+            palette_rgb[palette_index]
+        };
+
+        // Fill scanline with background color
+        let bg = resolve(0, 0);
+        for x in 0..288 {
+            let off = x * 3;
+            buf[off] = bg.0;
+            buf[off + 1] = bg.1;
+            buf[off + 2] = bg.2;
+        }
+
+        // Tiles: use shared tilemap renderer
+        let config = gfx::TilemapConfig {
+            cols: 36,
+            rows: 28,
+            tile_width: 8,
+            tile_height: 8,
+        };
+
+        gfx::tilemap::render_tilemap_scanline(
+            &config,
+            tile_cache,
+            scanline,
+            |col, row| {
+                let offset = Self::tilemap_offset(col as i32, row as i32);
+                let tile_code = if offset < 0x400 {
+                    video_ram[offset] as u16
+                } else {
+                    0
+                };
+                let attribute = if offset < 0x400 { color_ram[offset] } else { 0 };
+                (tile_code, attribute)
+            },
+            resolve,
+            buf,
+            0,
+        );
+
+        // Sprites: draw in priority order (7→3, then 2→0 with +1 Y offset)
+        let ram = self.map.region_data(Region::Ram);
+        let sprite_coords = &self.sprite_coords;
+        let y = scanline as i32;
+
+        for pass in 0..2 {
+            let (start, end, y_offset): (usize, usize, i32) =
+                if pass == 0 { (7, 3, 0) } else { (2, 0, 1) };
+
+            let mut offs = start;
+            loop {
+                let attr_base = 0x3F0 + offs * 2;
+                let coord_base = offs * 2;
+
+                let sprite_byte0 = ram[attr_base];
+                let sprite_byte1 = ram[attr_base + 1];
+
+                let sprite_code = (sprite_byte0 >> 2) as u16;
+                let x_flip = (sprite_byte0 & 1) != 0;
+                let y_flip = (sprite_byte0 & 2) != 0;
+                let attribute = sprite_byte1 & 0x1F;
+
+                let sx = 272i32 - sprite_coords[coord_base + 1] as i32;
+                let sy = sprite_coords[coord_base] as i32 - 31 + y_offset;
+
+                if y >= sy && y < sy + 16 {
+                    let spy = (y - sy) as u8;
+                    let src_py = if y_flip { 15 - spy } else { spy };
+
+                    // Pre-compute transparency mask for this sprite's attribute
+                    let trans_base = (attribute as usize & 0x1F) * 4;
+                    let mut trans_mask: u8 = 0;
+                    for pv in 0..4u8 {
+                        if (color_lut_prom[trans_base + pv as usize] & 0x0F) == 0 {
+                            trans_mask |= 1 << pv;
+                        }
+                    }
+
+                    let clip = gfx::sprite::SpriteClip {
+                        x_min: 16,
+                        x_max: 272,
+                        wrap_offset: Some(-256), // tunnel wraparound
+                    };
+                    gfx::sprite::draw_sprite_row(
+                        sprite_cache,
+                        sprite_code,
+                        src_py as usize,
+                        sx,
+                        x_flip,
+                        |pv| (trans_mask >> pv) & 1 != 0,
+                        |pv| resolve(attribute, pv),
+                        buf,
+                        &clip,
+                    );
+                }
+
+                if offs == end {
+                    break;
+                }
+                offs -= 1;
+            }
+        }
+    }
+
+    /// Rotate 90° CCW from native scanline_buffer (288w × 224h)
+    /// to output buffer (224w × 288h).
+    pub fn render_frame(&self, buffer: &mut [u8]) {
+        let out_w = SCREEN_WIDTH as usize; // 224
+        for oy in 0..SCREEN_HEIGHT as usize {
+            for ox in 0..out_w {
+                let nx = oy;
+                let ny = 223 - ox;
+                let src = (ny * 288 + nx) * 3;
+                let dst = (oy * out_w + ox) * 3;
+                buffer[dst] = self.scanline_buffer[src];
+                buffer[dst + 1] = self.scanline_buffer[src + 1];
+                buffer[dst + 2] = self.scanline_buffer[src + 2];
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Audio
+    // -----------------------------------------------------------------------
+
+    pub fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
+        self.wsg.fill_audio(buffer)
+    }
+
+    // -----------------------------------------------------------------------
+    // Reset
+    // -----------------------------------------------------------------------
+
+    /// Reset all board state except ROMs, GFX caches, and palette.
+    /// The caller must reset the CPU separately (requires bus_split).
+    pub fn reset_board(&mut self) {
+        self.wsg.reset();
+        self.irq_enabled = false;
+        self.sound_enabled = false;
+        self.flip_screen = false;
+        self.interrupt_vector = 0;
+        self.vblank_irq_pending = false;
+        self.clock = 0;
+        self.watchdog_counter = 0;
+        self.in0 = 0xFF;
+        self.in1 = 0xFF;
+        self.map.region_data_mut(Region::VideoRam).fill(0);
+        self.map.region_data_mut(Region::ColorRam).fill(0);
+        self.map.region_data_mut(Region::Ram).fill(0);
+        self.sprite_coords = [0; 0x10];
+        self.scanline_buffer.fill(0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Debug
+    // -----------------------------------------------------------------------
+
+    pub fn debug_tick_boundaries(&self) -> u32 {
+        if self.cpu.at_instruction_boundary() {
+            1
+        } else {
+            0
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Save / Load state
+    // -----------------------------------------------------------------------
+
+    pub(crate) fn save_board_state(&self, w: &mut StateWriter) {
+        self.cpu.save_state(w);
+        w.write_bytes(self.map.region_data(Region::VideoRam));
+        w.write_bytes(self.map.region_data(Region::ColorRam));
+        w.write_bytes(self.map.region_data(Region::Ram));
+        w.write_bytes(&self.sprite_coords);
+        self.wsg.save_state(w);
+        w.write_u8(self.in0);
+        w.write_u8(self.in1);
+        w.write_bool(self.irq_enabled);
+        w.write_bool(self.sound_enabled);
+        w.write_bool(self.flip_screen);
+        w.write_u8(self.interrupt_vector);
+        w.write_bool(self.vblank_irq_pending);
+        w.write_u64_le(self.clock);
+        w.write_u32_le(self.watchdog_counter);
+    }
+
+    pub(crate) fn load_board_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        self.cpu.load_state(r)?;
+        r.read_bytes_into(self.map.region_data_mut(Region::VideoRam))?;
+        r.read_bytes_into(self.map.region_data_mut(Region::ColorRam))?;
+        r.read_bytes_into(self.map.region_data_mut(Region::Ram))?;
+        r.read_bytes_into(&mut self.sprite_coords)?;
+        self.wsg.load_state(r)?;
+        self.in0 = r.read_u8()?;
+        self.in1 = r.read_u8()?;
+        self.irq_enabled = r.read_bool()?;
+        self.sound_enabled = r.read_bool()?;
+        self.flip_screen = r.read_bool()?;
+        self.interrupt_vector = r.read_u8()?;
+        self.vblank_irq_pending = r.read_bool()?;
+        self.clock = r.read_u64_le()?;
+        self.watchdog_counter = r.read_u32_le()?;
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Palette helpers
+// ---------------------------------------------------------------------------
+
+/// Compute normalization scale factors for resistor-weighted DAC.
+fn compute_resistor_scale(weights: &[f64]) -> Vec<f64> {
+    let total: f64 = weights.iter().map(|w| 1.0 / w).sum();
+    weights.iter().map(|w| (1.0 / w) / total).collect()
+}
+
+/// Combine 3 resistor-weighted bits into an 8-bit color value.
+fn combine_weights_3(scale: &[f64], bit0: u8, bit1: u8, bit2: u8) -> u8 {
+    let val = bit0 as f64 * scale[0] + bit1 as f64 * scale[1] + bit2 as f64 * scale[2];
+    (val * 255.0).round().min(255.0) as u8
+}
+
+/// Combine 2 resistor-weighted bits into an 8-bit color value.
+fn combine_weights_2(scale: &[f64], bit0: u8, bit1: u8) -> u8 {
+    let val = bit0 as f64 * scale[0] + bit1 as f64 * scale[1];
+    (val * 255.0).round().min(255.0) as u8
+}
+
+// ---------------------------------------------------------------------------
+// Shared trait implementation macros (game wrappers must have `pub board: NamcoPacBoard`)
+// ---------------------------------------------------------------------------
+
+macro_rules! impl_namco_pac_renderable {
+    () => {
+        fn display_size(&self) -> (u32, u32) {
+            (
+                crate::namco_pac::SCREEN_WIDTH,
+                crate::namco_pac::SCREEN_HEIGHT,
+            )
+        }
+
+        fn render_frame(&self, buffer: &mut [u8]) {
+            self.board.render_frame(buffer);
+        }
+    };
+}
+
+macro_rules! impl_namco_pac_audio {
+    () => {
+        fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
+            self.board.fill_audio(buffer)
+        }
+
+        fn audio_sample_rate(&self) -> u32 {
+            44100
+        }
+    };
+}
+
+macro_rules! impl_namco_pac_debug {
+    () => {
+        fn debug_bus(&self) -> Option<&dyn phosphor_core::core::debug::BusDebug> {
+            Some(&self.board)
+        }
+
+        fn debug_bus_mut(&mut self) -> Option<&mut dyn phosphor_core::core::debug::BusDebug> {
+            Some(&mut self.board)
+        }
+
+        fn cycles_per_frame(&self) -> u64 {
+            crate::namco_pac::CYCLES_PER_FRAME
+        }
+    };
+}
+
+macro_rules! impl_namco_pac_machine_common {
+    () => {
+        fn frame_rate_hz(&self) -> f64 {
+            crate::namco_pac::CPU_CLOCK_HZ as f64 / crate::namco_pac::CYCLES_PER_FRAME as f64
+        }
+    };
+}
+
+macro_rules! impl_namco_pac_input {
+    () => {
+        fn set_input(&mut self, button: u8, pressed: bool) {
+            match button {
+                crate::namco_pac::INPUT_P1_UP => {
+                    crate::set_bit_active_low(&mut self.board.in0, 0, pressed)
+                }
+                crate::namco_pac::INPUT_P1_LEFT => {
+                    crate::set_bit_active_low(&mut self.board.in0, 1, pressed)
+                }
+                crate::namco_pac::INPUT_P1_RIGHT => {
+                    crate::set_bit_active_low(&mut self.board.in0, 2, pressed)
+                }
+                crate::namco_pac::INPUT_P1_DOWN => {
+                    crate::set_bit_active_low(&mut self.board.in0, 3, pressed)
+                }
+                crate::namco_pac::INPUT_COIN => {
+                    crate::set_bit_active_low(&mut self.board.in0, 5, pressed)
+                }
+                crate::namco_pac::INPUT_P2_UP => {
+                    crate::set_bit_active_low(&mut self.board.in1, 0, pressed)
+                }
+                crate::namco_pac::INPUT_P2_LEFT => {
+                    crate::set_bit_active_low(&mut self.board.in1, 1, pressed)
+                }
+                crate::namco_pac::INPUT_P2_RIGHT => {
+                    crate::set_bit_active_low(&mut self.board.in1, 2, pressed)
+                }
+                crate::namco_pac::INPUT_P2_DOWN => {
+                    crate::set_bit_active_low(&mut self.board.in1, 3, pressed)
+                }
+                crate::namco_pac::INPUT_P1_START => {
+                    crate::set_bit_active_low(&mut self.board.in1, 5, pressed)
+                }
+                crate::namco_pac::INPUT_P2_START => {
+                    crate::set_bit_active_low(&mut self.board.in1, 6, pressed)
+                }
+                _ => {}
+            }
+        }
+
+        fn input_map(&self) -> &[phosphor_core::core::machine::InputButton] {
+            crate::namco_pac::NAMCO_PAC_INPUT_MAP
+        }
+    };
+}
+
+pub(crate) use impl_namco_pac_audio;
+pub(crate) use impl_namco_pac_debug;
+pub(crate) use impl_namco_pac_input;
+pub(crate) use impl_namco_pac_machine_common;
+pub(crate) use impl_namco_pac_renderable;
