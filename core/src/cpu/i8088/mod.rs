@@ -12,6 +12,7 @@
 
 pub mod addressing;
 pub mod decode;
+pub mod execute;
 pub mod flags;
 pub mod registers;
 
@@ -168,10 +169,10 @@ impl I8088 {
                 }
 
                 // Consume any prefix bytes and fetch the opcode
-                let _opcode = self.consume_prefixes(bus, master);
+                let opcode = self.consume_prefixes(bus, master);
 
-                // TODO: dispatch opcode to execute stage (Step 1.3+)
-                // For now, remain in Fetch to advance through memory
+                // Execute the instruction
+                self.execute(opcode, bus, master);
             }
             ExecState::Execute(remaining) => {
                 if remaining <= 1 {
