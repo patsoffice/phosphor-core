@@ -1,9 +1,11 @@
+use phosphor_core::bus_split;
 use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::machine::{
     AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
 };
 use phosphor_core::core::save_state::{self, SaveError, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
+use phosphor_core::cpu::Cpu;
 
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
@@ -214,6 +216,13 @@ impl RobotronSystem {
         }
     }
 
+    /// Tick one cycle, splitting the borrow so the board can access the bus.
+    pub fn tick(&mut self) {
+        bus_split!(self, bus => {
+            self.board.tick(bus);
+        });
+    }
+
     /// Load program ROM from a RomSet using the Robotron ROM mapping.
     pub fn load_rom_set(
         &mut self,
@@ -246,19 +255,19 @@ impl Bus for RobotronSystem {
     type Data = u8;
 
     fn read(&mut self, master: BusMaster, addr: u16) -> u8 {
-        self.board.read(master, addr)
+        self.board.bus_read(master, addr)
     }
 
     fn write(&mut self, master: BusMaster, addr: u16, data: u8) {
-        self.board.write(master, addr, data);
+        self.board.bus_write(master, addr, data);
     }
 
     fn is_halted_for(&self, master: BusMaster) -> bool {
-        self.board.is_halted_for(master)
+        self.board.bus_is_halted_for(master)
     }
 
     fn check_interrupts(&mut self, target: BusMaster) -> InterruptState {
-        self.board.check_interrupts(target)
+        self.board.bus_check_interrupts(target)
     }
 }
 
@@ -338,7 +347,9 @@ impl MachineDebug for RobotronSystem {
     fn debug_tick(&mut self) -> u32 {
         self.board.widget_pia.set_port_a_input(self.widget_port_a);
         self.board.widget_pia.set_port_b_input(self.widget_port_b);
-        self.board.tick();
+        bus_split!(self, bus => {
+            self.board.tick(bus);
+        });
         self.board.debug_tick_boundaries()
     }
 }
@@ -357,16 +368,26 @@ impl Machine for RobotronSystem {
     }
 
     fn run_frame(&mut self) {
-        // Update PIA inputs before running the frame
         self.board.widget_pia.set_port_a_input(self.widget_port_a);
         self.board.widget_pia.set_port_b_input(self.widget_port_b);
-        self.board.run_frame();
+        self.board
+            .rom_pia
+            .set_port_a_input(self.board.rom_pia_input);
+        bus_split!(self, bus => {
+            for _ in 0..williams::CYCLES_PER_FRAME {
+                self.board.tick(bus);
+            }
+        });
     }
 
     fn reset(&mut self) {
         self.board.reset();
         self.widget_port_a = 0;
         self.widget_port_b = 0;
+        bus_split!(self, bus => {
+            self.board.cpu.reset(bus, BusMaster::Cpu(0));
+            self.board.sound_cpu.reset(bus, BusMaster::Cpu(1));
+        });
     }
 
     fn machine_id(&self) -> &str {

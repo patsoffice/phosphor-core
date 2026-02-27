@@ -1,13 +1,12 @@
 use phosphor_core::audio::AudioResampler;
-use phosphor_core::bus_split;
 use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
 use phosphor_core::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
+use phosphor_core::cpu::CpuStateTrait;
 use phosphor_core::cpu::m6800::M6800;
 use phosphor_core::cpu::m6809::M6809;
 use phosphor_core::cpu::state::{M6800State, M6809State};
-use phosphor_core::cpu::{Cpu, CpuStateTrait};
 use phosphor_core::device::dac::Mc1408Dac;
 use phosphor_core::device::pia6820::Pia6820;
 use phosphor_core::device::williams_blitter::WilliamsBlitter;
@@ -362,7 +361,7 @@ impl WilliamsBoard {
 
     // --- Core tick ---
 
-    pub fn tick(&mut self) {
+    pub fn tick(&mut self, bus: &mut dyn Bus<Address = u16, Data = u8>) {
         // Video timing signals on ROM PIA.
         // VA11 (scanline bit 5) → ROM PIA CB1, count240 → ROM PIA CA1.
         // These drive the main CPU's IRQ via ROM PIA interrupt outputs.
@@ -394,15 +393,13 @@ impl WilliamsBoard {
             self.sound_pia.set_cb1(command != 0xFF);
         }
 
-        bus_split!(self, bus => {
-            if self.blitter.is_active() {
-                self.blitter.do_dma_cycle(bus);
-            } else {
-                self.cpu.execute_cycle(bus, BusMaster::Cpu(0));
-            }
-            // Sound CPU runs every cycle (separate bus, not halted by blitter)
-            self.sound_cpu.execute_cycle(bus, BusMaster::Cpu(1));
-        });
+        if self.blitter.is_active() {
+            self.blitter.do_dma_cycle(bus);
+        } else {
+            self.cpu.execute_cycle(bus, BusMaster::Cpu(0));
+        }
+        // Sound CPU runs every cycle (separate bus, not halted by blitter)
+        self.sound_cpu.execute_cycle(bus, BusMaster::Cpu(1));
 
         // DAC is continuously connected to sound PIA Port A output pins
         let dac_byte = self.sound_pia.read_output_a();
@@ -434,12 +431,7 @@ impl WilliamsBoard {
         self.rom_pia_input = 0;
         self.scanline_buffer.fill(0);
         // CMOS RAM and video RAM NOT cleared (battery-backed / not cleared by hardware)
-
-        // CPU reset fetches the reset vector from the bus (matching real hardware)
-        bus_split!(self, bus => {
-            self.cpu.reset(bus, BusMaster::Cpu(0));
-            self.sound_cpu.reset(bus, BusMaster::Cpu(1));
-        });
+        // CPU resets are done by the game wrapper via bus_split! since Bus is on the wrapper.
     }
 
     // --- Debug helpers ---
@@ -458,15 +450,6 @@ impl WilliamsBoard {
     }
 
     // --- Machine trait helpers (called by game wrappers) ---
-
-    /// Run one frame's worth of cycles. Game wrappers that need per-tick
-    /// hooks (e.g. Joust's LS157 mux) should use their own tick loop instead.
-    pub fn run_frame(&mut self) {
-        self.rom_pia.set_port_a_input(self.rom_pia_input);
-        for _ in 0..CYCLES_PER_FRAME {
-            self.tick();
-        }
-    }
 
     pub fn render_frame(&self, buffer: &mut [u8]) {
         buffer.copy_from_slice(&self.scanline_buffer);
@@ -533,14 +516,12 @@ impl Default for WilliamsBoard {
 }
 
 // ---------------------------------------------------------------------------
-// Bus implementation — Williams gen-1 memory map
+// Bus dispatch helpers — Williams gen-1 memory map
+// Called from game wrapper Bus impls (JoustSystem, RobotronSystem).
 // ---------------------------------------------------------------------------
 
-impl Bus for WilliamsBoard {
-    type Address = u16;
-    type Data = u8;
-
-    fn read(&mut self, master: BusMaster, addr: u16) -> u8 {
+impl WilliamsBoard {
+    pub(crate) fn bus_read(&mut self, master: BusMaster, addr: u16) -> u8 {
         if master == BusMaster::Cpu(1) {
             // Sound board
             let data = match self.sound_map.page(addr).region_id {
@@ -592,7 +573,7 @@ impl Bus for WilliamsBoard {
         data
     }
 
-    fn write(&mut self, master: BusMaster, addr: u16, data: u8) {
+    pub(crate) fn bus_write(&mut self, master: BusMaster, addr: u16, data: u8) {
         if master == BusMaster::Cpu(1) {
             // Sound board
             match self.sound_map.page(addr).region_id {
@@ -653,14 +634,14 @@ impl Bus for WilliamsBoard {
         self.main_map.check_write_watch(addr, data);
     }
 
-    fn is_halted_for(&self, master: BusMaster) -> bool {
+    pub(crate) fn bus_is_halted_for(&self, master: BusMaster) -> bool {
         match master {
             BusMaster::Cpu(0) => self.blitter.is_active(),
             _ => false,
         }
     }
 
-    fn check_interrupts(&mut self, target: BusMaster) -> InterruptState {
+    pub(crate) fn bus_check_interrupts(&mut self, target: BusMaster) -> InterruptState {
         match target {
             // Only ROM PIA interrupts are wired to the main CPU IRQ line
             // via INPUT_MERGER_ANY_HIGH. Widget PIA IRQs are not connected.

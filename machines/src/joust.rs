@@ -1,9 +1,11 @@
+use phosphor_core::bus_split;
 use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::machine::{
     AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
 };
 use phosphor_core::core::save_state::{self, SaveError, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
+use phosphor_core::cpu::Cpu;
 
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
@@ -211,6 +213,13 @@ impl JoustSystem {
         self.board.widget_pia.set_port_a_input(port_a);
     }
 
+    /// Tick one cycle, splitting the borrow so the board can access the bus.
+    pub fn tick(&mut self) {
+        bus_split!(self, bus => {
+            self.board.tick(bus);
+        });
+    }
+
     /// Load program ROM from a RomSet using the Joust ROM mapping.
     ///
     /// Matches ROM files by CRC32 checksum (for MAME ROMs with any filename)
@@ -250,19 +259,19 @@ impl Bus for JoustSystem {
         if master != BusMaster::Cpu(1) && (0xC804..=0xC807).contains(&addr) {
             self.update_widget_mux();
         }
-        self.board.read(master, addr)
+        self.board.bus_read(master, addr)
     }
 
     fn write(&mut self, master: BusMaster, addr: u16, data: u8) {
-        self.board.write(master, addr, data);
+        self.board.bus_write(master, addr, data);
     }
 
     fn is_halted_for(&self, master: BusMaster) -> bool {
-        self.board.is_halted_for(master)
+        self.board.bus_is_halted_for(master)
     }
 
     fn check_interrupts(&mut self, target: BusMaster) -> InterruptState {
-        self.board.check_interrupts(target)
+        self.board.bus_check_interrupts(target)
     }
 }
 
@@ -337,7 +346,9 @@ impl MachineDebug for JoustSystem {
 
     fn debug_tick(&mut self) -> u32 {
         self.update_widget_mux();
-        self.board.tick();
+        bus_split!(self, bus => {
+            self.board.tick(bus);
+        });
         self.board.debug_tick_boundaries()
     }
 }
@@ -359,10 +370,12 @@ impl Machine for JoustSystem {
         self.board
             .rom_pia
             .set_port_a_input(self.board.rom_pia_input);
-        for _ in 0..williams::CYCLES_PER_FRAME {
-            self.update_widget_mux();
-            self.board.tick();
-        }
+        bus_split!(self, bus => {
+            for _ in 0..williams::CYCLES_PER_FRAME {
+                self.update_widget_mux();
+                self.board.tick(bus);
+            }
+        });
     }
 
     fn reset(&mut self) {
@@ -370,6 +383,10 @@ impl Machine for JoustSystem {
         self.p1_controls = 0;
         self.p2_controls = 0;
         self.start_bits = 0;
+        bus_split!(self, bus => {
+            self.board.cpu.reset(bus, BusMaster::Cpu(0));
+            self.board.sound_cpu.reset(bus, BusMaster::Cpu(1));
+        });
     }
 
     fn machine_id(&self) -> &str {

@@ -282,7 +282,7 @@ fn test_blitter_writes_to_video_ram() {
     sys.write(BusMaster::Cpu(0), 0xCA00, 0x00); // control: triggers blit
 
     for _ in 0..10 {
-        sys.board.tick();
+        sys.tick();
     }
 
     assert_eq!(sys.board.read_video_ram(0x2000), 0xAB);
@@ -372,7 +372,7 @@ fn test_sound_cpu_executes_independently() {
     sys.reset();
 
     for _ in 0..50 {
-        sys.board.tick();
+        sys.tick();
     }
 
     assert_eq!(sys.read(BusMaster::Cpu(1), 0x0010), 0x42);
@@ -386,7 +386,7 @@ fn test_sound_cpu_executes_independently() {
 fn test_watchdog_reset_on_write() {
     let mut sys = RobotronSystem::new();
     for _ in 0..100 {
-        sys.board.tick();
+        sys.tick();
     }
     sys.write(BusMaster::Cpu(0), 0xCBFF, 0x39);
     assert_eq!(sys.board.watchdog_counter, 0);
@@ -396,7 +396,7 @@ fn test_watchdog_reset_on_write() {
 fn test_watchdog_ignores_non_0x39() {
     let mut sys = RobotronSystem::new();
     for _ in 0..100 {
-        sys.board.tick();
+        sys.tick();
     }
     let before = sys.board.watchdog_counter;
     sys.write(BusMaster::Cpu(0), 0xCBFF, 0x00);
@@ -424,7 +424,7 @@ fn test_execute_simple_program() {
     sys.reset();
 
     for _ in 0..50 {
-        sys.board.tick();
+        sys.tick();
     }
 
     assert_eq!(sys.board.read_video_ram(0x0100), 0x42);
@@ -443,7 +443,7 @@ fn test_clock_advances() {
 
     assert_eq!(sys.board.clock(), 0);
     for _ in 0..100 {
-        sys.board.tick();
+        sys.tick();
     }
     assert_eq!(sys.board.clock(), 100);
 }

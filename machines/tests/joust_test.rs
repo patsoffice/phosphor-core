@@ -339,7 +339,7 @@ fn test_blitter_halts_cpu() {
 
     // Run enough cycles for the CPU to settle into the BRA loop
     for _ in 0..20 {
-        sys.board.tick();
+        sys.tick();
     }
 
     // Record CPU PC — it should be at the BRA instruction
@@ -357,7 +357,7 @@ fn test_blitter_halts_cpu() {
 
     // The blitter should now be active. Tick once and verify the CPU PC
     // did NOT advance (blitter halts the CPU via is_halted_for).
-    sys.board.tick();
+    sys.tick();
     let pc_during_blit = sys.board.get_cpu_state().pc;
     assert_eq!(
         pc_before, pc_during_blit,
@@ -366,7 +366,7 @@ fn test_blitter_halts_cpu() {
 
     // Run enough cycles to complete the blit (8*8 = 64 DMA cycles)
     for _ in 0..100 {
-        sys.board.tick();
+        sys.tick();
     }
 
     // After blit completes, CPU should resume and PC should be back in the loop
@@ -399,7 +399,7 @@ fn test_blitter_writes_to_video_ram() {
 
     // Run enough DMA cycles to complete
     for _ in 0..10 {
-        sys.board.tick();
+        sys.tick();
     }
 
     // Verify destination
@@ -421,7 +421,7 @@ fn test_no_irq_when_pia_disabled() {
 
     // PIA CB1 interrupt not enabled by default, so no IRQ after VBLANK
     for _ in 0..200 {
-        sys.board.tick();
+        sys.tick();
     }
     // CPU should still be running the loop, not stuck in an IRQ handler
     let state = sys.board.get_cpu_state();
@@ -657,7 +657,7 @@ fn test_blitter_reads_banked_rom() {
 
     // Run DMA cycles
     for _ in 0..10 {
-        sys.board.tick();
+        sys.tick();
     }
 
     // Blitter should have read from banked ROM (0x11, 0x22), not video RAM (0xAB, 0xCD)
@@ -690,7 +690,7 @@ fn test_blitter_reads_video_ram_when_bank_disabled() {
 
     // Run DMA cycles
     for _ in 0..10 {
-        sys.board.tick();
+        sys.tick();
     }
 
     // Blitter should have read from video RAM (0xAB, 0xCD)
@@ -736,7 +736,7 @@ fn test_blitter_dest_read_bypasses_rom_banking() {
 
     // Run DMA cycles
     for _ in 0..10 {
-        sys.board.tick();
+        sys.tick();
     }
 
     // Result should blend with VRAM (0xEE), not ROM (0x77):
@@ -773,7 +773,7 @@ fn test_cpu_reads_banked_rom() {
     sys.reset();
 
     for _ in 0..60 {
-        sys.board.tick();
+        sys.tick();
     }
 
     assert_eq!(sys.board.read_video_ram(0x9100), 0x42);
@@ -834,7 +834,7 @@ fn test_video_counter_read() {
 
     // Advance past first scanline boundary (64 cycles)
     for _ in 0..64 {
-        sys.board.tick();
+        sys.tick();
     }
     // At cycle 64, scanline = 1, video counter = 1 & 0xFC = 0
     let val = sys.read(BusMaster::Cpu(0), 0xCB00);
@@ -842,7 +842,7 @@ fn test_video_counter_read() {
 
     // Advance to scanline 4 (cycle 256)
     for _ in 0..192 {
-        sys.board.tick();
+        sys.tick();
     }
     let val = sys.read(BusMaster::Cpu(0), 0xCB42); // Any address in 0xCB00-0xCBFF works
     assert_eq!(val, 0x04);
@@ -853,7 +853,7 @@ fn test_watchdog_reset_on_write() {
     let mut sys = JoustSystem::new();
     // Advance watchdog counter
     for _ in 0..100 {
-        sys.board.tick();
+        sys.tick();
     }
     // Writing 0x39 to 0xCBFF resets watchdog (MAME: williams_m.cpp:251)
     sys.write(BusMaster::Cpu(0), 0xCBFF, 0x39);
@@ -864,7 +864,7 @@ fn test_watchdog_reset_on_write() {
 fn test_watchdog_ignores_non_0x39() {
     let mut sys = JoustSystem::new();
     for _ in 0..100 {
-        sys.board.tick();
+        sys.tick();
     }
     let before = sys.board.watchdog_counter;
     // Writing any value other than 0x39 does NOT reset watchdog
@@ -895,7 +895,7 @@ fn test_execute_simple_program() {
     sys.reset();
 
     for _ in 0..50 {
-        sys.board.tick();
+        sys.tick();
     }
 
     assert_eq!(sys.board.read_video_ram(0x0100), 0x42);
@@ -921,7 +921,7 @@ fn test_execute_palette_write_program() {
     sys.reset();
 
     for _ in 0..30 {
-        sys.board.tick();
+        sys.tick();
     }
 
     assert_eq!(sys.board.read_palette(0), 0xE3);
@@ -943,7 +943,7 @@ fn test_execute_cmos_write_program() {
     sys.reset();
 
     for _ in 0..30 {
-        sys.board.tick();
+        sys.tick();
     }
 
     assert_eq!(sys.board.save_cmos()[0], 0xF9);
@@ -965,7 +965,7 @@ fn test_execute_rom_bank_program() {
     sys.reset();
 
     for _ in 0..30 {
-        sys.board.tick();
+        sys.tick();
     }
 
     assert_eq!(sys.board.rom_bank(), 0x03);
@@ -980,7 +980,7 @@ fn test_clock_advances() {
 
     assert_eq!(sys.board.clock(), 0);
     for _ in 0..100 {
-        sys.board.tick();
+        sys.tick();
     }
     assert_eq!(sys.board.clock(), 100);
 }
@@ -1036,7 +1036,7 @@ fn test_sound_cpu_executes_independently() {
     sys.reset();
 
     for _ in 0..50 {
-        sys.board.tick();
+        sys.tick();
     }
 
     // Sound CPU should have written 0x42 to sound RAM at 0x0010
@@ -1117,7 +1117,7 @@ fn test_sound_command_propagation() {
     sys.write(BusMaster::Cpu(0), 0xC80E, 0x42);
 
     // Tick once to propagate
-    sys.board.tick();
+    sys.tick();
 
     // Sound PIA Port B should have the command with high bits pulled up (| 0xC0)
     let command = sys.read(BusMaster::Cpu(1), 0x0402);
@@ -1153,7 +1153,7 @@ fn test_sound_cpu_not_halted_during_blit() {
 
     // Tick during blit — sound CPU should still execute
     for _ in 0..50 {
-        sys.board.tick();
+        sys.tick();
     }
 
     assert_eq!(sys.read(BusMaster::Cpu(1), 0x0050), 0x42);
@@ -1178,7 +1178,7 @@ fn test_scanline_va11_signal() {
     // Advance past scanline 32 boundary: clock must reach 32*64 = 2048.
     // tick() checks clock at entry, so the (N+1)th call processes clock=N.
     for _ in 0..2049 {
-        sys.board.tick();
+        sys.tick();
     }
     // At scanline 32: VA11 = (32 & 0x20) != 0 = true → CB1 goes high (rising edge)
     // ROM PIA irq_b1 should be set → CRB bit 7 high
@@ -1203,7 +1203,7 @@ fn test_scanline_count240_signal() {
 
     // Advance past scanline 240 boundary: clock must reach 240*64 = 15360.
     for _ in 0..15361 {
-        sys.board.tick();
+        sys.tick();
     }
     // count240 should have asserted CA1 at scanline 240 → CRA bit 7 high
     let cra = sys.read(BusMaster::Cpu(0), 0xC80D);
