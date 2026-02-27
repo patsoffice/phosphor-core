@@ -116,6 +116,17 @@ impl I8088 {
             }
 
             // =============================================================
+            // Jcc — conditional jumps (0x70-0x7F)
+            // All take a signed 8-bit relative displacement.
+            // =============================================================
+            0x70..=0x7F => {
+                let disp = self.fetch_byte(bus, master) as i8;
+                if self.test_condition(opcode & 0x0F) {
+                    self.ip = self.ip.wrapping_add(disp as u16);
+                }
+            }
+
+            // =============================================================
             // Immediate ALU group (0x80-0x83)
             //   0x80: ALU r/m8, imm8
             //   0x81: ALU r/m16, imm16
@@ -261,6 +272,18 @@ impl I8088 {
             }
 
             // =============================================================
+            // CALL far (0x9A): push CS, push IP, load new CS:IP
+            // =============================================================
+            0x9A => {
+                let offset = self.fetch_word(bus, master);
+                let segment = self.fetch_word(bus, master);
+                self.push16(bus, master, self.cs);
+                self.push16(bus, master, self.ip);
+                self.cs = segment;
+                self.ip = offset;
+            }
+
+            // =============================================================
             // SAHF (0x9E): AH → FLAGS low byte (SF, ZF, AF, PF, CF)
             // LAHF (0x9F): FLAGS low byte → AH
             // =============================================================
@@ -336,6 +359,34 @@ impl I8088 {
             }
 
             // =============================================================
+            // RET near with imm16 (0xC2): pop IP, SP += imm16
+            // RET near (0xC3): pop IP
+            // =============================================================
+            0xC2 => {
+                let imm = self.fetch_word(bus, master);
+                self.ip = self.pop16(bus, master);
+                self.sp = self.sp.wrapping_add(imm);
+            }
+            0xC3 => {
+                self.ip = self.pop16(bus, master);
+            }
+
+            // =============================================================
+            // RETF near with imm16 (0xCA): pop IP, pop CS, SP += imm16
+            // RETF (0xCB): pop IP, pop CS
+            // =============================================================
+            0xCA => {
+                let imm = self.fetch_word(bus, master);
+                self.ip = self.pop16(bus, master);
+                self.cs = self.pop16(bus, master);
+                self.sp = self.sp.wrapping_add(imm);
+            }
+            0xCB => {
+                self.ip = self.pop16(bus, master);
+                self.cs = self.pop16(bus, master);
+            }
+
+            // =============================================================
             // LES reg16, mem32 (0xC4): load far pointer into ES:reg
             // LDS reg16, mem32 (0xC5): load far pointer into DS:reg
             // =============================================================
@@ -386,6 +437,76 @@ impl I8088 {
                 let offset = self.bx.wrapping_add(self.al() as u16);
                 let val = self.read_byte(bus, master, seg, offset);
                 self.set_al(val);
+            }
+
+            // =============================================================
+            // LOOP/LOOPZ/LOOPNZ/JCXZ (0xE0-0xE3)
+            // =============================================================
+            0xE0 => {
+                // LOOPNZ/LOOPNE: CX -= 1; jump if CX != 0 AND ZF == 0
+                let disp = self.fetch_byte(bus, master) as i8;
+                self.cx = self.cx.wrapping_sub(1);
+                if self.cx != 0 && !flags::get(self.flags, Flag::ZF) {
+                    self.ip = self.ip.wrapping_add(disp as u16);
+                }
+            }
+            0xE1 => {
+                // LOOPZ/LOOPE: CX -= 1; jump if CX != 0 AND ZF == 1
+                let disp = self.fetch_byte(bus, master) as i8;
+                self.cx = self.cx.wrapping_sub(1);
+                if self.cx != 0 && flags::get(self.flags, Flag::ZF) {
+                    self.ip = self.ip.wrapping_add(disp as u16);
+                }
+            }
+            0xE2 => {
+                // LOOP: CX -= 1; jump if CX != 0
+                let disp = self.fetch_byte(bus, master) as i8;
+                self.cx = self.cx.wrapping_sub(1);
+                if self.cx != 0 {
+                    self.ip = self.ip.wrapping_add(disp as u16);
+                }
+            }
+            0xE3 => {
+                // JCXZ: jump if CX == 0
+                let disp = self.fetch_byte(bus, master) as i8;
+                if self.cx == 0 {
+                    self.ip = self.ip.wrapping_add(disp as u16);
+                }
+            }
+
+            // =============================================================
+            // CALL near (0xE8): push IP, IP += disp16
+            // =============================================================
+            0xE8 => {
+                let disp = self.fetch_word(bus, master);
+                self.push16(bus, master, self.ip);
+                self.ip = self.ip.wrapping_add(disp);
+            }
+
+            // =============================================================
+            // JMP near (0xE9): IP += disp16
+            // =============================================================
+            0xE9 => {
+                let disp = self.fetch_word(bus, master);
+                self.ip = self.ip.wrapping_add(disp);
+            }
+
+            // =============================================================
+            // JMP far (0xEA): IP = offset, CS = segment
+            // =============================================================
+            0xEA => {
+                let offset = self.fetch_word(bus, master);
+                let segment = self.fetch_word(bus, master);
+                self.ip = offset;
+                self.cs = segment;
+            }
+
+            // =============================================================
+            // JMP short (0xEB): IP += sign-extended disp8
+            // =============================================================
+            0xEB => {
+                let disp = self.fetch_byte(bus, master) as i8;
+                self.ip = self.ip.wrapping_add(disp as u16);
             }
 
             // =============================================================
@@ -468,8 +589,9 @@ impl I8088 {
             }
 
             // =============================================================
-            // 0xFF group: /0=INC r/m16, /1=DEC r/m16, /6=PUSH r/m16
-            // CALL/JMP (/2-/5) in Step 1.5
+            // 0xFF group: /0=INC, /1=DEC, /2=CALL near indirect,
+            // /3=CALL far indirect, /4=JMP near indirect,
+            // /5=JMP far indirect, /6=PUSH r/m16
             // =============================================================
             0xFF => {
                 let modrm = self.fetch_modrm(bus, master);
@@ -485,12 +607,45 @@ impl I8088 {
                         let result = alu::dec16(&mut self.flags, val);
                         self.write_operand16(operand, bus, master, result);
                     }
+                    2 => {
+                        // CALL near indirect: push IP, IP = r/m16
+                        let target = self.read_operand16(operand, bus, master);
+                        self.push16(bus, master, self.ip);
+                        self.ip = target;
+                    }
+                    3 => {
+                        // CALL far indirect: push CS, push IP, load CS:IP from m32
+                        if let Operand::Memory { segment, offset } = operand {
+                            let new_ip = self.read_word(bus, master, segment, offset);
+                            let new_cs =
+                                self.read_word(bus, master, segment, offset.wrapping_add(2));
+                            self.push16(bus, master, self.cs);
+                            self.push16(bus, master, self.ip);
+                            self.ip = new_ip;
+                            self.cs = new_cs;
+                        }
+                    }
+                    4 => {
+                        // JMP near indirect: IP = r/m16
+                        let target = self.read_operand16(operand, bus, master);
+                        self.ip = target;
+                    }
+                    5 => {
+                        // JMP far indirect: load CS:IP from m32
+                        if let Operand::Memory { segment, offset } = operand {
+                            let new_ip = self.read_word(bus, master, segment, offset);
+                            let new_cs =
+                                self.read_word(bus, master, segment, offset.wrapping_add(2));
+                            self.ip = new_ip;
+                            self.cs = new_cs;
+                        }
+                    }
                     6 => {
                         // PUSH r/m16
                         let val = self.read_operand16(operand, bus, master);
                         self.push16(bus, master, val);
                     }
-                    _ => {} // CALL/JMP (Step 1.5)
+                    _ => {}
                 }
             }
 
@@ -612,6 +767,41 @@ impl I8088 {
             5 => alu::sub16(&mut self.flags, a, b, false),
             6 => alu::xor16(&mut self.flags, a, b),
             7 => alu::sub16(&mut self.flags, a, b, false), // CMP
+            _ => unreachable!(),
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Condition code testing (for Jcc 0x70-0x7F)
+    // -----------------------------------------------------------------
+
+    /// Test a condition code (0x0-0xF) against the current FLAGS register.
+    /// Condition codes come in pairs: even = condition, odd = NOT condition.
+    #[inline]
+    fn test_condition(&self, cc: u8) -> bool {
+        let f = self.flags;
+        let cf = flags::get(f, Flag::CF);
+        let zf = flags::get(f, Flag::ZF);
+        let sf = flags::get(f, Flag::SF);
+        let of = flags::get(f, Flag::OF);
+        let pf = flags::get(f, Flag::PF);
+        match cc & 0x0F {
+            0x0 => of,                // JO
+            0x1 => !of,               // JNO
+            0x2 => cf,                // JB / JNAE / JC
+            0x3 => !cf,               // JNB / JAE / JNC
+            0x4 => zf,                // JZ / JE
+            0x5 => !zf,               // JNZ / JNE
+            0x6 => cf || zf,          // JBE / JNA
+            0x7 => !cf && !zf,        // JA / JNBE
+            0x8 => sf,                // JS
+            0x9 => !sf,               // JNS
+            0xA => pf,                // JP / JPE
+            0xB => !pf,               // JNP / JPO
+            0xC => sf != of,          // JL / JNGE
+            0xD => sf == of,          // JGE / JNL
+            0xE => zf || (sf != of),  // JLE / JNG
+            0xF => !zf && (sf == of), // JG / JNLE
             _ => unreachable!(),
         }
     }
@@ -1723,6 +1913,621 @@ mod tests {
         bus.mem[0x100] = 0xC8;
         cpu.execute(0xFF, &mut bus, M); // DEC AX
         assert_eq!(cpu.ax, 0x00FF);
+    }
+
+    // =====================================================================
+    // JMP short (0xEB)
+    // =====================================================================
+
+    #[test]
+    fn jmp_short_forward() {
+        let (mut cpu, mut bus) = setup();
+        bus.mem[0x100] = 0x10; // disp8 = +16
+        cpu.execute(0xEB, &mut bus, M);
+        // IP was 0x100, fetch consumed 1 byte → IP=0x101, then +16 = 0x111
+        assert_eq!(cpu.ip, 0x0111);
+    }
+
+    #[test]
+    fn jmp_short_backward() {
+        let (mut cpu, mut bus) = setup();
+        bus.mem[0x100] = 0xFE_u8; // disp8 = -2 (signed)
+        cpu.execute(0xEB, &mut bus, M);
+        // IP was 0x100, fetch consumed 1 byte → IP=0x101, then -2 = 0xFF
+        assert_eq!(cpu.ip, 0x00FF);
+    }
+
+    // =====================================================================
+    // JMP near (0xE9)
+    // =====================================================================
+
+    #[test]
+    fn jmp_near() {
+        let (mut cpu, mut bus) = setup();
+        bus.mem[0x100] = 0x00; // disp16 low
+        bus.mem[0x101] = 0x10; // disp16 high = 0x1000
+        cpu.execute(0xE9, &mut bus, M);
+        // IP=0x100, fetch word consumed 2 → IP=0x102, then +0x1000 = 0x1102
+        assert_eq!(cpu.ip, 0x1102);
+    }
+
+    #[test]
+    fn jmp_near_backward() {
+        let (mut cpu, mut bus) = setup();
+        // disp16 = -0x0050 = 0xFFB0
+        bus.mem[0x100] = 0xB0;
+        bus.mem[0x101] = 0xFF;
+        cpu.execute(0xE9, &mut bus, M);
+        // IP=0x102 + 0xFFB0 = 0x00B2 (wrapping 16-bit)
+        assert_eq!(cpu.ip, 0x00B2);
+    }
+
+    // =====================================================================
+    // JMP far (0xEA)
+    // =====================================================================
+
+    #[test]
+    fn jmp_far() {
+        let (mut cpu, mut bus) = setup();
+        bus.mem[0x100] = 0x00; // offset low
+        bus.mem[0x101] = 0x01; // offset high = 0x0100
+        bus.mem[0x102] = 0x00; // segment low
+        bus.mem[0x103] = 0xF0; // segment high = 0xF000
+        cpu.execute(0xEA, &mut bus, M);
+        assert_eq!(cpu.ip, 0x0100);
+        assert_eq!(cpu.cs, 0xF000);
+    }
+
+    // =====================================================================
+    // JMP near indirect (0xFF /4), JMP far indirect (0xFF /5)
+    // =====================================================================
+
+    #[test]
+    fn jmp_near_indirect_reg() {
+        let (mut cpu, mut bus) = setup();
+        cpu.ax = 0x5678;
+        // ModR/M: mod=11 reg=100(/4=JMP near) rm=000(AX) = 0xE0
+        bus.mem[0x100] = 0xE0;
+        cpu.execute(0xFF, &mut bus, M);
+        assert_eq!(cpu.ip, 0x5678);
+    }
+
+    #[test]
+    fn jmp_near_indirect_mem() {
+        let (mut cpu, mut bus) = setup();
+        cpu.bx = 0x0050;
+        // Target address stored at DS:BX = 0x20050
+        bus.mem[0x20050] = 0x34;
+        bus.mem[0x20051] = 0x12; // target = 0x1234
+        // ModR/M: mod=00 reg=100(/4) rm=111([BX]) = 0x27
+        bus.mem[0x100] = 0x27;
+        cpu.execute(0xFF, &mut bus, M);
+        assert_eq!(cpu.ip, 0x1234);
+    }
+
+    #[test]
+    fn jmp_far_indirect_mem() {
+        let (mut cpu, mut bus) = setup();
+        cpu.bx = 0x0060;
+        // Far pointer at DS:BX = 0x20060
+        bus.mem[0x20060] = 0x00; // offset low
+        bus.mem[0x20061] = 0x02; // offset high = 0x0200
+        bus.mem[0x20062] = 0x00; // segment low
+        bus.mem[0x20063] = 0xA0; // segment high = 0xA000
+        // ModR/M: mod=00 reg=101(/5) rm=111([BX]) = 0x2F
+        bus.mem[0x100] = 0x2F;
+        cpu.execute(0xFF, &mut bus, M);
+        assert_eq!(cpu.ip, 0x0200);
+        assert_eq!(cpu.cs, 0xA000);
+    }
+
+    // =====================================================================
+    // CALL near (0xE8)
+    // =====================================================================
+
+    #[test]
+    fn call_near() {
+        let (mut cpu, mut bus) = setup();
+        let old_sp = cpu.sp;
+        bus.mem[0x100] = 0x00; // disp16 low
+        bus.mem[0x101] = 0x05; // disp16 high = 0x0500
+        cpu.execute(0xE8, &mut bus, M);
+        // IP=0x100, fetch word → IP=0x102, push 0x102, then IP = 0x102 + 0x0500 = 0x0602
+        assert_eq!(cpu.ip, 0x0602);
+        assert_eq!(cpu.sp, old_sp.wrapping_sub(2));
+        // Verify return address on stack
+        let ret_addr = cpu.read_word(&mut bus, M, cpu.ss, cpu.sp);
+        assert_eq!(ret_addr, 0x0102);
+    }
+
+    // =====================================================================
+    // CALL far (0x9A)
+    // =====================================================================
+
+    #[test]
+    fn call_far() {
+        let (mut cpu, mut bus) = setup();
+        let old_sp = cpu.sp;
+        let old_cs = cpu.cs;
+        bus.mem[0x100] = 0x00; // offset low
+        bus.mem[0x101] = 0x02; // offset high = 0x0200
+        bus.mem[0x102] = 0x00; // segment low
+        bus.mem[0x103] = 0xB0; // segment high = 0xB000
+        cpu.execute(0x9A, &mut bus, M);
+        assert_eq!(cpu.ip, 0x0200);
+        assert_eq!(cpu.cs, 0xB000);
+        assert_eq!(cpu.sp, old_sp.wrapping_sub(4));
+        // Check stack: first CS, then IP (both pushed)
+        let stacked_ip = cpu.read_word(&mut bus, M, cpu.ss, cpu.sp);
+        let stacked_cs = cpu.read_word(&mut bus, M, cpu.ss, cpu.sp.wrapping_add(2));
+        assert_eq!(stacked_ip, 0x0104); // IP after fetching 4 bytes
+        assert_eq!(stacked_cs, old_cs);
+    }
+
+    // =====================================================================
+    // CALL near indirect (0xFF /2), CALL far indirect (0xFF /3)
+    // =====================================================================
+
+    #[test]
+    fn call_near_indirect_reg() {
+        let (mut cpu, mut bus) = setup();
+        cpu.ax = 0x4000;
+        // ModR/M: mod=11 reg=010(/2=CALL near) rm=000(AX) = 0xD0
+        bus.mem[0x100] = 0xD0;
+        cpu.execute(0xFF, &mut bus, M);
+        assert_eq!(cpu.ip, 0x4000);
+        // Return address pushed
+        let ret_addr = cpu.read_word(&mut bus, M, cpu.ss, cpu.sp);
+        assert_eq!(ret_addr, 0x0101); // IP after ModR/M
+    }
+
+    #[test]
+    fn call_far_indirect_mem() {
+        let (mut cpu, mut bus) = setup();
+        let old_cs = cpu.cs;
+        cpu.bx = 0x0070;
+        // Far pointer at DS:BX = 0x20070
+        bus.mem[0x20070] = 0x00;
+        bus.mem[0x20071] = 0x03; // new IP = 0x0300
+        bus.mem[0x20072] = 0x00;
+        bus.mem[0x20073] = 0xC0; // new CS = 0xC000
+        // ModR/M: mod=00 reg=011(/3=CALL far) rm=111([BX]) = 0x1F
+        bus.mem[0x100] = 0x1F;
+        cpu.execute(0xFF, &mut bus, M);
+        assert_eq!(cpu.ip, 0x0300);
+        assert_eq!(cpu.cs, 0xC000);
+        // Verify stacked CS:IP
+        let stacked_ip = cpu.read_word(&mut bus, M, cpu.ss, cpu.sp);
+        let stacked_cs = cpu.read_word(&mut bus, M, cpu.ss, cpu.sp.wrapping_add(2));
+        assert_eq!(stacked_ip, 0x0101); // IP after ModR/M
+        assert_eq!(stacked_cs, old_cs);
+    }
+
+    // =====================================================================
+    // RET near (0xC3) / RET near with imm16 (0xC2)
+    // =====================================================================
+
+    #[test]
+    fn ret_near() {
+        let (mut cpu, mut bus) = setup();
+        // Simulate a CALL: push return address
+        cpu.push16(&mut bus, M, 0x0200);
+        cpu.execute(0xC3, &mut bus, M);
+        assert_eq!(cpu.ip, 0x0200);
+    }
+
+    #[test]
+    fn ret_near_imm16() {
+        let (mut cpu, mut bus) = setup();
+        let old_sp = cpu.sp;
+        cpu.push16(&mut bus, M, 0x0300);
+        bus.mem[0x100] = 0x04; // imm16 low
+        bus.mem[0x101] = 0x00; // imm16 high = 4
+        cpu.execute(0xC2, &mut bus, M);
+        assert_eq!(cpu.ip, 0x0300);
+        // SP = old_sp (pushed 2, popped 2) + 4 = old_sp + 4
+        assert_eq!(cpu.sp, old_sp.wrapping_add(4));
+    }
+
+    // =====================================================================
+    // RETF (0xCB) / RETF with imm16 (0xCA)
+    // =====================================================================
+
+    #[test]
+    fn retf() {
+        let (mut cpu, mut bus) = setup();
+        // Simulate a far CALL: push CS then IP
+        cpu.push16(&mut bus, M, 0xF000); // CS
+        cpu.push16(&mut bus, M, 0x1234); // IP
+        cpu.execute(0xCB, &mut bus, M);
+        assert_eq!(cpu.ip, 0x1234);
+        assert_eq!(cpu.cs, 0xF000);
+    }
+
+    #[test]
+    fn retf_imm16() {
+        let (mut cpu, mut bus) = setup();
+        let old_sp = cpu.sp;
+        cpu.push16(&mut bus, M, 0xA000); // CS
+        cpu.push16(&mut bus, M, 0x5678); // IP
+        bus.mem[0x100] = 0x06; // imm16 low
+        bus.mem[0x101] = 0x00; // imm16 high = 6
+        cpu.execute(0xCA, &mut bus, M);
+        assert_eq!(cpu.ip, 0x5678);
+        assert_eq!(cpu.cs, 0xA000);
+        // SP: pushed 4, popped 4, then +6
+        assert_eq!(cpu.sp, old_sp.wrapping_add(6));
+    }
+
+    // =====================================================================
+    // CALL/RET round-trip
+    // =====================================================================
+
+    #[test]
+    fn call_ret_near_roundtrip() {
+        let (mut cpu, mut bus) = setup();
+        let old_sp = cpu.sp;
+        // CALL near: disp = 0x0100
+        bus.mem[0x100] = 0x00;
+        bus.mem[0x101] = 0x01;
+        cpu.execute(0xE8, &mut bus, M); // CALL 0x0100
+        assert_eq!(cpu.ip, 0x0202); // 0x102 + 0x100
+        // Now RET
+        cpu.execute(0xC3, &mut bus, M);
+        assert_eq!(cpu.ip, 0x0102); // return address
+        assert_eq!(cpu.sp, old_sp);
+    }
+
+    #[test]
+    fn call_ret_far_roundtrip() {
+        let (mut cpu, mut bus) = setup();
+        let old_sp = cpu.sp;
+        let old_cs = cpu.cs;
+        // CALL far: offset=0x0300, segment=0xD000
+        bus.mem[0x100] = 0x00;
+        bus.mem[0x101] = 0x03;
+        bus.mem[0x102] = 0x00;
+        bus.mem[0x103] = 0xD0;
+        cpu.execute(0x9A, &mut bus, M);
+        assert_eq!(cpu.ip, 0x0300);
+        assert_eq!(cpu.cs, 0xD000);
+        // Now RETF
+        cpu.execute(0xCB, &mut bus, M);
+        assert_eq!(cpu.ip, 0x0104);
+        assert_eq!(cpu.cs, old_cs);
+        assert_eq!(cpu.sp, old_sp);
+    }
+
+    // =====================================================================
+    // Jcc conditional jumps (0x70-0x7F)
+    // =====================================================================
+
+    #[test]
+    fn jo_taken() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        fl::set(&mut cpu.flags, Flag::OF, true);
+        bus.mem[0x100] = 0x10; // disp8 = +16
+        cpu.execute(0x70, &mut bus, M); // JO
+        assert_eq!(cpu.ip, 0x0111);
+    }
+
+    #[test]
+    fn jo_not_taken() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        fl::set(&mut cpu.flags, Flag::OF, false);
+        bus.mem[0x100] = 0x10;
+        cpu.execute(0x70, &mut bus, M); // JO
+        assert_eq!(cpu.ip, 0x0101); // only the disp byte consumed
+    }
+
+    #[test]
+    fn jno_taken() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        fl::set(&mut cpu.flags, Flag::OF, false);
+        bus.mem[0x100] = 0x10;
+        cpu.execute(0x71, &mut bus, M); // JNO
+        assert_eq!(cpu.ip, 0x0111);
+    }
+
+    #[test]
+    fn jb_taken() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        fl::set(&mut cpu.flags, Flag::CF, true);
+        bus.mem[0x100] = 0x20;
+        cpu.execute(0x72, &mut bus, M); // JB/JC
+        assert_eq!(cpu.ip, 0x0121);
+    }
+
+    #[test]
+    fn jnb_taken() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        fl::set(&mut cpu.flags, Flag::CF, false);
+        bus.mem[0x100] = 0x20;
+        cpu.execute(0x73, &mut bus, M); // JNB/JNC
+        assert_eq!(cpu.ip, 0x0121);
+    }
+
+    #[test]
+    fn jz_taken() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        fl::set(&mut cpu.flags, Flag::ZF, true);
+        bus.mem[0x100] = 0x05;
+        cpu.execute(0x74, &mut bus, M); // JZ/JE
+        assert_eq!(cpu.ip, 0x0106);
+    }
+
+    #[test]
+    fn jnz_taken() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        fl::set(&mut cpu.flags, Flag::ZF, false);
+        bus.mem[0x100] = 0x05;
+        cpu.execute(0x75, &mut bus, M); // JNZ/JNE
+        assert_eq!(cpu.ip, 0x0106);
+    }
+
+    #[test]
+    fn jbe_taken_zf() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        fl::set(&mut cpu.flags, Flag::ZF, true);
+        bus.mem[0x100] = 0x05;
+        cpu.execute(0x76, &mut bus, M); // JBE
+        assert_eq!(cpu.ip, 0x0106);
+    }
+
+    #[test]
+    fn jbe_taken_cf() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        fl::set(&mut cpu.flags, Flag::CF, true);
+        bus.mem[0x100] = 0x05;
+        cpu.execute(0x76, &mut bus, M); // JBE
+        assert_eq!(cpu.ip, 0x0106);
+    }
+
+    #[test]
+    fn ja_taken() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        fl::set(&mut cpu.flags, Flag::CF, false);
+        fl::set(&mut cpu.flags, Flag::ZF, false);
+        bus.mem[0x100] = 0x05;
+        cpu.execute(0x77, &mut bus, M); // JA/JNBE
+        assert_eq!(cpu.ip, 0x0106);
+    }
+
+    #[test]
+    fn ja_not_taken_cf() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        fl::set(&mut cpu.flags, Flag::CF, true);
+        fl::set(&mut cpu.flags, Flag::ZF, false);
+        bus.mem[0x100] = 0x05;
+        cpu.execute(0x77, &mut bus, M); // JA not taken (CF=1)
+        assert_eq!(cpu.ip, 0x0101);
+    }
+
+    #[test]
+    fn js_taken() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        fl::set(&mut cpu.flags, Flag::SF, true);
+        bus.mem[0x100] = 0x05;
+        cpu.execute(0x78, &mut bus, M); // JS
+        assert_eq!(cpu.ip, 0x0106);
+    }
+
+    #[test]
+    fn jns_taken() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        fl::set(&mut cpu.flags, Flag::SF, false);
+        bus.mem[0x100] = 0x05;
+        cpu.execute(0x79, &mut bus, M); // JNS
+        assert_eq!(cpu.ip, 0x0106);
+    }
+
+    #[test]
+    fn jp_taken() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        fl::set(&mut cpu.flags, Flag::PF, true);
+        bus.mem[0x100] = 0x05;
+        cpu.execute(0x7A, &mut bus, M); // JP/JPE
+        assert_eq!(cpu.ip, 0x0106);
+    }
+
+    #[test]
+    fn jnp_taken() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        fl::set(&mut cpu.flags, Flag::PF, false);
+        bus.mem[0x100] = 0x05;
+        cpu.execute(0x7B, &mut bus, M); // JNP/JPO
+        assert_eq!(cpu.ip, 0x0106);
+    }
+
+    #[test]
+    fn jl_taken() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        // JL: SF != OF
+        fl::set(&mut cpu.flags, Flag::SF, true);
+        fl::set(&mut cpu.flags, Flag::OF, false);
+        bus.mem[0x100] = 0x05;
+        cpu.execute(0x7C, &mut bus, M); // JL
+        assert_eq!(cpu.ip, 0x0106);
+    }
+
+    #[test]
+    fn jl_not_taken() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        // JL not taken when SF == OF
+        fl::set(&mut cpu.flags, Flag::SF, true);
+        fl::set(&mut cpu.flags, Flag::OF, true);
+        bus.mem[0x100] = 0x05;
+        cpu.execute(0x7C, &mut bus, M);
+        assert_eq!(cpu.ip, 0x0101);
+    }
+
+    #[test]
+    fn jge_taken() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        // JGE: SF == OF
+        fl::set(&mut cpu.flags, Flag::SF, false);
+        fl::set(&mut cpu.flags, Flag::OF, false);
+        bus.mem[0x100] = 0x05;
+        cpu.execute(0x7D, &mut bus, M); // JGE
+        assert_eq!(cpu.ip, 0x0106);
+    }
+
+    #[test]
+    fn jle_taken_zf() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        fl::set(&mut cpu.flags, Flag::ZF, true);
+        bus.mem[0x100] = 0x05;
+        cpu.execute(0x7E, &mut bus, M); // JLE
+        assert_eq!(cpu.ip, 0x0106);
+    }
+
+    #[test]
+    fn jle_taken_sf_ne_of() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        fl::set(&mut cpu.flags, Flag::SF, true);
+        fl::set(&mut cpu.flags, Flag::OF, false);
+        fl::set(&mut cpu.flags, Flag::ZF, false);
+        bus.mem[0x100] = 0x05;
+        cpu.execute(0x7E, &mut bus, M); // JLE
+        assert_eq!(cpu.ip, 0x0106);
+    }
+
+    #[test]
+    fn jg_taken() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        // JG: ZF=0 and SF==OF
+        fl::set(&mut cpu.flags, Flag::ZF, false);
+        fl::set(&mut cpu.flags, Flag::SF, false);
+        fl::set(&mut cpu.flags, Flag::OF, false);
+        bus.mem[0x100] = 0x05;
+        cpu.execute(0x7F, &mut bus, M); // JG
+        assert_eq!(cpu.ip, 0x0106);
+    }
+
+    #[test]
+    fn jg_not_taken_zf() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        // JG not taken when ZF=1
+        fl::set(&mut cpu.flags, Flag::ZF, true);
+        fl::set(&mut cpu.flags, Flag::SF, false);
+        fl::set(&mut cpu.flags, Flag::OF, false);
+        bus.mem[0x100] = 0x05;
+        cpu.execute(0x7F, &mut bus, M);
+        assert_eq!(cpu.ip, 0x0101);
+    }
+
+    // =====================================================================
+    // LOOP (0xE2), LOOPZ (0xE1), LOOPNZ (0xE0), JCXZ (0xE3)
+    // =====================================================================
+
+    #[test]
+    fn loop_basic() {
+        let (mut cpu, mut bus) = setup();
+        cpu.cx = 3;
+        bus.mem[0x100] = 0xFE_u8; // disp8 = -2
+        cpu.execute(0xE2, &mut bus, M); // LOOP
+        assert_eq!(cpu.cx, 2);
+        assert_eq!(cpu.ip, 0x00FF); // 0x101 - 2
+    }
+
+    #[test]
+    fn loop_falls_through_when_cx_zero() {
+        let (mut cpu, mut bus) = setup();
+        cpu.cx = 1; // will decrement to 0
+        bus.mem[0x100] = 0xFE_u8;
+        cpu.execute(0xE2, &mut bus, M);
+        assert_eq!(cpu.cx, 0);
+        assert_eq!(cpu.ip, 0x0101); // no jump
+    }
+
+    #[test]
+    fn loopz_taken() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.cx = 5;
+        fl::set(&mut cpu.flags, Flag::ZF, true);
+        bus.mem[0x100] = 0x10;
+        cpu.execute(0xE1, &mut bus, M); // LOOPZ
+        assert_eq!(cpu.cx, 4);
+        assert_eq!(cpu.ip, 0x0111);
+    }
+
+    #[test]
+    fn loopz_not_taken_zf_clear() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.cx = 5;
+        fl::set(&mut cpu.flags, Flag::ZF, false);
+        bus.mem[0x100] = 0x10;
+        cpu.execute(0xE1, &mut bus, M); // LOOPZ
+        assert_eq!(cpu.cx, 4);
+        assert_eq!(cpu.ip, 0x0101); // no jump
+    }
+
+    #[test]
+    fn loopnz_taken() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.cx = 5;
+        fl::set(&mut cpu.flags, Flag::ZF, false);
+        bus.mem[0x100] = 0x10;
+        cpu.execute(0xE0, &mut bus, M); // LOOPNZ
+        assert_eq!(cpu.cx, 4);
+        assert_eq!(cpu.ip, 0x0111);
+    }
+
+    #[test]
+    fn loopnz_not_taken_zf_set() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.cx = 5;
+        fl::set(&mut cpu.flags, Flag::ZF, true);
+        bus.mem[0x100] = 0x10;
+        cpu.execute(0xE0, &mut bus, M); // LOOPNZ
+        assert_eq!(cpu.cx, 4);
+        assert_eq!(cpu.ip, 0x0101); // no jump
+    }
+
+    #[test]
+    fn jcxz_taken() {
+        let (mut cpu, mut bus) = setup();
+        cpu.cx = 0;
+        bus.mem[0x100] = 0x10;
+        cpu.execute(0xE3, &mut bus, M); // JCXZ
+        assert_eq!(cpu.ip, 0x0111);
+        assert_eq!(cpu.cx, 0); // unchanged
+    }
+
+    #[test]
+    fn jcxz_not_taken() {
+        let (mut cpu, mut bus) = setup();
+        cpu.cx = 1;
+        bus.mem[0x100] = 0x10;
+        cpu.execute(0xE3, &mut bus, M); // JCXZ
+        assert_eq!(cpu.ip, 0x0101); // no jump
+        assert_eq!(cpu.cx, 1); // unchanged
     }
 
     // =====================================================================
