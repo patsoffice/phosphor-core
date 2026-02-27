@@ -17,10 +17,24 @@ use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
 use crate::set_bit_active_low;
 
-mod region {
-    pub const RAM: u8 = 1;
-    pub const IO: u8 = 2;
-    pub const ROM: u8 = 3;
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Region {
+    Ram = 1,
+    Io = 2,
+    Rom = 3,
+}
+
+impl Region {
+    const RAM: u8 = Self::Ram as u8;
+    const IO: u8 = Self::Io as u8;
+    const ROM: u8 = Self::Rom as u8;
+}
+
+impl From<Region> for u8 {
+    fn from(r: Region) -> u8 {
+        r as u8
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -275,11 +289,16 @@ impl MissileCommandSystem {
     }
 
     fn build_map() -> MemoryMap {
-        use region::*;
         let mut map = MemoryMap::new();
-        map.region(RAM, "RAM", 0x0000, 0x4000, AccessKind::ReadWrite)
-            .region(IO, "I/O", 0x4000, 0x1000, AccessKind::Io)
-            .region(ROM, "Program ROM", 0x5000, 0x3000, AccessKind::ReadOnly)
+        map.region(Region::Ram, "RAM", 0x0000, 0x4000, AccessKind::ReadWrite)
+            .region(Region::Io, "I/O", 0x4000, 0x1000, AccessKind::Io)
+            .region(
+                Region::Rom,
+                "Program ROM",
+                0x5000,
+                0x3000,
+                AccessKind::ReadOnly,
+            )
             .mirror(0xF800, 0x7800, 0x0800);
         map
     }
@@ -384,7 +403,7 @@ impl MissileCommandSystem {
         rom_set: &crate::rom_loader::RomSet,
     ) -> Result<(), crate::rom_loader::RomLoadError> {
         let rom_data = MISSILE_COMMAND_ROM.load(rom_set)?;
-        self.map.load_region(region::ROM, &rom_data);
+        self.map.load_region(Region::Rom, &rom_data);
         Ok(())
     }
 
@@ -393,12 +412,12 @@ impl MissileCommandSystem {
     }
 
     pub fn read_ram(&self, addr: usize) -> u8 {
-        let ram = self.map.region_data(region::RAM);
+        let ram = self.map.region_data(Region::Ram);
         if addr < ram.len() { ram[addr] } else { 0 }
     }
 
     pub fn write_ram(&mut self, addr: usize, data: u8) {
-        let ram = self.map.region_data_mut(region::RAM);
+        let ram = self.map.region_data_mut(Region::Ram);
         if addr < ram.len() {
             ram[addr] = data;
         }
@@ -439,7 +458,7 @@ impl MissileCommandSystem {
         let vramdata = DATA_LOOKUP[(data >> 6) as usize];
         let vrammask = !(0x11u8 << pixel);
 
-        let ram = self.map.region_data_mut(region::RAM);
+        let ram = self.map.region_data_mut(Region::Ram);
         if vramaddr < ram.len() {
             ram[vramaddr] = (ram[vramaddr] & vrammask) | (vramdata & !vrammask);
         }
@@ -451,7 +470,7 @@ impl MissileCommandSystem {
             let bit3_data: u8 = if data & 0x20 != 0 { 0xFF } else { 0x00 };
             let bit3_mask = !(1u8 << (offset & 7));
 
-            let ram = self.map.region_data_mut(region::RAM);
+            let ram = self.map.region_data_mut(Region::Ram);
             if bit3_addr < ram.len() {
                 ram[bit3_addr] = (ram[bit3_addr] & bit3_mask) | (bit3_data & !bit3_mask);
             }
@@ -464,7 +483,7 @@ impl MissileCommandSystem {
     fn vram_madsel_read(&mut self, offset: u16) -> u8 {
         let vramaddr = (offset >> 2) as usize;
         let vrammask = 0x11u8 << (offset & 3);
-        let ram = self.map.region_data(region::RAM);
+        let ram = self.map.region_data(Region::Ram);
         let vramdata = if vramaddr < ram.len() {
             ram[vramaddr] & vrammask
         } else {
@@ -484,7 +503,7 @@ impl MissileCommandSystem {
         if (offset & 0xE000) == 0xE000 {
             let bit3_addr = Self::get_bit3_addr(offset) as usize;
             let bit3_mask = 1u8 << (offset & 7);
-            let ram = self.map.region_data(region::RAM);
+            let ram = self.map.region_data(Region::Ram);
             let bit3_data = if bit3_addr < ram.len() {
                 ram[bit3_addr] & bit3_mask
             } else {
@@ -525,7 +544,7 @@ impl MissileCommandSystem {
             );
         }
 
-        let ram = self.map.region_data(region::RAM);
+        let ram = self.map.region_data(Region::Ram);
 
         for screen_y in 0..h {
             let effy = screen_y + 25;
@@ -598,7 +617,7 @@ impl MissileCommandSystem {
 
         let row_offset = screen_y * 256 * 3;
 
-        let ram = self.map.region_data(region::RAM);
+        let ram = self.map.region_data(Region::Ram);
 
         for screen_x in 0..256 {
             let byte_offset = src_base + screen_x / 4;
@@ -657,10 +676,10 @@ impl Bus for MissileCommandSystem {
         let addr = addr & 0x7FFF;
 
         let data = match self.map.page(addr).region_id {
-            region::RAM | region::ROM => self.map.read_backing(addr),
+            Region::RAM | Region::ROM => self.map.read_backing(addr),
 
-            region::IO => match addr {
-                0x4000..=0x47FF => self.pokey.read((addr & 0x0F) as u8),
+            Region::IO => match addr {
+                0x4000..=0x47FF => self.pokey.read(addr & 0x0F),
                 0x4800..=0x48FF => {
                     if self.ctrld {
                         (self.trackball_y << 4) | (self.trackball_x & 0x0F)
@@ -699,10 +718,10 @@ impl Bus for MissileCommandSystem {
         self.map.check_write_watch(addr, data);
 
         match self.map.page(addr).region_id {
-            region::RAM => self.map.write_backing(addr, data),
+            Region::RAM => self.map.write_backing(addr, data),
 
-            region::IO => match addr {
-                0x4000..=0x47FF => self.pokey.write((addr & 0x0F) as u8, data),
+            Region::IO => match addr {
+                0x4000..=0x47FF => self.pokey.write(addr & 0x0F, data),
                 0x4800..=0x48FF => {
                     self.ctrld = (data & 1) != 0;
                 }
@@ -873,7 +892,7 @@ impl Machine for MissileCommandSystem {
         save_state::write_header(&mut w, self.machine_id());
         self.cpu.save_state(&mut w);
         self.pokey.save_state(&mut w);
-        w.write_bytes(self.map.region_data(region::RAM));
+        w.write_bytes(self.map.region_data(Region::Ram));
         w.write_u8(self.in0);
         w.write_u8(self.in1);
         w.write_bool(self.ctrld);
@@ -899,7 +918,7 @@ impl Machine for MissileCommandSystem {
         let mut r = save_state::read_header(data, self.machine_id())?;
         self.cpu.load_state(&mut r)?;
         self.pokey.load_state(&mut r)?;
-        r.read_bytes_into(self.map.region_data_mut(region::RAM))?;
+        r.read_bytes_into(self.map.region_data_mut(Region::Ram))?;
         self.in0 = r.read_u8()?;
         self.in1 = r.read_u8()?;
         self.ctrld = r.read_bool()?;
@@ -951,7 +970,7 @@ mod tests {
         let mut sys = MissileCommandSystem::new();
 
         // Set known state
-        sys.map.region_data_mut(region::RAM)[0x100] = 0xAA;
+        sys.map.region_data_mut(Region::Ram)[0x100] = 0xAA;
         sys.in0 = 0xEE;
         sys.in1 = 0x77;
         sys.ctrld = true;
@@ -975,7 +994,7 @@ mod tests {
 
         // Mutate everything
         let mut sys2 = MissileCommandSystem::new();
-        sys2.map.region_data_mut(region::RAM)[0x100] = 0xFF;
+        sys2.map.region_data_mut(Region::Ram)[0x100] = 0xFF;
         sys2.clock = 999;
 
         // Load
@@ -983,7 +1002,7 @@ mod tests {
 
         // Verify
         assert_eq!(sys2.cpu.snapshot(), cpu_snap);
-        assert_eq!(sys2.map.region_data_mut(region::RAM)[0x100], 0xAA);
+        assert_eq!(sys2.map.region_data_mut(Region::Ram)[0x100], 0xAA);
         assert_eq!(sys2.in0, 0xEE);
         assert_eq!(sys2.in1, 0x77);
         assert!(sys2.ctrld);
@@ -1020,14 +1039,14 @@ mod tests {
     #[test]
     fn save_does_not_include_rom() {
         let mut sys = MissileCommandSystem::new();
-        sys.map.region_data_mut(region::ROM)[0] = 0xDE;
+        sys.map.region_data_mut(Region::Rom)[0] = 0xDE;
 
         let data = sys.save_state().unwrap();
 
         let mut sys2 = MissileCommandSystem::new();
         sys2.load_state(&data).unwrap();
 
-        assert_eq!(sys2.map.region_data_mut(region::ROM)[0], 0x00);
+        assert_eq!(sys2.map.region_data_mut(Region::Rom)[0], 0x00);
     }
 
     #[test]

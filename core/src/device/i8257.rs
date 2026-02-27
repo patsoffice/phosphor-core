@@ -126,7 +126,7 @@ impl I8257 {
     /// Offsets 0-7 read channel address/count registers via the flip-flop.
     /// Offset 8 reads the status register. Reading status does NOT clear
     /// TC flags (only a mode register write does).
-    pub fn read(&mut self, offset: u8) -> u8 {
+    pub fn read(&mut self, offset: u16) -> u8 {
         match offset {
             0..=7 => {
                 let ch = (offset / 2) as usize;
@@ -160,7 +160,7 @@ impl I8257 {
     /// Offsets 0-7 write channel address/count registers via the flip-flop.
     /// Offset 8 writes the mode register, resets the flip-flop, and clears
     /// TC flags and the update flag.
-    pub fn write(&mut self, offset: u8, data: u8) {
+    pub fn write(&mut self, offset: u16, data: u8) {
         match offset {
             0..=7 => {
                 let ch = (offset / 2) as usize;
@@ -345,10 +345,10 @@ impl super::Device for I8257 {
     fn reset(&mut self) {
         self.reset();
     }
-    fn read(&mut self, offset: u8) -> u8 {
+    fn read(&mut self, offset: u16) -> u8 {
         self.read(offset)
     }
-    fn write(&mut self, offset: u8, data: u8) {
+    fn write(&mut self, offset: u16, data: u8) {
         self.write(offset, data);
     }
 }
@@ -417,6 +417,7 @@ use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
 
 impl Saveable for I8257 {
     fn save_state(&self, w: &mut StateWriter) {
+        w.write_version(1);
         for ch in &self.channels {
             w.write_u16_le(ch.address);
             w.write_u16_le(ch.count);
@@ -434,6 +435,7 @@ impl Saveable for I8257 {
     }
 
     fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        r.read_version(1)?;
         for ch in &mut self.channels {
             ch.address = r.read_u16_le()?;
             ch.count = r.read_u16_le()?;

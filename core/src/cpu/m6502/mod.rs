@@ -7,11 +7,7 @@ mod shift;
 mod stack;
 mod unary;
 
-use crate::core::{
-    Bus, BusMaster,
-    bus::InterruptState,
-    component::{BusMasterComponent, Component},
-};
+use crate::core::{Bus, BusMaster, bus::InterruptState, component::BusMasterComponent};
 use crate::cpu::{
     Cpu,
     state::{CpuStateTrait, M6502State},
@@ -590,12 +586,6 @@ impl M6502 {
     }
 }
 
-impl Component for M6502 {
-    fn tick(&mut self) -> bool {
-        false
-    }
-}
-
 impl BusMasterComponent for M6502 {
     type Bus = dyn Bus<Address = u16, Data = u8>;
 
@@ -678,6 +668,7 @@ impl DebugCpu for M6502 {
 
 impl Saveable for M6502 {
     fn save_state(&self, w: &mut StateWriter) {
+        w.write_version(1);
         w.write_u8(self.a);
         w.write_u8(self.x);
         w.write_u8(self.y);
@@ -689,6 +680,7 @@ impl Saveable for M6502 {
     }
 
     fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        r.read_version(1)?;
         self.a = r.read_u8()?;
         self.x = r.read_u8()?;
         self.y = r.read_u8()?;

@@ -8,11 +8,26 @@ use phosphor_macros::BusDebug;
 
 use phosphor_core::device::SsioBoard;
 
-pub(crate) mod region {
-    pub const ROM: u8 = 1;
-    pub const NVRAM: u8 = 2;
-    pub const SPRITE_RAM: u8 = 3;
-    pub const VIDEO_RAM: u8 = 4;
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Region {
+    Rom = 1,
+    Nvram = 2,
+    SpriteRam = 3,
+    VideoRam = 4,
+}
+
+impl Region {
+    pub(crate) const ROM: u8 = Self::Rom as u8;
+    pub(crate) const NVRAM: u8 = Self::Nvram as u8;
+    pub(crate) const SPRITE_RAM: u8 = Self::SpriteRam as u8;
+    pub(crate) const VIDEO_RAM: u8 = Self::VideoRam as u8;
+}
+
+impl From<Region> for u8 {
+    fn from(r: Region) -> u8 {
+        r as u8
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -116,11 +131,11 @@ macro_rules! impl_mcr2_debug {
 macro_rules! impl_mcr2_machine_common {
     () => {
         fn save_nvram(&self) -> Option<&[u8]> {
-            Some(self.board.map.region_data(crate::mcr2::region::NVRAM))
+            Some(self.board.map.region_data(crate::mcr2::Region::Nvram))
         }
 
         fn load_nvram(&mut self, data: &[u8]) {
-            let nvram = self.board.map.region_data_mut(crate::mcr2::region::NVRAM);
+            let nvram = self.board.map.region_data_mut(crate::mcr2::Region::Nvram);
             let len = data.len().min(nvram.len());
             nvram[..len].copy_from_slice(&data[..len]);
         }
@@ -208,24 +223,35 @@ impl Mcr2Board {
     }
 
     fn build_map() -> MemoryMap {
-        use region::*;
         let mut map = MemoryMap::new();
-        map.region(ROM, "Program ROM", 0x0000, 0xC000, AccessKind::ReadOnly)
-            .region(NVRAM, "NVRAM", 0xC000, 0x0800, AccessKind::ReadWrite)
-            .region(
-                SPRITE_RAM,
-                "Sprite RAM",
-                0xE000,
-                0x0200,
-                AccessKind::ReadWrite,
-            )
-            .region(
-                VIDEO_RAM,
-                "Video RAM",
-                0xE800,
-                0x0800,
-                AccessKind::ReadWrite,
-            );
+        map.region(
+            Region::Rom,
+            "Program ROM",
+            0x0000,
+            0xC000,
+            AccessKind::ReadOnly,
+        )
+        .region(
+            Region::Nvram,
+            "NVRAM",
+            0xC000,
+            0x0800,
+            AccessKind::ReadWrite,
+        )
+        .region(
+            Region::SpriteRam,
+            "Sprite RAM",
+            0xE000,
+            0x0200,
+            AccessKind::ReadWrite,
+        )
+        .region(
+            Region::VideoRam,
+            "Video RAM",
+            0xE800,
+            0x0800,
+            AccessKind::ReadWrite,
+        );
         // NVRAM mirrors (2KB repeated across 0xC000-0xDFFF)
         for i in 1..4u16 {
             map.mirror(0xC000 + i * 0x800, 0xC000, 0x0800);
@@ -351,7 +377,7 @@ impl Mcr2Board {
     /// Render all tiles from video RAM into the indexed pixel buffer.
     fn render_tiles(&mut self) {
         let tile_count = self.tile_cache.count().max(1);
-        let video_ram = self.map.region_data(region::VIDEO_RAM);
+        let video_ram = self.map.region_data(Region::VideoRam);
 
         for tile_row in 0..TILE_ROWS {
             for tile_col in 0..TILE_COLS {
@@ -398,7 +424,7 @@ impl Mcr2Board {
     /// Render sprites from sprite RAM, compositing with the priority buffer.
     fn render_sprites(&mut self) {
         let sprite_count = self.sprite_cache.count().max(1);
-        let sprite_ram = self.map.region_data(region::SPRITE_RAM);
+        let sprite_ram = self.map.region_data(Region::SpriteRam);
 
         // Iterate back-to-front (later entries have higher priority)
         let mut offs = sprite_ram.len().saturating_sub(4);
@@ -482,8 +508,8 @@ impl Mcr2Board {
     pub fn reset_board(&mut self) {
         self.ctc.reset();
         self.ssio.reset();
-        self.map.region_data_mut(region::SPRITE_RAM).fill(0);
-        self.map.region_data_mut(region::VIDEO_RAM).fill(0);
+        self.map.region_data_mut(Region::SpriteRam).fill(0);
+        self.map.region_data_mut(Region::VideoRam).fill(0);
         self.palette_ram.fill(0);
         self.rebuild_palette();
         self.pixel_buffer.fill(0);
@@ -516,9 +542,9 @@ impl Mcr2Board {
         self.cpu.save_state(w);
         self.ctc.save_state(w);
         self.ssio.save_state(w);
-        w.write_bytes(self.map.region_data(region::NVRAM));
-        w.write_bytes(self.map.region_data(region::SPRITE_RAM));
-        w.write_bytes(self.map.region_data(region::VIDEO_RAM));
+        w.write_bytes(self.map.region_data(Region::Nvram));
+        w.write_bytes(self.map.region_data(Region::SpriteRam));
+        w.write_bytes(self.map.region_data(Region::VideoRam));
         w.write_bytes(&self.palette_ram);
         w.write_u64_le(self.clock);
         self.ssio_clock.save_state(w);
@@ -529,9 +555,9 @@ impl Mcr2Board {
         self.cpu.load_state(r)?;
         self.ctc.load_state(r)?;
         self.ssio.load_state(r)?;
-        r.read_bytes_into(self.map.region_data_mut(region::NVRAM))?;
-        r.read_bytes_into(self.map.region_data_mut(region::SPRITE_RAM))?;
-        r.read_bytes_into(self.map.region_data_mut(region::VIDEO_RAM))?;
+        r.read_bytes_into(self.map.region_data_mut(Region::Nvram))?;
+        r.read_bytes_into(self.map.region_data_mut(Region::SpriteRam))?;
+        r.read_bytes_into(self.map.region_data_mut(Region::VideoRam))?;
         r.read_bytes_into(&mut self.palette_ram)?;
         self.clock = r.read_u64_le()?;
         self.ssio_clock.load_state(r)?;

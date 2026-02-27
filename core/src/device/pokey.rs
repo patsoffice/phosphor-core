@@ -221,7 +221,7 @@ impl Pokey {
     ///
     /// Reading RANDOM returns the upper bits of either the 9-bit or 17-bit
     /// polynomial counter, selected by AUDCTL bit 7.
-    pub fn read(&mut self, offset: u8) -> u8 {
+    pub fn read(&mut self, offset: u16) -> u8 {
         match offset & 0x0F {
             0x00..=0x07 => {
                 // POT0-POT7: Read pot counter value
@@ -261,7 +261,7 @@ impl Pokey {
     ///
     /// Writing IRQEN also clears any pending interrupts for newly-disabled
     /// sources (sets the corresponding IRQST bits to 1).
-    pub fn write(&mut self, offset: u8, data: u8) {
+    pub fn write(&mut self, offset: u16, data: u8) {
         let masked_offset = offset & 0x0F;
         match masked_offset {
             0x00 | 0x02 | 0x04 | 0x06 => {
@@ -676,10 +676,10 @@ impl super::Device for Pokey {
     fn reset(&mut self) {
         self.reset();
     }
-    fn read(&mut self, offset: u8) -> u8 {
+    fn read(&mut self, offset: u16) -> u8 {
         self.read(offset)
     }
-    fn write(&mut self, offset: u8, data: u8) {
+    fn write(&mut self, offset: u16, data: u8) {
         self.write(offset, data);
     }
     fn tick(&mut self) {
@@ -761,6 +761,7 @@ use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
 
 impl Saveable for Pokey {
     fn save_state(&self, w: &mut StateWriter) {
+        w.write_version(1);
         // Audio channel registers
         for &v in &self.audf {
             w.write_u8(v);
@@ -822,6 +823,7 @@ impl Saveable for Pokey {
     }
 
     fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        r.read_version(1)?;
         for v in &mut self.audf {
             *v = r.read_u8()?;
         }

@@ -35,7 +35,7 @@ impl std::fmt::Display for SaveError {
 pub const SAVE_MAGIC: &[u8; 4] = b"PHOS";
 
 /// Current save-state format version.
-pub const SAVE_VERSION: u32 = 1;
+pub const SAVE_VERSION: u32 = 2;
 
 // -- Saveable trait ----------------------------------------------------------
 
@@ -99,6 +99,12 @@ impl StateWriter {
     pub fn write_bytes(&mut self, bytes: &[u8]) {
         self.write_u32_le(bytes.len() as u32);
         self.data.extend_from_slice(bytes);
+    }
+
+    /// Write a component version tag. Each `Saveable` implementation should
+    /// call this first in `save_state()` so format changes can be detected.
+    pub fn write_version(&mut self, version: u8) {
+        self.data.push(version);
     }
 
     pub fn into_vec(self) -> Vec<u8> {
@@ -204,6 +210,18 @@ impl<'a> StateReader<'a> {
     pub fn read_bytes(&mut self) -> Result<&'a [u8], SaveError> {
         let len = self.read_u32_le()? as usize;
         self.take(len)
+    }
+
+    /// Read and validate a component version tag. Returns an error if the
+    /// version does not match `expected`.
+    pub fn read_version(&mut self, expected: u8) -> Result<(), SaveError> {
+        let found = self.read_u8()?;
+        if found != expected {
+            return Err(SaveError::InvalidFormat(format!(
+                "component version mismatch: expected {expected}, found {found}"
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -340,7 +358,7 @@ mod tests {
 
     #[test]
     fn header_bad_magic() {
-        let data = b"BAD!\x01\x00\x00\x00\x05\x00\x00\x00joust";
+        let data = b"BAD!\x02\x00\x00\x00\x05\x00\x00\x00joust";
         let err = read_header(data, "joust").unwrap_err();
         assert!(matches!(err, SaveError::InvalidFormat(_)));
     }

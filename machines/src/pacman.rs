@@ -18,12 +18,28 @@ use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
 use crate::set_bit_active_low;
 
-mod region {
-    pub const ROM: u8 = 1;
-    pub const VIDEORAM: u8 = 2;
-    pub const COLORRAM: u8 = 3;
-    pub const RAM: u8 = 4;
-    pub const IO: u8 = 5;
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Region {
+    Rom = 1,
+    VideoRam = 2,
+    ColorRam = 3,
+    Ram = 4,
+    Io = 5,
+}
+
+impl Region {
+    const ROM: u8 = Self::Rom as u8;
+    const VIDEO_RAM: u8 = Self::VideoRam as u8;
+    const COLOR_RAM: u8 = Self::ColorRam as u8;
+    const RAM: u8 = Self::Ram as u8;
+    const IO: u8 = Self::Io as u8;
+}
+
+impl From<Region> for u8 {
+    fn from(r: Region) -> u8 {
+        r as u8
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -282,13 +298,30 @@ impl PacmanSystem {
     }
 
     fn build_map() -> MemoryMap {
-        use region::*;
         let mut map = MemoryMap::new();
-        map.region(ROM, "Program ROM", 0x0000, 0x4000, AccessKind::ReadOnly)
-            .region(VIDEORAM, "Video RAM", 0x4000, 0x0400, AccessKind::ReadWrite)
-            .region(COLORRAM, "Color RAM", 0x4400, 0x0400, AccessKind::ReadWrite)
-            .region(RAM, "RAM", 0x4C00, 0x0400, AccessKind::ReadWrite)
-            .region(IO, "I/O", 0x5000, 0x0100, AccessKind::Io);
+        map.region(
+            Region::Rom,
+            "Program ROM",
+            0x0000,
+            0x4000,
+            AccessKind::ReadOnly,
+        )
+        .region(
+            Region::VideoRam,
+            "Video RAM",
+            0x4000,
+            0x0400,
+            AccessKind::ReadWrite,
+        )
+        .region(
+            Region::ColorRam,
+            "Color RAM",
+            0x4400,
+            0x0400,
+            AccessKind::ReadWrite,
+        )
+        .region(Region::Ram, "RAM", 0x4C00, 0x0400, AccessKind::ReadWrite)
+        .region(Region::Io, "I/O", 0x5000, 0x0100, AccessKind::Io);
         map
     }
 
@@ -362,7 +395,7 @@ impl PacmanSystem {
         rom_set: &crate::rom_loader::RomSet,
     ) -> Result<(), crate::rom_loader::RomLoadError> {
         let rom_data = PACMAN_PROGRAM_ROM.load(rom_set)?;
-        self.map.load_region(region::ROM, &rom_data);
+        self.map.load_region(Region::Rom, &rom_data);
 
         let gfx_data = PACMAN_GFX_ROM.load(rom_set)?;
         self.tile_cache = gfx::decode::decode_pacman_tiles(&gfx_data, 0x0000, 256);
@@ -409,8 +442,8 @@ impl PacmanSystem {
         let row_offset = scanline * 288 * 3;
 
         // Split borrows: immutable refs for closures, mutable ref for buffer
-        let video_ram = self.map.region_data(region::VIDEORAM);
-        let color_ram = self.map.region_data(region::COLORRAM);
+        let video_ram = self.map.region_data(Region::VideoRam);
+        let color_ram = self.map.region_data(Region::ColorRam);
         let color_lut_prom = &self.color_lut_prom;
         let palette_rgb = &self.palette_rgb;
         let tile_cache = &self.tile_cache;
@@ -465,7 +498,7 @@ impl PacmanSystem {
         );
 
         // Sprites: draw in priority order (7→3, then 2→0 with +1 Y offset)
-        let ram = self.map.region_data(region::RAM);
+        let ram = self.map.region_data(Region::Ram);
         let sprite_coords = &self.sprite_coords;
         let y = scanline as i32;
 
@@ -544,11 +577,11 @@ impl Bus for PacmanSystem {
         let addr = addr & 0x7FFF;
 
         let data = match self.map.page(addr).region_id {
-            region::ROM | region::VIDEORAM | region::COLORRAM | region::RAM => {
+            Region::ROM | Region::VIDEO_RAM | Region::COLOR_RAM | Region::RAM => {
                 self.map.read_backing(addr)
             }
 
-            region::IO => match addr {
+            Region::IO => match addr {
                 0x5000..=0x503F => self.in0,
                 0x5040..=0x507F => self.in1,
                 0x5080..=0x50BF => self.dip_switches,
@@ -574,11 +607,11 @@ impl Bus for PacmanSystem {
         self.map.check_write_watch(addr, data);
 
         match self.map.page(addr).region_id {
-            region::VIDEORAM | region::COLORRAM | region::RAM => {
+            Region::VIDEO_RAM | Region::COLOR_RAM | Region::RAM => {
                 self.map.write_backing(addr, data);
             }
 
-            region::IO => match addr {
+            Region::IO => match addr {
                 // 74LS259 addressable latch: address bits 0-2 select output, data bit 0 is value
                 0x5000..=0x5007 => {
                     let bit = (addr & 7) as u8;
@@ -601,7 +634,7 @@ impl Bus for PacmanSystem {
                 }
 
                 // Namco WSG sound registers (32 nibble registers)
-                0x5040..=0x505F => self.wsg.write((addr - 0x5040) as u8, data),
+                0x5040..=0x505F => self.wsg.write(addr - 0x5040, data),
 
                 // Sprite coordinates
                 0x5060..=0x506F => self.sprite_coords[(addr - 0x5060) as usize] = data,
@@ -743,9 +776,9 @@ impl Machine for PacmanSystem {
         self.watchdog_counter = 0;
         self.in0 = 0xFF;
         self.in1 = 0xFF;
-        self.map.region_data_mut(region::VIDEORAM).fill(0);
-        self.map.region_data_mut(region::COLORRAM).fill(0);
-        self.map.region_data_mut(region::RAM).fill(0);
+        self.map.region_data_mut(Region::VideoRam).fill(0);
+        self.map.region_data_mut(Region::ColorRam).fill(0);
+        self.map.region_data_mut(Region::Ram).fill(0);
         self.sprite_coords = [0; 0x10];
         self.scanline_buffer.fill(0);
         // ROM, GFX, PROMs, and palette_rgb are NOT cleared (loaded from ROM set)
@@ -767,9 +800,9 @@ impl Machine for PacmanSystem {
         let mut w = StateWriter::new();
         save_state::write_header(&mut w, self.machine_id());
         self.cpu.save_state(&mut w);
-        w.write_bytes(self.map.region_data(region::VIDEORAM));
-        w.write_bytes(self.map.region_data(region::COLORRAM));
-        w.write_bytes(self.map.region_data(region::RAM));
+        w.write_bytes(self.map.region_data(Region::VideoRam));
+        w.write_bytes(self.map.region_data(Region::ColorRam));
+        w.write_bytes(self.map.region_data(Region::Ram));
         w.write_bytes(&self.sprite_coords);
         self.wsg.save_state(&mut w);
         w.write_u8(self.in0);
@@ -787,9 +820,9 @@ impl Machine for PacmanSystem {
     fn load_state(&mut self, data: &[u8]) -> Result<(), SaveError> {
         let mut r = save_state::read_header(data, self.machine_id())?;
         self.cpu.load_state(&mut r)?;
-        r.read_bytes_into(self.map.region_data_mut(region::VIDEORAM))?;
-        r.read_bytes_into(self.map.region_data_mut(region::COLORRAM))?;
-        r.read_bytes_into(self.map.region_data_mut(region::RAM))?;
+        r.read_bytes_into(self.map.region_data_mut(Region::VideoRam))?;
+        r.read_bytes_into(self.map.region_data_mut(Region::ColorRam))?;
+        r.read_bytes_into(self.map.region_data_mut(Region::Ram))?;
         r.read_bytes_into(&mut self.sprite_coords)?;
         self.wsg.load_state(&mut r)?;
         self.in0 = r.read_u8()?;
@@ -851,9 +884,9 @@ mod tests {
         let mut sys = PacmanSystem::new();
 
         // Set known state
-        sys.map.region_data_mut(region::VIDEORAM)[0x100] = 0xAA;
-        sys.map.region_data_mut(region::COLORRAM)[0x200] = 0xBB;
-        sys.map.region_data_mut(region::RAM)[0x300] = 0xCC;
+        sys.map.region_data_mut(Region::VideoRam)[0x100] = 0xAA;
+        sys.map.region_data_mut(Region::ColorRam)[0x200] = 0xBB;
+        sys.map.region_data_mut(Region::Ram)[0x300] = 0xCC;
         sys.sprite_coords[5] = 0xDD;
         sys.in0 = 0xEE;
         sys.in1 = 0x77;
@@ -871,7 +904,7 @@ mod tests {
 
         // Mutate everything
         let mut sys2 = PacmanSystem::new();
-        sys2.map.region_data_mut(region::VIDEORAM)[0x100] = 0xFF;
+        sys2.map.region_data_mut(Region::VideoRam)[0x100] = 0xFF;
         sys2.in0 = 0x00;
         sys2.clock = 999;
 
@@ -882,9 +915,9 @@ mod tests {
         assert_eq!(sys2.cpu.snapshot(), cpu_snap);
 
         // Verify memory
-        assert_eq!(sys2.map.region_data(region::VIDEORAM)[0x100], 0xAA);
-        assert_eq!(sys2.map.region_data(region::COLORRAM)[0x200], 0xBB);
-        assert_eq!(sys2.map.region_data(region::RAM)[0x300], 0xCC);
+        assert_eq!(sys2.map.region_data(Region::VideoRam)[0x100], 0xAA);
+        assert_eq!(sys2.map.region_data(Region::ColorRam)[0x200], 0xBB);
+        assert_eq!(sys2.map.region_data(Region::Ram)[0x300], 0xCC);
         assert_eq!(sys2.sprite_coords[5], 0xDD);
 
         // Verify I/O and control state
@@ -917,7 +950,7 @@ mod tests {
     #[test]
     fn save_does_not_include_rom() {
         let mut sys = PacmanSystem::new();
-        sys.map.region_data_mut(region::ROM)[0] = 0xDE;
+        sys.map.region_data_mut(Region::Rom)[0] = 0xDE;
         sys.tile_cache.set_pixel(0, 0, 0, 3);
 
         let data = sys.save_state().unwrap();
@@ -927,7 +960,7 @@ mod tests {
         sys2.load_state(&data).unwrap();
 
         // ROMs and GFX caches should remain at their default, not overwritten
-        assert_eq!(sys2.map.region_data(region::ROM)[0], 0x00);
+        assert_eq!(sys2.map.region_data(Region::Rom)[0], 0x00);
         assert_eq!(sys2.tile_cache.pixel(0, 0, 0), 0);
     }
 }

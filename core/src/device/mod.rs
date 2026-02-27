@@ -19,12 +19,12 @@ pub trait Device: Debuggable + Saveable {
     fn reset(&mut self);
 
     /// Read a device register by offset. Default returns 0xFF (no register file).
-    fn read(&mut self, _offset: u8) -> u8 {
+    fn read(&mut self, _offset: u16) -> u8 {
         0xFF
     }
 
     /// Write a device register by offset. Default is a no-op.
-    fn write(&mut self, _offset: u8, _data: u8) {}
+    fn write(&mut self, _offset: u16, _data: u8) {}
 
     /// Advance the device by one clock tick. Default is a no-op.
     fn tick(&mut self) {}

@@ -5,13 +5,7 @@ mod load_store;
 mod stack;
 mod transfer;
 
-use std::mem;
-
-use crate::core::{
-    Bus, BusMaster,
-    bus::InterruptState,
-    component::{BusMasterComponent, Component},
-};
+use crate::core::{Bus, BusMaster, bus::InterruptState, component::BusMasterComponent};
 use crate::cpu::{
     Cpu,
     state::{CpuStateTrait, M6809State},
@@ -42,6 +36,8 @@ pub struct M6809 {
     pub(crate) nmi_previous: bool,
     /// Countdown for internal cycles during indexed addressing
     pub(crate) indexed_internal: u8,
+    /// True when the bus HALT line is asserted (TSC/RDY logic)
+    pub(crate) halted: bool,
     #[allow(dead_code)]
     resume_delay: u8, // For TSC/RDY release timing
 }
@@ -52,9 +48,6 @@ pub(crate) enum ExecState {
     Execute(u8, u8),      // (opcode, cycle)
     ExecutePage2(u8, u8), // (opcode, cycle) for 0x10 prefix
     ExecutePage3(u8, u8), // (opcode, cycle) for 0x11 prefix
-    Halted {
-        return_state: Box<ExecState>,
-    },
     /// Hardware interrupt response sequence (NMI/IRQ/FIRQ push + vector)
     Interrupt(u8),
     /// CWAI: all registers pushed, waiting for interrupt
@@ -87,6 +80,7 @@ impl M6809 {
             interrupt_type: 0,
             nmi_previous: false,
             indexed_internal: 0,
+            halted: false,
             resume_delay: 0,
         }
     }
@@ -126,25 +120,17 @@ impl M6809 {
     ) {
         // Check TSC via the generic bus
         if bus.is_halted_for(master) {
-            if !matches!(self.state, ExecState::Halted { .. }) {
-                self.state = ExecState::Halted {
-                    return_state: Box::new(self.state.clone()),
-                };
-            }
+            self.halted = true;
             return;
         }
 
-        // TSC released — restore the pre-halt state (one dead cycle for re-sync)
-        if let ExecState::Halted { .. } = self.state {
-            let old = mem::replace(&mut self.state, ExecState::Fetch);
-            if let ExecState::Halted { return_state } = old {
-                self.state = *return_state;
-            }
+        // TSC released — one dead cycle for re-sync
+        if self.halted {
+            self.halted = false;
             return;
         }
 
         match self.state {
-            ExecState::Halted { .. } => unreachable!("handled above"),
             ExecState::Fetch => {
                 let ints = bus.check_interrupts(master);
                 if self.handle_interrupts(ints) {
@@ -590,14 +576,6 @@ impl M6809 {
     }
 }
 
-impl Component for M6809 {
-    fn tick(&mut self) -> bool {
-        // This would be called for clock-domain only ticks (no bus)
-        // For CPUs, we usually use tick_with_bus instead
-        false
-    }
-}
-
 impl BusMasterComponent for M6809 {
     type Bus = dyn Bus<Address = u16, Data = u8>;
 
@@ -621,10 +599,11 @@ impl Cpu for M6809 {
     }
 
     fn is_sleeping(&self) -> bool {
-        matches!(
-            self.state,
-            ExecState::Halted { .. } | ExecState::WaitForInterrupt | ExecState::SyncWait
-        )
+        self.halted
+            || matches!(
+                self.state,
+                ExecState::WaitForInterrupt | ExecState::SyncWait
+            )
     }
 }
 
@@ -695,6 +674,7 @@ impl DebugCpu for M6809 {
 
 impl Saveable for M6809 {
     fn save_state(&self, w: &mut StateWriter) {
+        w.write_version(1);
         // Registers
         w.write_u8(self.a);
         w.write_u8(self.b);
@@ -708,6 +688,7 @@ impl Saveable for M6809 {
         // Internal state
         w.write_bool(self.nmi_previous);
         w.write_u8(self.interrupt_type);
+        w.write_bool(self.halted);
         // ExecState tag
         let tag = match self.state {
             ExecState::WaitForInterrupt => STATE_TAG_WAIT,
@@ -718,6 +699,7 @@ impl Saveable for M6809 {
     }
 
     fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        r.read_version(1)?;
         self.a = r.read_u8()?;
         self.b = r.read_u8()?;
         self.dp = r.read_u8()?;
@@ -729,6 +711,7 @@ impl Saveable for M6809 {
         self.cc = r.read_u8()?;
         self.nmi_previous = r.read_bool()?;
         self.interrupt_type = r.read_u8()?;
+        self.halted = r.read_bool()?;
         let tag = r.read_u8()?;
         self.state = match tag {
             STATE_TAG_WAIT => ExecState::WaitForInterrupt,

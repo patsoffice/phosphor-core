@@ -214,7 +214,7 @@ impl WilliamsBlitter {
     ///
     /// Reference (Sean Riddle): "$CA00 Control Byte: Initiates blit; encodes
     /// operation flavor."
-    pub fn write_register(&mut self, offset: u8, data: u8) {
+    pub fn write_register(&mut self, offset: u16, data: u8) {
         match offset {
             0 => {
                 self.control = data;
@@ -449,7 +449,7 @@ impl super::Device for WilliamsBlitter {
     fn reset(&mut self) {
         self.reset();
     }
-    fn write(&mut self, offset: u8, data: u8) {
+    fn write(&mut self, offset: u16, data: u8) {
         self.write_register(offset, data);
     }
 }
@@ -464,6 +464,7 @@ use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
 
 impl Saveable for WilliamsBlitter {
     fn save_state(&self, w: &mut StateWriter) {
+        w.write_version(1);
         // Registers
         w.write_u8(self.control);
         w.write_u8(self.solid_color);
@@ -488,6 +489,7 @@ impl Saveable for WilliamsBlitter {
     }
 
     fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        r.read_version(1)?;
         self.control = r.read_u8()?;
         self.solid_color = r.read_u8()?;
         self.src_addr = r.read_u16_le()?;

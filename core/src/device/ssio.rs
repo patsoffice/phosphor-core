@@ -443,6 +443,7 @@ impl Debuggable for SsioBoard {
 
 impl Saveable for SsioBoard {
     fn save_state(&self, w: &mut StateWriter) {
+        w.write_version(1);
         self.cpu.save_state(w);
         self.ay[0].save_state(w);
         self.ay[1].save_state(w);
@@ -471,6 +472,7 @@ impl Saveable for SsioBoard {
     }
 
     fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        r.read_version(1)?;
         self.cpu.load_state(r)?;
         self.ay[0].load_state(r)?;
         self.ay[1].load_state(r)?;

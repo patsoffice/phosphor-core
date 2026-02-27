@@ -76,7 +76,7 @@ pub trait BusDebug {
     /// Write to a device register by device index and register offset.
     /// Device indices match the order returned by `devices()`.
     /// Only `#[debug_device]` fields respond; CPU indices are ignored.
-    fn write_device_register(&mut self, _device_index: usize, _offset: u8, _data: u8) {}
+    fn write_device_register(&mut self, _device_index: usize, _offset: u16, _data: u8) {}
 
     /// Reset an individual device by index.
     /// Device indices match the order returned by `devices()`.

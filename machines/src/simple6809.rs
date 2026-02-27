@@ -5,8 +5,23 @@ use phosphor_core::cpu::state::M6809State;
 use phosphor_core::cpu::{CpuStateTrait, m6809::M6809};
 
 // Region IDs for Simple6809System address space
-const RAM: u8 = 1;
-const ROM: u8 = 2;
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Region {
+    Ram = 1,
+    Rom = 2,
+}
+
+impl Region {
+    const RAM: u8 = Self::Ram as u8;
+    const ROM: u8 = Self::Rom as u8;
+}
+
+impl From<Region> for u8 {
+    fn from(r: Region) -> u8 {
+        r as u8
+    }
+}
 
 pub struct Simple6809System {
     #[allow(dead_code)]
@@ -27,8 +42,8 @@ impl Simple6809System {
     pub fn new() -> Self {
         let mut memory_map = MemoryMap::new();
         memory_map
-            .region(RAM, "RAM", 0x0000, 0x8000, AccessKind::ReadWrite)
-            .region(ROM, "ROM", 0x8000, 0x8000, AccessKind::ReadOnly);
+            .region(Region::Ram, "RAM", 0x0000, 0x8000, AccessKind::ReadWrite)
+            .region(Region::Rom, "ROM", 0x8000, 0x8000, AccessKind::ReadOnly);
 
         Self {
             cpu: M6809::new(),
@@ -120,8 +135,8 @@ impl Bus for Simple6809System {
     fn read(&mut self, _master: BusMaster, addr: u16) -> u8 {
         let page = self.memory_map.page(addr);
         let data = match page.region_id {
-            RAM => self.ram[addr as usize],
-            ROM => self.rom[(addr - 0x8000) as usize],
+            Region::RAM => self.ram[addr as usize],
+            Region::ROM => self.rom[(addr - 0x8000) as usize],
             _ => 0xFF,
         };
         self.memory_map.check_read_watch(addr, data);
@@ -129,7 +144,7 @@ impl Bus for Simple6809System {
     }
 
     fn write(&mut self, _master: BusMaster, addr: u16, data: u8) {
-        if self.memory_map.page(addr).region_id == RAM {
+        if self.memory_map.page(addr).region_id == Region::RAM {
             self.ram[addr as usize] = data;
         }
         self.memory_map.check_write_watch(addr, data);

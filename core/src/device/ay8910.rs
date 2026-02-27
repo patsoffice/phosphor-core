@@ -446,6 +446,7 @@ use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
 
 impl Saveable for Ay8910 {
     fn save_state(&self, w: &mut StateWriter) {
+        w.write_version(1);
         w.write_bytes(&self.registers);
         w.write_u8(self.address_latch);
 
@@ -478,6 +479,7 @@ impl Saveable for Ay8910 {
     }
 
     fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        r.read_version(1)?;
         r.read_bytes_into(&mut self.registers)?;
         self.address_latch = r.read_u8()?;
 

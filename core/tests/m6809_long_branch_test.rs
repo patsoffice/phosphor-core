@@ -147,25 +147,13 @@ fn test_lbeq_backward_offset() {
     let mut cpu = M6809::new();
     let mut bus = TestBus::new();
     cpu.cc = CcFlag::Z as u8;
-    // Place LBEQ at offset 0x10, branch backward by 0x08
-    // 0xFFF8 = -8 as i16
-    bus.load(0x10, &[0x10, 0x27, 0xFF, 0xF8]);
-
-    // Start execution at 0x10
-    // We need to set PC to 0x10 first — use a JMP or set directly
-    // Easiest: fill ROM from 0 with NOPs (we don't have NOP, use BRN as 3-byte NOP)
-    // Actually, just load at 0 and pad with known instructions
-    // Simpler: load instruction at address 0 and use a negative offset
-    let mut cpu2 = M6809::new();
-    let mut bus2 = TestBus::new();
-    cpu2.cc = CcFlag::Z as u8;
     // LBEQ $FFF0 at address 0 — offset = -16 = 0xFFF0
     // PC after instruction = 0x04, so target = 0x04 + 0xFFF0 = 0xFFF4 (wraps)
-    bus2.load(0, &[0x10, 0x27, 0xFF, 0xF0]);
+    bus.load(0, &[0x10, 0x27, 0xFF, 0xF0]);
 
     for _ in 0..6 {
-        cpu2.tick_with_bus(&mut bus2, BusMaster::Cpu(0));
+        cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
     }
 
-    assert_eq!(cpu2.pc, 0xFFF4, "Negative offset should wrap PC");
+    assert_eq!(cpu.pc, 0xFFF4, "Negative offset should wrap PC");
 }

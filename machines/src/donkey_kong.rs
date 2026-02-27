@@ -9,7 +9,7 @@ use phosphor_core::cpu::Cpu; // for .reset()
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
 use crate::set_bit_active_high;
-use crate::tkg04::{self, Tkg04Board, main_region, sound_region};
+use crate::tkg04::{self, MainRegion, SoundRegion, Tkg04Board};
 
 // ---------------------------------------------------------------------------
 // Donkey Kong ROM definitions (TKG-04 / "dkong" MAME set)
@@ -242,15 +242,15 @@ impl DkongSystem {
         let rom_data = DKONG_PROGRAM_ROM.load(rom_set)?;
         self.board
             .main_map
-            .load_region_at(main_region::ROM, 0, &rom_data);
+            .load_region_at(MainRegion::Rom, 0, &rom_data);
 
         let sound_data = DKONG_SOUND_ROM.load(rom_set)?;
         self.board
             .sound_map
-            .load_region_at(sound_region::ROM, 0, &sound_data);
+            .load_region_at(SoundRegion::Rom, 0, &sound_data);
         self.board
             .sound_map
-            .load_region_at(sound_region::ROM, 0x0800, &sound_data); // mirror
+            .load_region_at(SoundRegion::Rom, 0x0800, &sound_data); // mirror
 
         let tune_data = DKONG_TUNE_ROM.load(rom_set)?;
         self.board.tune_rom.copy_from_slice(&tune_data);
@@ -286,18 +286,18 @@ impl Bus for DkongSystem {
             // Main CPU (Z80)
             BusMaster::Cpu(0) => {
                 let data = match self.board.main_map.page(addr).region_id {
-                    main_region::ROM
-                    | main_region::RAM
-                    | main_region::SPRITE_RAM
-                    | main_region::VIDEO_RAM => self.board.main_map.read_backing(addr),
-                    main_region::IO_DMA => {
+                    MainRegion::ROM
+                    | MainRegion::RAM
+                    | MainRegion::SPRITE_RAM
+                    | MainRegion::VIDEO_RAM => self.board.main_map.read_backing(addr),
+                    MainRegion::IO_DMA => {
                         if addr <= 0x7808 {
-                            self.board.dma.read((addr - 0x7800) as u8)
+                            self.board.dma.read(addr - 0x7800)
                         } else {
                             0x00
                         }
                     }
-                    main_region::IO_PORTS => match addr {
+                    MainRegion::IO_PORTS => match addr {
                         0x7C00 => self.board.in0,
                         0x7C80 => self.board.in1,
                         0x7D00 => {
@@ -329,15 +329,15 @@ impl Bus for DkongSystem {
         match master {
             BusMaster::Cpu(0) => {
                 match self.board.main_map.page(addr).region_id {
-                    main_region::RAM | main_region::SPRITE_RAM | main_region::VIDEO_RAM => {
+                    MainRegion::RAM | MainRegion::SPRITE_RAM | MainRegion::VIDEO_RAM => {
                         self.board.main_map.write_backing(addr, data);
                     }
-                    main_region::IO_DMA => {
+                    MainRegion::IO_DMA => {
                         if addr <= 0x7808 {
-                            self.board.dma.write((addr - 0x7800) as u8, data);
+                            self.board.dma.write(addr - 0x7800, data);
                         }
                     }
-                    main_region::IO_PORTS => match addr {
+                    MainRegion::IO_PORTS => match addr {
                         // Sound latch (ls175.3d)
                         0x7C00 => self.board.sound_latch = data,
 
@@ -593,9 +593,9 @@ mod tests {
         let mut sys = DkongSystem::new();
 
         // Set known state
-        sys.board.main_map.region_data_mut(main_region::RAM)[0x100] = 0xAA;
-        sys.board.main_map.region_data_mut(main_region::SPRITE_RAM)[0x50] = 0xBB;
-        sys.board.main_map.region_data_mut(main_region::VIDEO_RAM)[0x100] = 0xCC;
+        sys.board.main_map.region_data_mut(MainRegion::Ram)[0x100] = 0xAA;
+        sys.board.main_map.region_data_mut(MainRegion::SpriteRam)[0x50] = 0xBB;
+        sys.board.main_map.region_data_mut(MainRegion::VideoRam)[0x100] = 0xCC;
         sys.board.in0 = 0x1F;
         sys.board.in1 = 0x0F;
         sys.board.in2 = 0x8C;
@@ -621,7 +621,7 @@ mod tests {
 
         // Mutate everything
         let mut sys2 = DkongSystem::new();
-        sys2.board.main_map.region_data_mut(main_region::RAM)[0x100] = 0xFF;
+        sys2.board.main_map.region_data_mut(MainRegion::Ram)[0x100] = 0xFF;
         sys2.board.clock = 999;
 
         // Load
@@ -633,15 +633,15 @@ mod tests {
 
         // Verify memory
         assert_eq!(
-            sys2.board.main_map.region_data(main_region::RAM)[0x100],
+            sys2.board.main_map.region_data(MainRegion::Ram)[0x100],
             0xAA
         );
         assert_eq!(
-            sys2.board.main_map.region_data(main_region::SPRITE_RAM)[0x50],
+            sys2.board.main_map.region_data(MainRegion::SpriteRam)[0x50],
             0xBB
         );
         assert_eq!(
-            sys2.board.main_map.region_data(main_region::VIDEO_RAM)[0x100],
+            sys2.board.main_map.region_data(MainRegion::VideoRam)[0x100],
             0xCC
         );
 
@@ -678,8 +678,8 @@ mod tests {
     #[test]
     fn save_does_not_include_rom() {
         let mut sys = DkongSystem::new();
-        sys.board.main_map.region_data_mut(main_region::ROM)[0] = 0xDE;
-        sys.board.sound_map.region_data_mut(sound_region::ROM)[0] = 0xAD;
+        sys.board.main_map.region_data_mut(MainRegion::Rom)[0] = 0xDE;
+        sys.board.sound_map.region_data_mut(SoundRegion::Rom)[0] = 0xAD;
         sys.board.tile_rom[0] = 0xBE;
         sys.board.sprite_rom[0] = 0xEF;
 
@@ -688,8 +688,8 @@ mod tests {
         let mut sys2 = DkongSystem::new();
         sys2.load_state(&data).unwrap();
 
-        assert_eq!(sys2.board.main_map.region_data(main_region::ROM)[0], 0x00);
-        assert_eq!(sys2.board.sound_map.region_data(sound_region::ROM)[0], 0x00);
+        assert_eq!(sys2.board.main_map.region_data(MainRegion::Rom)[0], 0x00);
+        assert_eq!(sys2.board.sound_map.region_data(SoundRegion::Rom)[0], 0x00);
         assert_eq!(sys2.board.tile_rom[0], 0x00);
         assert_eq!(sys2.board.sprite_rom[0], 0x00);
     }

@@ -106,12 +106,14 @@ impl AudioResampler {
 
 impl Saveable for AudioResampler {
     fn save_state(&self, w: &mut StateWriter) {
+        w.write_version(1);
         w.write_i64_le(self.sample_accum);
         w.write_u32_le(self.sample_count);
         w.write_u64_le(self.sample_phase);
     }
 
     fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        r.read_version(1)?;
         self.sample_accum = r.read_i64_le()?;
         self.sample_count = r.read_u32_le()?;
         self.sample_phase = r.read_u64_le()?;
@@ -187,12 +189,14 @@ impl AudioResamplerF32 {
 
 impl Saveable for AudioResamplerF32 {
     fn save_state(&self, w: &mut StateWriter) {
+        w.write_version(1);
         w.write_f32_le(self.sample_accum);
         w.write_u32_le(self.sample_count);
         w.write_u64_le(self.sample_phase);
     }
 
     fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        r.read_version(1)?;
         self.sample_accum = r.read_f32_le()?;
         self.sample_count = r.read_u32_le()?;
         self.sample_phase = r.read_u64_le()?;

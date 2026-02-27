@@ -18,15 +18,34 @@ use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
 use crate::set_bit_active_low;
 
-mod region {
-    pub const VIDEORAM: u8 = 1;
-    pub const SRAM: u8 = 2;
-    pub const SPRITERAM: u8 = 3;
-    pub const NVRAM: u8 = 4;
-    pub const IO: u8 = 5;
-    pub const ROM_BANK0: u8 = 6;
-    pub const ROM_BANK1: u8 = 7;
-    pub const ROM_FIXED: u8 = 8;
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Region {
+    VideoRam = 1,
+    Sram = 2,
+    SpriteRam = 3,
+    Nvram = 4,
+    Io = 5,
+    RomBank0 = 6,
+    RomBank1 = 7,
+    RomFixed = 8,
+}
+
+impl Region {
+    const VIDEO_RAM: u8 = Self::VideoRam as u8;
+    const SRAM: u8 = Self::Sram as u8;
+    const SPRITE_RAM: u8 = Self::SpriteRam as u8;
+    const NVRAM: u8 = Self::Nvram as u8;
+    const IO: u8 = Self::Io as u8;
+    const ROM_BANK0: u8 = Self::RomBank0 as u8;
+    const ROM_BANK1: u8 = Self::RomBank1 as u8;
+    const ROM_FIXED: u8 = Self::RomFixed as u8;
+}
+
+impl From<Region> for u8 {
+    fn from(r: Region) -> u8 {
+        r as u8
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -347,39 +366,56 @@ pub struct CrystalCastlesSystem {
 
 impl CrystalCastlesSystem {
     fn build_map() -> MemoryMap {
-        use region::*;
         let mut map = MemoryMap::new();
-        map.region(VIDEORAM, "Video RAM", 0x0000, 0x8000, AccessKind::ReadWrite)
-            .region(SRAM, "SRAM", 0x8000, 0x0E00, AccessKind::ReadWrite)
-            .region(
-                SPRITERAM,
-                "Sprite RAM",
-                0x8E00,
-                0x0200,
-                AccessKind::ReadWrite,
-            )
-            .region(NVRAM, "NVRAM", 0x9000, 0x0100, AccessKind::ReadWrite)
-            .mirror(0x9100, 0x9000, 0x0100)
-            .mirror(0x9200, 0x9000, 0x0100)
-            .mirror(0x9300, 0x9000, 0x0100)
-            .region(IO, "I/O", 0x9400, 0x0C00, AccessKind::Io)
-            .region(
-                ROM_BANK0,
-                "ROM Bank 0",
-                0xA000,
-                0x4000,
-                AccessKind::ReadOnly,
-            )
-            .backing_region(ROM_BANK1, "ROM Bank 1", 0x4000)
-            .region(ROM_FIXED, "Fixed ROM", 0xE000, 0x2000, AccessKind::ReadOnly);
+        map.region(
+            Region::VideoRam,
+            "Video RAM",
+            0x0000,
+            0x8000,
+            AccessKind::ReadWrite,
+        )
+        .region(Region::Sram, "SRAM", 0x8000, 0x0E00, AccessKind::ReadWrite)
+        .region(
+            Region::SpriteRam,
+            "Sprite RAM",
+            0x8E00,
+            0x0200,
+            AccessKind::ReadWrite,
+        )
+        .region(
+            Region::Nvram,
+            "NVRAM",
+            0x9000,
+            0x0100,
+            AccessKind::ReadWrite,
+        )
+        .mirror(0x9100, 0x9000, 0x0100)
+        .mirror(0x9200, 0x9000, 0x0100)
+        .mirror(0x9300, 0x9000, 0x0100)
+        .region(Region::Io, "I/O", 0x9400, 0x0C00, AccessKind::Io)
+        .region(
+            Region::RomBank0,
+            "ROM Bank 0",
+            0xA000,
+            0x4000,
+            AccessKind::ReadOnly,
+        )
+        .backing_region(Region::RomBank1, "ROM Bank 1", 0x4000)
+        .region(
+            Region::RomFixed,
+            "Fixed ROM",
+            0xE000,
+            0x2000,
+            AccessKind::ReadOnly,
+        );
         map
     }
 
     fn update_rom_bank(&mut self) {
         let id = if self.outlatch0.bit(7) {
-            region::ROM_BANK1
+            Region::RomBank1
         } else {
-            region::ROM_BANK0
+            Region::RomBank0
         };
         self.map.remap_pages(0xA0, 0x40, id, 0);
     }
@@ -438,11 +474,11 @@ impl CrystalCastlesSystem {
     pub fn load_rom_set(&mut self, rom_set: &RomSet) -> Result<(), RomLoadError> {
         let program = CCASTLES_PROGRAM_ROM.load(rom_set)?;
         self.map
-            .load_region(region::ROM_BANK0, &program[0x0000..0x4000]);
+            .load_region(Region::RomBank0, &program[0x0000..0x4000]);
         self.map
-            .load_region(region::ROM_FIXED, &program[0x4000..0x6000]);
+            .load_region(Region::RomFixed, &program[0x4000..0x6000]);
         self.map
-            .load_region(region::ROM_BANK1, &program[0x6000..0xA000]);
+            .load_region(Region::RomBank1, &program[0x6000..0xA000]);
 
         let gfx = CCASTLES_GFX_ROM.load(rom_set)?;
         self.gfx_rom.copy_from_slice(&gfx);
@@ -497,7 +533,7 @@ impl CrystalCastlesSystem {
 
         // Write to the appropriate nibbles of two adjacent VRAM bytes
         if dest_addr < 0x8000 {
-            let vram = self.map.region_data_mut(region::VIDEORAM);
+            let vram = self.map.region_data_mut(Region::VideoRam);
             if wpbits & 1 == 0 {
                 vram[dest_addr] = (vram[dest_addr] & 0xF0) | (data & 0x0F);
             }
@@ -549,7 +585,7 @@ impl CrystalCastlesSystem {
     fn bitmode_r(&mut self) -> u8 {
         let addr = ((self.bitmode_addr[1] as u16) << 7) | ((self.bitmode_addr[0] as u16) >> 1);
         let shift = (!self.bitmode_addr[0] & 1) * 4;
-        let result = self.map.region_data(region::VIDEORAM)[addr as usize] << shift;
+        let result = self.map.region_data(Region::VideoRam)[addr as usize] << shift;
 
         self.bitmode_autoinc();
         result | 0x0F
@@ -660,7 +696,7 @@ impl CrystalCastlesSystem {
         // Select active MOB buffer (outlatch1 bit 7: BUF1/BUF2)
         let buf_offset: usize = if self.outlatch1.bit(7) { 0x100 } else { 0x00 };
         let flip = self.outlatch1.bit(4);
-        let sprites = self.map.region_data(region::SPRITERAM);
+        let sprites = self.map.region_data(Region::SpriteRam);
 
         // 40 sprites: 160 bytes / 4 bytes per sprite
         for offs in (0..160).step_by(4) {
@@ -736,7 +772,7 @@ impl CrystalCastlesSystem {
             let effx = self.hscroll.wrapping_add((x as u8) ^ flip) as usize;
 
             // Read 4bpp bitmap pixel (2 pixels per byte: low nibble = even, high = odd)
-            let vram = self.map.region_data(region::VIDEORAM);
+            let vram = self.map.region_data(Region::VideoRam);
             let pix = (vram[src_base + effx / 2] >> ((effx & 1) * 4)) & 0x0F;
 
             // Read sprite pixel from sprite buffer (screen-space, not scrolled)
@@ -859,7 +895,7 @@ impl Bus for CrystalCastlesSystem {
 
     fn read(&mut self, _master: BusMaster, addr: u16) -> u8 {
         let data = match self.map.page(addr).region_id {
-            region::VIDEORAM => {
+            Region::VIDEO_RAM => {
                 if addr == 0x0002 {
                     self.bitmode_r()
                 } else {
@@ -867,24 +903,24 @@ impl Bus for CrystalCastlesSystem {
                 }
             }
 
-            region::SRAM
-            | region::SPRITERAM
-            | region::NVRAM
-            | region::ROM_BANK0
-            | region::ROM_BANK1
-            | region::ROM_FIXED => self.map.read_backing(addr),
+            Region::SRAM
+            | Region::SPRITE_RAM
+            | Region::NVRAM
+            | Region::ROM_BANK0
+            | Region::ROM_BANK1
+            | Region::ROM_FIXED => self.map.read_backing(addr),
 
-            region::IO => match addr {
+            Region::IO => match addr {
                 // Trackball LETA0-3 (mirrored: 0x9400-0x95FF)
                 0x9400..=0x95FF => self.trackball[(addr & 0x03) as usize],
                 // IN0 — digital inputs + VBLANK (0x9600-0x97FF)
                 0x9600..=0x97FF => self.in0,
                 // POKEY 1 (mirrored: 0x9800-0x99FF)
-                0x9800..=0x99FF => self.pokey1.read((addr & 0x0F) as u8),
+                0x9800..=0x99FF => self.pokey1.read(addr & 0x0F),
                 // POKEY 2 (mirrored: 0x9A00-0x9BFF)
                 // ALLPOT (offset 0x08) is wired to DIP switches
                 0x9A00..=0x9BFF => {
-                    let offset = (addr & 0x0F) as u8;
+                    let offset = addr & 0x0F;
                     if offset == 0x08 {
                         self.dip_switches
                     } else {
@@ -905,21 +941,21 @@ impl Bus for CrystalCastlesSystem {
         self.map.check_write_watch(addr, data);
 
         match self.map.page(addr).region_id {
-            region::VIDEORAM => match addr {
+            Region::VIDEO_RAM => match addr {
                 0x0000..=0x0001 => self.bitmode_addr_w(addr as u8, data),
                 0x0002 => self.bitmode_w(data),
                 _ => self.write_vram(addr, data, 0, 0),
             },
 
-            region::SRAM | region::SPRITERAM | region::NVRAM => {
+            Region::SRAM | Region::SPRITE_RAM | Region::NVRAM => {
                 self.map.write_backing(addr, data);
             }
 
-            region::IO => match addr {
+            Region::IO => match addr {
                 // POKEY 1 (mirrored: 0x9800-0x99FF)
-                0x9800..=0x99FF => self.pokey1.write((addr & 0x0F) as u8, data),
+                0x9800..=0x99FF => self.pokey1.write(addr & 0x0F, data),
                 // POKEY 2 (mirrored: 0x9A00-0x9BFF)
-                0x9A00..=0x9BFF => self.pokey2.write((addr & 0x0F) as u8, data),
+                0x9A00..=0x9BFF => self.pokey2.write(addr & 0x0F, data),
                 // NVRAM recall (no-op)
                 0x9C00..=0x9C7F => {}
                 // H scroll
@@ -1096,11 +1132,11 @@ impl Machine for CrystalCastlesSystem {
     }
 
     fn save_nvram(&self) -> Option<&[u8]> {
-        Some(self.map.region_data(region::NVRAM))
+        Some(self.map.region_data(Region::Nvram))
     }
 
     fn load_nvram(&mut self, data: &[u8]) {
-        let nvram = self.map.region_data_mut(region::NVRAM);
+        let nvram = self.map.region_data_mut(Region::Nvram);
         let len = data.len().min(nvram.len());
         nvram[..len].copy_from_slice(&data[..len]);
     }
@@ -1119,10 +1155,10 @@ impl Machine for CrystalCastlesSystem {
         self.cpu.save_state(&mut w);
         self.pokey1.save_state(&mut w);
         self.pokey2.save_state(&mut w);
-        w.write_bytes(self.map.region_data(region::VIDEORAM));
-        w.write_bytes(self.map.region_data(region::SRAM));
-        w.write_bytes(self.map.region_data(region::SPRITERAM));
-        w.write_bytes(self.map.region_data(region::NVRAM));
+        w.write_bytes(self.map.region_data(Region::VideoRam));
+        w.write_bytes(self.map.region_data(Region::Sram));
+        w.write_bytes(self.map.region_data(Region::SpriteRam));
+        w.write_bytes(self.map.region_data(Region::Nvram));
         w.write_bytes(&self.bitmode_addr);
         w.write_u8(self.hscroll);
         w.write_u8(self.vscroll);
@@ -1149,10 +1185,10 @@ impl Machine for CrystalCastlesSystem {
         self.cpu.load_state(&mut r)?;
         self.pokey1.load_state(&mut r)?;
         self.pokey2.load_state(&mut r)?;
-        r.read_bytes_into(self.map.region_data_mut(region::VIDEORAM))?;
-        r.read_bytes_into(self.map.region_data_mut(region::SRAM))?;
-        r.read_bytes_into(self.map.region_data_mut(region::SPRITERAM))?;
-        r.read_bytes_into(self.map.region_data_mut(region::NVRAM))?;
+        r.read_bytes_into(self.map.region_data_mut(Region::VideoRam))?;
+        r.read_bytes_into(self.map.region_data_mut(Region::Sram))?;
+        r.read_bytes_into(self.map.region_data_mut(Region::SpriteRam))?;
+        r.read_bytes_into(self.map.region_data_mut(Region::Nvram))?;
         r.read_bytes_into(&mut self.bitmode_addr)?;
         self.hscroll = r.read_u8()?;
         self.vscroll = r.read_u8()?;
@@ -1208,10 +1244,10 @@ mod tests {
     #[test]
     fn save_load_round_trip() {
         let mut sys = CrystalCastlesSystem::new();
-        sys.map.region_data_mut(region::VIDEORAM)[0x1000] = 0xAB;
-        sys.map.region_data_mut(region::SRAM)[0x100] = 0xCD;
-        sys.map.region_data_mut(region::SPRITERAM)[0x10] = 0xEF;
-        sys.map.region_data_mut(region::NVRAM)[0x20] = 0x42;
+        sys.map.region_data_mut(Region::VideoRam)[0x1000] = 0xAB;
+        sys.map.region_data_mut(Region::Sram)[0x100] = 0xCD;
+        sys.map.region_data_mut(Region::SpriteRam)[0x10] = 0xEF;
+        sys.map.region_data_mut(Region::Nvram)[0x20] = 0x42;
         sys.hscroll = 0x80;
         sys.vscroll = 0x40;
         // Set outlatch0 to 0x80 (bit 7) via latch API
@@ -1235,10 +1271,10 @@ mod tests {
         sys2.load_state(&data).unwrap();
 
         assert_eq!(sys2.cpu.snapshot(), cpu_snap);
-        assert_eq!(sys2.map.region_data(region::VIDEORAM)[0x1000], 0xAB);
-        assert_eq!(sys2.map.region_data(region::SRAM)[0x100], 0xCD);
-        assert_eq!(sys2.map.region_data(region::SPRITERAM)[0x10], 0xEF);
-        assert_eq!(sys2.map.region_data(region::NVRAM)[0x20], 0x42);
+        assert_eq!(sys2.map.region_data(Region::VideoRam)[0x1000], 0xAB);
+        assert_eq!(sys2.map.region_data(Region::Sram)[0x100], 0xCD);
+        assert_eq!(sys2.map.region_data(Region::SpriteRam)[0x10], 0xEF);
+        assert_eq!(sys2.map.region_data(Region::Nvram)[0x20], 0x42);
         assert_eq!(sys2.hscroll, 0x80);
         assert_eq!(sys2.vscroll, 0x40);
         assert_eq!(sys2.outlatch0.value(), 0x80);
@@ -1256,8 +1292,8 @@ mod tests {
     fn rom_banking_selects_correct_bank() {
         let mut sys = CrystalCastlesSystem::new();
         // Fill bank 0 low with 0xAA, bank 1 low with 0xBB
-        sys.map.region_data_mut(region::ROM_BANK0)[..0x2000].fill(0xAA);
-        sys.map.region_data_mut(region::ROM_BANK1)[..0x2000].fill(0xBB);
+        sys.map.region_data_mut(Region::RomBank0)[..0x2000].fill(0xAA);
+        sys.map.region_data_mut(Region::RomBank1)[..0x2000].fill(0xBB);
 
         // Bank 0 (default, outlatch0 bit 7 = 0)
         sys.outlatch0.reset();
@@ -1281,8 +1317,8 @@ mod tests {
     #[test]
     fn fixed_rom_always_accessible() {
         let mut sys = CrystalCastlesSystem::new();
-        sys.map.region_data_mut(region::ROM_FIXED)[0x0000] = 0xDE;
-        sys.map.region_data_mut(region::ROM_FIXED)[0x1FFF] = 0xAD;
+        sys.map.region_data_mut(Region::RomFixed)[0x0000] = 0xDE;
+        sys.map.region_data_mut(Region::RomFixed)[0x1FFF] = 0xAD;
 
         assert_eq!(Bus::read(&mut sys, BusMaster::Cpu(0), 0xE000), 0xDE);
         assert_eq!(Bus::read(&mut sys, BusMaster::Cpu(0), 0xFFFF), 0xAD);
@@ -1403,7 +1439,7 @@ mod tests {
         sys.gfx_rom[0x2000..0x4000].fill(0xFF); // 0xF0 | 0x0F
 
         // Place sprite 0 at position (100, 100)
-        let sprites = sys.map.region_data_mut(region::SPRITERAM);
+        let sprites = sys.map.region_data_mut(Region::SpriteRam);
         sprites[0] = 0; // sprite code
         sprites[1] = (256 - 16 - 100) as u8; // Y = 100
         sprites[2] = 0; // color group 0
@@ -1431,7 +1467,7 @@ mod tests {
         sys.gfx_rom[0x2020] = 0x08;
 
         // Place sprite with code 1 at (50, 200)
-        let sprites = sys.map.region_data_mut(region::SPRITERAM);
+        let sprites = sys.map.region_data_mut(Region::SpriteRam);
         sprites[0] = 1; // sprite code
         sprites[1] = (256u16.wrapping_sub(16).wrapping_sub(200)) as u8; // Y
         sprites[2] = 0x80; // color group 1 → color_base = 8
@@ -1458,7 +1494,7 @@ mod tests {
 
         // Write bitmap pixel value 5 at effective Y=24, X=0
         // videoram[24 * 128 + 0] low nibble = 5
-        sys.map.region_data_mut(region::VIDEORAM)[24 * 128] = 0x05;
+        sys.map.region_data_mut(Region::VideoRam)[24 * 128] = 0x05;
 
         // Sprite buffer clear (transparent)
         sys.sprite_buffer.fill(0x0F);

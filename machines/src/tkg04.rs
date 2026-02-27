@@ -16,18 +16,48 @@ use phosphor_macros::BusDebug;
 // ---------------------------------------------------------------------------
 
 /// Main CPU (Z80) address space region IDs.
-pub(crate) mod main_region {
-    pub const ROM: u8 = 1; // 0x0000-0x5FFF (24KB max program ROM)
-    pub const RAM: u8 = 2; // 0x6000-0x6FFF (4KB work RAM)
-    pub const SPRITE_RAM: u8 = 3; // 0x7000-0x73FF (1KB sprite RAM)
-    pub const VIDEO_RAM: u8 = 4; // 0x7400-0x77FF (1KB video RAM)
-    pub const IO_DMA: u8 = 5; // 0x7800-0x78FF (DMA controller)
-    pub const IO_PORTS: u8 = 6; // 0x7C00-0x7DFF (input/control ports)
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum MainRegion {
+    Rom = 1,       // 0x0000-0x5FFF (24KB max program ROM)
+    Ram = 2,       // 0x6000-0x6FFF (4KB work RAM)
+    SpriteRam = 3, // 0x7000-0x73FF (1KB sprite RAM)
+    VideoRam = 4,  // 0x7400-0x77FF (1KB video RAM)
+    IoDma = 5,     // 0x7800-0x78FF (DMA controller)
+    IoPorts = 6,   // 0x7C00-0x7DFF (input/control ports)
+}
+
+impl MainRegion {
+    pub(crate) const ROM: u8 = Self::Rom as u8;
+    pub(crate) const RAM: u8 = Self::Ram as u8;
+    pub(crate) const SPRITE_RAM: u8 = Self::SpriteRam as u8;
+    pub(crate) const VIDEO_RAM: u8 = Self::VideoRam as u8;
+    pub(crate) const IO_DMA: u8 = Self::IoDma as u8;
+    pub(crate) const IO_PORTS: u8 = Self::IoPorts as u8;
+}
+
+impl From<MainRegion> for u8 {
+    fn from(r: MainRegion) -> u8 {
+        r as u8
+    }
 }
 
 /// Sound CPU (I8035) address space region IDs.
-pub(crate) mod sound_region {
-    pub const ROM: u8 = 1; // 0x0000-0x0FFF (4KB sound ROM)
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum SoundRegion {
+    Rom = 1, // 0x0000-0x0FFF (4KB sound ROM)
+}
+
+impl SoundRegion {
+    #[allow(dead_code)]
+    pub(crate) const ROM: u8 = Self::Rom as u8;
+}
+
+impl From<SoundRegion> for u8 {
+    fn from(r: SoundRegion) -> u8 {
+        r as u8
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -347,33 +377,27 @@ impl Tkg04Board {
     }
 
     fn build_main_map() -> MemoryMap {
-        use main_region::*;
+        use MainRegion::*;
         let mut map = MemoryMap::new();
-        map.region(ROM, "Program ROM", 0x0000, 0x6000, AccessKind::ReadOnly)
-            .region(RAM, "Work RAM", 0x6000, 0x1000, AccessKind::ReadWrite)
+        map.region(Rom, "Program ROM", 0x0000, 0x6000, AccessKind::ReadOnly)
+            .region(Ram, "Work RAM", 0x6000, 0x1000, AccessKind::ReadWrite)
             .region(
-                SPRITE_RAM,
+                SpriteRam,
                 "Sprite RAM",
                 0x7000,
                 0x0400,
                 AccessKind::ReadWrite,
             )
-            .region(
-                VIDEO_RAM,
-                "Video RAM",
-                0x7400,
-                0x0400,
-                AccessKind::ReadWrite,
-            )
-            .region(IO_DMA, "DMA", 0x7800, 0x100, AccessKind::Io)
-            .region(IO_PORTS, "I/O Ports", 0x7C00, 0x200, AccessKind::Io);
+            .region(VideoRam, "Video RAM", 0x7400, 0x0400, AccessKind::ReadWrite)
+            .region(IoDma, "DMA", 0x7800, 0x100, AccessKind::Io)
+            .region(IoPorts, "I/O Ports", 0x7C00, 0x200, AccessKind::Io);
         map
     }
 
     fn build_sound_map() -> MemoryMap {
-        use sound_region::*;
+        use SoundRegion::*;
         let mut map = MemoryMap::new();
-        map.region(ROM, "Sound ROM", 0x0000, 0x1000, AccessKind::ReadOnly);
+        map.region(Rom, "Sound ROM", 0x0000, 0x1000, AccessKind::ReadOnly);
         map
     }
 
@@ -442,7 +466,7 @@ impl Tkg04Board {
         let row_offset = scanline * NATIVE_WIDTH * 3;
 
         // Split borrows: immutable refs for closures, mutable ref for buffer
-        let video_ram = self.main_map.region_data(main_region::VIDEO_RAM);
+        let video_ram = self.main_map.region_data(MainRegion::VideoRam);
         let color_prom = &self.color_prom;
         let palette_rgb = &self.palette_rgb;
         let tile_cache = &self.tile_cache;
@@ -482,7 +506,7 @@ impl Tkg04Board {
 
         // --- Sprites ---
         // Iterate forward: later sprites overwrite earlier ones.
-        let sprite_ram = self.main_map.region_data(main_region::SPRITE_RAM);
+        let sprite_ram = self.main_map.region_data(MainRegion::SpriteRam);
         let sprite_base = if self.sprite_bank { 0x200 } else { 0x000 };
         let mut offs = sprite_base;
         while offs < sprite_base + 0x200 {
@@ -634,13 +658,9 @@ impl Tkg04Board {
         self.in1 = 0x00;
         self.in2 = 0x00;
 
-        self.main_map
-            .region_data_mut(main_region::VIDEO_RAM)
-            .fill(0);
-        self.main_map.region_data_mut(main_region::RAM).fill(0);
-        self.main_map
-            .region_data_mut(main_region::SPRITE_RAM)
-            .fill(0);
+        self.main_map.region_data_mut(MainRegion::VideoRam).fill(0);
+        self.main_map.region_data_mut(MainRegion::Ram).fill(0);
+        self.main_map.region_data_mut(MainRegion::SpriteRam).fill(0);
         self.scanline_buffer.fill(0);
 
         self.discrete.reset();
@@ -653,7 +673,7 @@ impl Tkg04Board {
     /// Trigger sprite DMA transfer from i8257 channel 0.
     pub fn trigger_sprite_dma(&mut self) {
         let src_addr = self.dma.channel_address(0);
-        let sprite_len = self.main_map.region_data(main_region::SPRITE_RAM).len();
+        let sprite_len = self.main_map.region_data(MainRegion::SpriteRam).len();
         let count = ((self.dma.channel_count(0) & 0x3FFF) + 1).min(sprite_len as u16);
         // Two-phase: read source bytes first, then bulk-write to sprite RAM
         let mut buf = [0u8; 0x0400];
@@ -661,7 +681,7 @@ impl Tkg04Board {
             let addr = src_addr.wrapping_add(i);
             buf[i as usize] = self.main_map.debug_read(addr).unwrap_or(0);
         }
-        let sprite_data = self.main_map.region_data_mut(main_region::SPRITE_RAM);
+        let sprite_data = self.main_map.region_data_mut(MainRegion::SpriteRam);
         sprite_data[..count as usize].copy_from_slice(&buf[..count as usize]);
     }
 
@@ -697,9 +717,9 @@ impl Tkg04Board {
     pub(crate) fn save_board_state(&self, w: &mut StateWriter) {
         self.cpu.save_state(w);
         self.sound_cpu.save_state(w);
-        w.write_bytes(self.main_map.region_data(main_region::RAM));
-        w.write_bytes(self.main_map.region_data(main_region::SPRITE_RAM));
-        w.write_bytes(self.main_map.region_data(main_region::VIDEO_RAM));
+        w.write_bytes(self.main_map.region_data(MainRegion::Ram));
+        w.write_bytes(self.main_map.region_data(MainRegion::SpriteRam));
+        w.write_bytes(self.main_map.region_data(MainRegion::VideoRam));
         w.write_u8(self.in0);
         w.write_u8(self.in1);
         w.write_u8(self.in2);
@@ -724,9 +744,9 @@ impl Tkg04Board {
     pub(crate) fn load_board_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
         self.cpu.load_state(r)?;
         self.sound_cpu.load_state(r)?;
-        r.read_bytes_into(self.main_map.region_data_mut(main_region::RAM))?;
-        r.read_bytes_into(self.main_map.region_data_mut(main_region::SPRITE_RAM))?;
-        r.read_bytes_into(self.main_map.region_data_mut(main_region::VIDEO_RAM))?;
+        r.read_bytes_into(self.main_map.region_data_mut(MainRegion::Ram))?;
+        r.read_bytes_into(self.main_map.region_data_mut(MainRegion::SpriteRam))?;
+        r.read_bytes_into(self.main_map.region_data_mut(MainRegion::VideoRam))?;
         self.in0 = r.read_u8()?;
         self.in1 = r.read_u8()?;
         self.in2 = r.read_u8()?;

@@ -3,11 +3,7 @@ mod branch;
 pub mod disasm;
 mod load_store;
 
-use crate::core::{
-    Bus, BusMaster,
-    bus::InterruptState,
-    component::{BusMasterComponent, Component},
-};
+use crate::core::{Bus, BusMaster, bus::InterruptState, component::BusMasterComponent};
 use crate::cpu::{
     Cpu,
     state::{CpuStateTrait, I8035State},
@@ -678,12 +674,6 @@ impl I8035 {
     }
 }
 
-impl Component for I8035 {
-    fn tick(&mut self) -> bool {
-        false
-    }
-}
-
 impl BusMasterComponent for I8035 {
     type Bus = dyn Bus<Address = u16, Data = u8>;
 
@@ -782,6 +772,7 @@ impl DebugCpu for I8035 {
 
 impl Saveable for I8035 {
     fn save_state(&self, w: &mut StateWriter) {
+        w.write_version(1);
         // Registers
         w.write_u8(self.a);
         w.write_u16_le(self.pc);
@@ -818,6 +809,7 @@ impl Saveable for I8035 {
     }
 
     fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        r.read_version(1)?;
         self.a = r.read_u8()?;
         self.pc = r.read_u16_le()?;
         self.psw = r.read_u8()?;

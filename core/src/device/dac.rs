@@ -56,10 +56,12 @@ use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
 
 impl Saveable for Mc1408Dac {
     fn save_state(&self, w: &mut StateWriter) {
+        w.write_version(1);
         w.write_u8(self.value);
     }
 
     fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        r.read_version(1)?;
         self.value = r.read_u8()?;
         Ok(())
     }

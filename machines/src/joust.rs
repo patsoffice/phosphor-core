@@ -381,17 +381,17 @@ mod tests {
 
     #[test]
     fn save_load_round_trip() {
-        use crate::williams::{main_region, sound_region};
+        use crate::williams::{MainRegion, SoundRegion};
 
         let mut sys = JoustSystem::new();
 
         // Set known board state
         sys.board.write_video_ram(0x100, 0xAA);
-        sys.board.main_map.region_data_mut(main_region::PALETTE)[5] = 0x77;
+        sys.board.main_map.region_data_mut(MainRegion::Palette)[5] = 0x77;
         sys.board.rom_bank = 3;
         sys.board.clock = 50_000;
         sys.board.watchdog_counter = 42;
-        sys.board.sound_map.region_data_mut(sound_region::RAM)[0x20] = 0xEF;
+        sys.board.sound_map.region_data_mut(SoundRegion::Ram)[0x20] = 0xEF;
 
         // Set Joust-specific input state
         sys.p1_controls = 0x05;
@@ -423,14 +423,14 @@ mod tests {
         // Verify board state
         assert_eq!(sys2.board.read_video_ram(0x100), 0xAA);
         assert_eq!(
-            sys2.board.main_map.region_data(main_region::PALETTE)[5],
+            sys2.board.main_map.region_data(MainRegion::Palette)[5],
             0x77
         );
         assert_eq!(sys2.board.rom_bank, 3);
         assert_eq!(sys2.board.clock, 50_000);
         assert_eq!(sys2.board.watchdog_counter, 42);
         assert_eq!(
-            sys2.board.sound_map.region_data(sound_region::RAM)[0x20],
+            sys2.board.sound_map.region_data(SoundRegion::Ram)[0x20],
             0xEF
         );
 
@@ -457,28 +457,26 @@ mod tests {
 
     #[test]
     fn save_does_not_include_rom() {
-        use crate::williams::main_region;
+        use crate::williams::MainRegion;
 
         let mut sys = JoustSystem::new();
-        sys.board.main_map.region_data_mut(main_region::PROGRAM_ROM)[0] = 0xDE;
-        sys.board.main_map.region_data_mut(main_region::BANKED_ROM)[0] = 0xAD;
+        sys.board.main_map.region_data_mut(MainRegion::ProgramRom)[0] = 0xDE;
+        sys.board.main_map.region_data_mut(MainRegion::BankedRom)[0] = 0xAD;
 
         let data = sys.save_state().unwrap();
 
         // Load into system with different ROM — ROM should be preserved
         let mut sys2 = JoustSystem::new();
-        sys2.board
-            .main_map
-            .region_data_mut(main_region::PROGRAM_ROM)[0] = 0x11;
-        sys2.board.main_map.region_data_mut(main_region::BANKED_ROM)[0] = 0x22;
+        sys2.board.main_map.region_data_mut(MainRegion::ProgramRom)[0] = 0x11;
+        sys2.board.main_map.region_data_mut(MainRegion::BankedRom)[0] = 0x22;
         sys2.load_state(&data).unwrap();
 
         assert_eq!(
-            sys2.board.main_map.region_data(main_region::PROGRAM_ROM)[0],
+            sys2.board.main_map.region_data(MainRegion::ProgramRom)[0],
             0x11
         );
         assert_eq!(
-            sys2.board.main_map.region_data(main_region::BANKED_ROM)[0],
+            sys2.board.main_map.region_data(MainRegion::BankedRom)[0],
             0x22
         );
     }

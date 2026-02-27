@@ -6,11 +6,7 @@ pub mod disasm;
 mod load_store;
 mod stack;
 
-use crate::core::{
-    Bus, BusMaster,
-    bus::InterruptState,
-    component::{BusMasterComponent, Component},
-};
+use crate::core::{Bus, BusMaster, bus::InterruptState, component::BusMasterComponent};
 use crate::cpu::{
     Cpu,
     state::{CpuStateTrait, Z80State},
@@ -787,12 +783,6 @@ impl Z80 {
     }
 }
 
-impl Component for Z80 {
-    fn tick(&mut self) -> bool {
-        false
-    }
-}
-
 impl BusMasterComponent for Z80 {
     type Bus = dyn Bus<Address = u16, Data = u8>;
 
@@ -900,6 +890,7 @@ impl DebugCpu for Z80 {
 
 impl Saveable for Z80 {
     fn save_state(&self, w: &mut StateWriter) {
+        w.write_version(1);
         // Main registers
         w.write_u8(self.a);
         w.write_u8(self.f);
@@ -939,6 +930,7 @@ impl Saveable for Z80 {
     }
 
     fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        r.read_version(1)?;
         self.a = r.read_u8()?;
         self.f = r.read_u8()?;
         self.b = r.read_u8()?;

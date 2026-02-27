@@ -9,7 +9,7 @@ use phosphor_core::cpu::Cpu; // for .reset()
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
 use crate::set_bit_active_high;
-use crate::tkg04::{self, Tkg04Board, main_region, sound_region};
+use crate::tkg04::{self, MainRegion, SoundRegion, Tkg04Board};
 
 // ---------------------------------------------------------------------------
 // Donkey Kong Jr ROM definitions ("dkongjr2" MAME set — contiguous layout)
@@ -234,12 +234,12 @@ impl DkongJrSystem {
     /// Load all ROM sets.
     pub fn load_rom_set(&mut self, rom_set: &RomSet) -> Result<(), RomLoadError> {
         let rom_data = DKONGJR_PROGRAM_ROM.load(rom_set)?;
-        self.board.main_map.load_region(main_region::ROM, &rom_data);
+        self.board.main_map.load_region(MainRegion::Rom, &rom_data);
 
         let sound_data = DKONGJR_SOUND_ROM.load(rom_set)?;
         self.board
             .sound_map
-            .load_region(sound_region::ROM, &sound_data);
+            .load_region(SoundRegion::Rom, &sound_data);
         // DK Jr has no tune ROM (board.tune_rom stays zeroed)
 
         let tile_data = DKONGJR_TILE_ROM.load(rom_set)?;
@@ -273,18 +273,18 @@ impl Bus for DkongJrSystem {
             // Main CPU (Z80)
             BusMaster::Cpu(0) => {
                 let data = match self.board.main_map.page(addr).region_id {
-                    main_region::ROM
-                    | main_region::RAM
-                    | main_region::SPRITE_RAM
-                    | main_region::VIDEO_RAM => self.board.main_map.read_backing(addr),
-                    main_region::IO_DMA => {
+                    MainRegion::ROM
+                    | MainRegion::RAM
+                    | MainRegion::SPRITE_RAM
+                    | MainRegion::VIDEO_RAM => self.board.main_map.read_backing(addr),
+                    MainRegion::IO_DMA => {
                         if addr <= 0x7808 {
-                            self.board.dma.read((addr - 0x7800) as u8)
+                            self.board.dma.read(addr - 0x7800)
                         } else {
                             0x00
                         }
                     }
-                    main_region::IO_PORTS => match addr {
+                    MainRegion::IO_PORTS => match addr {
                         0x7C00 => self.board.in0,
                         0x7C80 => self.board.in1,
                         0x7D00 => {
@@ -311,15 +311,15 @@ impl Bus for DkongJrSystem {
         match master {
             BusMaster::Cpu(0) => {
                 match self.board.main_map.page(addr).region_id {
-                    main_region::RAM | main_region::SPRITE_RAM | main_region::VIDEO_RAM => {
+                    MainRegion::RAM | MainRegion::SPRITE_RAM | MainRegion::VIDEO_RAM => {
                         self.board.main_map.write_backing(addr, data);
                     }
-                    main_region::IO_DMA => {
+                    MainRegion::IO_DMA => {
                         if addr <= 0x7808 {
-                            self.board.dma.write((addr - 0x7800) as u8, data);
+                            self.board.dma.write(addr - 0x7800, data);
                         }
                     }
-                    main_region::IO_PORTS => match addr {
+                    MainRegion::IO_PORTS => match addr {
                         // Sound latch (ls174.3d)
                         0x7C00 => self.board.sound_latch = data,
 

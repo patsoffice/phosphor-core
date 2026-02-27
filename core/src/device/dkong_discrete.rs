@@ -209,6 +209,7 @@ use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
 
 impl Saveable for DkongDiscrete {
     fn save_state(&self, w: &mut StateWriter) {
+        w.write_version(1);
         w.write_f64_le(self.walk_lfo_phase);
         w.write_f64_le(self.walk_vco_phase);
         w.write_bool(self.jump_active);
@@ -222,6 +223,7 @@ impl Saveable for DkongDiscrete {
     }
 
     fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        r.read_version(1)?;
         self.walk_lfo_phase = r.read_f64_le()?;
         self.walk_vco_phase = r.read_f64_le()?;
         self.jump_active = r.read_bool()?;

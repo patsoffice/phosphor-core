@@ -255,7 +255,7 @@ pub fn derive_bus_debug(input: TokenStream) -> TokenStream {
                 }
             }
 
-            fn write_device_register(&mut self, device_index: usize, offset: u8, data: u8) {
+            fn write_device_register(&mut self, device_index: usize, offset: u16, data: u8) {
                 match device_index {
                     #(#device_write_arms,)*
                     _ => {}

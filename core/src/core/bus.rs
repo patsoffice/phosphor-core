@@ -82,9 +82,7 @@ macro_rules! bus_split {
     ($self:expr, $bus:ident => $body:block) => {{
         let __ptr: *mut _ = $self;
         #[allow(unused_unsafe)]
-        unsafe {
-            let $bus = &mut *__ptr as &mut dyn $crate::core::Bus<Address = u16, Data = u8>;
-            $body
-        }
+        let $bus = unsafe { &mut *__ptr as &mut dyn $crate::core::Bus<Address = u16, Data = u8> };
+        $body
     }};
 }

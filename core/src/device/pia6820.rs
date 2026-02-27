@@ -82,7 +82,7 @@ impl Pia6820 {
     /// | 3      | x     | CRB                 |
     ///
     /// Reading a data port clears both IRQ flags for that side.
-    pub fn read(&mut self, offset: u8) -> u8 {
+    pub fn read(&mut self, offset: u16) -> u8 {
         match offset & 0x03 {
             0 => {
                 if (self.ctrl_a & 0x04) != 0 {
@@ -122,7 +122,7 @@ impl Pia6820 {
     /// the corresponding DDR bit is 1 actually drive the output pins.
     /// Writing to a control register only affects bits 5:0 (bits 7:6 are
     /// read-only interrupt flags).
-    pub fn write(&mut self, offset: u8, data: u8) {
+    pub fn write(&mut self, offset: u16, data: u8) {
         match offset & 0x03 {
             0 => {
                 if (self.ctrl_a & 0x04) != 0 {
@@ -334,10 +334,10 @@ impl super::Device for Pia6820 {
     fn reset(&mut self) {
         self.reset();
     }
-    fn read(&mut self, offset: u8) -> u8 {
+    fn read(&mut self, offset: u16) -> u8 {
         self.read(offset)
     }
-    fn write(&mut self, offset: u8, data: u8) {
+    fn write(&mut self, offset: u16, data: u8) {
         self.write(offset, data);
     }
 }
@@ -395,6 +395,7 @@ use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
 
 impl Saveable for Pia6820 {
     fn save_state(&self, w: &mut StateWriter) {
+        w.write_version(1);
         w.write_u8(self.output_a);
         w.write_u8(self.ddr_a);
         w.write_u8(self.ctrl_a);
@@ -415,6 +416,7 @@ impl Saveable for Pia6820 {
     }
 
     fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        r.read_version(1)?;
         self.output_a = r.read_u8()?;
         self.ddr_a = r.read_u8()?;
         self.ctrl_a = r.read_u8()?;

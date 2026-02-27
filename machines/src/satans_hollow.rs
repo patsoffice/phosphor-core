@@ -213,7 +213,7 @@ impl SatansHollowSystem {
     pub fn load_rom_set(&mut self, rom_set: &RomSet) -> Result<(), RomLoadError> {
         // Program ROM
         let prog_data = SHOLLOW_PROGRAM_ROM.load(rom_set)?;
-        self.board.map.load_region(mcr2::region::ROM, &prog_data);
+        self.board.map.load_region(mcr2::Region::Rom, &prog_data);
 
         // Sound ROM (loaded into SSIO)
         let sound_data = SHOLLOW_SOUND_ROM.load(rom_set)?;
@@ -250,10 +250,10 @@ impl Bus for SatansHollowSystem {
 
     fn read(&mut self, _master: BusMaster, addr: u16) -> u8 {
         let data = match self.board.map.page(addr).region_id {
-            mcr2::region::ROM
-            | mcr2::region::NVRAM
-            | mcr2::region::SPRITE_RAM
-            | mcr2::region::VIDEO_RAM => self.board.map.read_backing(addr),
+            mcr2::Region::ROM
+            | mcr2::Region::NVRAM
+            | mcr2::Region::SPRITE_RAM
+            | mcr2::Region::VIDEO_RAM => self.board.map.read_backing(addr),
             _ => 0xFF,
         };
         self.board.map.check_read_watch(addr, data);
@@ -263,10 +263,10 @@ impl Bus for SatansHollowSystem {
     fn write(&mut self, _master: BusMaster, addr: u16, data: u8) {
         self.board.map.check_write_watch(addr, data);
         match self.board.map.page(addr).region_id {
-            mcr2::region::NVRAM | mcr2::region::SPRITE_RAM => {
+            mcr2::Region::NVRAM | mcr2::Region::SPRITE_RAM => {
                 self.board.map.write_backing(addr, data);
             }
-            mcr2::region::VIDEO_RAM => {
+            mcr2::Region::VIDEO_RAM => {
                 self.board.map.write_backing(addr, data);
                 let offset = (addr & 0x7FF) as usize;
                 if (offset & 0x780) == 0x780 {
@@ -455,9 +455,9 @@ mod tests {
         let mut sys = SatansHollowSystem::new();
 
         // Set known state
-        sys.board.map.region_data_mut(mcr2::region::NVRAM)[0x100] = 0xAA;
-        sys.board.map.region_data_mut(mcr2::region::VIDEO_RAM)[0x50] = 0xBB;
-        sys.board.map.region_data_mut(mcr2::region::SPRITE_RAM)[0x10] = 0xCC;
+        sys.board.map.region_data_mut(mcr2::Region::Nvram)[0x100] = 0xAA;
+        sys.board.map.region_data_mut(mcr2::Region::VideoRam)[0x50] = 0xBB;
+        sys.board.map.region_data_mut(mcr2::Region::SpriteRam)[0x10] = 0xCC;
         sys.board.palette_ram[0] = 0x55;
         sys.board.clock = 50_000;
         sys.board.watchdog_counter = 42;
@@ -474,13 +474,13 @@ mod tests {
 
         // Verify
         assert_eq!(sys2.board.cpu.snapshot(), cpu_snap);
-        assert_eq!(sys2.board.map.region_data(mcr2::region::NVRAM)[0x100], 0xAA);
+        assert_eq!(sys2.board.map.region_data(mcr2::Region::Nvram)[0x100], 0xAA);
         assert_eq!(
-            sys2.board.map.region_data(mcr2::region::VIDEO_RAM)[0x50],
+            sys2.board.map.region_data(mcr2::Region::VideoRam)[0x50],
             0xBB
         );
         assert_eq!(
-            sys2.board.map.region_data(mcr2::region::SPRITE_RAM)[0x10],
+            sys2.board.map.region_data(mcr2::Region::SpriteRam)[0x10],
             0xCC
         );
         assert_eq!(sys2.board.palette_ram[0], 0x55);
@@ -506,17 +506,17 @@ mod tests {
     #[test]
     fn save_does_not_include_rom() {
         let mut sys = SatansHollowSystem::new();
-        sys.board.map.region_data_mut(mcr2::region::ROM)[0] = 0xDE;
+        sys.board.map.region_data_mut(mcr2::Region::Rom)[0] = 0xDE;
 
         let data = sys.save_state().unwrap();
 
         // Load into system with different ROM
         let mut sys2 = SatansHollowSystem::new();
-        sys2.board.map.region_data_mut(mcr2::region::ROM)[0] = 0x11;
+        sys2.board.map.region_data_mut(mcr2::Region::Rom)[0] = 0x11;
         sys2.load_state(&data).unwrap();
 
         assert_eq!(
-            sys2.board.map.region_data(mcr2::region::ROM)[0],
+            sys2.board.map.region_data(mcr2::Region::Rom)[0],
             0x11,
             "ROM should be untouched"
         );
@@ -647,8 +647,8 @@ mod tests {
     #[test]
     fn memory_map_rom_read() {
         let mut sys = SatansHollowSystem::new();
-        sys.board.map.region_data_mut(mcr2::region::ROM)[0] = 0x42;
-        sys.board.map.region_data_mut(mcr2::region::ROM)[0xBFFF] = 0x77;
+        sys.board.map.region_data_mut(mcr2::Region::Rom)[0] = 0x42;
+        sys.board.map.region_data_mut(mcr2::Region::Rom)[0xBFFF] = 0x77;
 
         assert_eq!(Bus::read(&mut sys, BusMaster::Cpu(0), 0x0000), 0x42);
         assert_eq!(Bus::read(&mut sys, BusMaster::Cpu(0), 0xBFFF), 0x77);
@@ -660,6 +660,6 @@ mod tests {
 
         Bus::write(&mut sys, BusMaster::Cpu(0), 0xC000, 0x55);
         assert_eq!(Bus::read(&mut sys, BusMaster::Cpu(0), 0xC000), 0x55);
-        assert_eq!(sys.board.map.region_data(mcr2::region::NVRAM)[0], 0x55);
+        assert_eq!(sys.board.map.region_data(mcr2::Region::Nvram)[0], 0x55);
     }
 }

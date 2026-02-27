@@ -372,17 +372,17 @@ mod tests {
 
     #[test]
     fn save_load_round_trip() {
-        use crate::williams::{main_region, sound_region};
+        use crate::williams::{MainRegion, SoundRegion};
 
         let mut sys = RobotronSystem::new();
 
         // Set known board state
         sys.board.write_video_ram(0x100, 0xAA);
-        sys.board.main_map.region_data_mut(main_region::PALETTE)[5] = 0x77;
+        sys.board.main_map.region_data_mut(MainRegion::Palette)[5] = 0x77;
         sys.board.rom_bank = 3;
         sys.board.clock = 50_000;
         sys.board.watchdog_counter = 42;
-        sys.board.sound_map.region_data_mut(sound_region::RAM)[0x20] = 0xEF;
+        sys.board.sound_map.region_data_mut(SoundRegion::Ram)[0x20] = 0xEF;
 
         // Set Robotron-specific input state
         sys.widget_port_a = 0x3F;
@@ -412,14 +412,14 @@ mod tests {
         // Verify board state
         assert_eq!(sys2.board.read_video_ram(0x100), 0xAA);
         assert_eq!(
-            sys2.board.main_map.region_data(main_region::PALETTE)[5],
+            sys2.board.main_map.region_data(MainRegion::Palette)[5],
             0x77
         );
         assert_eq!(sys2.board.rom_bank, 3);
         assert_eq!(sys2.board.clock, 50_000);
         assert_eq!(sys2.board.watchdog_counter, 42);
         assert_eq!(
-            sys2.board.sound_map.region_data(sound_region::RAM)[0x20],
+            sys2.board.sound_map.region_data(SoundRegion::Ram)[0x20],
             0xEF
         );
 

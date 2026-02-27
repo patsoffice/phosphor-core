@@ -38,13 +38,13 @@ impl Bus for TestBus {
 }
 
 /// Helper: write a 16-bit value to an i8257 register pair via flip-flop.
-fn write_reg16(dma: &mut I8257, offset: u8, value: u16) {
+fn write_reg16(dma: &mut I8257, offset: u16, value: u16) {
     dma.write(offset, value as u8); // LSB first
     dma.write(offset, (value >> 8) as u8); // MSB second
 }
 
 /// Helper: read a 16-bit value from an i8257 register pair via flip-flop.
-fn read_reg16(dma: &mut I8257, offset: u8) -> u16 {
+fn read_reg16(dma: &mut I8257, offset: u16) -> u16 {
     let lo = dma.read(offset) as u16;
     let hi = dma.read(offset) as u16;
     (hi << 8) | lo

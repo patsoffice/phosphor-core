@@ -471,6 +471,7 @@ use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
 
 impl Saveable for Dvg {
     fn save_state(&self, w: &mut StateWriter) {
+        w.write_version(1);
         w.write_u16_le(self.pc);
         for &addr in &self.stack {
             w.write_u16_le(addr);
@@ -484,6 +485,7 @@ impl Saveable for Dvg {
     }
 
     fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        r.read_version(1)?;
         self.pc = r.read_u16_le()?;
         for addr in &mut self.stack {
             *addr = r.read_u16_le()?;

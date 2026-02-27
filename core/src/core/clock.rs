@@ -67,10 +67,12 @@ use super::save_state::{SaveError, Saveable, StateReader, StateWriter};
 
 impl Saveable for ClockDivider {
     fn save_state(&self, w: &mut StateWriter) {
+        w.write_version(1);
         w.write_u32_le(self.phase_accum);
     }
 
     fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        r.read_version(1)?;
         self.phase_accum = r.read_u32_le()?;
         Ok(())
     }

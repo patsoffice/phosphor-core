@@ -286,11 +286,11 @@ impl super::Device for Z80Ctc {
     fn reset(&mut self) {
         self.reset();
     }
-    fn read(&mut self, offset: u8) -> u8 {
-        Z80Ctc::read(self, offset)
+    fn read(&mut self, offset: u16) -> u8 {
+        Z80Ctc::read(self, offset as u8)
     }
-    fn write(&mut self, offset: u8, data: u8) {
-        self.write(offset, data);
+    fn write(&mut self, offset: u16, data: u8) {
+        self.write(offset as u8, data);
     }
     fn tick(&mut self) {
         self.tick();
@@ -365,6 +365,7 @@ use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
 
 impl Saveable for Z80Ctc {
     fn save_state(&self, w: &mut StateWriter) {
+        w.write_version(1);
         w.write_u8(self.vector_base);
         for ch in &self.channels {
             w.write_u8(ch.control);
@@ -381,6 +382,7 @@ impl Saveable for Z80Ctc {
     }
 
     fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        r.read_version(1)?;
         self.vector_base = r.read_u8()?;
         for ch in &mut self.channels {
             ch.control = r.read_u8()?;

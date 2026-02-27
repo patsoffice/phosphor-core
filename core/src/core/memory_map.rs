@@ -145,12 +145,13 @@ impl MemoryMap {
     /// a multiple of 256. Sets page entries and adds a region descriptor.
     pub fn region(
         &mut self,
-        id: RegionId,
+        id: impl Into<RegionId>,
         name: &'static str,
         start: u16,
         length: u32,
         access: AccessKind,
     ) -> &mut Self {
+        let id = id.into();
         debug_assert_eq!(
             start & 0xFF,
             0,
@@ -209,7 +210,13 @@ impl MemoryMap {
     /// Used for bank-switched overlays (e.g., banked ROM) that share an
     /// address range with another region. Use `remap_pages()` to switch
     /// pages to this region at runtime.
-    pub fn backing_region(&mut self, id: RegionId, name: &'static str, length: u32) -> &mut Self {
+    pub fn backing_region(
+        &mut self,
+        id: impl Into<RegionId>,
+        name: &'static str,
+        length: u32,
+    ) -> &mut Self {
+        let id = id.into();
         let offset = self.backing.len() as u32;
         self.backing.resize(self.backing.len() + length as usize, 0);
         self.region_backing[id as usize] = offset;
@@ -257,9 +264,10 @@ impl MemoryMap {
         &mut self,
         start_page: u8,
         page_count: u8,
-        new_region_id: RegionId,
+        new_region_id: impl Into<RegionId>,
         new_base_offset: u16,
     ) {
+        let new_region_id = new_region_id.into();
         for i in 0..page_count as usize {
             let idx = start_page as usize + i;
             if idx < 256 {
@@ -361,7 +369,8 @@ impl MemoryMap {
     /// Get a read-only slice of a region's backing store.
     ///
     /// Panics if the region has no backing (I/O or unregistered).
-    pub fn region_data(&self, region_id: RegionId) -> &[u8] {
+    pub fn region_data(&self, region_id: impl Into<RegionId>) -> &[u8] {
+        let region_id = region_id.into();
         let offset = self.region_backing[region_id as usize];
         debug_assert!(
             offset != u32::MAX,
@@ -375,7 +384,8 @@ impl MemoryMap {
     /// Get a mutable slice of a region's backing store.
     ///
     /// Panics if the region has no backing (I/O or unregistered).
-    pub fn region_data_mut(&mut self, region_id: RegionId) -> &mut [u8] {
+    pub fn region_data_mut(&mut self, region_id: impl Into<RegionId>) -> &mut [u8] {
+        let region_id = region_id.into();
         let offset = self.region_backing[region_id as usize];
         debug_assert!(
             offset != u32::MAX,
@@ -389,7 +399,8 @@ impl MemoryMap {
     /// Bulk-copy data into a region's backing store (e.g., ROM loading).
     ///
     /// `data` must exactly match the region's length.
-    pub fn load_region(&mut self, region_id: RegionId, data: &[u8]) {
+    pub fn load_region(&mut self, region_id: impl Into<RegionId>, data: &[u8]) {
+        let region_id = region_id.into();
         let dest = self.region_data_mut(region_id);
         assert_eq!(
             dest.len(),
@@ -403,7 +414,8 @@ impl MemoryMap {
     }
 
     /// Copy data into a region's backing store at the given byte offset.
-    pub fn load_region_at(&mut self, region_id: RegionId, offset: usize, data: &[u8]) {
+    pub fn load_region_at(&mut self, region_id: impl Into<RegionId>, offset: usize, data: &[u8]) {
+        let region_id = region_id.into();
         let dest = self.region_data_mut(region_id);
         let end = (offset + data.len()).min(dest.len());
         let len = end - offset;

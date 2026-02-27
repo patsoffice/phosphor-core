@@ -85,7 +85,7 @@ impl NamcoWsg {
     ///   0x1A:       Ch 1 volume
     ///   0x1B-0x1E:  Ch 2 frequency nibbles
     ///   0x1F:       Ch 2 volume
-    pub fn write(&mut self, offset: u8, data: u8) {
+    pub fn write(&mut self, offset: u16, data: u8) {
         let offset = (offset & 0x1F) as usize;
         let data = data & 0x0F;
 
@@ -189,7 +189,7 @@ impl super::Device for NamcoWsg {
     fn reset(&mut self) {
         self.reset();
     }
-    fn write(&mut self, offset: u8, data: u8) {
+    fn write(&mut self, offset: u16, data: u8) {
         self.write(offset, data);
     }
     fn tick(&mut self) {
@@ -260,6 +260,7 @@ use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
 
 impl Saveable for NamcoWsg {
     fn save_state(&self, w: &mut StateWriter) {
+        w.write_version(1);
         for voice in &self.voices {
             w.write_u32_le(voice.frequency);
             w.write_u32_le(voice.counter);
@@ -272,6 +273,7 @@ impl Saveable for NamcoWsg {
     }
 
     fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        r.read_version(1)?;
         for voice in &mut self.voices {
             voice.frequency = r.read_u32_le()?;
             voice.counter = r.read_u32_le()?;
