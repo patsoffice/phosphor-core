@@ -7,11 +7,13 @@ mod shift;
 mod stack;
 mod unary;
 
+use crate::core::save_state::{SaveError, StateReader, StateWriter};
 use crate::core::{Bus, BusMaster, bus::InterruptState, component::BusMasterComponent};
 use crate::cpu::{
     Cpu,
     state::{CpuStateTrait, M6502State},
 };
+use crate::prelude::Saveable;
 
 #[repr(u8)]
 #[derive(Copy, Clone, Debug)]
@@ -42,6 +44,24 @@ pub(crate) enum InterruptType {
     Irq = 2,
 }
 
+impl Saveable for InterruptType {
+    fn save_state(&self, w: &mut StateWriter) {
+        w.write_u8(*self as u8);
+    }
+
+    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        *self = match r.read_u8()? {
+            1 => InterruptType::Nmi,
+            2 => InterruptType::Irq,
+            _ => InterruptType::None,
+        };
+        Ok(())
+    }
+}
+
+/// Field order matches save-state serialization order (version 1).
+#[derive(Saveable)]
+#[save_version(1)]
 pub struct M6502 {
     // Registers
     pub a: u8,
@@ -51,16 +71,22 @@ pub struct M6502 {
     pub sp: u8,
     pub p: u8,
 
-    // Internal state
-    pub(crate) state: ExecState,
-    pub(crate) opcode: u8,
-    pub(crate) temp_addr: u16,
-    /// Temporary data storage for multi-cycle operations (RMW operand, address bytes)
-    pub(crate) temp_data: u8,
-    /// Interrupt type being processed (BRK has its own handler)
-    pub(crate) interrupt_type: InterruptType,
+    // Internal state (nmi_previous before interrupt_type to match save-state order)
     /// Previous NMI line state for edge detection
     pub(crate) nmi_previous: bool,
+    /// Interrupt type being processed (BRK has its own handler)
+    pub(crate) interrupt_type: InterruptType,
+
+    // Execution temporaries — not saved, reset to defaults on load
+    #[save_skip(default = ExecState::Fetch)]
+    pub(crate) state: ExecState,
+    #[save_skip(default)]
+    pub(crate) opcode: u8,
+    #[save_skip(default)]
+    pub(crate) temp_addr: u16,
+    /// Temporary data storage for multi-cycle operations (RMW operand, address bytes)
+    #[save_skip(default)]
+    pub(crate) temp_data: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -86,12 +112,12 @@ impl M6502 {
             pc: 0,
             sp: 0xFD,
             p: 0x24, // I=1, U=1
+            nmi_previous: false,
+            interrupt_type: InterruptType::None,
             state: ExecState::Fetch,
             opcode: 0,
             temp_addr: 0,
             temp_data: 0,
-            interrupt_type: InterruptType::None,
-            nmi_previous: false,
         }
     }
 
@@ -638,8 +664,6 @@ impl CpuStateTrait for M6502 {
 
 // -- Save state support ------------------------------------------------------
 
-use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
-
 impl M6502 {
     /// Returns true when the CPU is at a saveable instruction boundary.
     pub fn is_at_save_boundary(&self) -> bool {
@@ -673,40 +697,5 @@ impl DebugCpu for M6502 {
 
     fn debug_disassemble(&self, addr: u16, bytes: &[u8]) -> DisassembledInstruction {
         <Self as crate::cpu::Disassemble>::disassemble(addr, bytes)
-    }
-}
-
-impl Saveable for M6502 {
-    fn save_state(&self, w: &mut StateWriter) {
-        w.write_version(1);
-        w.write_u8(self.a);
-        w.write_u8(self.x);
-        w.write_u8(self.y);
-        w.write_u16_le(self.pc);
-        w.write_u8(self.sp);
-        w.write_u8(self.p);
-        w.write_bool(self.nmi_previous);
-        w.write_u8(self.interrupt_type as u8);
-    }
-
-    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
-        r.read_version(1)?;
-        self.a = r.read_u8()?;
-        self.x = r.read_u8()?;
-        self.y = r.read_u8()?;
-        self.pc = r.read_u16_le()?;
-        self.sp = r.read_u8()?;
-        self.p = r.read_u8()?;
-        self.nmi_previous = r.read_bool()?;
-        self.interrupt_type = match r.read_u8()? {
-            1 => InterruptType::Nmi,
-            2 => InterruptType::Irq,
-            _ => InterruptType::None,
-        };
-        self.state = ExecState::Fetch;
-        self.opcode = 0;
-        self.temp_addr = 0;
-        self.temp_data = 0;
-        Ok(())
     }
 }

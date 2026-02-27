@@ -9,14 +9,18 @@
 //! Register interface: 32 nibble-wide registers written at 0x5040–0x505F.
 
 use crate::audio::AudioResampler;
+use crate::prelude::Saveable;
 
 /// 3-voice Namco WSG wavetable synthesizer.
+#[derive(Saveable)]
+#[save_version(1)]
 pub struct NamcoWsg {
     voices: [WsgVoice; 3],
     sound_regs: [u8; 32],
 
     /// 8 waveforms × 32 samples, 4 bits per sample (only low nibble used).
     /// Loaded from the sound PROM (82s126.1m for Pac-Man, 256 bytes).
+    #[save_skip]
     waveform_rom: [u8; 256],
 
     sound_enabled: bool,
@@ -24,7 +28,7 @@ pub struct NamcoWsg {
     resampler: AudioResampler,
 }
 
-#[derive(Default)]
+#[derive(Default, Saveable)]
 struct WsgVoice {
     frequency: u32,
     counter: u32,
@@ -253,36 +257,5 @@ impl Debuggable for NamcoWsg {
                 width: 8,
             },
         ]
-    }
-}
-
-use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
-
-impl Saveable for NamcoWsg {
-    fn save_state(&self, w: &mut StateWriter) {
-        w.write_version(1);
-        for voice in &self.voices {
-            w.write_u32_le(voice.frequency);
-            w.write_u32_le(voice.counter);
-            w.write_u8(voice.volume);
-            w.write_u8(voice.waveform_select);
-        }
-        w.write_bytes(&self.sound_regs);
-        w.write_bool(self.sound_enabled);
-        self.resampler.save_state(w);
-    }
-
-    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
-        r.read_version(1)?;
-        for voice in &mut self.voices {
-            voice.frequency = r.read_u32_le()?;
-            voice.counter = r.read_u32_le()?;
-            voice.volume = r.read_u8()?;
-            voice.waveform_select = r.read_u8()?;
-        }
-        r.read_bytes_into(&mut self.sound_regs)?;
-        self.sound_enabled = r.read_bool()?;
-        self.resampler.load_state(r)?;
-        Ok(())
     }
 }

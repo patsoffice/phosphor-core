@@ -1,3 +1,5 @@
+extern crate self as phosphor_core;
+
 pub mod audio;
 pub mod core;
 pub mod cpu;
@@ -12,4 +14,5 @@ pub mod prelude {
         bus::InterruptState,
     };
     pub use crate::cpu::Cpu;
+    pub use phosphor_macros::Saveable;
 }

@@ -1,4 +1,5 @@
 use crate::core::{Bus, BusMaster};
+use phosphor_macros::Saveable;
 
 /// Williams Special Chip (SC1/SC2) — Blitter / DMA engine
 ///
@@ -86,6 +87,8 @@ use crate::core::{Bus, BusMaster};
 /// Reference (Sean Riddle): "CPU completes current instruction, sets BA/BS
 /// high. /BABS signal goes low; blitter gains bus control. [...] Upon
 /// completion, /HALT deasserts; CPU resumes."
+#[derive(Saveable)]
+#[save_version(1)]
 pub struct WilliamsBlitter {
     // Registers (offsets 0-7, write-only)
     control: u8,
@@ -457,58 +460,5 @@ impl super::Device for WilliamsBlitter {
 impl Default for WilliamsBlitter {
     fn default() -> Self {
         Self::sc1()
-    }
-}
-
-use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
-
-impl Saveable for WilliamsBlitter {
-    fn save_state(&self, w: &mut StateWriter) {
-        w.write_version(1);
-        // Registers
-        w.write_u8(self.control);
-        w.write_u8(self.solid_color);
-        w.write_u16_le(self.src_addr);
-        w.write_u16_le(self.dst_addr);
-        w.write_u8(self.width);
-        w.write_u8(self.height);
-        w.write_u8(self.size_xor);
-        // Execution state (should be inactive after DMA completion)
-        w.write_bool(self.active);
-        w.write_u16_le(self.x);
-        w.write_u16_le(self.w);
-        w.write_u16_le(self.h);
-        w.write_u16_le(self.rows_done);
-        w.write_u16_le(self.sstart);
-        w.write_u16_le(self.dstart);
-        w.write_u16_le(self.cur_src);
-        w.write_u16_le(self.cur_dst);
-        w.write_u16_le(self.sxadv);
-        w.write_u16_le(self.dxadv);
-        w.write_u8(self.shift_reg);
-    }
-
-    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
-        r.read_version(1)?;
-        self.control = r.read_u8()?;
-        self.solid_color = r.read_u8()?;
-        self.src_addr = r.read_u16_le()?;
-        self.dst_addr = r.read_u16_le()?;
-        self.width = r.read_u8()?;
-        self.height = r.read_u8()?;
-        self.size_xor = r.read_u8()?;
-        self.active = r.read_bool()?;
-        self.x = r.read_u16_le()?;
-        self.w = r.read_u16_le()?;
-        self.h = r.read_u16_le()?;
-        self.rows_done = r.read_u16_le()?;
-        self.sstart = r.read_u16_le()?;
-        self.dstart = r.read_u16_le()?;
-        self.cur_src = r.read_u16_le()?;
-        self.cur_dst = r.read_u16_le()?;
-        self.sxadv = r.read_u16_le()?;
-        self.dxadv = r.read_u16_le()?;
-        self.shift_reg = r.read_u8()?;
-        Ok(())
     }
 }

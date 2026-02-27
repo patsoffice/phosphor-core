@@ -1,3 +1,5 @@
+use phosphor_macros::Saveable;
+
 /// Bresenham-style fractional clock divider.
 ///
 /// Ticks a secondary clock at a fractional rate relative to the primary clock.
@@ -16,9 +18,13 @@
 /// }
 /// assert_eq!(fires, 25);
 /// ```
+#[derive(Saveable)]
+#[save_version(1)]
 pub struct ClockDivider {
     phase_accum: u32,
+    #[save_skip]
     numerator: u32,
+    #[save_skip]
     denominator: u32,
 }
 
@@ -63,24 +69,10 @@ impl ClockDivider {
     }
 }
 
-use super::save_state::{SaveError, Saveable, StateReader, StateWriter};
-
-impl Saveable for ClockDivider {
-    fn save_state(&self, w: &mut StateWriter) {
-        w.write_version(1);
-        w.write_u32_le(self.phase_accum);
-    }
-
-    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
-        r.read_version(1)?;
-        self.phase_accum = r.read_u32_le()?;
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::save_state::{Saveable, StateReader, StateWriter};
 
     #[test]
     fn ratio_25_192_fires_exactly_25_times() {

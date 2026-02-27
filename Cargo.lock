@@ -602,6 +602,9 @@ dependencies = [
 [[package]]
 name = "phosphor-core"
 version = "0.1.0"
+dependencies = [
+ "phosphor-macros",
+]
 
 [[package]]
 name = "phosphor-cpu-validation"

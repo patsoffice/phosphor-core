@@ -1,9 +1,12 @@
+use phosphor_macros::Saveable;
+
 /// 74LS259 8-bit addressable latch.
 ///
 /// Address lines A0-A2 select which output bit to set/clear.
 /// One data line (typically D0) provides the value. The caller extracts
 /// the relevant data bit before calling [`write()`](OutputLatch::write).
-#[derive(Default)]
+#[derive(Default, Saveable)]
+#[save_version(1)]
 pub struct OutputLatch {
     value: u8,
 }
@@ -59,20 +62,5 @@ impl Debuggable for OutputLatch {
             value: self.value as u64,
             width: 8,
         }]
-    }
-}
-
-use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
-
-impl Saveable for OutputLatch {
-    fn save_state(&self, w: &mut StateWriter) {
-        w.write_version(1);
-        w.write_u8(self.value);
-    }
-
-    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
-        r.read_version(1)?;
-        self.value = r.read_u8()?;
-        Ok(())
     }
 }

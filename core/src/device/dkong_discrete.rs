@@ -1,3 +1,5 @@
+use phosphor_macros::Saveable;
+
 /// Donkey Kong discrete analog sound effects.
 ///
 /// Models three circuits from the DK sound board, driven by the 74LS259
@@ -11,6 +13,8 @@
 ///   exponential amplitude decay (τ ≈ 50ms). Triggered on rising edge.
 ///
 /// Call [`generate_sample`] at 44.1 kHz to produce output samples.
+#[derive(Saveable)]
+#[save_version(1)]
 pub struct DkongDiscrete {
     // Walk: LFO-modulated VCO
     walk_lfo_phase: f64,
@@ -202,38 +206,5 @@ impl Debuggable for DkongDiscrete {
                 width: 8,
             },
         ]
-    }
-}
-
-use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
-
-impl Saveable for DkongDiscrete {
-    fn save_state(&self, w: &mut StateWriter) {
-        w.write_version(1);
-        w.write_f64_le(self.walk_lfo_phase);
-        w.write_f64_le(self.walk_vco_phase);
-        w.write_bool(self.jump_active);
-        w.write_f64_le(self.jump_timer);
-        w.write_f64_le(self.jump_vco_phase);
-        w.write_bool(self.stomp_active);
-        w.write_f64_le(self.stomp_timer);
-        w.write_u32_le(self.stomp_lfsr);
-        w.write_f64_le(self.stomp_lfsr_clock);
-        w.write_u8(self.latch);
-    }
-
-    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
-        r.read_version(1)?;
-        self.walk_lfo_phase = r.read_f64_le()?;
-        self.walk_vco_phase = r.read_f64_le()?;
-        self.jump_active = r.read_bool()?;
-        self.jump_timer = r.read_f64_le()?;
-        self.jump_vco_phase = r.read_f64_le()?;
-        self.stomp_active = r.read_bool()?;
-        self.stomp_timer = r.read_f64_le()?;
-        self.stomp_lfsr = r.read_u32_le()?;
-        self.stomp_lfsr_clock = r.read_f64_le()?;
-        self.latch = r.read_u8()?;
-        Ok(())
     }
 }

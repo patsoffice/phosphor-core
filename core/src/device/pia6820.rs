@@ -1,3 +1,5 @@
+use phosphor_macros::Saveable;
+
 /// MC6821 Peripheral Interface Adapter (PIA)
 ///
 /// The 6820 and 6821 are register-compatible. This implementation covers
@@ -13,6 +15,8 @@
 ///
 /// Register addressing uses RS1:RS0 (2 bits = 4 locations), with CRx bit 2
 /// selecting between DDR and data register at offsets 0 and 2.
+#[derive(Saveable)]
+#[save_version(1)]
 pub struct Pia6820 {
     // Port A
     output_a: u8, // Output Register A (ORA) — written by CPU
@@ -388,52 +392,5 @@ impl Debuggable for Pia6820 {
                 width: 8,
             },
         ]
-    }
-}
-
-use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
-
-impl Saveable for Pia6820 {
-    fn save_state(&self, w: &mut StateWriter) {
-        w.write_version(1);
-        w.write_u8(self.output_a);
-        w.write_u8(self.ddr_a);
-        w.write_u8(self.ctrl_a);
-        w.write_u8(self.input_a);
-        w.write_u8(self.output_b);
-        w.write_u8(self.ddr_b);
-        w.write_u8(self.ctrl_b);
-        w.write_u8(self.input_b);
-        w.write_bool(self.irq_a1);
-        w.write_bool(self.irq_a2);
-        w.write_bool(self.irq_b1);
-        w.write_bool(self.irq_b2);
-        w.write_bool(self.ca1);
-        w.write_bool(self.ca2);
-        w.write_bool(self.cb1);
-        w.write_bool(self.cb2);
-        w.write_bool(self.port_b_written);
-    }
-
-    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
-        r.read_version(1)?;
-        self.output_a = r.read_u8()?;
-        self.ddr_a = r.read_u8()?;
-        self.ctrl_a = r.read_u8()?;
-        self.input_a = r.read_u8()?;
-        self.output_b = r.read_u8()?;
-        self.ddr_b = r.read_u8()?;
-        self.ctrl_b = r.read_u8()?;
-        self.input_b = r.read_u8()?;
-        self.irq_a1 = r.read_bool()?;
-        self.irq_a2 = r.read_bool()?;
-        self.irq_b1 = r.read_bool()?;
-        self.irq_b2 = r.read_bool()?;
-        self.ca1 = r.read_bool()?;
-        self.ca2 = r.read_bool()?;
-        self.cb1 = r.read_bool()?;
-        self.cb2 = r.read_bool()?;
-        self.port_b_written = r.read_bool()?;
-        Ok(())
     }
 }

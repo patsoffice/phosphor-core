@@ -5,7 +5,7 @@
 //! Two variants are provided: `AudioResampler` (i64/i16) for most devices,
 //! and `AudioResamplerF32` (f32) for POKEY and other float-based pipelines.
 
-use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
+use crate::prelude::Saveable;
 
 // ---------------------------------------------------------------------------
 // AudioResampler (i64 accumulator, i16 output)
@@ -17,12 +17,20 @@ use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
 /// box-filter averaging. Each `tick()` accumulates a sample; when the
 /// Bresenham phase crosses the threshold, the averaged sample is pushed
 /// to the internal buffer.
+#[derive(Saveable)]
+#[save_version(1)]
 pub struct AudioResampler {
-    input_rate: u64,
-    output_rate: u64,
+    // Saved fields (order matches serialization layout)
     sample_accum: i64,
     sample_count: u32,
     sample_phase: u64,
+
+    // Skipped fields
+    #[save_skip]
+    input_rate: u64,
+    #[save_skip]
+    output_rate: u64,
+    #[save_skip(default)]
     buffer: Vec<i16>,
 }
 
@@ -104,24 +112,6 @@ impl AudioResampler {
     }
 }
 
-impl Saveable for AudioResampler {
-    fn save_state(&self, w: &mut StateWriter) {
-        w.write_version(1);
-        w.write_i64_le(self.sample_accum);
-        w.write_u32_le(self.sample_count);
-        w.write_u64_le(self.sample_phase);
-    }
-
-    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
-        r.read_version(1)?;
-        self.sample_accum = r.read_i64_le()?;
-        self.sample_count = r.read_u32_le()?;
-        self.sample_phase = r.read_u64_le()?;
-        self.buffer.clear();
-        Ok(())
-    }
-}
-
 // ---------------------------------------------------------------------------
 // AudioResamplerF32 (f32 accumulator, f32 output)
 // ---------------------------------------------------------------------------
@@ -130,12 +120,20 @@ impl Saveable for AudioResampler {
 ///
 /// Identical algorithm to [`AudioResampler`] but uses `f32` accumulator
 /// and buffer. Used by POKEY and other float-based audio pipelines.
+#[derive(Saveable)]
+#[save_version(1)]
 pub struct AudioResamplerF32 {
-    input_rate: u64,
-    output_rate: u64,
+    // Saved fields (order matches serialization layout)
     sample_accum: f32,
     sample_count: u32,
     sample_phase: u64,
+
+    // Skipped fields
+    #[save_skip]
+    input_rate: u64,
+    #[save_skip]
+    output_rate: u64,
+    #[save_skip(default)]
     buffer: Vec<f32>,
 }
 
@@ -187,27 +185,10 @@ impl AudioResamplerF32 {
     }
 }
 
-impl Saveable for AudioResamplerF32 {
-    fn save_state(&self, w: &mut StateWriter) {
-        w.write_version(1);
-        w.write_f32_le(self.sample_accum);
-        w.write_u32_le(self.sample_count);
-        w.write_u64_le(self.sample_phase);
-    }
-
-    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
-        r.read_version(1)?;
-        self.sample_accum = r.read_f32_le()?;
-        self.sample_count = r.read_u32_le()?;
-        self.sample_phase = r.read_u64_le()?;
-        self.buffer.clear();
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::save_state::{StateReader, StateWriter};
 
     #[test]
     fn resampler_produces_correct_sample_count() {

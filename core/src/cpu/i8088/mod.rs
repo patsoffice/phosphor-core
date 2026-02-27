@@ -22,6 +22,7 @@ use crate::core::component::BusMasterComponent;
 use crate::core::{Bus, BusMaster};
 use crate::cpu::Cpu;
 use crate::cpu::state::CpuStateTrait;
+use crate::prelude::Saveable;
 
 /// Execution state machine for multi-cycle instructions.
 #[derive(Clone, Debug)]
@@ -57,6 +58,9 @@ pub(crate) enum InterruptType {
     Software = 2,
 }
 
+/// Fields are ordered to match the save-state serialization layout (version 1).
+#[derive(Saveable)]
+#[save_version(1)]
 pub struct I8088 {
     // General-purpose registers (accessible as 16-bit or 8-bit halves)
     pub ax: u16,
@@ -84,17 +88,22 @@ pub struct I8088 {
     // FLAGS register (16-bit, with always-one bits)
     pub flags: u16,
 
-    // Internal state
-    pub(crate) state: ExecState,
-    pub(crate) segment_override: Option<SegReg>,
-    pub(crate) rep_prefix: Option<RepPrefix>,
-
-    // Interrupt state
-    pub(crate) nmi_pending: bool,
+    // Interrupt state (nmi_prev before nmi_pending to match save-state order)
     pub(crate) nmi_prev: bool,
+    pub(crate) nmi_pending: bool,
+
+    // Internal state (not serialized)
+    #[save_skip(default = ExecState::Fetch)]
+    pub(crate) state: ExecState,
+    #[save_skip(default)]
+    pub(crate) segment_override: Option<SegReg>,
+    #[save_skip(default)]
+    pub(crate) rep_prefix: Option<RepPrefix>,
+    #[save_skip(default)]
     pub(crate) irq_line: bool,
 
-    // Cycle counter (total bus cycles executed)
+    // Cycle counter (total bus cycles executed, not serialized, keeps current value)
+    #[save_skip]
     pub(crate) clock: u64,
 }
 
@@ -407,59 +416,6 @@ impl I8088State {
 impl Debuggable for I8088 {
     fn debug_registers(&self) -> Vec<DebugRegister> {
         self.snapshot().debug_registers()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Save state support
-// ---------------------------------------------------------------------------
-
-use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
-
-impl Saveable for I8088 {
-    fn save_state(&self, w: &mut StateWriter) {
-        w.write_version(1);
-        w.write_u16_le(self.ax);
-        w.write_u16_le(self.bx);
-        w.write_u16_le(self.cx);
-        w.write_u16_le(self.dx);
-        w.write_u16_le(self.si);
-        w.write_u16_le(self.di);
-        w.write_u16_le(self.bp);
-        w.write_u16_le(self.sp);
-        w.write_u16_le(self.cs);
-        w.write_u16_le(self.ds);
-        w.write_u16_le(self.es);
-        w.write_u16_le(self.ss);
-        w.write_u16_le(self.ip);
-        w.write_u16_le(self.flags);
-        w.write_bool(self.nmi_prev);
-        w.write_bool(self.nmi_pending);
-    }
-
-    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
-        r.read_version(1)?;
-        self.ax = r.read_u16_le()?;
-        self.bx = r.read_u16_le()?;
-        self.cx = r.read_u16_le()?;
-        self.dx = r.read_u16_le()?;
-        self.si = r.read_u16_le()?;
-        self.di = r.read_u16_le()?;
-        self.bp = r.read_u16_le()?;
-        self.sp = r.read_u16_le()?;
-        self.cs = r.read_u16_le()?;
-        self.ds = r.read_u16_le()?;
-        self.es = r.read_u16_le()?;
-        self.ss = r.read_u16_le()?;
-        self.ip = r.read_u16_le()?;
-        self.flags = r.read_u16_le()?;
-        self.nmi_prev = r.read_bool()?;
-        self.nmi_pending = r.read_bool()?;
-        self.state = ExecState::Fetch;
-        self.segment_override = None;
-        self.rep_prefix = None;
-        self.irq_line = false;
-        Ok(())
     }
 }
 

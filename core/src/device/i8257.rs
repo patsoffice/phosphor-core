@@ -55,6 +55,10 @@ use crate::core::{Bus, BusMaster};
 /// DREQ active, `hrq()` returns true — the board should halt the CPU.
 /// Each call to `do_dma_cycle()` transfers one byte and returns a
 /// `DmaTransfer` describing what happened (channel, data, direction, TC).
+use crate::prelude::Saveable;
+
+#[derive(Saveable)]
+#[save_version(1)]
 pub struct I8257 {
     channels: [DmaChannel; 4],
     flip_flop: bool, // false = LSB, true = MSB
@@ -62,10 +66,10 @@ pub struct I8257 {
     tc_flags: u8,
     update_flag: bool,
     dreq: [bool; 4],
-    last_serviced: usize,
+    last_serviced: u8,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Saveable)]
 struct DmaChannel {
     address: u16,
     count: u16, // bits 15:14 = transfer mode, bits 13:0 = byte count
@@ -272,7 +276,7 @@ impl I8257 {
 
         // Update rotating priority
         if (self.mode & MODE_ROTATING_PRIORITY) != 0 {
-            self.last_serviced = ch;
+            self.last_serviced = ch as u8;
         }
 
         Some(DmaTransfer {
@@ -289,8 +293,8 @@ impl I8257 {
 
         if (self.mode & MODE_ROTATING_PRIORITY) != 0 {
             // Rotating priority: start after the last serviced channel
-            for i in 1..=4 {
-                let ch = (self.last_serviced + i) % 4;
+            for i in 1u8..=4 {
+                let ch = ((self.last_serviced + i) % 4) as usize;
                 if self.dreq[ch] && (enable_mask & (1 << ch)) != 0 {
                     return Some(ch);
                 }
@@ -410,46 +414,5 @@ impl Debuggable for I8257 {
 impl Default for I8257 {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
-
-impl Saveable for I8257 {
-    fn save_state(&self, w: &mut StateWriter) {
-        w.write_version(1);
-        for ch in &self.channels {
-            w.write_u16_le(ch.address);
-            w.write_u16_le(ch.count);
-            w.write_u16_le(ch.base_address);
-            w.write_u16_le(ch.base_count);
-        }
-        w.write_bool(self.flip_flop);
-        w.write_u8(self.mode);
-        w.write_u8(self.tc_flags);
-        w.write_bool(self.update_flag);
-        for &d in &self.dreq {
-            w.write_bool(d);
-        }
-        w.write_u8(self.last_serviced as u8);
-    }
-
-    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
-        r.read_version(1)?;
-        for ch in &mut self.channels {
-            ch.address = r.read_u16_le()?;
-            ch.count = r.read_u16_le()?;
-            ch.base_address = r.read_u16_le()?;
-            ch.base_count = r.read_u16_le()?;
-        }
-        self.flip_flop = r.read_bool()?;
-        self.mode = r.read_u8()?;
-        self.tc_flags = r.read_u8()?;
-        self.update_flag = r.read_bool()?;
-        for d in &mut self.dreq {
-            *d = r.read_bool()?;
-        }
-        self.last_serviced = r.read_u8()? as usize;
-        Ok(())
     }
 }

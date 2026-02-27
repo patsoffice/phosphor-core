@@ -10,6 +10,7 @@ use crate::cpu::{
     Cpu,
     state::{CpuStateTrait, M6809State},
 };
+use phosphor_macros::Saveable;
 
 pub use super::m68xx::CcFlag;
 use super::m68xx::M68xxAlu;
@@ -25,6 +26,9 @@ pub(crate) enum InterruptType {
     Irq = 3,
 }
 
+/// Fields are ordered to match the save-state serialization layout (version 2).
+#[derive(Saveable)]
+#[save_version(2)]
 pub struct M6809 {
     // Registers (a,b,x,y,u,s,pc,cc)
     pub a: u8,
@@ -37,18 +41,26 @@ pub struct M6809 {
     pub pc: u16,
     pub cc: u8,
 
-    // Internal state (generic enough to support TSC/RDY logic)
-    pub(crate) state: ExecState,
-    pub(crate) opcode: u8,
-    pub(crate) temp_addr: u16,
-    /// Interrupt type being processed
-    pub(crate) interrupt_type: InterruptType,
+    // Internal state (serialized)
     /// Previous NMI line state for edge detection
     pub(crate) nmi_previous: bool,
-    /// Countdown for internal cycles during indexed addressing
-    pub(crate) indexed_internal: u8,
     /// True when the bus HALT line is asserted (TSC/RDY logic)
     pub(crate) halted: bool,
+
+    // Execution temporaries — not saved, reset to defaults on load
+    #[save_skip(default = ExecState::Fetch)]
+    pub(crate) state: ExecState,
+    #[save_skip(default)]
+    pub(crate) opcode: u8,
+    #[save_skip(default)]
+    pub(crate) temp_addr: u16,
+    /// Interrupt type being processed
+    #[save_skip(default = InterruptType::None)]
+    pub(crate) interrupt_type: InterruptType,
+    /// Countdown for internal cycles during indexed addressing
+    #[save_skip(default)]
+    pub(crate) indexed_internal: u8,
+    #[save_skip(default)]
     #[allow(dead_code)]
     resume_delay: u8, // For TSC/RDY release timing
 }
@@ -85,13 +97,13 @@ impl M6809 {
             s: 0,
             pc: 0,
             cc: 0,
+            nmi_previous: false,
+            halted: false,
             state: ExecState::Fetch,
             opcode: 0,
             temp_addr: 0,
             interrupt_type: InterruptType::None,
-            nmi_previous: false,
             indexed_internal: 0,
-            halted: false,
             resume_delay: 0,
         }
     }
@@ -636,14 +648,6 @@ impl CpuStateTrait for M6809 {
     }
 }
 
-// -- Save state support ------------------------------------------------------
-
-use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
-
-const STATE_TAG_FETCH: u8 = 0;
-const STATE_TAG_WAIT: u8 = 1;
-const STATE_TAG_SYNC: u8 = 2;
-
 impl M6809 {
     /// Returns true when the CPU is at a saveable instruction boundary.
     pub fn is_at_save_boundary(&self) -> bool {
@@ -680,64 +684,5 @@ impl DebugCpu for M6809 {
 
     fn debug_disassemble(&self, addr: u16, bytes: &[u8]) -> DisassembledInstruction {
         <Self as crate::cpu::Disassemble>::disassemble(addr, bytes)
-    }
-}
-
-impl Saveable for M6809 {
-    fn save_state(&self, w: &mut StateWriter) {
-        w.write_version(1);
-        // Registers
-        w.write_u8(self.a);
-        w.write_u8(self.b);
-        w.write_u8(self.dp);
-        w.write_u16_le(self.x);
-        w.write_u16_le(self.y);
-        w.write_u16_le(self.u);
-        w.write_u16_le(self.s);
-        w.write_u16_le(self.pc);
-        w.write_u8(self.cc);
-        // Internal state
-        w.write_bool(self.nmi_previous);
-        w.write_u8(self.interrupt_type as u8);
-        w.write_bool(self.halted);
-        // ExecState tag
-        let tag = match self.state {
-            ExecState::WaitForInterrupt => STATE_TAG_WAIT,
-            ExecState::SyncWait => STATE_TAG_SYNC,
-            _ => STATE_TAG_FETCH,
-        };
-        w.write_u8(tag);
-    }
-
-    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
-        r.read_version(1)?;
-        self.a = r.read_u8()?;
-        self.b = r.read_u8()?;
-        self.dp = r.read_u8()?;
-        self.x = r.read_u16_le()?;
-        self.y = r.read_u16_le()?;
-        self.u = r.read_u16_le()?;
-        self.s = r.read_u16_le()?;
-        self.pc = r.read_u16_le()?;
-        self.cc = r.read_u8()?;
-        self.nmi_previous = r.read_bool()?;
-        self.interrupt_type = match r.read_u8()? {
-            1 => InterruptType::Nmi,
-            2 => InterruptType::Firq,
-            3 => InterruptType::Irq,
-            _ => InterruptType::None,
-        };
-        self.halted = r.read_bool()?;
-        let tag = r.read_u8()?;
-        self.state = match tag {
-            STATE_TAG_WAIT => ExecState::WaitForInterrupt,
-            STATE_TAG_SYNC => ExecState::SyncWait,
-            _ => ExecState::Fetch,
-        };
-        self.opcode = 0;
-        self.temp_addr = 0;
-        self.indexed_internal = 0;
-        self.resume_delay = 0;
-        Ok(())
     }
 }

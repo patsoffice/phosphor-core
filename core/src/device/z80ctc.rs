@@ -37,13 +37,17 @@ const PRESCALER_256: u8 = 0x20;
 const COUNTER_MODE: u8 = 0x40;
 const INTERRUPT_EN: u8 = 0x80;
 
+use crate::prelude::Saveable;
+
 /// Z80 CTC — 4-channel Counter/Timer Circuit.
+#[derive(Saveable)]
+#[save_version(1)]
 pub struct Z80Ctc {
-    channels: [CtcChannel; 4],
     vector_base: u8,
+    channels: [CtcChannel; 4],
 }
 
-#[derive(Default)]
+#[derive(Default, Saveable)]
 struct CtcChannel {
     control: u8,
     time_constant: u16, // 1–256 (TC byte 0 maps to 256)
@@ -60,8 +64,8 @@ struct CtcChannel {
 impl Z80Ctc {
     pub fn new() -> Self {
         Self {
-            channels: Default::default(),
             vector_base: 0,
+            channels: Default::default(),
         }
     }
 
@@ -359,50 +363,10 @@ impl Debuggable for Z80Ctc {
     }
 }
 
-// -- Save state support ------------------------------------------------------
-
-use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
-
-impl Saveable for Z80Ctc {
-    fn save_state(&self, w: &mut StateWriter) {
-        w.write_version(1);
-        w.write_u8(self.vector_base);
-        for ch in &self.channels {
-            w.write_u8(ch.control);
-            w.write_u16_le(ch.time_constant);
-            w.write_u16_le(ch.down_counter);
-            w.write_u16_le(ch.prescaler_count);
-            w.write_bool(ch.waiting_for_tc);
-            w.write_bool(ch.running);
-            w.write_bool(ch.waiting_for_trigger);
-            w.write_bool(ch.trigger_state);
-            w.write_bool(ch.zc_pulse);
-            w.write_bool(ch.interrupt_pending);
-        }
-    }
-
-    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
-        r.read_version(1)?;
-        self.vector_base = r.read_u8()?;
-        for ch in &mut self.channels {
-            ch.control = r.read_u8()?;
-            ch.time_constant = r.read_u16_le()?;
-            ch.down_counter = r.read_u16_le()?;
-            ch.prescaler_count = r.read_u16_le()?;
-            ch.waiting_for_tc = r.read_bool()?;
-            ch.running = r.read_bool()?;
-            ch.waiting_for_trigger = r.read_bool()?;
-            ch.trigger_state = r.read_bool()?;
-            ch.zc_pulse = r.read_bool()?;
-            ch.interrupt_pending = r.read_bool()?;
-        }
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::save_state::{StateReader, StateWriter};
 
     #[test]
     fn initial_state() {

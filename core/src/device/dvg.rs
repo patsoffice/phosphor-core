@@ -36,12 +36,16 @@ pub struct VectorLine {
     pub intensity: u8,
 }
 
+use crate::prelude::Saveable;
+
 /// Atari Digital Vector Generator (DVG).
 ///
 /// The DVG is triggered by the CPU writing to a VG_GO register. It then
 /// executes vector instructions until it encounters a HALT opcode, producing
 /// a display list of [`VectorLine`] segments. The CPU polls a VG_HALT status
 /// bit to know when the DVG has finished.
+#[derive(Saveable)]
+#[save_version(1)]
 pub struct Dvg {
     /// Program counter (word address into vector memory, 0–2047).
     pc: u16,
@@ -63,6 +67,7 @@ pub struct Dvg {
     halted: bool,
 
     /// Accumulated display list for the current frame.
+    #[save_skip(default)]
     display_list: Vec<VectorLine>,
 }
 
@@ -464,41 +469,6 @@ impl super::Device for Dvg {
 impl Default for Dvg {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
-
-impl Saveable for Dvg {
-    fn save_state(&self, w: &mut StateWriter) {
-        w.write_version(1);
-        w.write_u16_le(self.pc);
-        for &addr in &self.stack {
-            w.write_u16_le(addr);
-        }
-        w.write_u8(self.sp);
-        w.write_u32_le(self.xpos as u32);
-        w.write_u32_le(self.ypos as u32);
-        w.write_u8(self.scale);
-        w.write_u8(self.intensity);
-        w.write_bool(self.halted);
-    }
-
-    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
-        r.read_version(1)?;
-        self.pc = r.read_u16_le()?;
-        for addr in &mut self.stack {
-            *addr = r.read_u16_le()?;
-        }
-        self.sp = r.read_u8()?;
-        self.xpos = r.read_u32_le()? as i32;
-        self.ypos = r.read_u32_le()? as i32;
-        self.scale = r.read_u8()?;
-        self.intensity = r.read_u8()?;
-        self.halted = r.read_bool()?;
-        // Clear display list on load (will be regenerated on next frame)
-        self.display_list.clear();
-        Ok(())
     }
 }
 

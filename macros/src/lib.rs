@@ -1,6 +1,7 @@
 use proc_macro::TokenStream;
+use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
-use syn::{DeriveInput, Fields, parse_macro_input};
+use syn::{DeriveInput, Expr, Fields, Type, parse_macro_input};
 
 /// Derive macro that generates a `BusDebug` implementation for a struct.
 ///
@@ -418,4 +419,377 @@ fn pascal_to_screaming_snake(s: &str) -> String {
         result.extend(c.to_uppercase());
     }
     result
+}
+
+// ---------------------------------------------------------------------------
+// #[derive(Saveable)] — auto-generate Saveable trait implementations
+// ---------------------------------------------------------------------------
+
+/// Derive macro that generates `Saveable` trait implementations for structs.
+///
+/// Annotate the struct with `#[save_version(N)]` to emit a version tag.
+/// Annotate fields with `#[save_skip]` to exclude them from serialization.
+///
+/// # Field attributes
+///
+/// - `#[save_skip]` — field is not saved or loaded; keeps its current value.
+/// - `#[save_skip(default)]` — not saved; set to `Default::default()` on load.
+/// - `#[save_skip(default = <expr>)]` — not saved; set to `<expr>` on load.
+/// - `#[save_elements]` — serialize `[u8; N]` per-element instead of bulk
+///   `write_bytes`/`read_bytes_into`. Use when compatibility with existing
+///   save formats that use individual `write_u8` calls is required.
+///
+/// # Supported field types
+///
+/// Primitives (`u8`, `u16`, `u32`, `u64`, `i16`, `i32`, `i64`, `f32`, `f64`,
+/// `bool`), byte arrays (`[u8; N]`), byte vectors (`Vec<u8>`), fixed-size
+/// arrays of primitives or `Saveable` types (`[T; N]`), and any other type
+/// that implements `Saveable` (delegated via `save_state`/`load_state`).
+#[proc_macro_derive(Saveable, attributes(save_version, save_skip, save_elements))]
+pub fn derive_saveable(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let struct_name = &input.ident;
+
+    let fields = match &input.data {
+        syn::Data::Struct(data) => match &data.fields {
+            Fields::Named(fields) => &fields.named,
+            _ => panic!("Saveable can only be derived on structs with named fields"),
+        },
+        _ => panic!("Saveable can only be derived on structs"),
+    };
+
+    // Parse #[save_version(N)] from struct attributes
+    let version = parse_save_version(&input.attrs);
+
+    let version_write = version.map(|v| quote! { w.write_version(#v); });
+    let version_read = version.map(|v| quote! { r.read_version(#v)?; });
+
+    let mut save_stmts = Vec::new();
+    let mut load_stmts = Vec::new();
+    let mut load_skip_stmts = Vec::new();
+
+    for field in fields {
+        let ident = field.ident.as_ref().expect("named field");
+
+        let force_elements = has_save_elements(&field.attrs);
+
+        match parse_save_skip(&field.attrs) {
+            SaveSkip::None => {
+                // Normal field: generate save + load code based on type
+                let (save, load) = gen_field_io(ident, &field.ty, force_elements);
+                save_stmts.push(save);
+                load_stmts.push(load);
+            }
+            SaveSkip::Keep => {
+                // #[save_skip] — excluded, no code generated
+            }
+            SaveSkip::Default => {
+                // #[save_skip(default)] — set to Default::default() on load
+                load_skip_stmts.push(quote! { self.#ident = Default::default(); });
+            }
+            SaveSkip::Expr(expr) => {
+                // #[save_skip(default = <expr>)] — set to expr on load
+                load_skip_stmts.push(quote! { self.#ident = #expr; });
+            }
+        }
+    }
+
+    let expanded = quote! {
+        impl phosphor_core::prelude::Saveable for #struct_name {
+            fn save_state(&self, w: &mut phosphor_core::prelude::StateWriter) {
+                #version_write
+                #(#save_stmts)*
+            }
+
+            fn load_state(
+                &mut self,
+                r: &mut phosphor_core::prelude::StateReader,
+            ) -> Result<(), phosphor_core::prelude::SaveError> {
+                #version_read
+                #(#load_stmts)*
+                #(#load_skip_stmts)*
+                Ok(())
+            }
+        }
+    };
+
+    TokenStream::from(expanded)
+}
+
+/// Extract `#[save_version(N)]` from struct-level attributes.
+fn parse_save_version(attrs: &[syn::Attribute]) -> Option<u8> {
+    for attr in attrs {
+        if attr.path().is_ident("save_version") {
+            let lit: syn::LitInt = attr
+                .parse_args()
+                .expect("#[save_version] expects an integer literal");
+            return Some(
+                lit.base10_parse::<u8>()
+                    .expect("#[save_version] value must be u8"),
+            );
+        }
+    }
+    None
+}
+
+/// Parsed forms of `#[save_skip]`.
+enum SaveSkip {
+    /// No `#[save_skip]` attribute — normal serialized field.
+    None,
+    /// `#[save_skip]` — excluded, field keeps its current value on load.
+    Keep,
+    /// `#[save_skip(default)]` — excluded, set to `Default::default()` on load.
+    Default,
+    /// `#[save_skip(default = <expr>)]` — excluded, set to `<expr>` on load.
+    Expr(Expr),
+}
+
+/// Parse `#[save_skip]`, `#[save_skip(default)]`, or `#[save_skip(default = <expr>)]`.
+fn parse_save_skip(attrs: &[syn::Attribute]) -> SaveSkip {
+    for attr in attrs {
+        if attr.path().is_ident("save_skip") {
+            // Check if the attribute has arguments
+            match &attr.meta {
+                syn::Meta::Path(_) => return SaveSkip::Keep,
+                syn::Meta::List(list) => {
+                    let args: SaveSkipArgs = syn::parse2(list.tokens.clone())
+                        .expect("#[save_skip] expects empty, (default), or (default = <expr>)");
+                    return match args.expr {
+                        Some(expr) => SaveSkip::Expr(expr),
+                        Option::None => SaveSkip::Default,
+                    };
+                }
+                syn::Meta::NameValue(_) => {
+                    panic!(
+                        "#[save_skip] does not support = syntax; use #[save_skip(default = <expr>)]"
+                    )
+                }
+            }
+        }
+    }
+    SaveSkip::None
+}
+
+/// Parsed arguments for `#[save_skip(default)]` or `#[save_skip(default = <expr>)]`.
+struct SaveSkipArgs {
+    expr: Option<Expr>,
+}
+
+impl syn::parse::Parse for SaveSkipArgs {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let key: syn::Ident = input.parse()?;
+        if key != "default" {
+            return Err(syn::Error::new(
+                key.span(),
+                format!("unknown attribute `{key}`, expected `default`"),
+            ));
+        }
+        if input.peek(syn::Token![=]) {
+            input.parse::<syn::Token![=]>()?;
+            let expr: Expr = input.parse()?;
+            Ok(SaveSkipArgs { expr: Some(expr) })
+        } else {
+            Ok(SaveSkipArgs { expr: Option::None })
+        }
+    }
+}
+
+/// Check if a field has the `#[save_elements]` attribute.
+fn has_save_elements(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|a| a.path().is_ident("save_elements"))
+}
+
+/// Generate save and load token streams for a single field based on its type.
+fn gen_field_io(
+    ident: &syn::Ident,
+    ty: &Type,
+    force_elements: bool,
+) -> (TokenStream2, TokenStream2) {
+    match ty {
+        // Fixed-size array: [T; N]
+        Type::Array(arr) => gen_array_io(ident, &arr.elem, force_elements),
+        // Path types: primitives, Vec<u8>, or Saveable delegates
+        Type::Path(path) => {
+            let seg = path.path.segments.last().expect("non-empty path");
+            let type_name = seg.ident.to_string();
+            match type_name.as_str() {
+                "u8" => (
+                    quote! { w.write_u8(self.#ident); },
+                    quote! { self.#ident = r.read_u8()?; },
+                ),
+                "u16" => (
+                    quote! { w.write_u16_le(self.#ident); },
+                    quote! { self.#ident = r.read_u16_le()?; },
+                ),
+                "u32" => (
+                    quote! { w.write_u32_le(self.#ident); },
+                    quote! { self.#ident = r.read_u32_le()?; },
+                ),
+                "u64" => (
+                    quote! { w.write_u64_le(self.#ident); },
+                    quote! { self.#ident = r.read_u64_le()?; },
+                ),
+                "i16" => (
+                    quote! { w.write_i16_le(self.#ident); },
+                    quote! { self.#ident = r.read_i16_le()?; },
+                ),
+                "i32" => (
+                    quote! { w.write_i32_le(self.#ident); },
+                    quote! { self.#ident = r.read_i32_le()?; },
+                ),
+                "i64" => (
+                    quote! { w.write_i64_le(self.#ident); },
+                    quote! { self.#ident = r.read_i64_le()?; },
+                ),
+                "f32" => (
+                    quote! { w.write_f32_le(self.#ident); },
+                    quote! { self.#ident = r.read_f32_le()?; },
+                ),
+                "f64" => (
+                    quote! { w.write_f64_le(self.#ident); },
+                    quote! { self.#ident = r.read_f64_le()?; },
+                ),
+                "bool" => (
+                    quote! { w.write_bool(self.#ident); },
+                    quote! { self.#ident = r.read_bool()?; },
+                ),
+                "Vec" => {
+                    // Verify it's Vec<u8>
+                    if is_vec_u8(seg) {
+                        (
+                            quote! { w.write_bytes(&self.#ident); },
+                            quote! { self.#ident = r.read_bytes()?.to_vec(); },
+                        )
+                    } else {
+                        panic!(
+                            "Saveable derive only supports Vec<u8>; field `{}` has unsupported Vec type",
+                            ident
+                        );
+                    }
+                }
+                // Unknown type — delegate to Saveable
+                _ => (
+                    quote! { phosphor_core::prelude::Saveable::save_state(&self.#ident, w); },
+                    quote! { phosphor_core::prelude::Saveable::load_state(&mut self.#ident, r)?; },
+                ),
+            }
+        }
+        _ => {
+            // Fallback: delegate to Saveable
+            (
+                quote! { phosphor_core::prelude::Saveable::save_state(&self.#ident, w); },
+                quote! { phosphor_core::prelude::Saveable::load_state(&mut self.#ident, r)?; },
+            )
+        }
+    }
+}
+
+/// Generate save/load for `[T; N]` arrays.
+///
+/// When `force_elements` is true, `[u8; N]` is serialized per-element instead
+/// of using the bulk `write_bytes`/`read_bytes_into` path. This preserves
+/// compatibility with hand-written impls that used individual `write_u8` calls.
+fn gen_array_io(
+    ident: &syn::Ident,
+    elem_ty: &Type,
+    force_elements: bool,
+) -> (TokenStream2, TokenStream2) {
+    // Check if element is u8 — use bulk bytes path (unless force_elements)
+    if is_type_u8(elem_ty) && !force_elements {
+        return (
+            quote! { w.write_bytes(&self.#ident); },
+            quote! { r.read_bytes_into(&mut self.#ident)?; },
+        );
+    }
+
+    // For other element types, generate a loop
+    let (elem_save, elem_load) = gen_array_element_io(ident, elem_ty);
+    (
+        quote! { for __v in &self.#ident { #elem_save } },
+        quote! { for __v in &mut self.#ident { #elem_load } },
+    )
+}
+
+/// Generate per-element save/load for array loops.
+fn gen_array_element_io(ident: &syn::Ident, elem_ty: &Type) -> (TokenStream2, TokenStream2) {
+    if let Type::Path(path) = elem_ty {
+        let seg = path.path.segments.last().expect("non-empty path");
+        let type_name = seg.ident.to_string();
+        match type_name.as_str() {
+            "u8" => (
+                quote! { w.write_u8(*__v); },
+                quote! { *__v = r.read_u8()?; },
+            ),
+            "u16" => (
+                quote! { w.write_u16_le(*__v); },
+                quote! { *__v = r.read_u16_le()?; },
+            ),
+            "u32" => (
+                quote! { w.write_u32_le(*__v); },
+                quote! { *__v = r.read_u32_le()?; },
+            ),
+            "u64" => (
+                quote! { w.write_u64_le(*__v); },
+                quote! { *__v = r.read_u64_le()?; },
+            ),
+            "i16" => (
+                quote! { w.write_i16_le(*__v); },
+                quote! { *__v = r.read_i16_le()?; },
+            ),
+            "i32" => (
+                quote! { w.write_i32_le(*__v); },
+                quote! { *__v = r.read_i32_le()?; },
+            ),
+            "i64" => (
+                quote! { w.write_i64_le(*__v); },
+                quote! { *__v = r.read_i64_le()?; },
+            ),
+            "f32" => (
+                quote! { w.write_f32_le(*__v); },
+                quote! { *__v = r.read_f32_le()?; },
+            ),
+            "f64" => (
+                quote! { w.write_f64_le(*__v); },
+                quote! { *__v = r.read_f64_le()?; },
+            ),
+            "bool" => (
+                quote! { w.write_bool(*__v); },
+                quote! { *__v = r.read_bool()?; },
+            ),
+            _ => {
+                // Delegate to nested Saveable
+                let _ = ident; // suppress unused warning
+                (
+                    quote! { phosphor_core::prelude::Saveable::save_state(__v, w); },
+                    quote! { phosphor_core::prelude::Saveable::load_state(__v, r)?; },
+                )
+            }
+        }
+    } else {
+        // Non-path element type — delegate to Saveable
+        (
+            quote! { phosphor_core::prelude::Saveable::save_state(__v, w); },
+            quote! { phosphor_core::prelude::Saveable::load_state(__v, r)?; },
+        )
+    }
+}
+
+/// Check if a type is `u8`.
+fn is_type_u8(ty: &Type) -> bool {
+    if let Type::Path(path) = ty
+        && let Some(seg) = path.path.segments.last()
+    {
+        return seg.ident == "u8";
+    }
+    false
+}
+
+/// Check if a path segment is `Vec<u8>`.
+fn is_vec_u8(seg: &syn::PathSegment) -> bool {
+    if let syn::PathArguments::AngleBracketed(args) = &seg.arguments
+        && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
+    {
+        return is_type_u8(inner);
+    }
+    false
 }

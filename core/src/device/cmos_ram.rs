@@ -1,9 +1,13 @@
+use phosphor_macros::Saveable;
+
 /// Battery-backed CMOS RAM (1KB)
 ///
 /// Simple read/write memory that can be saved/loaded for persistence
 /// across sessions. On Williams arcade hardware, this stores high scores,
 /// game settings, and audit counters. The RAM is standard read/write
 /// memory; the "battery-backed" aspect is a board-level feature.
+#[derive(Saveable)]
+#[save_version(1)]
 pub struct CmosRam {
     data: [u8; 1024],
 }
@@ -68,20 +72,6 @@ impl super::Device for CmosRam {
 
     fn write(&mut self, offset: u16, data: u8) {
         self.data[(offset & 0x03FF) as usize] = data;
-    }
-}
-
-use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
-
-impl Saveable for CmosRam {
-    fn save_state(&self, w: &mut StateWriter) {
-        w.write_version(1);
-        w.write_bytes(&self.data);
-    }
-
-    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
-        r.read_version(1)?;
-        r.read_bytes_into(&mut self.data)
     }
 }
 

@@ -11,6 +11,7 @@ use crate::cpu::{
     Cpu,
     state::{CpuStateTrait, Z80State},
 };
+use crate::prelude::Saveable;
 
 #[repr(u8)]
 #[derive(Copy, Clone, Debug)]
@@ -25,6 +26,8 @@ pub enum Flag {
     S = 0x80,  // Sign
 }
 
+#[derive(Saveable)]
+#[save_version(1)]
 pub struct Z80 {
     // Registers
     pub a: u8,
@@ -44,13 +47,13 @@ pub struct Z80 {
     pub e_prime: u8,
     pub h_prime: u8,
     pub l_prime: u8,
-    // Index & Special Registers
+    // Index & Special Registers (sp/pc before i/r to match save-state order)
     pub ix: u16,
     pub iy: u16,
-    pub i: u8,
-    pub r: u8,
     pub sp: u16,
     pub pc: u16,
+    pub i: u8,
+    pub r: u8,
 
     // Internal state
     pub iff1: bool,
@@ -63,17 +66,24 @@ pub struct Z80 {
     pub q: u8, // Copy of F when instruction modifies flags, 0 otherwise (for SCF/CCF X/Y)
     pub(crate) prev_q: u8, // Previous instruction's q value (saved at Fetch for SCF/CCF)
 
-    pub(crate) state: ExecState,
-    pub(crate) opcode: u8,
-    pub(crate) temp_addr: u16,
-    pub(crate) temp_data: u8,
-
-    // Prefix handling
-    pub(crate) index_mode: IndexMode,
-    pub(crate) prefix_pending: bool,
-
     // Interrupt state
     pub(crate) nmi_previous: bool,
+
+    // Execution temporaries — not saved, reset to defaults on load
+    #[save_skip(default = ExecState::Fetch)]
+    pub(crate) state: ExecState,
+    #[save_skip(default)]
+    pub(crate) opcode: u8,
+    #[save_skip(default)]
+    pub(crate) temp_addr: u16,
+    #[save_skip(default)]
+    pub(crate) temp_data: u8,
+
+    // Prefix handling — not saved, reset to defaults on load
+    #[save_skip(default = IndexMode::HL)]
+    pub(crate) index_mode: IndexMode,
+    #[save_skip(default)]
+    pub(crate) prefix_pending: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -141,10 +151,10 @@ impl Z80 {
             l_prime: 0xFF,
             ix: 0xFFFF,
             iy: 0xFFFF,
-            i: 0,
-            r: 0,
             sp: 0xFFFF,
             pc: 0x0000,
+            i: 0,
+            r: 0,
             iff1: false,
             iff2: false,
             im: 0,
@@ -154,13 +164,13 @@ impl Z80 {
             p: false,
             q: 0,
             prev_q: 0,
+            nmi_previous: false,
             state: ExecState::Fetch,
             opcode: 0,
             temp_addr: 0,
             temp_data: 0,
             index_mode: IndexMode::HL,
             prefix_pending: false,
-            nmi_previous: false,
         }
     }
 
@@ -860,10 +870,6 @@ impl CpuStateTrait for Z80 {
     }
 }
 
-// -- Save state support ------------------------------------------------------
-
-use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
-
 impl Z80 {
     /// Returns true when the CPU is at a saveable instruction boundary.
     pub fn is_at_save_boundary(&self) -> bool {
@@ -897,91 +903,5 @@ impl DebugCpu for Z80 {
 
     fn debug_disassemble(&self, addr: u16, bytes: &[u8]) -> DisassembledInstruction {
         <Self as crate::cpu::Disassemble>::disassemble(addr, bytes)
-    }
-}
-
-impl Saveable for Z80 {
-    fn save_state(&self, w: &mut StateWriter) {
-        w.write_version(1);
-        // Main registers
-        w.write_u8(self.a);
-        w.write_u8(self.f);
-        w.write_u8(self.b);
-        w.write_u8(self.c);
-        w.write_u8(self.d);
-        w.write_u8(self.e);
-        w.write_u8(self.h);
-        w.write_u8(self.l);
-        // Shadow registers
-        w.write_u8(self.a_prime);
-        w.write_u8(self.f_prime);
-        w.write_u8(self.b_prime);
-        w.write_u8(self.c_prime);
-        w.write_u8(self.d_prime);
-        w.write_u8(self.e_prime);
-        w.write_u8(self.h_prime);
-        w.write_u8(self.l_prime);
-        // Index & special
-        w.write_u16_le(self.ix);
-        w.write_u16_le(self.iy);
-        w.write_u16_le(self.sp);
-        w.write_u16_le(self.pc);
-        w.write_u8(self.i);
-        w.write_u8(self.r);
-        // Internal state
-        w.write_bool(self.iff1);
-        w.write_bool(self.iff2);
-        w.write_u8(self.im);
-        w.write_u16_le(self.memptr);
-        w.write_bool(self.halted);
-        w.write_bool(self.ei_delay);
-        w.write_bool(self.p);
-        w.write_u8(self.q);
-        w.write_u8(self.prev_q);
-        w.write_bool(self.nmi_previous);
-    }
-
-    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
-        r.read_version(1)?;
-        self.a = r.read_u8()?;
-        self.f = r.read_u8()?;
-        self.b = r.read_u8()?;
-        self.c = r.read_u8()?;
-        self.d = r.read_u8()?;
-        self.e = r.read_u8()?;
-        self.h = r.read_u8()?;
-        self.l = r.read_u8()?;
-        self.a_prime = r.read_u8()?;
-        self.f_prime = r.read_u8()?;
-        self.b_prime = r.read_u8()?;
-        self.c_prime = r.read_u8()?;
-        self.d_prime = r.read_u8()?;
-        self.e_prime = r.read_u8()?;
-        self.h_prime = r.read_u8()?;
-        self.l_prime = r.read_u8()?;
-        self.ix = r.read_u16_le()?;
-        self.iy = r.read_u16_le()?;
-        self.sp = r.read_u16_le()?;
-        self.pc = r.read_u16_le()?;
-        self.i = r.read_u8()?;
-        self.r = r.read_u8()?;
-        self.iff1 = r.read_bool()?;
-        self.iff2 = r.read_bool()?;
-        self.im = r.read_u8()?;
-        self.memptr = r.read_u16_le()?;
-        self.halted = r.read_bool()?;
-        self.ei_delay = r.read_bool()?;
-        self.p = r.read_bool()?;
-        self.q = r.read_u8()?;
-        self.prev_q = r.read_u8()?;
-        self.nmi_previous = r.read_bool()?;
-        // Reset execution temporaries
-        self.state = ExecState::Fetch;
-        self.opcode = 0;
-        self.temp_addr = 0;
-        self.temp_data = 0;
-        self.index_mode = IndexMode::HL;
-        self.prefix_pending = false;
-        Ok(())
     }
 }
