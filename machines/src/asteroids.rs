@@ -1,8 +1,6 @@
 use phosphor_core::bus_split;
 use phosphor_core::core::bus::InterruptState;
-use phosphor_core::core::machine::{
-    AudioSource, InputButton, InputReceiver, Machine, Renderable,
-};
+use phosphor_core::core::machine::{AudioSource, InputButton, InputReceiver, Machine, Renderable};
 use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
 use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};

@@ -68,7 +68,7 @@ ROMs are matched by CRC32 checksum, so any MAME ROM naming convention works. All
 | F6               | Quick Save          |
 | F7               | Quick Load          |
 | F9               | Toggle Throttle     |
-| F10              | Toggle FPS          |
+| F10              | Toggle Debug Overlay|
 | F11              | Toggle Mouse Grab   |
 | Escape           | Quit                |
 
@@ -96,12 +96,16 @@ ROMs are matched by CRC32 checksum, so any MAME ROM naming convention works. All
 | **AudioResampler** | Complete | Bresenham box-filter downsampler (CPU clock → 44.1 kHz), i16 and f32 variants |
 | **ClockDivider** | Complete | Bresenham fractional clock divider for cross-domain ticking |
 | **DK Discrete** | Complete | Donkey Kong analog sound effects (walk, jump, stomp) |
+| **SSIO Sound Board** | Complete | Midway MCR sound board: Z80 + 2×AY-8910, command latches, input routing |
 | **CMOS RAM** | Complete | 1KB battery-backed RAM with save/load persistence |
+| **DirtyBitset** | Complete | Fixed-capacity dirty-tracking bitset with O(1) bulk invalidation |
+| **GfxCache** | Complete | Pre-decoded tile/sprite pixel cache, ROM format decoders (Pac-Man, DK, MCR) |
 | **ROM Loader** | Complete | MAME ZIP support, CRC32-based ROM matching, multi-variant support |
 | **Joust System** | Complete | Williams board: CPU + video RAM + PIAs + blitter + CMOS + ROM |
 | **Machine Trait** | Complete | Frontend-agnostic interface: display, input, render, reset |
 | **Atari DVG** | Complete | Digital Vector Generator: 8 opcodes, 7497 BRM drawing, hardware clipping |
 | **CPU Validation** | Complete | M6809: 266K vectors (100%), M6800: 192K vectors (99.998%), M6502: 1.51M vectors (100%), Z80: 1.60M vectors (100%) |
+| **Satan's Hollow System** | Complete | Bally Midway MCR II: Z80 + SSIO + CTC + tile dirty tracking + sprite compositing |
 | **Crystal Castles System** | Complete | Atari arcade: M6502 + 2×POKEY + bitmap video + sprites + trackball |
 | **Device Trait** | Complete | Common interface for all peripherals: reset, read/write, tick, debug |
 | **Test Suite** | Complete | 2283 tests across core, devices, and machine integration |
@@ -122,7 +126,9 @@ Contains all reusable components — zero external dependencies:
 - MemoryMap (page-table dispatch with backing memory for side-effect-free debug reads, watchpoints, region introspection, and bank switching)
 - Audio utilities (AudioResampler, AudioResamplerF32 — Bresenham box-filter downsampling from CPU clock to output rate)
 - ClockDivider (Bresenham fractional clock divider for cross-domain ticking)
-- Peripheral devices (MC6821 PIA, AY-8910, POKEY, Namco WSG, Z80 CTC, Williams SC1/SC2 blitter, DVG, I8257 DMA, MC1408 DAC, 74LS259 latch, CMOS RAM)
+- DirtyBitset (fixed-capacity dirty-tracking bitset with O(1) bulk invalidation for tile/scanline change tracking)
+- GFX utilities (GfxCache pre-decoded tile/sprite pixels, ROM decoders for Pac-Man/DK/MCR families, cache-friendly blocked rotation, sprite clipping, tilemap rendering)
+- Peripheral devices (MC6821 PIA, AY-8910, POKEY, Namco WSG, Z80 CTC, Williams SC1/SC2 blitter, DVG, I8257 DMA, MC1408 DAC, 74LS259 latch, SSIO sound board, CMOS RAM)
 
 ### Machines Crate (`phosphor-machines`)
 
@@ -137,6 +143,7 @@ Complete system implementations that wire core components together:
 - **PacmanSystem** — Pac-Man on shared Namco Pac board (Z80 + WSG + tile/sprite video)
 - **MsPacmanSystem** — Ms. Pac-Man on shared Namco Pac board (auxiliary decode latch + ROM encryption)
 - **RobotronSystem** — Williams twin-stick arcade (M6809 + blitter + PIAs)
+- **SatansHollowSystem** — Satan's Hollow on shared MCR II board (Z80 + SSIO + CTC + tile dirty tracking)
 - **GridleeSystem** — Videa arcade (M6809 + bitmap video + trackball — freely distributable ROMs)
 - Simple6502System, Simple6800System, Simple6809System, SimpleZ80System (test harnesses)
 
@@ -153,7 +160,7 @@ SDL2 + egui windowed frontend — external dependencies: SDL2, zip, egui:
 - SDL2 window with GPU-scaled texture rendering (VSync frame timing)
 - **Debug panel** (F1 or `--debug`) — egui side panel showing all CPU and device registers, step/cycle/continue controls
 - Keyboard and game controller input mapping built automatically from `Machine::input_map()`
-- Quick save/load (F6/F7), FPS overlay (F10), mouse grab for trackball games (F11)
+- Quick save/load (F6/F7), debug overlay with FPS and machine stats (F10), mouse grab for trackball games (F11)
 
 ### CPU Validation Crate (`phosphor-cpu-validation`)
 
@@ -184,9 +191,15 @@ phosphor-core/
 ├── core/                           # phosphor-core crate
 │   ├── Cargo.toml                  # Core crate manifest (zero dependencies)
 │   ├── src/
-│   │   ├── lib.rs                  # Library root, exports core, cpu, device, audio
+│   │   ├── lib.rs                  # Library root, exports core, cpu, device, audio, gfx
 │   │   ├── audio/                  # Shared audio utilities
 │   │   │   └── mod.rs              # AudioResampler (i16), AudioResamplerF32 (f32)
+│   │   ├── dirty_bitset.rs         # DirtyBitset (fixed-capacity dirty tracking for tiles/scanlines)
+│   │   ├── gfx/                    # Graphics utilities
+│   │   │   ├── mod.rs              # Rotation helpers (CCW indexed, cache-friendly blocked)
+│   │   │   ├── decode.rs           # GfxCache (pre-decoded pixels), ROM decoders (Pac-Man, DK, MCR)
+│   │   │   ├── sprite.rs           # Sprite clipping and rendering helpers
+│   │   │   └── tilemap.rs          # TilemapConfig and tilemap rendering helpers
 │   │   ├── core/                   # Core abstractions (complete)
 │   │   │   ├── bus.rs              # Bus trait, BusMaster, InterruptState
 │   │   │   ├── clock.rs            # ClockDivider (Bresenham fractional clock)
@@ -216,7 +229,8 @@ phosphor-core/
 │   │       ├── dac.rs              # MC1408 8-bit DAC
 │   │       ├── output_latch.rs     # 74LS259 8-bit addressable latch
 │   │       ├── dkong_discrete.rs   # Donkey Kong discrete analog sounds
-│   │       └── cmos_ram.rs         # 1KB battery-backed CMOS RAM
+│   │       ├── cmos_ram.rs         # 1KB battery-backed CMOS RAM
+│   │       └── ssio.rs             # Midway SSIO sound board (Z80 + 2×AY-8910)
 │   └── tests/                      # Integration tests
 │       ├── common/mod.rs           # TestBus harness
 │       ├── m6809_*_test.rs         # M6809 tests
@@ -247,6 +261,8 @@ phosphor-core/
 │   │   ├── namco_pac.rs             # Shared Namco Pac-Man board (Z80 + WSG + tile/sprite video)
 │   │   ├── pacman.rs               # Pac-Man (Namco Pac board)
 │   │   ├── mspacman.rs             # Ms. Pac-Man (Namco Pac board + auxiliary decode latch)
+│   │   ├── mcr2.rs                 # Shared Bally Midway MCR II board (Z80 + SSIO + CTC + tile/sprite)
+│   │   ├── satans_hollow.rs        # Satan's Hollow (MCR II board)
 │   │   ├── gridlee.rs              # Gridlee (Videa: M6809 + bitmap video + trackball)
 │   │   ├── rom_loader.rs           # ROM loading with CRC32 matching, multi-variant support
 │   │   ├── simple6800.rs           # M6800 + RAM/ROM
@@ -290,7 +306,7 @@ phosphor-core/
 │       ├── video.rs                # SDL window/texture setup, framebuffer blit, egui integration
 │       ├── input.rs                # Keyboard/controller → Machine::set_input() mapping
 │       ├── audio.rs                # SDL audio callback with ring buffer
-│       └── overlay.rs              # FPS overlay rendering
+│       └── overlay.rs              # Debug overlay (FPS, machine stats, 4x5 bitmap font)
 └── cross-validation/               # C++ reference validation
     ├── Makefile
     ├── validate_m6809.cpp          # M6809 harness using elmerucr/MC6809
@@ -458,8 +474,11 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 - [x] Williams SC1/SC2 blitter (DMA copy/fill, mask, shift, foreground-only)
 - [x] Intel 8257 DMA controller (4-channel, rotating priority, auto-load)
 - [x] MC1408 DAC, 74LS259 output latch, DK discrete analog sounds
+- [x] SSIO sound board (Midway MCR: Z80 + 2×AY-8910, command latches, input routing)
 - [x] CMOS RAM (1KB battery-backed, save/load persistence)
 - [x] ROM loader (MAME ZIP support, CRC32-based matching, multi-variant ROM sets)
+- [x] GfxCache (pre-decoded tile/sprite pixels, ROM decoders for Pac-Man, DK, MCR families)
+- [x] DirtyBitset (fixed-capacity dirty tracking for tile-level change detection)
 - [x] Machine trait (frontend-agnostic display/input/render interface)
 - [x] Joust arcade board (Williams 2nd-gen: M6809 + video RAM + PIAs + blitter + CMOS + ROM)
 - [ ] Namco 06xx custom I/O arbiter (Dig Dug, Galaga)
@@ -492,6 +511,7 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 - [x] Gridlee (Videa: M6809 + bitmap video + trackball — freely distributable ROMs)
 - [ ] Dig Dug (Namco: 3×Z80 + WSG + 06xx/51xx)
 - [ ] Galaga (Namco: 3×Z80 + WSG + 06xx/51xx/54xx + starfield)
+- [x] Satan's Hollow (Bally Midway MCR II: Z80 + SSIO + CTC + tile dirty tracking)
 - [x] Crystal Castles (Atari: M6502 + 2×POKEY + bitmap video + sprites + trackball)
 - [ ] Tempest (Atari: M6502 + 2×POKEY + AVG + math box)
 - [ ] Star Wars (Atari: 2×M6809 + 4×POKEY + TMS5220 + AVG + math box)

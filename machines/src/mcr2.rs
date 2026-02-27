@@ -3,6 +3,7 @@ use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
 use phosphor_core::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
 use phosphor_core::cpu::z80::Z80;
 use phosphor_core::device::Z80Ctc;
+use phosphor_core::dirty_bitset::DirtyBitset;
 use phosphor_core::gfx;
 use phosphor_macros::{BusDebug, MemoryRegion};
 
@@ -50,8 +51,8 @@ pub const SCREEN_WIDTH: u32 = NATIVE_HEIGHT as u32; // 480
 pub const SCREEN_HEIGHT: u32 = NATIVE_WIDTH as u32; // 512
 
 // Tilemap dimensions
-const TILE_COLS: usize = 32;
-const TILE_ROWS: usize = 30;
+pub(crate) const TILE_COLS: usize = 32;
+pub(crate) const TILE_ROWS: usize = 30;
 
 // ---------------------------------------------------------------------------
 // 9-bit palette helpers
@@ -76,6 +77,14 @@ macro_rules! impl_mcr2_renderable {
 
         fn render_frame(&self, buffer: &mut [u8]) {
             self.board.render_frame(buffer);
+        }
+
+        fn overlay_stats(&self) -> Option<String> {
+            let total = crate::mcr2::TILE_ROWS * crate::mcr2::TILE_COLS;
+            Some(format!(
+                "tile dirty: {}/{}",
+                self.board.tiles_redrawn, total
+            ))
         }
     };
 }
@@ -178,6 +187,13 @@ pub struct Mcr2Board {
     pub(crate) pixel_buffer: Vec<u8>, // 512×480 palette index (u8)
     pub(crate) priority_buffer: Vec<u8>, // 512×480 (sprite palette bank per pixel)
 
+    // Tile dirty tracking (960 tiles = 15 × 64 bits)
+    pub(crate) tile_dirty: DirtyBitset<15>,
+    // Tracks which tiles had sprites composited on them (for next-frame erasure)
+    sprite_tile_dirty: DirtyBitset<15>,
+    // Dirty tracking stats (for debug overlay)
+    pub(crate) tiles_redrawn: usize,
+
     // CTC interrupt handling
     pub(crate) ctc_ack_needed: bool,
     pub(crate) ctc_vector_latch: u8,
@@ -201,6 +217,9 @@ impl Mcr2Board {
             palette_rgb: [(0, 0, 0); 64],
             pixel_buffer: vec![0u8; NATIVE_WIDTH * NATIVE_HEIGHT],
             priority_buffer: vec![0u8; NATIVE_WIDTH * NATIVE_HEIGHT],
+            tile_dirty: DirtyBitset::new_all_dirty(),
+            sprite_tile_dirty: DirtyBitset::new_all_dirty(),
+            tiles_redrawn: 0,
             ctc_ack_needed: false,
             ctc_vector_latch: 0,
             clock: 0,
@@ -299,6 +318,17 @@ impl Mcr2Board {
         }
     }
 
+    /// Mark a tile as dirty from a VRAM write offset.
+    ///
+    /// Offsets 0x000–0x77F are tile data (2 bytes per tile, 960 tiles).
+    /// Offsets 0x780–0x7FF are palette — use `tile_dirty.mark_all()` for those.
+    #[inline]
+    pub fn mark_tile_dirty(&mut self, vram_offset: usize) {
+        if vram_offset < 0x780 {
+            self.tile_dirty.mark(vram_offset / 2);
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Core tick
     // -----------------------------------------------------------------------
@@ -356,19 +386,30 @@ impl Mcr2Board {
     /// Render the full frame into the indexed pixel buffer.
     /// Called once per frame from the game wrapper's run_frame().
     pub fn render_frame_internal(&mut self) {
-        // No buffer clears needed — tiles cover every pixel.
+        // Tiles under previous frame's sprites must be redrawn to erase
+        // stale sprite pixels before compositing new sprites.
+        self.tile_dirty.merge(&self.sprite_tile_dirty);
+        self.sprite_tile_dirty.clear();
+
         self.render_tiles();
         self.render_sprites();
     }
 
-    /// Render all tiles from video RAM into the indexed pixel buffer.
+    /// Render dirty tiles from video RAM into the indexed pixel buffer.
     fn render_tiles(&mut self) {
         let tile_count = self.tile_cache.count().max(1);
         let video_ram = self.map.region_data(Region::VideoRam);
+        let mut redrawn = 0usize;
 
         for tile_row in 0..TILE_ROWS {
             for tile_col in 0..TILE_COLS {
-                let vram_offset = (tile_row * TILE_COLS + tile_col) * 2;
+                let tile_index = tile_row * TILE_COLS + tile_col;
+                if !self.tile_dirty.is_dirty(tile_index) {
+                    continue;
+                }
+                redrawn += 1;
+
+                let vram_offset = tile_index * 2;
                 let low = video_ram[vram_offset] as u16;
                 let high = video_ram[vram_offset + 1] as u16;
                 let data = low | (high << 8);
@@ -380,32 +421,34 @@ impl Mcr2Board {
                 let spr_bank = ((data >> 14) & 3) as u8;
                 let pri_val = spr_bank << 4;
 
-                // Each 8×8 tile is rendered at 16×16 (2× in both dimensions)
-                for py in 0..16usize {
-                    let src_py = py / 2;
-                    let actual_py = if vflip { 7 - src_py } else { src_py };
-                    let screen_y = tile_row * 16 + py;
-                    if screen_y >= NATIVE_HEIGHT {
-                        continue;
-                    }
-                    let row_base = screen_y * NATIVE_WIDTH;
+                // Each 8×8 tile is rendered at 16×16 (2× in both dimensions).
+                // Iterate source pixels and write 2×2 blocks to avoid redundant lookups.
+                for src_y in 0..8usize {
+                    let actual_py = if vflip { 7 - src_y } else { src_y };
+                    let row = self.tile_cache.row_slice(code, actual_py);
+                    let screen_y0 = tile_row * 16 + src_y * 2;
+                    let row_base0 = screen_y0 * NATIVE_WIDTH + tile_col * 16;
+                    let row_base1 = row_base0 + NATIVE_WIDTH;
 
-                    for px in 0..16usize {
-                        let src_px = px / 2;
-                        let actual_px = if hflip { 7 - src_px } else { src_px };
-                        let screen_x = tile_col * 16 + px;
-                        let buf_idx = row_base + screen_x;
-
-                        let pixel = self.tile_cache.pixel(code, actual_px, actual_py);
-
-                        // Write every pixel (including 0 = black) so no clear is needed
-                        self.pixel_buffer[buf_idx] =
-                            if pixel != 0 { (color << 4) | pixel } else { 0 };
-                        self.priority_buffer[buf_idx] = pri_val;
+                    for src_x in 0..8usize {
+                        let actual_px = if hflip { 7 - src_x } else { src_x };
+                        let pixel = row[actual_px];
+                        let pal = if pixel != 0 { (color << 4) | pixel } else { 0 };
+                        let dx = src_x * 2;
+                        self.pixel_buffer[row_base0 + dx] = pal;
+                        self.pixel_buffer[row_base0 + dx + 1] = pal;
+                        self.pixel_buffer[row_base1 + dx] = pal;
+                        self.pixel_buffer[row_base1 + dx + 1] = pal;
+                        self.priority_buffer[row_base0 + dx] = pri_val;
+                        self.priority_buffer[row_base0 + dx + 1] = pri_val;
+                        self.priority_buffer[row_base1 + dx] = pri_val;
+                        self.priority_buffer[row_base1 + dx + 1] = pri_val;
                     }
                 }
             }
         }
+        self.tile_dirty.clear();
+        self.tiles_redrawn = redrawn;
     }
 
     /// Render sprites from sprite RAM, compositing with the priority buffer.
@@ -450,6 +493,7 @@ impl Mcr2Board {
 
                         if pix & 0x07 != 0 {
                             self.pixel_buffer[buf_idx] = pix;
+                            self.sprite_tile_dirty.mark((ty / 16) * TILE_COLS + tx / 16);
                         }
                     }
                 }
@@ -463,12 +507,13 @@ impl Mcr2Board {
     }
 
     pub fn render_frame(&self, buffer: &mut [u8]) {
-        gfx::rotate_90_ccw_indexed(
+        gfx::rotate_90_ccw_indexed_blocked(
             &self.pixel_buffer,
             buffer,
             NATIVE_WIDTH,
             NATIVE_HEIGHT,
             &self.palette_rgb,
+            16,
         );
     }
 
@@ -493,6 +538,8 @@ impl Mcr2Board {
         self.rebuild_palette();
         self.pixel_buffer.fill(0);
         self.priority_buffer.fill(0);
+        self.tile_dirty = DirtyBitset::new_all_dirty();
+        self.sprite_tile_dirty = DirtyBitset::new_all_dirty();
         self.clock = 0;
         self.ssio_clock.reset();
         self.watchdog_counter = 0;
@@ -543,6 +590,8 @@ impl Mcr2Board {
         self.watchdog_counter = r.read_u16_le()?;
         // Rebuild derived state from loaded data
         self.rebuild_palette();
+        self.tile_dirty = DirtyBitset::new_all_dirty();
+        self.sprite_tile_dirty = DirtyBitset::new_all_dirty();
         self.ctc_ack_needed = false;
         self.ctc_vector_latch = 0;
         Ok(())

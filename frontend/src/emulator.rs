@@ -373,7 +373,13 @@ pub fn run(
 
             // FPS overlay onto framebuffer (only when debug panel is not active)
             if show_fps && !debug_state.active {
-                crate::overlay::draw_fps(&mut framebuffer, width as usize, &fps_text);
+                let stats = machine.overlay_stats();
+                crate::overlay::draw_overlay(
+                    &mut framebuffer,
+                    width as usize,
+                    &fps_text,
+                    stats.as_deref(),
+                );
             }
 
             video.update_game_texture(&framebuffer);
@@ -397,7 +403,7 @@ pub fn run(
             if dt > 0.0 {
                 let instant_fps = 1.0 / dt;
                 fps_smoothed += 0.05 * (instant_fps - fps_smoothed);
-                fps_text = format!("{fps_smoothed:.1}");
+                fps_text = format!("fps: {fps_smoothed:.1}");
             }
         }
 

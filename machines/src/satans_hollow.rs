@@ -271,6 +271,9 @@ impl Bus for SatansHollowSystem {
                 let offset = (addr & 0x7FF) as usize;
                 if (offset & 0x780) == 0x780 {
                     self.board.update_palette_from_vram(offset, data);
+                    self.board.tile_dirty.mark_all();
+                } else {
+                    self.board.mark_tile_dirty(offset);
                 }
             }
             _ => {} // ROM and unmapped: writes ignored

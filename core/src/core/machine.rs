@@ -35,6 +35,14 @@ pub trait Renderable {
     /// The machine is responsible for converting its internal video representation
     /// (e.g., 4bpp column-major video RAM + palette) into this standard format.
     fn render_frame(&self, buffer: &mut [u8]);
+
+    /// Optional debug overlay text (e.g., dirty-tracking stats).
+    ///
+    /// Returns a short string to display below the FPS counter when the
+    /// overlay is active. Machines without stats return `None` (the default).
+    fn overlay_stats(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Audio output capabilities: PCM sample generation.

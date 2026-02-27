@@ -39,6 +39,17 @@ impl GfxCache {
         self.pixels[code * self.stride + py * self.width + px]
     }
 
+    /// Return a full row of pixel values for a given code and row.
+    ///
+    /// The returned slice has `width` elements, one per column. This avoids
+    /// repeated per-pixel index arithmetic when the caller needs every pixel
+    /// in a row (e.g. 2× upscale loops).
+    #[inline]
+    pub fn row_slice(&self, code: usize, py: usize) -> &[u8] {
+        let start = code * self.stride + py * self.width;
+        &self.pixels[start..start + self.width]
+    }
+
     /// Set a single pixel value (used during decode).
     #[inline]
     pub fn set_pixel(&mut self, code: usize, px: usize, py: usize, value: u8) {
