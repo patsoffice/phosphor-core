@@ -4,11 +4,11 @@
 //! instructions. Future steps add ALU, control flow, shifts, string ops,
 //! interrupts, and I/O.
 
-use super::I8088;
 use super::addressing::Operand;
 use super::alu;
 use super::flags::{self, Flag};
 use super::registers::SegReg;
+use super::{I8088, RepPrefix};
 use crate::core::{Bus, BusMaster};
 
 impl I8088 {
@@ -406,6 +406,25 @@ impl I8088 {
                 let seg = self.effective_segment(SegReg::DS);
                 self.write_word(bus, master, seg, offset, self.ax);
             }
+
+            // =============================================================
+            // String operations (0xA4-0xA7, 0xAA-0xAF)
+            //
+            // REP prefix handling: when rep_prefix is set, the string
+            // operation loops with CX as the counter. REP is used with
+            // MOVS/STOS/LODS; REPZ/REPNZ with CMPS/SCAS (early exit
+            // on ZF mismatch).
+            // =============================================================
+            0xA4 => self.string_op_movsb(bus, master),
+            0xA5 => self.string_op_movsw(bus, master),
+            0xA6 => self.string_op_cmpsb(bus, master),
+            0xA7 => self.string_op_cmpsw(bus, master),
+            0xAA => self.string_op_stosb(bus, master),
+            0xAB => self.string_op_stosw(bus, master),
+            0xAC => self.string_op_lodsb(bus, master),
+            0xAD => self.string_op_lodsw(bus, master),
+            0xAE => self.string_op_scasb(bus, master),
+            0xAF => self.string_op_scasw(bus, master),
 
             // =============================================================
             // TEST AL, imm8 (0xA8) | TEST AX, imm16 (0xA9)
@@ -1034,6 +1053,354 @@ impl I8088 {
             0xE => zf || (sf != of),  // JLE / JNG
             0xF => !zf && (sf == of), // JG / JNLE
             _ => unreachable!(),
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // String operations
+    // -----------------------------------------------------------------
+
+    /// SI/DI step size: +1 or -1 for byte ops, +2 or -2 for word ops.
+    #[inline]
+    fn string_step(&self, word: bool) -> u16 {
+        let size: u16 = if word { 2 } else { 1 };
+        if flags::get(self.flags, Flag::DF) {
+            size.wrapping_neg() // decrement
+        } else {
+            size // increment
+        }
+    }
+
+    /// Source segment for string operations: DS (or segment override).
+    #[inline]
+    fn string_src_seg(&self) -> u16 {
+        self.effective_segment(SegReg::DS)
+    }
+
+    /// MOVSB: [ES:DI] <- [DS:SI], SI += step, DI += step
+    fn string_op_movsb<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let rep = self.rep_prefix.take();
+        let step = self.string_step(false);
+        match rep {
+            Some(_) => {
+                while self.cx != 0 {
+                    let seg = self.string_src_seg();
+                    let val = self.read_byte(bus, master, seg, self.si);
+                    self.write_byte(bus, master, self.es, self.di, val);
+                    self.si = self.si.wrapping_add(step);
+                    self.di = self.di.wrapping_add(step);
+                    self.cx = self.cx.wrapping_sub(1);
+                }
+            }
+            None => {
+                let seg = self.string_src_seg();
+                let val = self.read_byte(bus, master, seg, self.si);
+                self.write_byte(bus, master, self.es, self.di, val);
+                self.si = self.si.wrapping_add(step);
+                self.di = self.di.wrapping_add(step);
+            }
+        }
+    }
+
+    /// MOVSW: [ES:DI] <- [DS:SI], SI += step*2, DI += step*2
+    fn string_op_movsw<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let rep = self.rep_prefix.take();
+        let step = self.string_step(true);
+        match rep {
+            Some(_) => {
+                while self.cx != 0 {
+                    let seg = self.string_src_seg();
+                    let val = self.read_word(bus, master, seg, self.si);
+                    self.write_word(bus, master, self.es, self.di, val);
+                    self.si = self.si.wrapping_add(step);
+                    self.di = self.di.wrapping_add(step);
+                    self.cx = self.cx.wrapping_sub(1);
+                }
+            }
+            None => {
+                let seg = self.string_src_seg();
+                let val = self.read_word(bus, master, seg, self.si);
+                self.write_word(bus, master, self.es, self.di, val);
+                self.si = self.si.wrapping_add(step);
+                self.di = self.di.wrapping_add(step);
+            }
+        }
+    }
+
+    /// CMPSB: [DS:SI] - [ES:DI] (set flags), SI += step, DI += step
+    fn string_op_cmpsb<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let rep = self.rep_prefix.take();
+        let step = self.string_step(false);
+        match rep {
+            Some(prefix) => {
+                while self.cx != 0 {
+                    let seg = self.string_src_seg();
+                    let a = self.read_byte(bus, master, seg, self.si);
+                    let b = self.read_byte(bus, master, self.es, self.di);
+                    alu::sub8(&mut self.flags, a, b, false);
+                    self.si = self.si.wrapping_add(step);
+                    self.di = self.di.wrapping_add(step);
+                    self.cx = self.cx.wrapping_sub(1);
+                    // REPZ: continue while ZF=1; REPNZ: continue while ZF=0
+                    let zf = flags::get(self.flags, Flag::ZF);
+                    match prefix {
+                        RepPrefix::Rep => {
+                            if !zf {
+                                break;
+                            }
+                        }
+                        RepPrefix::Repnz => {
+                            if zf {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            None => {
+                let seg = self.string_src_seg();
+                let a = self.read_byte(bus, master, seg, self.si);
+                let b = self.read_byte(bus, master, self.es, self.di);
+                alu::sub8(&mut self.flags, a, b, false);
+                self.si = self.si.wrapping_add(step);
+                self.di = self.di.wrapping_add(step);
+            }
+        }
+    }
+
+    /// CMPSW: [DS:SI] - [ES:DI] (set flags, 16-bit), SI += step, DI += step
+    fn string_op_cmpsw<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let rep = self.rep_prefix.take();
+        let step = self.string_step(true);
+        match rep {
+            Some(prefix) => {
+                while self.cx != 0 {
+                    let seg = self.string_src_seg();
+                    let a = self.read_word(bus, master, seg, self.si);
+                    let b = self.read_word(bus, master, self.es, self.di);
+                    alu::sub16(&mut self.flags, a, b, false);
+                    self.si = self.si.wrapping_add(step);
+                    self.di = self.di.wrapping_add(step);
+                    self.cx = self.cx.wrapping_sub(1);
+                    let zf = flags::get(self.flags, Flag::ZF);
+                    match prefix {
+                        RepPrefix::Rep => {
+                            if !zf {
+                                break;
+                            }
+                        }
+                        RepPrefix::Repnz => {
+                            if zf {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            None => {
+                let seg = self.string_src_seg();
+                let a = self.read_word(bus, master, seg, self.si);
+                let b = self.read_word(bus, master, self.es, self.di);
+                alu::sub16(&mut self.flags, a, b, false);
+                self.si = self.si.wrapping_add(step);
+                self.di = self.di.wrapping_add(step);
+            }
+        }
+    }
+
+    /// STOSB: [ES:DI] <- AL, DI += step
+    fn string_op_stosb<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let rep = self.rep_prefix.take();
+        let step = self.string_step(false);
+        let al = self.al();
+        match rep {
+            Some(_) => {
+                while self.cx != 0 {
+                    self.write_byte(bus, master, self.es, self.di, al);
+                    self.di = self.di.wrapping_add(step);
+                    self.cx = self.cx.wrapping_sub(1);
+                }
+            }
+            None => {
+                self.write_byte(bus, master, self.es, self.di, al);
+                self.di = self.di.wrapping_add(step);
+            }
+        }
+    }
+
+    /// STOSW: [ES:DI] <- AX, DI += step
+    fn string_op_stosw<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let rep = self.rep_prefix.take();
+        let step = self.string_step(true);
+        let ax = self.ax;
+        match rep {
+            Some(_) => {
+                while self.cx != 0 {
+                    self.write_word(bus, master, self.es, self.di, ax);
+                    self.di = self.di.wrapping_add(step);
+                    self.cx = self.cx.wrapping_sub(1);
+                }
+            }
+            None => {
+                self.write_word(bus, master, self.es, self.di, ax);
+                self.di = self.di.wrapping_add(step);
+            }
+        }
+    }
+
+    /// LODSB: AL <- [DS:SI], SI += step
+    fn string_op_lodsb<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let rep = self.rep_prefix.take();
+        let step = self.string_step(false);
+        match rep {
+            Some(_) => {
+                while self.cx != 0 {
+                    let seg = self.string_src_seg();
+                    let val = self.read_byte(bus, master, seg, self.si);
+                    self.set_al(val);
+                    self.si = self.si.wrapping_add(step);
+                    self.cx = self.cx.wrapping_sub(1);
+                }
+            }
+            None => {
+                let seg = self.string_src_seg();
+                let val = self.read_byte(bus, master, seg, self.si);
+                self.set_al(val);
+                self.si = self.si.wrapping_add(step);
+            }
+        }
+    }
+
+    /// LODSW: AX <- [DS:SI], SI += step
+    fn string_op_lodsw<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let rep = self.rep_prefix.take();
+        let step = self.string_step(true);
+        match rep {
+            Some(_) => {
+                while self.cx != 0 {
+                    let seg = self.string_src_seg();
+                    let val = self.read_word(bus, master, seg, self.si);
+                    self.ax = val;
+                    self.si = self.si.wrapping_add(step);
+                    self.cx = self.cx.wrapping_sub(1);
+                }
+            }
+            None => {
+                let seg = self.string_src_seg();
+                let val = self.read_word(bus, master, seg, self.si);
+                self.ax = val;
+                self.si = self.si.wrapping_add(step);
+            }
+        }
+    }
+
+    /// SCASB: AL - [ES:DI] (set flags), DI += step
+    fn string_op_scasb<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let rep = self.rep_prefix.take();
+        let step = self.string_step(false);
+        match rep {
+            Some(prefix) => {
+                while self.cx != 0 {
+                    let al = self.al();
+                    let val = self.read_byte(bus, master, self.es, self.di);
+                    alu::sub8(&mut self.flags, al, val, false);
+                    self.di = self.di.wrapping_add(step);
+                    self.cx = self.cx.wrapping_sub(1);
+                    let zf = flags::get(self.flags, Flag::ZF);
+                    match prefix {
+                        RepPrefix::Rep => {
+                            if !zf {
+                                break;
+                            }
+                        }
+                        RepPrefix::Repnz => {
+                            if zf {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            None => {
+                let al = self.al();
+                let val = self.read_byte(bus, master, self.es, self.di);
+                alu::sub8(&mut self.flags, al, val, false);
+                self.di = self.di.wrapping_add(step);
+            }
+        }
+    }
+
+    /// SCASW: AX - [ES:DI] (set flags, 16-bit), DI += step
+    fn string_op_scasw<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let rep = self.rep_prefix.take();
+        let step = self.string_step(true);
+        match rep {
+            Some(prefix) => {
+                while self.cx != 0 {
+                    let val = self.read_word(bus, master, self.es, self.di);
+                    alu::sub16(&mut self.flags, self.ax, val, false);
+                    self.di = self.di.wrapping_add(step);
+                    self.cx = self.cx.wrapping_sub(1);
+                    let zf = flags::get(self.flags, Flag::ZF);
+                    match prefix {
+                        RepPrefix::Rep => {
+                            if !zf {
+                                break;
+                            }
+                        }
+                        RepPrefix::Repnz => {
+                            if zf {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            None => {
+                let val = self.read_word(bus, master, self.es, self.di);
+                alu::sub16(&mut self.flags, self.ax, val, false);
+                self.di = self.di.wrapping_add(step);
+            }
         }
     }
 }
@@ -3329,5 +3696,637 @@ mod tests {
         cpu.execute(0xD2, &mut bus, M); // SHL AL, CL
         assert_eq!(cpu.al(), 0xFF);
         assert!(fl::get(cpu.flags, Flag::CF)); // unchanged
+    }
+
+    // =====================================================================
+    // String operations: MOVSB/MOVSW (0xA4-0xA5)
+    // =====================================================================
+
+    #[test]
+    fn movsb_forward() {
+        let (mut cpu, mut bus) = setup();
+        // Source: DS:SI = 0x2000:0x0010 → physical 0x20010
+        // Dest:   ES:DI = 0x4000:0x0020 → physical 0x40020
+        cpu.si = 0x0010;
+        cpu.di = 0x0020;
+        bus.mem[0x20010] = 0xAB;
+        cpu.execute(0xA4, &mut bus, M); // MOVSB
+        assert_eq!(bus.mem[0x40020], 0xAB);
+        assert_eq!(cpu.si, 0x0011); // incremented
+        assert_eq!(cpu.di, 0x0021); // incremented
+    }
+
+    #[test]
+    fn movsb_backward() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        fl::set(&mut cpu.flags, Flag::DF, true); // direction = decrement
+        cpu.si = 0x0010;
+        cpu.di = 0x0020;
+        bus.mem[0x20010] = 0xCD;
+        cpu.execute(0xA4, &mut bus, M); // MOVSB
+        assert_eq!(bus.mem[0x40020], 0xCD);
+        assert_eq!(cpu.si, 0x000F); // decremented
+        assert_eq!(cpu.di, 0x001F); // decremented
+    }
+
+    #[test]
+    fn movsw_forward() {
+        let (mut cpu, mut bus) = setup();
+        cpu.si = 0x0010;
+        cpu.di = 0x0020;
+        bus.mem[0x20010] = 0x34; // low byte
+        bus.mem[0x20011] = 0x12; // high byte
+        cpu.execute(0xA5, &mut bus, M); // MOVSW
+        assert_eq!(bus.mem[0x40020], 0x34);
+        assert_eq!(bus.mem[0x40021], 0x12);
+        assert_eq!(cpu.si, 0x0012); // +2
+        assert_eq!(cpu.di, 0x0022); // +2
+    }
+
+    #[test]
+    fn movsw_backward() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        fl::set(&mut cpu.flags, Flag::DF, true);
+        cpu.si = 0x0010;
+        cpu.di = 0x0020;
+        bus.mem[0x20010] = 0x34;
+        bus.mem[0x20011] = 0x12;
+        cpu.execute(0xA5, &mut bus, M); // MOVSW
+        assert_eq!(bus.mem[0x40020], 0x34);
+        assert_eq!(bus.mem[0x40021], 0x12);
+        assert_eq!(cpu.si, 0x000E); // -2
+        assert_eq!(cpu.di, 0x001E); // -2
+    }
+
+    // =====================================================================
+    // REP MOVSB (block copy)
+    // =====================================================================
+
+    #[test]
+    fn rep_movsb_forward() {
+        let (mut cpu, mut bus) = setup();
+        cpu.si = 0x0000;
+        cpu.di = 0x0000;
+        cpu.cx = 5;
+        cpu.rep_prefix = Some(super::RepPrefix::Rep);
+        // Write source data at DS:0 = phys 0x20000
+        for i in 0..5u8 {
+            bus.mem[0x20000 + i as usize] = 0x10 + i;
+        }
+        cpu.execute(0xA4, &mut bus, M); // REP MOVSB
+        // Check destination at ES:0 = phys 0x40000
+        for i in 0..5u8 {
+            assert_eq!(bus.mem[0x40000 + i as usize], 0x10 + i);
+        }
+        assert_eq!(cpu.cx, 0);
+        assert_eq!(cpu.si, 0x0005);
+        assert_eq!(cpu.di, 0x0005);
+    }
+
+    #[test]
+    fn rep_movsb_cx_zero() {
+        let (mut cpu, mut bus) = setup();
+        cpu.si = 0x0010;
+        cpu.di = 0x0020;
+        cpu.cx = 0; // should do nothing
+        cpu.rep_prefix = Some(super::RepPrefix::Rep);
+        bus.mem[0x20010] = 0xFF;
+        cpu.execute(0xA4, &mut bus, M); // REP MOVSB
+        assert_eq!(bus.mem[0x40020], 0x00); // unchanged
+        assert_eq!(cpu.si, 0x0010); // unchanged
+        assert_eq!(cpu.di, 0x0020); // unchanged
+    }
+
+    #[test]
+    fn rep_movsw_forward() {
+        let (mut cpu, mut bus) = setup();
+        cpu.si = 0x0000;
+        cpu.di = 0x0000;
+        cpu.cx = 3;
+        cpu.rep_prefix = Some(super::RepPrefix::Rep);
+        // 3 words at DS:0
+        for i in 0..3u16 {
+            let base = 0x20000 + (i as usize) * 2;
+            bus.mem[base] = (0x1000 + i) as u8;
+            bus.mem[base + 1] = ((0x1000 + i) >> 8) as u8;
+        }
+        cpu.execute(0xA5, &mut bus, M); // REP MOVSW
+        for i in 0..3u16 {
+            let base = 0x40000 + (i as usize) * 2;
+            let val = bus.mem[base] as u16 | ((bus.mem[base + 1] as u16) << 8);
+            assert_eq!(val, 0x1000 + i);
+        }
+        assert_eq!(cpu.cx, 0);
+        assert_eq!(cpu.si, 6);
+        assert_eq!(cpu.di, 6);
+    }
+
+    #[test]
+    fn rep_movsb_backward() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        fl::set(&mut cpu.flags, Flag::DF, true);
+        cpu.si = 0x0004;
+        cpu.di = 0x0004;
+        cpu.cx = 5;
+        cpu.rep_prefix = Some(super::RepPrefix::Rep);
+        for i in 0..5u8 {
+            bus.mem[0x20000 + i as usize] = 0xA0 + i;
+        }
+        cpu.execute(0xA4, &mut bus, M); // REP MOVSB backward
+        for i in 0..5u8 {
+            assert_eq!(bus.mem[0x40000 + i as usize], 0xA0 + i);
+        }
+        assert_eq!(cpu.cx, 0);
+        assert_eq!(cpu.si, 0xFFFF); // wrapped from 0x0004 - 5
+        assert_eq!(cpu.di, 0xFFFF);
+    }
+
+    // =====================================================================
+    // CMPSB/CMPSW (0xA6-0xA7)
+    // =====================================================================
+
+    #[test]
+    fn cmpsb_equal() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.si = 0x0010;
+        cpu.di = 0x0020;
+        bus.mem[0x20010] = 0x42;
+        bus.mem[0x40020] = 0x42;
+        cpu.execute(0xA6, &mut bus, M); // CMPSB
+        assert!(fl::get(cpu.flags, Flag::ZF)); // equal
+        assert_eq!(cpu.si, 0x0011);
+        assert_eq!(cpu.di, 0x0021);
+    }
+
+    #[test]
+    fn cmpsb_not_equal() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.si = 0x0010;
+        cpu.di = 0x0020;
+        bus.mem[0x20010] = 0x50;
+        bus.mem[0x40020] = 0x30;
+        cpu.execute(0xA6, &mut bus, M); // CMPSB
+        assert!(!fl::get(cpu.flags, Flag::ZF)); // not equal
+        assert!(!fl::get(cpu.flags, Flag::CF)); // 0x50 > 0x30, no borrow
+    }
+
+    #[test]
+    fn cmpsw_equal() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.si = 0x0010;
+        cpu.di = 0x0020;
+        // Write 0x1234 at DS:SI
+        bus.mem[0x20010] = 0x34;
+        bus.mem[0x20011] = 0x12;
+        // Write 0x1234 at ES:DI
+        bus.mem[0x40020] = 0x34;
+        bus.mem[0x40021] = 0x12;
+        cpu.execute(0xA7, &mut bus, M); // CMPSW
+        assert!(fl::get(cpu.flags, Flag::ZF));
+        assert_eq!(cpu.si, 0x0012);
+        assert_eq!(cpu.di, 0x0022);
+    }
+
+    // =====================================================================
+    // REPZ CMPSB (block compare, stop on mismatch)
+    // =====================================================================
+
+    #[test]
+    fn repz_cmpsb_all_equal() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.si = 0x0000;
+        cpu.di = 0x0000;
+        cpu.cx = 4;
+        cpu.rep_prefix = Some(super::RepPrefix::Rep); // REPZ
+        // Same data in both regions
+        for i in 0..4u8 {
+            bus.mem[0x20000 + i as usize] = 0x41 + i;
+            bus.mem[0x40000 + i as usize] = 0x41 + i;
+        }
+        cpu.execute(0xA6, &mut bus, M); // REPZ CMPSB
+        assert_eq!(cpu.cx, 0); // exhausted all
+        assert!(fl::get(cpu.flags, Flag::ZF)); // last compare was equal
+    }
+
+    #[test]
+    fn repz_cmpsb_mismatch_at_3() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.si = 0x0000;
+        cpu.di = 0x0000;
+        cpu.cx = 5;
+        cpu.rep_prefix = Some(super::RepPrefix::Rep); // REPZ
+        for i in 0..5u8 {
+            bus.mem[0x20000 + i as usize] = 0x41 + i;
+            bus.mem[0x40000 + i as usize] = 0x41 + i;
+        }
+        bus.mem[0x40002] = 0xFF; // mismatch at index 2
+        cpu.execute(0xA6, &mut bus, M);
+        assert_eq!(cpu.cx, 2); // stopped after 3 iterations (5-3=2)
+        assert!(!fl::get(cpu.flags, Flag::ZF)); // mismatch
+        assert_eq!(cpu.si, 3);
+        assert_eq!(cpu.di, 3);
+    }
+
+    #[test]
+    fn repnz_cmpsb_find_match() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.si = 0x0000;
+        cpu.di = 0x0000;
+        cpu.cx = 5;
+        cpu.rep_prefix = Some(super::RepPrefix::Repnz); // REPNZ
+        for i in 0..5u8 {
+            bus.mem[0x20000 + i as usize] = 0x00;
+            bus.mem[0x40000 + i as usize] = i + 1; // all different from 0
+        }
+        bus.mem[0x40003] = 0x00; // match at index 3
+        cpu.execute(0xA6, &mut bus, M);
+        assert_eq!(cpu.cx, 1); // stopped after 4 iterations (5-4=1)
+        assert!(fl::get(cpu.flags, Flag::ZF)); // match found
+    }
+
+    // =====================================================================
+    // STOSB/STOSW (0xAA-0xAB)
+    // =====================================================================
+
+    #[test]
+    fn stosb_forward() {
+        let (mut cpu, mut bus) = setup();
+        cpu.set_al(0xEE);
+        cpu.di = 0x0050;
+        cpu.execute(0xAA, &mut bus, M); // STOSB
+        assert_eq!(bus.mem[0x40050], 0xEE);
+        assert_eq!(cpu.di, 0x0051);
+    }
+
+    #[test]
+    fn stosw_forward() {
+        let (mut cpu, mut bus) = setup();
+        cpu.ax = 0xBEEF;
+        cpu.di = 0x0050;
+        cpu.execute(0xAB, &mut bus, M); // STOSW
+        assert_eq!(bus.mem[0x40050], 0xEF); // low byte
+        assert_eq!(bus.mem[0x40051], 0xBE); // high byte
+        assert_eq!(cpu.di, 0x0052);
+    }
+
+    #[test]
+    fn rep_stosb_fill() {
+        let (mut cpu, mut bus) = setup();
+        cpu.set_al(0xFF);
+        cpu.di = 0x0000;
+        cpu.cx = 8;
+        cpu.rep_prefix = Some(super::RepPrefix::Rep);
+        cpu.execute(0xAA, &mut bus, M); // REP STOSB
+        for i in 0..8 {
+            assert_eq!(bus.mem[0x40000 + i], 0xFF);
+        }
+        assert_eq!(bus.mem[0x40008], 0x00); // untouched
+        assert_eq!(cpu.cx, 0);
+        assert_eq!(cpu.di, 8);
+    }
+
+    #[test]
+    fn rep_stosw_fill() {
+        let (mut cpu, mut bus) = setup();
+        cpu.ax = 0x1234;
+        cpu.di = 0x0000;
+        cpu.cx = 4;
+        cpu.rep_prefix = Some(super::RepPrefix::Rep);
+        cpu.execute(0xAB, &mut bus, M); // REP STOSW
+        for i in 0..4 {
+            let base = 0x40000 + i * 2;
+            assert_eq!(bus.mem[base], 0x34);
+            assert_eq!(bus.mem[base + 1], 0x12);
+        }
+        assert_eq!(cpu.cx, 0);
+        assert_eq!(cpu.di, 8);
+    }
+
+    // =====================================================================
+    // LODSB/LODSW (0xAC-0xAD)
+    // =====================================================================
+
+    #[test]
+    fn lodsb_forward() {
+        let (mut cpu, mut bus) = setup();
+        cpu.si = 0x0030;
+        bus.mem[0x20030] = 0x99;
+        cpu.execute(0xAC, &mut bus, M); // LODSB
+        assert_eq!(cpu.al(), 0x99);
+        assert_eq!(cpu.si, 0x0031);
+    }
+
+    #[test]
+    fn lodsw_forward() {
+        let (mut cpu, mut bus) = setup();
+        cpu.si = 0x0030;
+        bus.mem[0x20030] = 0xCD;
+        bus.mem[0x20031] = 0xAB;
+        cpu.execute(0xAD, &mut bus, M); // LODSW
+        assert_eq!(cpu.ax, 0xABCD);
+        assert_eq!(cpu.si, 0x0032);
+    }
+
+    #[test]
+    fn lodsb_backward() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        fl::set(&mut cpu.flags, Flag::DF, true);
+        cpu.si = 0x0030;
+        bus.mem[0x20030] = 0x77;
+        cpu.execute(0xAC, &mut bus, M); // LODSB
+        assert_eq!(cpu.al(), 0x77);
+        assert_eq!(cpu.si, 0x002F);
+    }
+
+    #[test]
+    fn rep_lodsb() {
+        let (mut cpu, mut bus) = setup();
+        cpu.si = 0x0000;
+        cpu.cx = 3;
+        cpu.rep_prefix = Some(super::RepPrefix::Rep);
+        bus.mem[0x20000] = 0x11;
+        bus.mem[0x20001] = 0x22;
+        bus.mem[0x20002] = 0x33;
+        cpu.execute(0xAC, &mut bus, M); // REP LODSB
+        assert_eq!(cpu.al(), 0x33); // last loaded value
+        assert_eq!(cpu.cx, 0);
+        assert_eq!(cpu.si, 3);
+    }
+
+    // =====================================================================
+    // SCASB/SCASW (0xAE-0xAF)
+    // =====================================================================
+
+    #[test]
+    fn scasb_match() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.set_al(0x42);
+        cpu.di = 0x0010;
+        bus.mem[0x40010] = 0x42;
+        cpu.execute(0xAE, &mut bus, M); // SCASB
+        assert!(fl::get(cpu.flags, Flag::ZF)); // match
+        assert_eq!(cpu.di, 0x0011);
+    }
+
+    #[test]
+    fn scasb_no_match() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.set_al(0x42);
+        cpu.di = 0x0010;
+        bus.mem[0x40010] = 0x99;
+        cpu.execute(0xAE, &mut bus, M); // SCASB
+        assert!(!fl::get(cpu.flags, Flag::ZF)); // mismatch
+    }
+
+    #[test]
+    fn scasw_match() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.ax = 0x1234;
+        cpu.di = 0x0010;
+        bus.mem[0x40010] = 0x34;
+        bus.mem[0x40011] = 0x12;
+        cpu.execute(0xAF, &mut bus, M); // SCASW
+        assert!(fl::get(cpu.flags, Flag::ZF));
+        assert_eq!(cpu.di, 0x0012);
+    }
+
+    // =====================================================================
+    // REPZ SCASB (scan for mismatch)
+    // =====================================================================
+
+    #[test]
+    fn repz_scasb_all_match() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.set_al(0xAA);
+        cpu.di = 0x0000;
+        cpu.cx = 4;
+        cpu.rep_prefix = Some(super::RepPrefix::Rep); // REPZ
+        for i in 0..4 {
+            bus.mem[0x40000 + i] = 0xAA;
+        }
+        cpu.execute(0xAE, &mut bus, M); // REPZ SCASB
+        assert_eq!(cpu.cx, 0);
+        assert!(fl::get(cpu.flags, Flag::ZF));
+    }
+
+    #[test]
+    fn repz_scasb_mismatch() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.set_al(0xAA);
+        cpu.di = 0x0000;
+        cpu.cx = 6;
+        cpu.rep_prefix = Some(super::RepPrefix::Rep); // REPZ
+        for i in 0..6 {
+            bus.mem[0x40000 + i] = 0xAA;
+        }
+        bus.mem[0x40003] = 0xBB; // mismatch at index 3
+        cpu.execute(0xAE, &mut bus, M);
+        assert_eq!(cpu.cx, 2); // 6 - 4 iterations = 2
+        assert!(!fl::get(cpu.flags, Flag::ZF));
+        assert_eq!(cpu.di, 4);
+    }
+
+    // =====================================================================
+    // REPNZ SCASB (scan for match, like memchr)
+    // =====================================================================
+
+    #[test]
+    fn repnz_scasb_find() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.set_al(0x00); // searching for null terminator
+        cpu.di = 0x0000;
+        cpu.cx = 10;
+        cpu.rep_prefix = Some(super::RepPrefix::Repnz);
+        // "Hello\0..."
+        let data = b"Hello\0xxxx";
+        for (i, &b) in data.iter().enumerate() {
+            bus.mem[0x40000 + i] = b;
+        }
+        cpu.execute(0xAE, &mut bus, M); // REPNZ SCASB
+        assert!(fl::get(cpu.flags, Flag::ZF)); // found the null
+        assert_eq!(cpu.cx, 4); // 10 - 6 iterations = 4
+        assert_eq!(cpu.di, 6); // points past the null
+    }
+
+    #[test]
+    fn repnz_scasb_not_found() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.set_al(0x00);
+        cpu.di = 0x0000;
+        cpu.cx = 3;
+        cpu.rep_prefix = Some(super::RepPrefix::Repnz);
+        bus.mem[0x40000] = 0x41;
+        bus.mem[0x40001] = 0x42;
+        bus.mem[0x40002] = 0x43;
+        cpu.execute(0xAE, &mut bus, M);
+        assert_eq!(cpu.cx, 0); // exhausted
+        assert!(!fl::get(cpu.flags, Flag::ZF)); // not found
+    }
+
+    // =====================================================================
+    // REPNZ SCASW (scan for 16-bit match)
+    // =====================================================================
+
+    #[test]
+    fn repnz_scasw_find() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.ax = 0xDEAD;
+        cpu.di = 0x0000;
+        cpu.cx = 4;
+        cpu.rep_prefix = Some(super::RepPrefix::Repnz);
+        // Words: 0x0001, 0x0002, 0xDEAD, 0x0004
+        let words: &[u16] = &[0x0001, 0x0002, 0xDEAD, 0x0004];
+        for (i, &w) in words.iter().enumerate() {
+            bus.mem[0x40000 + i * 2] = w as u8;
+            bus.mem[0x40000 + i * 2 + 1] = (w >> 8) as u8;
+        }
+        cpu.execute(0xAF, &mut bus, M); // REPNZ SCASW
+        assert!(fl::get(cpu.flags, Flag::ZF));
+        assert_eq!(cpu.cx, 1); // found at 3rd word
+        assert_eq!(cpu.di, 6); // past the match
+    }
+
+    // =====================================================================
+    // REPZ CMPSW (block compare, 16-bit)
+    // =====================================================================
+
+    #[test]
+    fn repz_cmpsw_all_equal() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.si = 0x0000;
+        cpu.di = 0x0000;
+        cpu.cx = 3;
+        cpu.rep_prefix = Some(super::RepPrefix::Rep);
+        let words: &[u16] = &[0x1111, 0x2222, 0x3333];
+        for (i, &w) in words.iter().enumerate() {
+            bus.mem[0x20000 + i * 2] = w as u8;
+            bus.mem[0x20000 + i * 2 + 1] = (w >> 8) as u8;
+            bus.mem[0x40000 + i * 2] = w as u8;
+            bus.mem[0x40000 + i * 2 + 1] = (w >> 8) as u8;
+        }
+        cpu.execute(0xA7, &mut bus, M); // REPZ CMPSW
+        assert_eq!(cpu.cx, 0);
+        assert!(fl::get(cpu.flags, Flag::ZF));
+        assert_eq!(cpu.si, 6);
+        assert_eq!(cpu.di, 6);
+    }
+
+    // =====================================================================
+    // Segment override with string ops
+    // =====================================================================
+
+    #[test]
+    fn movsb_with_segment_override() {
+        let (mut cpu, mut bus) = setup();
+        // Override source segment from DS to ES
+        cpu.segment_override = Some(SegReg::ES);
+        cpu.si = 0x0010;
+        cpu.di = 0x0020;
+        // Source at ES:SI = 0x4000:0x0010 = phys 0x40010
+        bus.mem[0x40010] = 0xBB;
+        cpu.execute(0xA4, &mut bus, M); // MOVSB
+        // Dest at ES:DI = phys 0x40020
+        assert_eq!(bus.mem[0x40020], 0xBB);
+    }
+
+    #[test]
+    fn lodsb_with_segment_override() {
+        let (mut cpu, mut bus) = setup();
+        cpu.segment_override = Some(SegReg::SS);
+        cpu.si = 0x0010;
+        // Source at SS:SI = 0x3000:0x0010 = phys 0x30010
+        bus.mem[0x30010] = 0x77;
+        cpu.execute(0xAC, &mut bus, M); // LODSB
+        assert_eq!(cpu.al(), 0x77);
+    }
+
+    // =====================================================================
+    // CX=0 with REP (should not execute body)
+    // =====================================================================
+
+    #[test]
+    fn rep_stosb_cx_zero() {
+        let (mut cpu, mut bus) = setup();
+        cpu.set_al(0xFF);
+        cpu.di = 0x0000;
+        cpu.cx = 0;
+        cpu.rep_prefix = Some(super::RepPrefix::Rep);
+        cpu.execute(0xAA, &mut bus, M); // REP STOSB
+        assert_eq!(bus.mem[0x40000], 0x00); // untouched
+        assert_eq!(cpu.di, 0x0000); // unchanged
+    }
+
+    #[test]
+    fn repz_scasb_cx_zero() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.set_al(0x42);
+        cpu.di = 0x0010;
+        cpu.cx = 0;
+        cpu.rep_prefix = Some(super::RepPrefix::Rep);
+        // Should not compare anything
+        fl::set(&mut cpu.flags, Flag::ZF, false);
+        cpu.execute(0xAE, &mut bus, M);
+        assert_eq!(cpu.cx, 0);
+        assert_eq!(cpu.di, 0x0010);
+        // ZF should be unmodified (no comparison performed)
+        assert!(!fl::get(cpu.flags, Flag::ZF));
+    }
+
+    // =====================================================================
+    // STOSB backward with DF=1
+    // =====================================================================
+
+    #[test]
+    fn rep_stosb_backward() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        fl::set(&mut cpu.flags, Flag::DF, true);
+        cpu.set_al(0xCC);
+        cpu.di = 0x0003;
+        cpu.cx = 4;
+        cpu.rep_prefix = Some(super::RepPrefix::Rep);
+        cpu.execute(0xAA, &mut bus, M); // REP STOSB backward
+        for i in 0..4 {
+            assert_eq!(bus.mem[0x40000 + i], 0xCC);
+        }
+        assert_eq!(cpu.cx, 0);
+        assert_eq!(cpu.di, 0xFFFF); // wrapped: 0x0003 - 4
+    }
+
+    // =====================================================================
+    // SCASB backward
+    // =====================================================================
+
+    #[test]
+    fn scasb_backward() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        fl::set(&mut cpu.flags, Flag::DF, true);
+        cpu.set_al(0x55);
+        cpu.di = 0x0010;
+        bus.mem[0x40010] = 0x55;
+        cpu.execute(0xAE, &mut bus, M); // SCASB
+        assert!(fl::get(cpu.flags, Flag::ZF));
+        assert_eq!(cpu.di, 0x000F); // decremented
     }
 }
