@@ -10,6 +10,8 @@
 //! via internal state. The bus interface uses `Address = u32` for 20-bit
 //! physical addresses and `Data = u8` for the 8-bit external data bus.
 
+pub mod addressing;
+pub mod decode;
 pub mod flags;
 pub mod registers;
 
@@ -156,12 +158,10 @@ impl I8088 {
                     return;
                 }
 
-                // Fetch opcode at CS:IP
-                let addr = Self::physical_addr(self.cs, self.ip);
-                let _opcode = bus.read(master, addr);
-                self.ip = self.ip.wrapping_add(1);
+                // Consume any prefix bytes and fetch the opcode
+                let _opcode = self.consume_prefixes(bus, master);
 
-                // TODO: decode and execute instruction (Step 1.2+)
+                // TODO: dispatch opcode to execute stage (Step 1.3+)
                 // For now, remain in Fetch to advance through memory
             }
             ExecState::Execute(remaining) => {
