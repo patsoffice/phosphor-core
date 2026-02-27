@@ -220,6 +220,9 @@ impl I8035State {
     }
 }
 
+// I8088 state is defined in its own module; re-export here for consistency
+pub use super::i8088::I8088State;
+
 /// Z80 CPU state snapshot
 #[derive(Debug, Clone, PartialEq)]
 pub struct Z80State {

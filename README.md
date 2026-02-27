@@ -83,6 +83,7 @@ ROMs are matched by CRC32 checksum, so any MAME ROM naming convention works. All
 | **M6800 CPU** | Complete | 192 opcodes, cycle-accurate, all addressing modes. [Details](core/src/cpu/m6800/README.md) |
 | **M6502 CPU** | Complete | 151 opcodes, cycle-accurate with bus-level traces. [Details](core/src/cpu/m6502/README.md) |
 | **Z80 CPU** | Complete | 1604 opcodes, cycle-accurate, all prefix groups (CB/DD/ED/FD/DDCB/FDCB). [Details](core/src/cpu/z80/README.md) |
+| **I8088 CPU** | In Progress | 8088 skeleton: registers, flags, segment addressing. Step 1.1 of 9 complete. |
 | **MC6821 PIA** | Complete | Full register set, interrupts, edge detection, control lines |
 | **Williams SC1/SC2 Blitter** | Complete | DMA block copy/fill, mask, shift, foreground-only modes |
 | **AY-8910 PSG** | Complete | 3-channel square wave + noise + envelope, dual I/O ports |
@@ -118,7 +119,7 @@ This project uses a **workspace structure** to separate reusable components from
 
 Contains all reusable components — zero external dependencies:
 
-- CPU implementations (M6800, M6809, M6502, Z80, I8035)
+- CPU implementations (M6800, M6809, M6502, Z80, I8035, I8088)
 - Bus abstractions (Bus trait, BusMasterComponent)
 - Machine trait (frontend-agnostic display/input/render interface)
 - Device trait (common interface for all peripherals: reset, read/write, tick)
@@ -215,7 +216,8 @@ phosphor-core/
 │   │   │   ├── m6809/              # M6809 CPU (285 opcodes) — see [README](core/src/cpu/m6809/README.md)
 │   │   │   ├── m6502/              # M6502 CPU (151 opcodes) — see [README](core/src/cpu/m6502/README.md)
 │   │   │   ├── z80/                # Z80 CPU (1604 opcodes) — see [README](core/src/cpu/z80/README.md)
-│   │   │   └── i8035/              # I8035 CPU (229 opcodes, MCS-48) — see [README](core/src/cpu/i8035/README.md)
+│   │   │   ├── i8035/              # I8035 CPU (229 opcodes, MCS-48) — see [README](core/src/cpu/i8035/README.md)
+│   │   │   └── i8088/              # I8088 CPU (x86, 8-bit bus) — in progress
 │   │   └── device/                 # Peripheral devices (all implement Device trait)
 │   │       ├── mod.rs              # Device trait + module exports
 │   │       ├── pia6820.rs          # MC6821 PIA (registers, interrupts, edge detection)
@@ -461,6 +463,7 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 - [x] MOS 6502 CPU (151 opcodes, cross-validated against SingleStepTests/65x02)
 - [x] Zilog Z80 CPU (1604 opcodes, cross-validated against SingleStepTests/z80)
 - [x] Intel I8035 CPU (229 opcodes, MCS-48 family, cross-validated against MAME)
+- [ ] Intel I8088 CPU (x86 16-bit ISA, 8-bit data bus, 20-bit segmented addressing)
 - [ ] Motorola 68000 CPU (32-bit address space, 16-bit data bus)
 
 ### Phase 4: Peripherals & Systems
@@ -479,6 +482,8 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 - [x] ROM loader (MAME ZIP support, CRC32-based matching, multi-variant ROM sets)
 - [x] GfxCache (pre-decoded tile/sprite pixels, ROM decoders for Pac-Man, DK, MCR families)
 - [x] DirtyBitset (fixed-capacity dirty tracking for tile-level change detection)
+- [ ] MOS 6532 RIOT (128B RAM, 2 I/O ports, programmable interval timer, PA7 edge detect)
+- [ ] Votrax SC-01 speech synthesizer (stub: phoneme accept + request line)
 - [x] Machine trait (frontend-agnostic display/input/render interface)
 - [x] Joust arcade board (Williams 2nd-gen: M6809 + video RAM + PIAs + blitter + CMOS + ROM)
 - [ ] Namco 06xx custom I/O arbiter (Dig Dug, Galaga)
@@ -513,6 +518,7 @@ Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
 - [ ] Galaga (Namco: 3×Z80 + WSG + 06xx/51xx/54xx + starfield)
 - [x] Satan's Hollow (Bally Midway MCR II: Z80 + SSIO + CTC + tile dirty tracking)
 - [x] Crystal Castles (Atari: M6502 + 2×POKEY + bitmap video + sprites + trackball)
+- [ ] Q*Bert (Gottlieb System 80: I8088 + M6502 sound + 6532 RIOT + DAC + Votrax)
 - [ ] Tempest (Atari: M6502 + 2×POKEY + AVG + math box)
 - [ ] Star Wars (Atari: 2×M6809 + 4×POKEY + TMS5220 + AVG + math box)
 

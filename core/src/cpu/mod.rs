@@ -19,7 +19,9 @@ pub use disasm::{Disassemble, DisassembledInstruction};
 
 // Re-export state types
 pub mod state;
-pub use state::{CpuStateTrait, I8035State, M6502State, M6800State, M6809State, Z80State};
+pub use state::{
+    CpuStateTrait, I8035State, I8088State, M6502State, M6800State, M6809State, Z80State,
+};
 
 // Shared flag and signal helpers
 pub mod flags;
@@ -45,3 +47,7 @@ pub use z80::Z80;
 // Intel 8035 (MCS-48 family)
 pub mod i8035;
 pub use i8035::I8035;
+
+// Intel 8088 (x86 16-bit, 8-bit bus)
+pub mod i8088;
+pub use i8088::I8088;
