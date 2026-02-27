@@ -204,6 +204,272 @@ pub fn xor16(flags: &mut u16, a: u16, b: u16) -> u16 {
 }
 
 // ---------------------------------------------------------------------------
+// Shift and rotate operations
+// ---------------------------------------------------------------------------
+
+/// Dispatch a shift/rotate on an 8-bit value.
+/// `op`: 0=ROL, 1=ROR, 2=RCL, 3=RCR, 4=SHL, 5=SHR, 6=SAL(=SHL), 7=SAR.
+/// If `count` is 0, no flags are modified and the value is returned unchanged.
+pub fn shift_rotate8(flags: &mut u16, val: u8, count: u8, op: u8) -> u8 {
+    if count == 0 {
+        return val;
+    }
+    match op & 7 {
+        0 => rol8(flags, val, count),
+        1 => ror8(flags, val, count),
+        2 => rcl8(flags, val, count),
+        3 => rcr8(flags, val, count),
+        4 | 6 => shl8(flags, val, count),
+        5 => shr8(flags, val, count),
+        7 => sar8(flags, val, count),
+        _ => unreachable!(),
+    }
+}
+
+/// Dispatch a shift/rotate on a 16-bit value.
+pub fn shift_rotate16(flags: &mut u16, val: u16, count: u8, op: u8) -> u16 {
+    if count == 0 {
+        return val;
+    }
+    match op & 7 {
+        0 => rol16(flags, val, count),
+        1 => ror16(flags, val, count),
+        2 => rcl16(flags, val, count),
+        3 => rcr16(flags, val, count),
+        4 | 6 => shl16(flags, val, count),
+        5 => shr16(flags, val, count),
+        7 => sar16(flags, val, count),
+        _ => unreachable!(),
+    }
+}
+
+// --- Rotates (only CF and OF affected) ---
+
+fn rol8(flags: &mut u16, val: u8, count: u8) -> u8 {
+    let eff = (count as u32) % 8;
+    let result = val.rotate_left(if eff == 0 { 8 } else { eff });
+    let cf = result & 1 != 0;
+    flags::set(flags, Flag::CF, cf);
+    if count == 1 {
+        flags::set(flags, Flag::OF, ((result >> 7) != 0) ^ cf);
+    }
+    result
+}
+
+fn rol16(flags: &mut u16, val: u16, count: u8) -> u16 {
+    let eff = (count as u32) % 16;
+    let result = val.rotate_left(if eff == 0 { 16 } else { eff });
+    let cf = result & 1 != 0;
+    flags::set(flags, Flag::CF, cf);
+    if count == 1 {
+        flags::set(flags, Flag::OF, ((result >> 15) != 0) ^ cf);
+    }
+    result
+}
+
+fn ror8(flags: &mut u16, val: u8, count: u8) -> u8 {
+    let eff = (count as u32) % 8;
+    let result = val.rotate_right(if eff == 0 { 8 } else { eff });
+    let cf = result & 0x80 != 0;
+    flags::set(flags, Flag::CF, cf);
+    if count == 1 {
+        flags::set(flags, Flag::OF, ((result >> 7) ^ (result >> 6)) & 1 != 0);
+    }
+    result
+}
+
+fn ror16(flags: &mut u16, val: u16, count: u8) -> u16 {
+    let eff = (count as u32) % 16;
+    let result = val.rotate_right(if eff == 0 { 16 } else { eff });
+    let cf = result & 0x8000 != 0;
+    flags::set(flags, Flag::CF, cf);
+    if count == 1 {
+        flags::set(flags, Flag::OF, ((result >> 15) ^ (result >> 14)) & 1 != 0);
+    }
+    result
+}
+
+fn rcl8(flags: &mut u16, val: u8, count: u8) -> u8 {
+    let eff = (count as u32) % 9;
+    if eff == 0 {
+        return val; // full 9-bit cycle: value and CF unchanged
+    }
+    let cf_in = flags::get(*flags, Flag::CF) as u16;
+    let wide = (val as u16) | (cf_in << 8);
+    let rotated = ((wide << eff) | (wide >> (9 - eff))) & 0x1FF;
+    let result = rotated as u8;
+    let cf = (rotated >> 8) & 1 != 0;
+    flags::set(flags, Flag::CF, cf);
+    if count == 1 {
+        flags::set(flags, Flag::OF, ((result >> 7) & 1 != 0) ^ cf);
+    }
+    result
+}
+
+fn rcl16(flags: &mut u16, val: u16, count: u8) -> u16 {
+    let eff = (count as u32) % 17;
+    if eff == 0 {
+        return val;
+    }
+    let cf_in = flags::get(*flags, Flag::CF) as u32;
+    let wide = (val as u32) | (cf_in << 16);
+    let rotated = ((wide << eff) | (wide >> (17 - eff))) & 0x1_FFFF;
+    let result = rotated as u16;
+    let cf = (rotated >> 16) & 1 != 0;
+    flags::set(flags, Flag::CF, cf);
+    if count == 1 {
+        flags::set(flags, Flag::OF, ((result >> 15) & 1 != 0) ^ cf);
+    }
+    result
+}
+
+fn rcr8(flags: &mut u16, val: u8, count: u8) -> u8 {
+    let eff = (count as u32) % 9;
+    if eff == 0 {
+        return val;
+    }
+    let cf_in = flags::get(*flags, Flag::CF) as u16;
+    let wide = (val as u16) | (cf_in << 8);
+    let rotated = ((wide >> eff) | (wide << (9 - eff))) & 0x1FF;
+    let result = rotated as u8;
+    let cf = (rotated >> 8) & 1 != 0;
+    flags::set(flags, Flag::CF, cf);
+    if count == 1 {
+        flags::set(flags, Flag::OF, ((result >> 7) ^ (result >> 6)) & 1 != 0);
+    }
+    result
+}
+
+fn rcr16(flags: &mut u16, val: u16, count: u8) -> u16 {
+    let eff = (count as u32) % 17;
+    if eff == 0 {
+        return val;
+    }
+    let cf_in = flags::get(*flags, Flag::CF) as u32;
+    let wide = (val as u32) | (cf_in << 16);
+    let rotated = ((wide >> eff) | (wide << (17 - eff))) & 0x1_FFFF;
+    let result = rotated as u16;
+    let cf = (rotated >> 16) & 1 != 0;
+    flags::set(flags, Flag::CF, cf);
+    if count == 1 {
+        flags::set(flags, Flag::OF, ((result >> 15) ^ (result >> 14)) & 1 != 0);
+    }
+    result
+}
+
+// --- Shifts (CF, OF, SF, ZF, PF affected; AF undefined) ---
+
+fn shl8(flags: &mut u16, val: u8, count: u8) -> u8 {
+    let (result, cf) = if count >= 9 {
+        (0u8, false)
+    } else {
+        // count 1..=8; use u16 so count=8 doesn't overflow
+        let wide = (val as u16) << count;
+        (wide as u8, wide & 0x100 != 0)
+    };
+    flags::set(flags, Flag::CF, cf);
+    flags::update_szp8(flags, result);
+    if count == 1 {
+        flags::set(flags, Flag::OF, ((result >> 7) & 1 != 0) ^ cf);
+    }
+    result
+}
+
+fn shl16(flags: &mut u16, val: u16, count: u8) -> u16 {
+    let count32 = count as u32;
+    let (result, cf) = if count32 > 16 {
+        (0u16, false)
+    } else {
+        // count 1..=16; use u32
+        let wide = (val as u32) << count32;
+        (wide as u16, wide & 0x1_0000 != 0)
+    };
+    flags::set(flags, Flag::CF, cf);
+    flags::update_szp16(flags, result);
+    if count == 1 {
+        flags::set(flags, Flag::OF, ((result >> 15) & 1 != 0) ^ cf);
+    }
+    result
+}
+
+fn shr8(flags: &mut u16, val: u8, count: u8) -> u8 {
+    let (result, cf) = if count > 8 {
+        (0u8, false)
+    } else if count == 8 {
+        (0u8, val & 0x80 != 0)
+    } else {
+        // count 1..=7
+        let cf = (val >> (count - 1)) & 1 != 0;
+        (val >> count, cf)
+    };
+    flags::set(flags, Flag::CF, cf);
+    flags::update_szp8(flags, result);
+    if count == 1 {
+        flags::set(flags, Flag::OF, val & 0x80 != 0);
+    }
+    result
+}
+
+fn shr16(flags: &mut u16, val: u16, count: u8) -> u16 {
+    let (result, cf) = if count as u32 > 16 {
+        (0u16, false)
+    } else if count == 16 {
+        (0u16, val & 0x8000 != 0)
+    } else {
+        // count 1..=15
+        let cf = (val >> (count - 1)) & 1 != 0;
+        (val >> count, cf)
+    };
+    flags::set(flags, Flag::CF, cf);
+    flags::update_szp16(flags, result);
+    if count == 1 {
+        flags::set(flags, Flag::OF, val & 0x8000 != 0);
+    }
+    result
+}
+
+fn sar8(flags: &mut u16, val: u8, count: u8) -> u8 {
+    let (result, cf) = if count >= 8 {
+        // All bits become the sign bit
+        if val & 0x80 != 0 {
+            (0xFF_u8, true)
+        } else {
+            (0x00_u8, false)
+        }
+    } else {
+        // count 1..=7
+        let cf = (val >> (count - 1)) & 1 != 0;
+        (((val as i8) >> count) as u8, cf)
+    };
+    flags::set(flags, Flag::CF, cf);
+    flags::update_szp8(flags, result);
+    if count == 1 {
+        flags::set(flags, Flag::OF, false); // sign never changes
+    }
+    result
+}
+
+fn sar16(flags: &mut u16, val: u16, count: u8) -> u16 {
+    let (result, cf) = if count >= 16 {
+        if val & 0x8000 != 0 {
+            (0xFFFF_u16, true)
+        } else {
+            (0x0000_u16, false)
+        }
+    } else {
+        // count 1..=15
+        let cf = (val >> (count - 1)) & 1 != 0;
+        (((val as i16) >> count) as u16, cf)
+    };
+    flags::set(flags, Flag::CF, cf);
+    flags::update_szp16(flags, result);
+    if count == 1 {
+        flags::set(flags, Flag::OF, false);
+    }
+    result
+}
+
+// ---------------------------------------------------------------------------
 // NOT (no flags affected)
 // ---------------------------------------------------------------------------
 
@@ -462,5 +728,169 @@ mod tests {
     fn not16_basic() {
         assert_eq!(not16(0x0000), 0xFFFF);
         assert_eq!(not16(0xFFFF), 0x0000);
+    }
+
+    // -- SHL --
+
+    #[test]
+    fn shl8_by_1() {
+        let mut flags = f();
+        assert_eq!(shift_rotate8(&mut flags, 0x80, 1, 4), 0x00);
+        assert!(flags::get(flags, Flag::CF)); // MSB shifted out
+        assert!(flags::get(flags, Flag::ZF));
+    }
+
+    #[test]
+    fn shl8_by_4() {
+        let mut flags = f();
+        assert_eq!(shift_rotate8(&mut flags, 0x0F, 4, 4), 0xF0);
+        assert!(!flags::get(flags, Flag::CF));
+        assert!(flags::get(flags, Flag::SF));
+    }
+
+    #[test]
+    fn shl8_by_8() {
+        let mut flags = f();
+        // SHL 0xFF by 8: CF = bit 0 = 1, result = 0
+        assert_eq!(shift_rotate8(&mut flags, 0xFF, 8, 4), 0x00);
+        assert!(flags::get(flags, Flag::CF));
+    }
+
+    #[test]
+    fn shl8_by_9_plus() {
+        let mut flags = f();
+        assert_eq!(shift_rotate8(&mut flags, 0xFF, 9, 4), 0x00);
+        assert!(!flags::get(flags, Flag::CF));
+    }
+
+    #[test]
+    fn shl8_count_zero_no_flags() {
+        let mut flags = f();
+        flags::set(&mut flags, Flag::CF, true);
+        assert_eq!(shift_rotate8(&mut flags, 0xFF, 0, 4), 0xFF);
+        assert!(flags::get(flags, Flag::CF)); // unchanged
+    }
+
+    // -- SHR --
+
+    #[test]
+    fn shr8_by_1() {
+        let mut flags = f();
+        assert_eq!(shift_rotate8(&mut flags, 0x01, 1, 5), 0x00);
+        assert!(flags::get(flags, Flag::CF));
+        assert!(flags::get(flags, Flag::ZF));
+    }
+
+    #[test]
+    fn shr8_of_flag() {
+        let mut flags = f();
+        // SHR by 1: OF = MSB of original
+        assert_eq!(shift_rotate8(&mut flags, 0x80, 1, 5), 0x40);
+        assert!(!flags::get(flags, Flag::CF));
+        assert!(flags::get(flags, Flag::OF));
+    }
+
+    #[test]
+    fn shr16_by_1() {
+        let mut flags = f();
+        assert_eq!(shift_rotate16(&mut flags, 0x8001, 1, 5), 0x4000);
+        assert!(flags::get(flags, Flag::CF));
+        assert!(flags::get(flags, Flag::OF)); // MSB was 1
+    }
+
+    // -- SAR --
+
+    #[test]
+    fn sar8_positive() {
+        let mut flags = f();
+        assert_eq!(shift_rotate8(&mut flags, 0x40, 1, 7), 0x20);
+        assert!(!flags::get(flags, Flag::CF));
+        assert!(!flags::get(flags, Flag::OF)); // SAR OF always 0
+    }
+
+    #[test]
+    fn sar8_negative() {
+        let mut flags = f();
+        assert_eq!(shift_rotate8(&mut flags, 0x80, 1, 7), 0xC0);
+        assert!(!flags::get(flags, Flag::CF));
+        assert!(flags::get(flags, Flag::SF));
+    }
+
+    #[test]
+    fn sar8_saturates() {
+        let mut flags = f();
+        assert_eq!(shift_rotate8(&mut flags, 0x80, 8, 7), 0xFF);
+        assert!(flags::get(flags, Flag::CF));
+    }
+
+    // -- ROL --
+
+    #[test]
+    fn rol8_by_1() {
+        let mut flags = f();
+        assert_eq!(shift_rotate8(&mut flags, 0x80, 1, 0), 0x01);
+        assert!(flags::get(flags, Flag::CF)); // bit 0 of result
+    }
+
+    #[test]
+    fn rol8_by_4() {
+        let mut flags = f();
+        assert_eq!(shift_rotate8(&mut flags, 0x12, 4, 0), 0x21);
+        assert!(flags::get(flags, Flag::CF));
+    }
+
+    // -- ROR --
+
+    #[test]
+    fn ror8_by_1() {
+        let mut flags = f();
+        assert_eq!(shift_rotate8(&mut flags, 0x01, 1, 1), 0x80);
+        assert!(flags::get(flags, Flag::CF)); // MSB of result
+    }
+
+    #[test]
+    fn ror8_by_4() {
+        let mut flags = f();
+        assert_eq!(shift_rotate8(&mut flags, 0x12, 4, 1), 0x21);
+    }
+
+    // -- RCL --
+
+    #[test]
+    fn rcl8_by_1_cf_clear() {
+        let mut flags = f();
+        flags::set(&mut flags, Flag::CF, false);
+        // RCL 0x80 by 1: old CF (0) goes to bit 0, MSB (1) goes to CF
+        assert_eq!(shift_rotate8(&mut flags, 0x80, 1, 2), 0x00);
+        assert!(flags::get(flags, Flag::CF));
+    }
+
+    #[test]
+    fn rcl8_by_1_cf_set() {
+        let mut flags = f();
+        flags::set(&mut flags, Flag::CF, true);
+        // RCL 0x00 by 1: old CF (1) goes to bit 0, MSB (0) goes to CF
+        assert_eq!(shift_rotate8(&mut flags, 0x00, 1, 2), 0x01);
+        assert!(!flags::get(flags, Flag::CF));
+    }
+
+    // -- RCR --
+
+    #[test]
+    fn rcr8_by_1_cf_clear() {
+        let mut flags = f();
+        flags::set(&mut flags, Flag::CF, false);
+        // RCR 0x01 by 1: old CF (0) goes to MSB, LSB (1) goes to CF
+        assert_eq!(shift_rotate8(&mut flags, 0x01, 1, 3), 0x00);
+        assert!(flags::get(flags, Flag::CF));
+    }
+
+    #[test]
+    fn rcr8_by_1_cf_set() {
+        let mut flags = f();
+        flags::set(&mut flags, Flag::CF, true);
+        // RCR 0x00 by 1: old CF (1) goes to MSB, LSB (0) goes to CF
+        assert_eq!(shift_rotate8(&mut flags, 0x00, 1, 3), 0x80);
+        assert!(!flags::get(flags, Flag::CF));
     }
 }

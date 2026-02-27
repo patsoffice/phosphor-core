@@ -70,16 +70,82 @@ impl I8088 {
             }
             0x20..=0x25 => self.alu_dispatch(opcode, 4, bus, master),
             // 0x26 = ES: prefix (consumed by consume_prefixes)
-            // 0x27 = DAA (Step 1.6)
+            0x27 => {
+                // DAA: Decimal Adjust AL after Addition
+                let old_al = self.al();
+                let old_cf = flags::get(self.flags, Flag::CF);
+                flags::set(&mut self.flags, Flag::CF, false);
+                let mut al = old_al;
+                if (al & 0x0F) > 9 || flags::get(self.flags, Flag::AF) {
+                    let (new_al, carry) = al.overflowing_add(6);
+                    al = new_al;
+                    flags::set(&mut self.flags, Flag::CF, old_cf || carry);
+                    flags::set(&mut self.flags, Flag::AF, true);
+                } else {
+                    flags::set(&mut self.flags, Flag::AF, false);
+                }
+                if old_al > 0x99 || old_cf {
+                    al = al.wrapping_add(0x60);
+                    flags::set(&mut self.flags, Flag::CF, true);
+                }
+                self.set_al(al);
+                flags::update_szp8(&mut self.flags, al);
+            }
             0x28..=0x2D => self.alu_dispatch(opcode, 5, bus, master),
             // 0x2E = CS: prefix (consumed by consume_prefixes)
-            // 0x2F = DAS (Step 1.6)
+            0x2F => {
+                // DAS: Decimal Adjust AL after Subtraction
+                let old_al = self.al();
+                let old_cf = flags::get(self.flags, Flag::CF);
+                flags::set(&mut self.flags, Flag::CF, false);
+                let mut al = old_al;
+                if (al & 0x0F) > 9 || flags::get(self.flags, Flag::AF) {
+                    let (new_al, borrow) = al.overflowing_sub(6);
+                    al = new_al;
+                    flags::set(&mut self.flags, Flag::CF, old_cf || borrow);
+                    flags::set(&mut self.flags, Flag::AF, true);
+                } else {
+                    flags::set(&mut self.flags, Flag::AF, false);
+                }
+                if old_al > 0x99 || old_cf {
+                    al = al.wrapping_sub(0x60);
+                    flags::set(&mut self.flags, Flag::CF, true);
+                }
+                self.set_al(al);
+                flags::update_szp8(&mut self.flags, al);
+            }
             0x30..=0x35 => self.alu_dispatch(opcode, 6, bus, master),
             // 0x36 = SS: prefix (consumed by consume_prefixes)
-            // 0x37 = AAA (Step 1.6)
+            0x37 => {
+                // AAA: ASCII Adjust after Addition
+                if (self.al() & 0x0F) > 9 || flags::get(self.flags, Flag::AF) {
+                    let al = self.al().wrapping_add(6);
+                    self.set_al(al);
+                    self.set_ah(self.ah().wrapping_add(1));
+                    flags::set(&mut self.flags, Flag::AF, true);
+                    flags::set(&mut self.flags, Flag::CF, true);
+                } else {
+                    flags::set(&mut self.flags, Flag::AF, false);
+                    flags::set(&mut self.flags, Flag::CF, false);
+                }
+                self.set_al(self.al() & 0x0F);
+            }
             0x38..=0x3D => self.alu_dispatch(opcode, 7, bus, master),
             // 0x3E = DS: prefix (consumed by consume_prefixes)
-            // 0x3F = AAS (Step 1.6)
+            0x3F => {
+                // AAS: ASCII Adjust after Subtraction
+                if (self.al() & 0x0F) > 9 || flags::get(self.flags, Flag::AF) {
+                    let al = self.al().wrapping_sub(6);
+                    self.set_al(al);
+                    self.set_ah(self.ah().wrapping_sub(1));
+                    flags::set(&mut self.flags, Flag::AF, true);
+                    flags::set(&mut self.flags, Flag::CF, true);
+                } else {
+                    flags::set(&mut self.flags, Flag::AF, false);
+                    flags::set(&mut self.flags, Flag::CF, false);
+                }
+                self.set_al(self.al() & 0x0F);
+            }
 
             // =============================================================
             // INC reg16 (0x40-0x47) / DEC reg16 (0x48-0x4F)
@@ -272,6 +338,21 @@ impl I8088 {
             }
 
             // =============================================================
+            // CBW (0x98): sign-extend AL → AX
+            // CWD (0x99): sign-extend AX → DX:AX
+            // =============================================================
+            0x98 => {
+                self.ax = self.al() as i8 as i16 as u16;
+            }
+            0x99 => {
+                self.dx = if self.ax & 0x8000 != 0 {
+                    0xFFFF
+                } else {
+                    0x0000
+                };
+            }
+
+            // =============================================================
             // CALL far (0x9A): push CS, push IP, load new CS:IP
             // =============================================================
             0x9A => {
@@ -430,6 +511,65 @@ impl I8088 {
             }
 
             // =============================================================
+            // Shift/Rotate group (0xD0-0xD3)
+            //   0xD0: r/m8, 1    0xD1: r/m16, 1
+            //   0xD2: r/m8, CL   0xD3: r/m16, CL
+            // =============================================================
+            0xD0 => {
+                let modrm = self.fetch_modrm(bus, master);
+                let operand = self.resolve_modrm(modrm, bus, master);
+                let val = self.read_operand8(operand, bus, master);
+                let result = alu::shift_rotate8(&mut self.flags, val, 1, modrm.reg);
+                self.write_operand8(operand, bus, master, result);
+            }
+            0xD1 => {
+                let modrm = self.fetch_modrm(bus, master);
+                let operand = self.resolve_modrm(modrm, bus, master);
+                let val = self.read_operand16(operand, bus, master);
+                let result = alu::shift_rotate16(&mut self.flags, val, 1, modrm.reg);
+                self.write_operand16(operand, bus, master, result);
+            }
+            0xD2 => {
+                let modrm = self.fetch_modrm(bus, master);
+                let operand = self.resolve_modrm(modrm, bus, master);
+                let val = self.read_operand8(operand, bus, master);
+                let cl = self.cl();
+                let result = alu::shift_rotate8(&mut self.flags, val, cl, modrm.reg);
+                self.write_operand8(operand, bus, master, result);
+            }
+            0xD3 => {
+                let modrm = self.fetch_modrm(bus, master);
+                let operand = self.resolve_modrm(modrm, bus, master);
+                let val = self.read_operand16(operand, bus, master);
+                let cl = self.cl();
+                let result = alu::shift_rotate16(&mut self.flags, val, cl, modrm.reg);
+                self.write_operand16(operand, bus, master, result);
+            }
+
+            // =============================================================
+            // AAM (0xD4): AH = AL / imm8, AL = AL % imm8
+            // AAD (0xD5): AL = AH * imm8 + AL, AH = 0
+            // =============================================================
+            0xD4 => {
+                let base = self.fetch_byte(bus, master);
+                if base != 0 {
+                    let al = self.al();
+                    self.set_ah(al / base);
+                    self.set_al(al % base);
+                    let result_al = self.al();
+                    flags::update_szp8(&mut self.flags, result_al);
+                }
+                // Division by zero: undefined on 8088 (no INT 0 for AAM)
+            }
+            0xD5 => {
+                let base = self.fetch_byte(bus, master);
+                let result = self.ah().wrapping_mul(base).wrapping_add(self.al());
+                self.set_al(result);
+                self.set_ah(0);
+                flags::update_szp8(&mut self.flags, result);
+            }
+
+            // =============================================================
             // XLAT (0xD7): AL = [DS:BX + unsigned AL]
             // =============================================================
             0xD7 => {
@@ -510,8 +650,7 @@ impl I8088 {
             }
 
             // =============================================================
-            // Unary group 0xF6 (byte): /0=TEST, /2=NOT, /3=NEG
-            // MUL/IMUL/DIV/IDIV (/4-/7) in Step 1.6
+            // Unary group 0xF6 (byte)
             // =============================================================
             0xF6 => {
                 let modrm = self.fetch_modrm(bus, master);
@@ -534,13 +673,58 @@ impl I8088 {
                         let result = alu::neg8(&mut self.flags, val);
                         self.write_operand8(operand, bus, master, result);
                     }
-                    _ => {} // MUL/IMUL/DIV/IDIV (Step 1.6)
+                    4 => {
+                        // MUL r/m8: AX = AL * r/m8 (unsigned)
+                        let val = self.read_operand8(operand, bus, master);
+                        let result = self.al() as u16 * val as u16;
+                        self.ax = result;
+                        let of_cf = self.ah() != 0;
+                        flags::set(&mut self.flags, Flag::CF, of_cf);
+                        flags::set(&mut self.flags, Flag::OF, of_cf);
+                    }
+                    5 => {
+                        // IMUL r/m8: AX = AL * r/m8 (signed)
+                        let val = self.read_operand8(operand, bus, master);
+                        let result = (self.al() as i8 as i16) * (val as i8 as i16);
+                        self.ax = result as u16;
+                        // CF=OF=1 if result doesn't fit in signed 8-bit
+                        let of_cf = result != self.al() as i8 as i16;
+                        flags::set(&mut self.flags, Flag::CF, of_cf);
+                        flags::set(&mut self.flags, Flag::OF, of_cf);
+                    }
+                    6 => {
+                        // DIV r/m8: AL = AX / r/m8, AH = AX % r/m8
+                        let val = self.read_operand8(operand, bus, master) as u16;
+                        if val != 0 {
+                            let quotient = self.ax / val;
+                            if quotient <= 0xFF {
+                                let remainder = self.ax % val;
+                                self.set_al(quotient as u8);
+                                self.set_ah(remainder as u8);
+                            }
+                            // quotient > 0xFF: divide overflow (INT 0, Step 1.8)
+                        }
+                        // val == 0: divide by zero (INT 0, Step 1.8)
+                    }
+                    7 => {
+                        // IDIV r/m8: AL = AX / r/m8, AH = AX % r/m8 (signed)
+                        let val = self.read_operand8(operand, bus, master) as i8;
+                        if val != 0 {
+                            let dividend = self.ax as i16;
+                            let quotient = dividend / val as i16;
+                            if (-128..=127).contains(&quotient) {
+                                let remainder = dividend % val as i16;
+                                self.set_al(quotient as u8);
+                                self.set_ah(remainder as u8);
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
 
             // =============================================================
-            // Unary group 0xF7 (word): /0=TEST, /2=NOT, /3=NEG
-            // MUL/IMUL/DIV/IDIV (/4-/7) in Step 1.6
+            // Unary group 0xF7 (word)
             // =============================================================
             0xF7 => {
                 let modrm = self.fetch_modrm(bus, master);
@@ -563,7 +747,54 @@ impl I8088 {
                         let result = alu::neg16(&mut self.flags, val);
                         self.write_operand16(operand, bus, master, result);
                     }
-                    _ => {} // MUL/IMUL/DIV/IDIV (Step 1.6)
+                    4 => {
+                        // MUL r/m16: DX:AX = AX * r/m16 (unsigned)
+                        let val = self.read_operand16(operand, bus, master);
+                        let result = self.ax as u32 * val as u32;
+                        self.ax = result as u16;
+                        self.dx = (result >> 16) as u16;
+                        let of_cf = self.dx != 0;
+                        flags::set(&mut self.flags, Flag::CF, of_cf);
+                        flags::set(&mut self.flags, Flag::OF, of_cf);
+                    }
+                    5 => {
+                        // IMUL r/m16: DX:AX = AX * r/m16 (signed)
+                        let val = self.read_operand16(operand, bus, master);
+                        let result = (self.ax as i16 as i32) * (val as i16 as i32);
+                        self.ax = result as u16;
+                        self.dx = (result >> 16) as u16;
+                        // CF=OF=1 if result doesn't fit in signed 16-bit
+                        let of_cf = result != self.ax as i16 as i32;
+                        flags::set(&mut self.flags, Flag::CF, of_cf);
+                        flags::set(&mut self.flags, Flag::OF, of_cf);
+                    }
+                    6 => {
+                        // DIV r/m16: AX = DX:AX / r/m16, DX = DX:AX % r/m16
+                        let val = self.read_operand16(operand, bus, master) as u32;
+                        if val != 0 {
+                            let dividend = ((self.dx as u32) << 16) | self.ax as u32;
+                            let quotient = dividend / val;
+                            if quotient <= 0xFFFF {
+                                let remainder = dividend % val;
+                                self.ax = quotient as u16;
+                                self.dx = remainder as u16;
+                            }
+                        }
+                    }
+                    7 => {
+                        // IDIV r/m16: AX = DX:AX / r/m16, DX = DX:AX % r/m16 (signed)
+                        let val = self.read_operand16(operand, bus, master) as i16;
+                        if val != 0 {
+                            let dividend = (((self.dx as u32) << 16) | self.ax as u32) as i32;
+                            let quotient = dividend / val as i32;
+                            if (-32768..=32767).contains(&quotient) {
+                                let remainder = dividend % val as i32;
+                                self.ax = quotient as u16;
+                                self.dx = remainder as u16;
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
 
@@ -2590,5 +2821,513 @@ mod tests {
         assert_eq!(cpu.al(), 0x7F);
         assert!(fl::get(cpu.flags, Flag::OF));
         assert!(fl::get(cpu.flags, Flag::AF));
+    }
+
+    // =====================================================================
+    // SHL r/m8, 1 (0xD0 /4) and SHL r/m8, CL (0xD2 /4)
+    // =====================================================================
+
+    #[test]
+    fn shl_rm8_by_1() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.set_al(0x80);
+        // ModR/M: mod=11 reg=100(/4=SHL) rm=000(AL) = 0xE0
+        bus.mem[0x100] = 0xE0;
+        cpu.execute(0xD0, &mut bus, M); // SHL AL, 1
+        assert_eq!(cpu.al(), 0x00);
+        assert!(fl::get(cpu.flags, Flag::CF));
+        assert!(fl::get(cpu.flags, Flag::ZF));
+    }
+
+    #[test]
+    fn shl_rm8_by_cl() {
+        let (mut cpu, mut bus) = setup();
+        cpu.set_al(0x01);
+        cpu.set_cl(4);
+        bus.mem[0x100] = 0xE0;
+        cpu.execute(0xD2, &mut bus, M); // SHL AL, CL
+        assert_eq!(cpu.al(), 0x10);
+    }
+
+    // =====================================================================
+    // SHR r/m8, 1 (0xD0 /5)
+    // =====================================================================
+
+    #[test]
+    fn shr_rm8_by_1() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.set_al(0x03);
+        // ModR/M: mod=11 reg=101(/5=SHR) rm=000(AL) = 0xE8
+        bus.mem[0x100] = 0xE8;
+        cpu.execute(0xD0, &mut bus, M); // SHR AL, 1
+        assert_eq!(cpu.al(), 0x01);
+        assert!(fl::get(cpu.flags, Flag::CF)); // bit 0 was 1
+    }
+
+    // =====================================================================
+    // SAR r/m8, 1 (0xD0 /7)
+    // =====================================================================
+
+    #[test]
+    fn sar_rm8_by_1() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.set_al(0x80); // -128
+        // ModR/M: mod=11 reg=111(/7=SAR) rm=000(AL) = 0xF8
+        bus.mem[0x100] = 0xF8;
+        cpu.execute(0xD0, &mut bus, M); // SAR AL, 1
+        assert_eq!(cpu.al(), 0xC0); // -64, sign preserved
+        assert!(!fl::get(cpu.flags, Flag::CF));
+        assert!(!fl::get(cpu.flags, Flag::OF));
+        assert!(fl::get(cpu.flags, Flag::SF));
+    }
+
+    // =====================================================================
+    // ROL r/m8, 1 (0xD0 /0)
+    // =====================================================================
+
+    #[test]
+    fn rol_rm8_by_1() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.set_al(0x80);
+        // ModR/M: mod=11 reg=000(/0=ROL) rm=000(AL) = 0xC0
+        bus.mem[0x100] = 0xC0;
+        cpu.execute(0xD0, &mut bus, M); // ROL AL, 1
+        assert_eq!(cpu.al(), 0x01);
+        assert!(fl::get(cpu.flags, Flag::CF));
+    }
+
+    // =====================================================================
+    // ROR r/m8, 1 (0xD0 /1)
+    // =====================================================================
+
+    #[test]
+    fn ror_rm8_by_1() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.set_al(0x01);
+        // ModR/M: mod=11 reg=001(/1=ROR) rm=000(AL) = 0xC8
+        bus.mem[0x100] = 0xC8;
+        cpu.execute(0xD0, &mut bus, M); // ROR AL, 1
+        assert_eq!(cpu.al(), 0x80);
+        assert!(fl::get(cpu.flags, Flag::CF));
+    }
+
+    // =====================================================================
+    // RCL r/m8, 1 (0xD0 /2)
+    // =====================================================================
+
+    #[test]
+    fn rcl_rm8_by_1() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        fl::set(&mut cpu.flags, Flag::CF, true);
+        cpu.set_al(0x00);
+        // ModR/M: mod=11 reg=010(/2=RCL) rm=000(AL) = 0xD0
+        bus.mem[0x100] = 0xD0;
+        cpu.execute(0xD0, &mut bus, M); // RCL AL, 1
+        assert_eq!(cpu.al(), 0x01); // CF rotated in
+        assert!(!fl::get(cpu.flags, Flag::CF)); // old bit 7 (0) → CF
+    }
+
+    // =====================================================================
+    // RCR r/m8, 1 (0xD0 /3)
+    // =====================================================================
+
+    #[test]
+    fn rcr_rm8_by_1() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        fl::set(&mut cpu.flags, Flag::CF, true);
+        cpu.set_al(0x00);
+        // ModR/M: mod=11 reg=011(/3=RCR) rm=000(AL) = 0xD8
+        bus.mem[0x100] = 0xD8;
+        cpu.execute(0xD0, &mut bus, M); // RCR AL, 1
+        assert_eq!(cpu.al(), 0x80); // CF rotated into MSB
+        assert!(!fl::get(cpu.flags, Flag::CF)); // old bit 0 (0) → CF
+    }
+
+    // =====================================================================
+    // Shift/rotate 16-bit (0xD1, 0xD3)
+    // =====================================================================
+
+    #[test]
+    fn shl_rm16_by_1() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.ax = 0x8000;
+        // ModR/M: mod=11 reg=100(/4=SHL) rm=000(AX) = 0xE0
+        bus.mem[0x100] = 0xE0;
+        cpu.execute(0xD1, &mut bus, M); // SHL AX, 1
+        assert_eq!(cpu.ax, 0x0000);
+        assert!(fl::get(cpu.flags, Flag::CF));
+    }
+
+    #[test]
+    fn shr_rm16_by_cl() {
+        let (mut cpu, mut bus) = setup();
+        cpu.ax = 0xFF00;
+        cpu.set_cl(8);
+        bus.mem[0x100] = 0xE8; // mod=11 reg=101(/5=SHR) rm=000(AX)
+        cpu.execute(0xD3, &mut bus, M); // SHR AX, CL
+        assert_eq!(cpu.ax, 0x00FF);
+    }
+
+    // =====================================================================
+    // MUL r/m8 (0xF6 /4)
+    // =====================================================================
+
+    #[test]
+    fn mul_rm8() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.set_al(0x10);
+        cpu.set_bl(0x10);
+        // ModR/M: mod=11 reg=100(/4=MUL) rm=011(BL) = 0xE3
+        bus.mem[0x100] = 0xE3;
+        cpu.execute(0xF6, &mut bus, M); // MUL BL
+        assert_eq!(cpu.ax, 0x0100); // 16 * 16 = 256
+        assert!(fl::get(cpu.flags, Flag::CF)); // AH != 0
+        assert!(fl::get(cpu.flags, Flag::OF));
+    }
+
+    #[test]
+    fn mul_rm8_no_overflow() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.set_al(0x03);
+        cpu.set_bl(0x04);
+        bus.mem[0x100] = 0xE3;
+        cpu.execute(0xF6, &mut bus, M); // MUL BL
+        assert_eq!(cpu.ax, 0x000C); // 3 * 4 = 12
+        assert!(!fl::get(cpu.flags, Flag::CF)); // AH == 0
+    }
+
+    // =====================================================================
+    // IMUL r/m8 (0xF6 /5)
+    // =====================================================================
+
+    #[test]
+    fn imul_rm8() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.set_al(0xFF); // -1 signed
+        cpu.set_bl(0x02); // +2
+        // ModR/M: mod=11 reg=101(/5=IMUL) rm=011(BL) = 0xEB
+        bus.mem[0x100] = 0xEB;
+        cpu.execute(0xF6, &mut bus, M); // IMUL BL
+        assert_eq!(cpu.ax, 0xFFFE); // -2 as u16
+        assert!(!fl::get(cpu.flags, Flag::CF)); // fits in 8-bit signed
+    }
+
+    #[test]
+    fn imul_rm8_overflow() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.set_al(0x40); // +64
+        cpu.set_bl(0x04); // +4
+        bus.mem[0x100] = 0xEB;
+        cpu.execute(0xF6, &mut bus, M); // IMUL BL
+        assert_eq!(cpu.ax, 0x0100); // 64*4 = 256, doesn't fit in i8
+        assert!(fl::get(cpu.flags, Flag::CF));
+        assert!(fl::get(cpu.flags, Flag::OF));
+    }
+
+    // =====================================================================
+    // MUL r/m16 (0xF7 /4)
+    // =====================================================================
+
+    #[test]
+    fn mul_rm16() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.ax = 0x0100;
+        cpu.bx = 0x0100;
+        // ModR/M: mod=11 reg=100(/4=MUL) rm=011(BX) = 0xE3
+        bus.mem[0x100] = 0xE3;
+        cpu.execute(0xF7, &mut bus, M); // MUL BX
+        assert_eq!(cpu.ax, 0x0000);
+        assert_eq!(cpu.dx, 0x0001); // 256 * 256 = 65536
+        assert!(fl::get(cpu.flags, Flag::CF));
+        assert!(fl::get(cpu.flags, Flag::OF));
+    }
+
+    // =====================================================================
+    // DIV r/m8 (0xF6 /6)
+    // =====================================================================
+
+    #[test]
+    fn div_rm8() {
+        let (mut cpu, mut bus) = setup();
+        cpu.ax = 0x0064; // 100
+        cpu.set_bl(0x0A); // 10
+        // ModR/M: mod=11 reg=110(/6=DIV) rm=011(BL) = 0xF3
+        bus.mem[0x100] = 0xF3;
+        cpu.execute(0xF6, &mut bus, M); // DIV BL
+        assert_eq!(cpu.al(), 0x0A); // 100 / 10 = 10
+        assert_eq!(cpu.ah(), 0x00); // 100 % 10 = 0
+    }
+
+    #[test]
+    fn div_rm8_with_remainder() {
+        let (mut cpu, mut bus) = setup();
+        cpu.ax = 0x000B; // 11
+        cpu.set_bl(0x03); // 3
+        bus.mem[0x100] = 0xF3;
+        cpu.execute(0xF6, &mut bus, M);
+        assert_eq!(cpu.al(), 0x03); // 11 / 3 = 3
+        assert_eq!(cpu.ah(), 0x02); // 11 % 3 = 2
+    }
+
+    // =====================================================================
+    // IDIV r/m8 (0xF6 /7)
+    // =====================================================================
+
+    #[test]
+    fn idiv_rm8() {
+        let (mut cpu, mut bus) = setup();
+        cpu.ax = 0xFFF6; // -10 as i16
+        cpu.set_bl(0x03); // +3
+        // ModR/M: mod=11 reg=111(/7=IDIV) rm=011(BL) = 0xFB
+        bus.mem[0x100] = 0xFB;
+        cpu.execute(0xF6, &mut bus, M); // IDIV BL
+        assert_eq!(cpu.al() as i8, -3); // -10 / 3 = -3
+        assert_eq!(cpu.ah() as i8, -1); // -10 % 3 = -1
+    }
+
+    // =====================================================================
+    // DIV r/m16 (0xF7 /6)
+    // =====================================================================
+
+    #[test]
+    fn div_rm16() {
+        let (mut cpu, mut bus) = setup();
+        cpu.dx = 0x0000;
+        cpu.ax = 0x03E8; // 1000
+        cpu.bx = 0x000A; // 10
+        // ModR/M: mod=11 reg=110(/6=DIV) rm=011(BX) = 0xF3
+        bus.mem[0x100] = 0xF3;
+        cpu.execute(0xF7, &mut bus, M); // DIV BX
+        assert_eq!(cpu.ax, 0x0064); // 1000 / 10 = 100
+        assert_eq!(cpu.dx, 0x0000); // 1000 % 10 = 0
+    }
+
+    #[test]
+    fn div_rm16_large_dividend() {
+        let (mut cpu, mut bus) = setup();
+        cpu.dx = 0x0001;
+        cpu.ax = 0x0000; // DX:AX = 0x10000 = 65536
+        cpu.bx = 0x0100; // 256
+        bus.mem[0x100] = 0xF3;
+        cpu.execute(0xF7, &mut bus, M); // DIV BX
+        assert_eq!(cpu.ax, 0x0100); // 65536 / 256 = 256
+        assert_eq!(cpu.dx, 0x0000);
+    }
+
+    // =====================================================================
+    // IMUL r/m16 (0xF7 /5)
+    // =====================================================================
+
+    #[test]
+    fn imul_rm16() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.ax = 0xFFFF; // -1 signed
+        cpu.bx = 0x0002; // +2
+        bus.mem[0x100] = 0xEB; // mod=11 reg=101(/5=IMUL) rm=011(BX)
+        cpu.execute(0xF7, &mut bus, M); // IMUL BX
+        // -1 * 2 = -2 → DX:AX = 0xFFFF:0xFFFE
+        assert_eq!(cpu.ax, 0xFFFE);
+        assert_eq!(cpu.dx, 0xFFFF);
+        assert!(!fl::get(cpu.flags, Flag::CF)); // fits in i16
+    }
+
+    // =====================================================================
+    // CBW (0x98) / CWD (0x99)
+    // =====================================================================
+
+    #[test]
+    fn cbw_positive() {
+        let (mut cpu, mut bus) = setup();
+        cpu.ax = 0xFF42; // AL = 0x42 (positive)
+        cpu.execute(0x98, &mut bus, M);
+        assert_eq!(cpu.ax, 0x0042); // AH = 0x00
+    }
+
+    #[test]
+    fn cbw_negative() {
+        let (mut cpu, mut bus) = setup();
+        cpu.ax = 0x0080; // AL = 0x80 (-128)
+        cpu.execute(0x98, &mut bus, M);
+        assert_eq!(cpu.ax, 0xFF80); // AH = 0xFF
+    }
+
+    #[test]
+    fn cwd_positive() {
+        let (mut cpu, mut bus) = setup();
+        cpu.ax = 0x1234;
+        cpu.dx = 0xFFFF; // should be cleared
+        cpu.execute(0x99, &mut bus, M);
+        assert_eq!(cpu.dx, 0x0000);
+    }
+
+    #[test]
+    fn cwd_negative() {
+        let (mut cpu, mut bus) = setup();
+        cpu.ax = 0x8000;
+        cpu.dx = 0x0000; // should be set
+        cpu.execute(0x99, &mut bus, M);
+        assert_eq!(cpu.dx, 0xFFFF);
+    }
+
+    // =====================================================================
+    // DAA (0x27)
+    // =====================================================================
+
+    #[test]
+    fn daa_basic() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        // 0x15 + 0x27 = 0x3C → DAA → 0x42 (BCD 15 + 27 = 42)
+        cpu.set_al(0x15);
+        bus.mem[0x100] = 0x27; // imm8 for ADD AL
+        cpu.execute(0x04, &mut bus, M); // ADD AL, 0x27
+        assert_eq!(cpu.al(), 0x3C);
+        cpu.execute(0x27, &mut bus, M); // DAA
+        assert_eq!(cpu.al(), 0x42);
+        assert!(!fl::get(cpu.flags, Flag::CF));
+    }
+
+    #[test]
+    fn daa_with_carry() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        // BCD 99 + 1 = 100: 0x99 + 0x01 = 0x9A → DAA → 0x00, CF=1
+        cpu.set_al(0x9A);
+        cpu.execute(0x27, &mut bus, M); // DAA
+        assert_eq!(cpu.al(), 0x00);
+        assert!(fl::get(cpu.flags, Flag::CF));
+    }
+
+    // =====================================================================
+    // DAS (0x2F)
+    // =====================================================================
+
+    #[test]
+    fn das_basic() {
+        let (mut cpu, mut bus) = setup();
+        // BCD 42 - 15 = 27: 0x42 - 0x15 = 0x2D → DAS → 0x27
+        cpu.set_al(0x2D);
+        cpu.execute(0x2F, &mut bus, M); // DAS
+        assert_eq!(cpu.al(), 0x27);
+    }
+
+    // =====================================================================
+    // AAA (0x37)
+    // =====================================================================
+
+    #[test]
+    fn aaa_adjust() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        // 9 + 5 = 14 = 0x0E → AAA → AH+=1, AL=4
+        cpu.set_al(0x0E);
+        cpu.set_ah(0x00);
+        cpu.execute(0x37, &mut bus, M); // AAA
+        assert_eq!(cpu.al(), 0x04);
+        assert_eq!(cpu.ah(), 0x01);
+        assert!(fl::get(cpu.flags, Flag::CF));
+        assert!(fl::get(cpu.flags, Flag::AF));
+    }
+
+    #[test]
+    fn aaa_no_adjust() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        cpu.set_al(0x05);
+        cpu.set_ah(0x00);
+        cpu.execute(0x37, &mut bus, M); // AAA
+        assert_eq!(cpu.al(), 0x05);
+        assert_eq!(cpu.ah(), 0x00);
+        assert!(!fl::get(cpu.flags, Flag::CF));
+    }
+
+    // =====================================================================
+    // AAS (0x3F)
+    // =====================================================================
+
+    #[test]
+    fn aas_adjust() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        // 10 - 5 = 5 but let's do 2 - 5 = -3 → borrow situation
+        // After SUB: AL = 0xFD (if we did raw sub)
+        // For AAS: AL & 0x0F = 0x0D > 9 → adjust
+        cpu.set_al(0xFD);
+        cpu.set_ah(0x02);
+        cpu.execute(0x3F, &mut bus, M); // AAS
+        assert_eq!(cpu.al(), 0x07); // 0xFD - 6 = 0xF7, & 0x0F = 0x07
+        assert_eq!(cpu.ah(), 0x01); // 2 - 1 = 1
+        assert!(fl::get(cpu.flags, Flag::CF));
+    }
+
+    // =====================================================================
+    // AAM (0xD4)
+    // =====================================================================
+
+    #[test]
+    fn aam_basic() {
+        let (mut cpu, mut bus) = setup();
+        cpu.set_al(0x2A); // 42 decimal
+        bus.mem[0x100] = 0x0A; // base 10
+        cpu.execute(0xD4, &mut bus, M); // AAM
+        assert_eq!(cpu.ah(), 0x04); // 42 / 10 = 4
+        assert_eq!(cpu.al(), 0x02); // 42 % 10 = 2
+    }
+
+    // =====================================================================
+    // AAD (0xD5)
+    // =====================================================================
+
+    #[test]
+    fn aad_basic() {
+        let (mut cpu, mut bus) = setup();
+        cpu.set_ah(0x04);
+        cpu.set_al(0x02);
+        bus.mem[0x100] = 0x0A; // base 10
+        cpu.execute(0xD5, &mut bus, M); // AAD
+        assert_eq!(cpu.al(), 0x2A); // 4*10 + 2 = 42
+        assert_eq!(cpu.ah(), 0x00);
+    }
+
+    // =====================================================================
+    // Shift with memory operand
+    // =====================================================================
+
+    #[test]
+    fn shl_mem_by_1() {
+        let (mut cpu, mut bus) = setup();
+        cpu.bx = 0x0050;
+        bus.mem[0x20050] = 0x42;
+        // ModR/M: mod=00 reg=100(/4=SHL) rm=111([BX]) = 0x27
+        bus.mem[0x100] = 0x27;
+        cpu.execute(0xD0, &mut bus, M); // SHL BYTE [BX], 1
+        assert_eq!(bus.mem[0x20050], 0x84);
+    }
+
+    #[test]
+    fn shift_count_zero_unchanged() {
+        let (mut cpu, mut bus) = setup();
+        use super::super::flags::{self as fl, Flag};
+        fl::set(&mut cpu.flags, Flag::CF, true);
+        cpu.set_al(0xFF);
+        cpu.set_cl(0); // count = 0 → no change
+        bus.mem[0x100] = 0xE0;
+        cpu.execute(0xD2, &mut bus, M); // SHL AL, CL
+        assert_eq!(cpu.al(), 0xFF);
+        assert!(fl::get(cpu.flags, Flag::CF)); // unchanged
     }
 }
