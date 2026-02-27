@@ -4,30 +4,17 @@ use phosphor_core::core::save_state::{SaveError, Saveable, StateReader, StateWri
 use phosphor_core::cpu::z80::Z80;
 use phosphor_core::device::Z80Ctc;
 use phosphor_core::gfx;
-use phosphor_macros::BusDebug;
+use phosphor_macros::{BusDebug, MemoryRegion};
 
 use phosphor_core::device::SsioBoard;
 
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, MemoryRegion)]
 pub(crate) enum Region {
     Rom = 1,
     Nvram = 2,
     SpriteRam = 3,
     VideoRam = 4,
-}
-
-impl Region {
-    pub(crate) const ROM: u8 = Self::Rom as u8;
-    pub(crate) const NVRAM: u8 = Self::Nvram as u8;
-    pub(crate) const SPRITE_RAM: u8 = Self::SpriteRam as u8;
-    pub(crate) const VIDEO_RAM: u8 = Self::VideoRam as u8;
-}
-
-impl From<Region> for u8 {
-    fn from(r: Region) -> u8 {
-        r as u8
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -475,22 +462,14 @@ impl Mcr2Board {
         }
     }
 
-    /// Rotate 90° CW from native (512w × 480h) to output (480w × 512h),
-    /// converting palette indices to RGB in a single pass.
     pub fn render_frame(&self, buffer: &mut [u8]) {
-        let out_w = SCREEN_WIDTH as usize; // 480
-        for oy in 0..SCREEN_HEIGHT as usize {
-            let nx = oy;
-            for ox in 0..out_w {
-                let ny = (NATIVE_HEIGHT - 1) - ox;
-                let idx = self.pixel_buffer[ny * NATIVE_WIDTH + nx];
-                let (r, g, b) = self.palette_rgb[idx as usize & 63];
-                let dst = (oy * out_w + ox) * 3;
-                buffer[dst] = r;
-                buffer[dst + 1] = g;
-                buffer[dst + 2] = b;
-            }
-        }
+        gfx::rotate_90_ccw_indexed(
+            &self.pixel_buffer,
+            buffer,
+            NATIVE_WIDTH,
+            NATIVE_HEIGHT,
+            &self.palette_rgb,
+        );
     }
 
     // -----------------------------------------------------------------------

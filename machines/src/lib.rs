@@ -16,6 +16,41 @@ pub(crate) fn set_bit_active_low(reg: &mut u8, bit: u8, pressed: bool) {
     }
 }
 
+/// Implements `MachineDebug` for standalone machines (single CPU, flat bus).
+///
+/// Requires the type to:
+/// - Have a `cpu` field with `at_instruction_boundary()`
+/// - Have a `tick()` method
+/// - Implement `BusDebug` on `Self`
+/// - Have `CYCLES_PER_FRAME` in scope
+macro_rules! impl_standalone_debug {
+    ($type:ty) => {
+        impl phosphor_core::core::machine::MachineDebug for $type {
+            fn debug_bus(&self) -> Option<&dyn phosphor_core::core::debug::BusDebug> {
+                Some(self)
+            }
+
+            fn debug_bus_mut(&mut self) -> Option<&mut dyn phosphor_core::core::debug::BusDebug> {
+                Some(self)
+            }
+
+            fn cycles_per_frame(&self) -> u64 {
+                CYCLES_PER_FRAME
+            }
+
+            fn debug_tick(&mut self) -> u32 {
+                self.tick();
+                if self.cpu.at_instruction_boundary() {
+                    1
+                } else {
+                    0
+                }
+            }
+        }
+    };
+}
+pub(crate) use impl_standalone_debug;
+
 pub mod asteroids;
 pub mod ccastles;
 pub mod donkey_kong;

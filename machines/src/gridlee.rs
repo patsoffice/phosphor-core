@@ -1,8 +1,7 @@
 use phosphor_core::bus_split;
 use phosphor_core::core::bus::InterruptState;
-use phosphor_core::core::debug::BusDebug;
 use phosphor_core::core::machine::{
-    AnalogInput, AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
+    AnalogInput, AudioSource, InputButton, InputReceiver, Machine, Renderable,
 };
 use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
 use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
@@ -10,33 +9,19 @@ use phosphor_core::core::{Bus, BusMaster, ClockDivider};
 use phosphor_core::cpu::m6809::M6809;
 use phosphor_core::cpu::state::M6809State;
 use phosphor_core::cpu::{Cpu, CpuStateTrait};
-use phosphor_macros::BusDebug;
+use phosphor_macros::{BusDebug, MemoryRegion};
 
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
 
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, MemoryRegion)]
 enum Region {
     Ram = 1,
     VideoRam = 2,
     Io = 3,
     Nvram = 4,
     Rom = 5,
-}
-
-impl Region {
-    const RAM: u8 = Self::Ram as u8;
-    const VIDEO_RAM: u8 = Self::VideoRam as u8;
-    const IO: u8 = Self::Io as u8;
-    const NVRAM: u8 = Self::Nvram as u8;
-    const ROM: u8 = Self::Rom as u8;
-}
-
-impl From<Region> for u8 {
-    fn from(r: Region) -> u8 {
-        r as u8
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -899,28 +884,7 @@ impl InputReceiver for GridleeSystem {
     }
 }
 
-impl MachineDebug for GridleeSystem {
-    fn debug_bus(&self) -> Option<&dyn BusDebug> {
-        Some(self)
-    }
-
-    fn debug_bus_mut(&mut self) -> Option<&mut dyn BusDebug> {
-        Some(self)
-    }
-
-    fn cycles_per_frame(&self) -> u64 {
-        CYCLES_PER_FRAME
-    }
-
-    fn debug_tick(&mut self) -> u32 {
-        self.tick();
-        if self.cpu.at_instruction_boundary() {
-            1
-        } else {
-            0
-        }
-    }
-}
+crate::impl_standalone_debug!(GridleeSystem);
 
 impl Machine for GridleeSystem {
     fn run_frame(&mut self) {

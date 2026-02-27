@@ -9,7 +9,7 @@ use phosphor_core::device::dkong_discrete::DkongDiscrete;
 use phosphor_core::device::i8257::I8257;
 use phosphor_core::device::output_latch::OutputLatch;
 use phosphor_core::gfx;
-use phosphor_macros::BusDebug;
+use phosphor_macros::{BusDebug, MemoryRegion};
 
 // ---------------------------------------------------------------------------
 // Memory map region IDs (machine-specific constants for page table dispatch)
@@ -17,7 +17,7 @@ use phosphor_macros::BusDebug;
 
 /// Main CPU (Z80) address space region IDs.
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, MemoryRegion)]
 pub(crate) enum MainRegion {
     Rom = 1,       // 0x0000-0x5FFF (24KB max program ROM)
     Ram = 2,       // 0x6000-0x6FFF (4KB work RAM)
@@ -27,37 +27,11 @@ pub(crate) enum MainRegion {
     IoPorts = 6,   // 0x7C00-0x7DFF (input/control ports)
 }
 
-impl MainRegion {
-    pub(crate) const ROM: u8 = Self::Rom as u8;
-    pub(crate) const RAM: u8 = Self::Ram as u8;
-    pub(crate) const SPRITE_RAM: u8 = Self::SpriteRam as u8;
-    pub(crate) const VIDEO_RAM: u8 = Self::VideoRam as u8;
-    pub(crate) const IO_DMA: u8 = Self::IoDma as u8;
-    pub(crate) const IO_PORTS: u8 = Self::IoPorts as u8;
-}
-
-impl From<MainRegion> for u8 {
-    fn from(r: MainRegion) -> u8 {
-        r as u8
-    }
-}
-
 /// Sound CPU (I8035) address space region IDs.
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, MemoryRegion)]
 pub(crate) enum SoundRegion {
     Rom = 1, // 0x0000-0x0FFF (4KB sound ROM)
-}
-
-impl SoundRegion {
-    #[allow(dead_code)]
-    pub(crate) const ROM: u8 = Self::Rom as u8;
-}
-
-impl From<SoundRegion> for u8 {
-    fn from(r: SoundRegion) -> u8 {
-        r as u8
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -608,18 +582,12 @@ impl Tkg04Board {
     /// Rotate 90° CCW from native scanline_buffer (256w × 240h)
     /// to output buffer (224w × 256h), clipping VBLANK (scanlines 0-15).
     pub fn render_frame(&self, buffer: &mut [u8]) {
-        let out_w = SCREEN_WIDTH as usize; // 224
-        for oy in 0..SCREEN_HEIGHT as usize {
-            for ox in 0..out_w {
-                let nx = oy;
-                let ny = (NATIVE_HEIGHT - 1) - ox;
-                let src = (ny * NATIVE_WIDTH + nx) * 3;
-                let dst = (oy * out_w + ox) * 3;
-                buffer[dst] = self.scanline_buffer[src];
-                buffer[dst + 1] = self.scanline_buffer[src + 1];
-                buffer[dst + 2] = self.scanline_buffer[src + 2];
-            }
-        }
+        gfx::rotate_90_ccw(
+            &self.scanline_buffer[VBLANK_END * NATIVE_WIDTH * 3..],
+            buffer,
+            NATIVE_WIDTH,
+            NATIVE_HEIGHT - VBLANK_END,
+        );
     }
 
     // -----------------------------------------------------------------------

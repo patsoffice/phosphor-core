@@ -1,8 +1,7 @@
 use phosphor_core::bus_split;
 use phosphor_core::core::bus::InterruptState;
-use phosphor_core::core::debug::BusDebug;
 use phosphor_core::core::machine::{
-    AnalogInput, AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
+    AnalogInput, AudioSource, InputButton, InputReceiver, Machine, Renderable,
 };
 use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
 use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
@@ -12,14 +11,14 @@ use phosphor_core::cpu::state::M6502State;
 use phosphor_core::cpu::{Cpu, CpuStateTrait};
 use phosphor_core::device::output_latch::OutputLatch;
 use phosphor_core::device::pokey::Pokey;
-use phosphor_macros::BusDebug;
+use phosphor_macros::{BusDebug, MemoryRegion};
 
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
 use crate::set_bit_active_low;
 
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, MemoryRegion)]
 enum Region {
     VideoRam = 1,
     Sram = 2,
@@ -29,23 +28,6 @@ enum Region {
     RomBank0 = 6,
     RomBank1 = 7,
     RomFixed = 8,
-}
-
-impl Region {
-    const VIDEO_RAM: u8 = Self::VideoRam as u8;
-    const SRAM: u8 = Self::Sram as u8;
-    const SPRITE_RAM: u8 = Self::SpriteRam as u8;
-    const NVRAM: u8 = Self::Nvram as u8;
-    const IO: u8 = Self::Io as u8;
-    const ROM_BANK0: u8 = Self::RomBank0 as u8;
-    const ROM_BANK1: u8 = Self::RomBank1 as u8;
-    const ROM_FIXED: u8 = Self::RomFixed as u8;
-}
-
-impl From<Region> for u8 {
-    fn from(r: Region) -> u8 {
-        r as u8
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -252,6 +234,7 @@ const CCASTLES_ANALOG_MAP: &[AnalogInput] = &[
 // VTOTAL: 256 scanlines per frame
 // VBLANK: scanlines 0-23 (sync PROM bit 0), visible: 24-255 (232 lines)
 // Frame rate: 5 MHz / (320 × 256) ≈ 61.04 Hz
+const CPU_CLOCK_HZ: u64 = 1_250_000;
 const CYCLES_PER_SCANLINE: u64 = 80;
 const SCANLINES_PER_FRAME: u64 = 256;
 const CYCLES_PER_FRAME: u64 = SCANLINES_PER_FRAME * CYCLES_PER_SCANLINE;
@@ -1065,28 +1048,7 @@ impl InputReceiver for CrystalCastlesSystem {
     }
 }
 
-impl MachineDebug for CrystalCastlesSystem {
-    fn debug_bus(&self) -> Option<&dyn BusDebug> {
-        Some(self)
-    }
-
-    fn debug_bus_mut(&mut self) -> Option<&mut dyn BusDebug> {
-        Some(self)
-    }
-
-    fn cycles_per_frame(&self) -> u64 {
-        CYCLES_PER_FRAME
-    }
-
-    fn debug_tick(&mut self) -> u32 {
-        self.tick();
-        if self.cpu.at_instruction_boundary() {
-            1
-        } else {
-            0
-        }
-    }
-}
+crate::impl_standalone_debug!(CrystalCastlesSystem);
 
 impl Machine for CrystalCastlesSystem {
     fn run_frame(&mut self) {
@@ -1142,7 +1104,7 @@ impl Machine for CrystalCastlesSystem {
     }
 
     fn frame_rate_hz(&self) -> f64 {
-        1_250_000.0 / CYCLES_PER_FRAME as f64
+        CPU_CLOCK_HZ as f64 / CYCLES_PER_FRAME as f64
     }
 
     fn machine_id(&self) -> &str {

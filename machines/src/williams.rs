@@ -11,7 +11,7 @@ use phosphor_core::cpu::{Cpu, CpuStateTrait};
 use phosphor_core::device::dac::Mc1408Dac;
 use phosphor_core::device::pia6820::Pia6820;
 use phosphor_core::device::williams_blitter::WilliamsBlitter;
-use phosphor_macros::BusDebug;
+use phosphor_macros::{BusDebug, MemoryRegion};
 
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
 
@@ -21,7 +21,7 @@ use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
 
 /// Main CPU (M6809) address space region IDs.
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, MemoryRegion)]
 pub(crate) enum MainRegion {
     VideoRam = 1,   // 0x0000-0xBFFF (48KB, banked ROM overlay at 0x0000-0x8FFF)
     Palette = 2,    // 0xC000-0xC00F (16-color palette)
@@ -34,48 +34,21 @@ pub(crate) enum MainRegion {
     BankedRom = 9,  // (36KB, overlays VIDEO_RAM when bank != 0)
 }
 
-impl MainRegion {
-    const VIDEO_RAM: u8 = Self::VideoRam as u8;
-    const PALETTE: u8 = Self::Palette as u8;
-    const IO_PIA: u8 = Self::IoPia as u8;
-    const IO_BANK: u8 = Self::IoBank as u8;
-    const IO_BLITTER: u8 = Self::IoBlitter as u8;
-    const IO_VIDEO: u8 = Self::IoVideo as u8;
-    const CMOS: u8 = Self::Cmos as u8;
-    const PROGRAM_ROM: u8 = Self::ProgramRom as u8;
-    const BANKED_ROM: u8 = Self::BankedRom as u8;
-}
-
-impl From<MainRegion> for u8 {
-    fn from(r: MainRegion) -> u8 {
-        r as u8
-    }
-}
-
 /// Sound CPU (M6800) address space region IDs.
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, MemoryRegion)]
 pub(crate) enum SoundRegion {
     Ram = 1,   // 0x0000-0x00FF (256 bytes)
     IoPia = 2, // 0x0400-0x04FF (Sound PIA)
     Rom = 3,   // 0xB000-0xFFFF (4KB mirrored)
 }
 
-impl SoundRegion {
-    const RAM: u8 = Self::Ram as u8;
-    const IO_PIA: u8 = Self::IoPia as u8;
-    const ROM: u8 = Self::Rom as u8;
-}
-
-impl From<SoundRegion> for u8 {
-    fn from(r: SoundRegion) -> u8 {
-        r as u8
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Williams gen-1 hardware constants
 // ---------------------------------------------------------------------------
+
+/// CPU clock frequency: E clock = 1 MHz (from 4 MHz XTAL ÷ 4).
+pub const CPU_CLOCK_HZ: u64 = 1_000_000;
 
 /// CPU cycles per scanline (1 MHz CPU / ~15.6 kHz horizontal).
 pub const CYCLES_PER_SCANLINE: u64 = 64;
@@ -196,7 +169,7 @@ macro_rules! impl_williams_machine_common {
         }
 
         fn frame_rate_hz(&self) -> f64 {
-            1_000_000.0 / crate::williams::CYCLES_PER_FRAME as f64
+            crate::williams::CPU_CLOCK_HZ as f64 / crate::williams::CYCLES_PER_FRAME as f64
         }
     };
 }

@@ -78,7 +78,7 @@ ROMs are matched by CRC32 checksum, so any MAME ROM naming convention works. All
 
 | Component | Status | Notes |
 | --------- | ------ | ----- |
-| **Core Framework** | Complete | Bus trait, Machine trait, component system, MemoryMap (page-table dispatch + backing memory), debug traits |
+| **Core Framework** | Complete | Bus trait, Machine trait, MemoryMap (page-table dispatch + backing memory), debug traits |
 | **M6809 CPU** | Complete | 285 opcodes, cycle-accurate, all addressing modes. [Details](core/src/cpu/m6809/README.md) |
 | **M6800 CPU** | Complete | 192 opcodes, cycle-accurate, all addressing modes. [Details](core/src/cpu/m6800/README.md) |
 | **M6502 CPU** | Complete | 151 opcodes, cycle-accurate with bus-level traces. [Details](core/src/cpu/m6502/README.md) |
@@ -115,7 +115,7 @@ This project uses a **workspace structure** to separate reusable components from
 Contains all reusable components — zero external dependencies:
 
 - CPU implementations (M6800, M6809, M6502, Z80, I8035)
-- Bus and component abstractions
+- Bus abstractions (Bus trait, BusMasterComponent)
 - Machine trait (frontend-agnostic display/input/render interface)
 - Device trait (common interface for all peripherals: reset, read/write, tick)
 - Debug traits (Debuggable, DebugCpu, BusDebug) for interactive inspection and device register writes
@@ -142,7 +142,7 @@ Complete system implementations that wire core components together:
 
 ### Macros Crate (`phosphor-macros`)
 
-Proc macro crate providing `#[derive(BusDebug)]` — auto-generates bus-level debug discovery, device register writes, watchpoint routing, and device reset dispatch from struct annotations (`#[debug_cpu(...)]`, `#[debug_device(...)]`, `#[debug_map(...)]`). When `#[debug_cpu]` omits explicit read/write methods, debug memory access is auto-routed through the matching `#[debug_map]` field's MemoryMap backing store.
+Proc macro crate providing `#[derive(BusDebug)]` and `#[derive(MemoryRegion)]`. `BusDebug` auto-generates bus-level debug discovery, device register writes, watchpoint routing, and device reset dispatch from struct annotations (`#[debug_cpu(...)]`, `#[debug_device(...)]`, `#[debug_map(...)]`). When `#[debug_cpu]` omits explicit read/write methods, debug memory access is auto-routed through the matching `#[debug_map]` field's MemoryMap backing store. `MemoryRegion` generates `From<Region> for u8` and SCREAMING_SNAKE_CASE `u8` constants from `#[repr(u8)]` region enums.
 
 ### Frontend Crate (`phosphor-frontend`)
 
@@ -190,7 +190,7 @@ phosphor-core/
 │   │   ├── core/                   # Core abstractions (complete)
 │   │   │   ├── bus.rs              # Bus trait, BusMaster, InterruptState
 │   │   │   ├── clock.rs            # ClockDivider (Bresenham fractional clock)
-│   │   │   ├── component.rs        # Component traits
+│   │   │   ├── component.rs        # BusMasterComponent trait
 │   │   │   ├── debug.rs            # Debuggable, DebugCpu, BusDebug traits
 │   │   │   ├── machine.rs          # Machine trait, InputButton (frontend interface)
 │   │   │   ├── memory_map.rs       # MemoryMap (page-table dispatch, backing memory, watchpoints)
@@ -229,7 +229,7 @@ phosphor-core/
 ├── macros/                         # phosphor-macros crate (proc macros)
 │   ├── Cargo.toml
 │   └── src/
-│       └── lib.rs                  # #[derive(BusDebug)] proc macro
+│       └── lib.rs                  # #[derive(BusDebug)] + #[derive(MemoryRegion)] proc macros
 ├── machines/                       # phosphor-machines crate
 │   ├── Cargo.toml
 │   ├── src/
@@ -363,23 +363,24 @@ pub trait Bus {
 
 ### Component Interface
 
-Two traits for different device types:
-
 ```rust
-// Simple devices (timers, sound chips)
-pub trait Component {
-    fn tick(&mut self) -> bool;  // Returns true at significant events
-    fn clock_divider(&self) -> u64 { 1 }  // For clock domain crossing
-}
-
-// Devices that access the bus (CPUs, DMA)
-pub trait BusMasterComponent: Component {
+// Devices that access the bus (CPUs, DMA controllers)
+pub trait BusMasterComponent {
     type Bus: Bus + ?Sized;
     fn tick_with_bus(&mut self, bus: &mut Self::Bus, master: BusMaster) -> bool;
 }
+
+// Peripherals (sound chips, PIAs, blitters, timers)
+pub trait Device: Debuggable + Saveable {
+    fn name(&self) -> &'static str;
+    fn reset(&mut self);
+    fn read(&mut self, offset: u16) -> u8 { 0xFF }
+    fn write(&mut self, offset: u16, data: u8) {}
+    fn tick(&mut self) {}
+}
 ```
 
-This separation allows video chips to tick without bus access, while CPUs get explicit bus references.
+`BusMasterComponent` is for devices that drive the address/data bus (CPUs, DMA). `Device` provides a uniform interface for peripherals: register access, reset, tick, plus debug inspection and save/load via supertraits.
 
 ### Using the Emulator
 

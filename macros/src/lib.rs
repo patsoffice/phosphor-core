@@ -358,3 +358,64 @@ impl syn::parse::Parse for MapArgs {
         })
     }
 }
+
+/// Derive macro that generates boilerplate for memory region ID enums.
+///
+/// Given a `#[repr(u8)]` enum, generates:
+/// - `impl From<EnumName> for u8` (casting via `as u8`)
+/// - Associated `u8` constants in SCREAMING_SNAKE_CASE for each variant
+///   (e.g., `Region::VideoRam` → `Region::VIDEO_RAM`)
+///
+/// The constants inherit the enum's visibility.
+#[proc_macro_derive(MemoryRegion)]
+pub fn derive_memory_region(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let enum_name = &input.ident;
+    let vis = &input.vis;
+
+    let variants = match &input.data {
+        syn::Data::Enum(data) => &data.variants,
+        _ => panic!("MemoryRegion can only be derived on enums"),
+    };
+
+    // Generate associated constants (PascalCase → SCREAMING_SNAKE_CASE)
+    let const_items = variants.iter().map(|v| {
+        let variant_name = &v.ident;
+        let const_name = syn::Ident::new(
+            &pascal_to_screaming_snake(&variant_name.to_string()),
+            variant_name.span(),
+        );
+        quote! {
+            #[allow(dead_code)]
+            #vis const #const_name: u8 = Self::#variant_name as u8;
+        }
+    });
+
+    let expanded = quote! {
+        impl #enum_name {
+            #(#const_items)*
+        }
+
+        impl From<#enum_name> for u8 {
+            fn from(r: #enum_name) -> u8 {
+                r as u8
+            }
+        }
+    };
+
+    TokenStream::from(expanded)
+}
+
+/// Convert PascalCase to SCREAMING_SNAKE_CASE.
+///
+/// Inserts `_` before each uppercase letter that follows a lowercase letter.
+fn pascal_to_screaming_snake(s: &str) -> String {
+    let mut result = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if c.is_uppercase() && i > 0 && s.as_bytes()[i - 1].is_ascii_lowercase() {
+            result.push('_');
+        }
+        result.extend(c.to_uppercase());
+    }
+    result
+}

@@ -7,34 +7,20 @@ use phosphor_core::cpu::state::Z80State;
 use phosphor_core::cpu::z80::Z80;
 use phosphor_core::device::namco_wsg::NamcoWsg;
 use phosphor_core::gfx;
-use phosphor_macros::BusDebug;
+use phosphor_macros::{BusDebug, MemoryRegion};
 
 // ---------------------------------------------------------------------------
 // Memory map region IDs (shared across all Namco Pac-Man hardware games)
 // ---------------------------------------------------------------------------
 
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, MemoryRegion)]
 pub(crate) enum Region {
     Rom = 1,
     VideoRam = 2,
     ColorRam = 3,
     Ram = 4,
     Io = 5,
-}
-
-impl Region {
-    pub const ROM: u8 = Self::Rom as u8;
-    pub const VIDEO_RAM: u8 = Self::VideoRam as u8;
-    pub const COLOR_RAM: u8 = Self::ColorRam as u8;
-    pub const RAM: u8 = Self::Ram as u8;
-    pub const IO: u8 = Self::Io as u8;
-}
-
-impl From<Region> for u8 {
-    fn from(r: Region) -> u8 {
-        r as u8
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -571,18 +557,7 @@ impl NamcoPacBoard {
     /// Rotate 90° CCW from native scanline_buffer (288w × 224h)
     /// to output buffer (224w × 288h).
     pub fn render_frame(&self, buffer: &mut [u8]) {
-        let out_w = SCREEN_WIDTH as usize; // 224
-        for oy in 0..SCREEN_HEIGHT as usize {
-            for ox in 0..out_w {
-                let nx = oy;
-                let ny = 223 - ox;
-                let src = (ny * 288 + nx) * 3;
-                let dst = (oy * out_w + ox) * 3;
-                buffer[dst] = self.scanline_buffer[src];
-                buffer[dst + 1] = self.scanline_buffer[src + 1];
-                buffer[dst + 2] = self.scanline_buffer[src + 2];
-            }
-        }
+        gfx::rotate_90_ccw(&self.scanline_buffer, buffer, 288, 224);
     }
 
     // -----------------------------------------------------------------------

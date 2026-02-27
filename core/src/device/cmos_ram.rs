@@ -45,6 +45,32 @@ impl Default for CmosRam {
     }
 }
 
+use crate::core::debug::{DebugRegister, Debuggable};
+
+impl Debuggable for CmosRam {
+    fn debug_registers(&self) -> Vec<DebugRegister> {
+        vec![]
+    }
+}
+
+impl super::Device for CmosRam {
+    fn name(&self) -> &'static str {
+        "CMOS RAM"
+    }
+
+    fn reset(&mut self) {
+        // Battery-backed: do not clear on reset
+    }
+
+    fn read(&mut self, offset: u16) -> u8 {
+        self.data[(offset & 0x03FF) as usize]
+    }
+
+    fn write(&mut self, offset: u16, data: u8) {
+        self.data[(offset & 0x03FF) as usize] = data;
+    }
+}
+
 use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
 
 impl Saveable for CmosRam {

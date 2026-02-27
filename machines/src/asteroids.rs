@@ -1,8 +1,7 @@
 use phosphor_core::bus_split;
 use phosphor_core::core::bus::InterruptState;
-use phosphor_core::core::debug::BusDebug;
 use phosphor_core::core::machine::{
-    AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
+    AudioSource, InputButton, InputReceiver, Machine, Renderable,
 };
 use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
 use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
@@ -10,34 +9,20 @@ use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::Cpu;
 use phosphor_core::cpu::m6502::M6502;
 use phosphor_core::device::dvg::{Dvg, VectorLine};
-use phosphor_macros::BusDebug;
+use phosphor_macros::{BusDebug, MemoryRegion};
 
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
 use crate::set_bit_active_high;
 
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, MemoryRegion)]
 enum Region {
     Ram = 1,
     Io = 2,
     VectorRam = 3,
     VectorRom = 4,
     ProgramRom = 5,
-}
-
-impl Region {
-    const RAM: u8 = Self::Ram as u8;
-    const IO: u8 = Self::Io as u8;
-    const VECTOR_RAM: u8 = Self::VectorRam as u8;
-    const VECTOR_ROM: u8 = Self::VectorRom as u8;
-    const PROGRAM_ROM: u8 = Self::ProgramRom as u8;
-}
-
-impl From<Region> for u8 {
-    fn from(r: Region) -> u8 {
-        r as u8
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -443,28 +428,7 @@ impl InputReceiver for AsteroidsSystem {
     }
 }
 
-impl MachineDebug for AsteroidsSystem {
-    fn debug_bus(&self) -> Option<&dyn BusDebug> {
-        Some(self)
-    }
-
-    fn debug_bus_mut(&mut self) -> Option<&mut dyn BusDebug> {
-        Some(self)
-    }
-
-    fn cycles_per_frame(&self) -> u64 {
-        CYCLES_PER_FRAME
-    }
-
-    fn debug_tick(&mut self) -> u32 {
-        self.tick();
-        if self.cpu.at_instruction_boundary() {
-            1
-        } else {
-            0
-        }
-    }
-}
+crate::impl_standalone_debug!(AsteroidsSystem);
 
 impl Machine for AsteroidsSystem {
     fn run_frame(&mut self) {
@@ -492,6 +456,10 @@ impl Machine for AsteroidsSystem {
         bus_split!(self, bus => {
             self.cpu.reset(bus, BusMaster::Cpu(0));
         });
+    }
+
+    fn frame_rate_hz(&self) -> f64 {
+        CPU_CLOCK_HZ as f64 / CYCLES_PER_FRAME as f64
     }
 
     fn machine_id(&self) -> &str {

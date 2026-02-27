@@ -3,24 +3,14 @@ use phosphor_core::core::memory_map::{AccessKind, MemoryMap, WatchpointHit, Watc
 use phosphor_core::core::{Bus, BusMaster, bus::InterruptState};
 use phosphor_core::cpu::state::M6809State;
 use phosphor_core::cpu::{CpuStateTrait, m6809::M6809};
+use phosphor_macros::MemoryRegion;
 
 // Region IDs for Simple6809System address space
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, MemoryRegion)]
 enum Region {
     Ram = 1,
     Rom = 2,
-}
-
-impl Region {
-    const RAM: u8 = Self::Ram as u8;
-    const ROM: u8 = Self::Rom as u8;
-}
-
-impl From<Region> for u8 {
-    fn from(r: Region) -> u8 {
-        r as u8
-    }
 }
 
 pub struct Simple6809System {
