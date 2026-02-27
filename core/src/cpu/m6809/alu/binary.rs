@@ -1,5 +1,5 @@
 use crate::core::{Bus, BusMaster};
-use crate::cpu::m68xx::M68xxAlu;
+use crate::cpu::m68xx::{Acc, M68xxAlu};
 use crate::cpu::m6809::{CcFlag, ExecState, M6809};
 
 impl M6809 {
@@ -14,7 +14,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            cpu.perform_suba(operand);
+            cpu.perform_sub(Acc::A, operand);
         });
     }
 
@@ -29,7 +29,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            cpu.perform_adda(operand);
+            cpu.perform_add(Acc::A, operand);
         });
     }
 
@@ -65,7 +65,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            cpu.perform_cmpa(operand);
+            cpu.perform_cmp(Acc::A, operand);
         });
     }
 
@@ -80,7 +80,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            cpu.perform_sbca(operand);
+            cpu.perform_sbc(Acc::A, operand);
         });
     }
 
@@ -93,11 +93,11 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            cpu.perform_anda(operand);
+            cpu.perform_and(Acc::A, operand);
         });
     }
 
-    /// BITA immediate (0x85): Bit test A — performs A AND operand, updates flags but discards result.
+    /// BITA immediate (0x85): Bit test A -- performs A AND operand, updates flags but discards result.
     /// N set if result bit 7 is set. Z set if result is zero. V always cleared.
     pub(crate) fn op_bita_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -106,7 +106,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            cpu.perform_bita(operand);
+            cpu.perform_bit(Acc::A, operand);
         });
     }
 
@@ -119,7 +119,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            cpu.perform_eora(operand);
+            cpu.perform_eor(Acc::A, operand);
         });
     }
 
@@ -135,7 +135,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            cpu.perform_adca(operand);
+            cpu.perform_adc(Acc::A, operand);
         });
     }
 
@@ -148,7 +148,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            cpu.perform_ora(operand);
+            cpu.perform_or(Acc::A, operand);
         });
     }
 
@@ -163,7 +163,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            cpu.perform_subb(operand);
+            cpu.perform_sub(Acc::B, operand);
         });
     }
 
@@ -178,7 +178,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            cpu.perform_cmpb(operand);
+            cpu.perform_cmp(Acc::B, operand);
         });
     }
 
@@ -193,7 +193,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            cpu.perform_sbcb(operand);
+            cpu.perform_sbc(Acc::B, operand);
         });
     }
 
@@ -206,11 +206,11 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            cpu.perform_andb(operand);
+            cpu.perform_and(Acc::B, operand);
         });
     }
 
-    /// BITB immediate (0xC5): Bit test B — performs B AND operand, updates flags but discards result.
+    /// BITB immediate (0xC5): Bit test B -- performs B AND operand, updates flags but discards result.
     /// N set if result bit 7 is set. Z set if result is zero. V always cleared.
     pub(crate) fn op_bitb_imm<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -219,7 +219,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            cpu.perform_bitb(operand);
+            cpu.perform_bit(Acc::B, operand);
         });
     }
 
@@ -232,7 +232,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            cpu.perform_eorb(operand);
+            cpu.perform_eor(Acc::B, operand);
         });
     }
 
@@ -248,7 +248,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            cpu.perform_adcb(operand);
+            cpu.perform_adc(Acc::B, operand);
         });
     }
 
@@ -261,7 +261,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            cpu.perform_orb(operand);
+            cpu.perform_or(Acc::B, operand);
         });
     }
 
@@ -276,7 +276,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_imm(cycle, bus, master, |cpu, operand| {
-            cpu.perform_addb(operand);
+            cpu.perform_add(Acc::B, operand);
         });
     }
 
@@ -293,7 +293,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_suba(operand);
+            cpu.perform_sub(Acc::A, operand);
         });
     }
 
@@ -309,7 +309,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_cmpa(operand);
+            cpu.perform_cmp(Acc::A, operand);
         });
     }
 
@@ -324,7 +324,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_sbca(operand);
+            cpu.perform_sbc(Acc::A, operand);
         });
     }
 
@@ -338,11 +338,11 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_anda(operand);
+            cpu.perform_and(Acc::A, operand);
         });
     }
 
-    /// BITA direct (0x95): Bit test A — performs A AND operand at DP:addr, updates flags but discards result.
+    /// BITA direct (0x95): Bit test A -- performs A AND operand at DP:addr, updates flags but discards result.
     /// N set if result bit 7 is set. Z set if result is zero. V always cleared.
     pub(crate) fn op_bita_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -352,7 +352,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_bita(operand);
+            cpu.perform_bit(Acc::A, operand);
         });
     }
 
@@ -366,7 +366,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_eora(operand);
+            cpu.perform_eor(Acc::A, operand);
         });
     }
 
@@ -382,7 +382,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_adca(operand);
+            cpu.perform_adc(Acc::A, operand);
         });
     }
 
@@ -396,7 +396,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_ora(operand);
+            cpu.perform_or(Acc::A, operand);
         });
     }
 
@@ -412,7 +412,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_adda(operand);
+            cpu.perform_add(Acc::A, operand);
         });
     }
 
@@ -429,7 +429,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_subb(operand);
+            cpu.perform_sub(Acc::B, operand);
         });
     }
 
@@ -445,7 +445,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_cmpb(operand);
+            cpu.perform_cmp(Acc::B, operand);
         });
     }
 
@@ -460,7 +460,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_sbcb(operand);
+            cpu.perform_sbc(Acc::B, operand);
         });
     }
 
@@ -474,11 +474,11 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_andb(operand);
+            cpu.perform_and(Acc::B, operand);
         });
     }
 
-    /// BITB direct (0xD5): Bit test B — performs B AND operand at DP:addr, updates flags but discards result.
+    /// BITB direct (0xD5): Bit test B -- performs B AND operand at DP:addr, updates flags but discards result.
     /// N set if result bit 7 is set. Z set if result is zero. V always cleared.
     pub(crate) fn op_bitb_direct<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -488,7 +488,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_bitb(operand);
+            cpu.perform_bit(Acc::B, operand);
         });
     }
 
@@ -502,7 +502,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_eorb(operand);
+            cpu.perform_eor(Acc::B, operand);
         });
     }
 
@@ -518,7 +518,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_adcb(operand);
+            cpu.perform_adc(Acc::B, operand);
         });
     }
 
@@ -532,7 +532,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_orb(operand);
+            cpu.perform_or(Acc::B, operand);
         });
     }
 
@@ -548,7 +548,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_direct(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_addb(operand);
+            cpu.perform_add(Acc::B, operand);
         });
     }
 
@@ -563,7 +563,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_suba(operand);
+            cpu.perform_sub(Acc::A, operand);
         });
     }
 
@@ -576,7 +576,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_cmpa(operand);
+            cpu.perform_cmp(Acc::A, operand);
         });
     }
 
@@ -589,7 +589,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_sbca(operand);
+            cpu.perform_sbc(Acc::A, operand);
         });
     }
 
@@ -602,7 +602,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_anda(operand);
+            cpu.perform_and(Acc::A, operand);
         });
     }
 
@@ -615,7 +615,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_bita(operand);
+            cpu.perform_bit(Acc::A, operand);
         });
     }
 
@@ -628,7 +628,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_eora(operand);
+            cpu.perform_eor(Acc::A, operand);
         });
     }
 
@@ -641,7 +641,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_adca(operand);
+            cpu.perform_adc(Acc::A, operand);
         });
     }
 
@@ -654,7 +654,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_ora(operand);
+            cpu.perform_or(Acc::A, operand);
         });
     }
 
@@ -670,7 +670,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_adda(operand);
+            cpu.perform_add(Acc::A, operand);
         });
     }
 
@@ -685,7 +685,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_subb(operand);
+            cpu.perform_sub(Acc::B, operand);
         });
     }
 
@@ -698,7 +698,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_cmpb(operand);
+            cpu.perform_cmp(Acc::B, operand);
         });
     }
 
@@ -711,7 +711,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_sbcb(operand);
+            cpu.perform_sbc(Acc::B, operand);
         });
     }
 
@@ -724,7 +724,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_andb(operand);
+            cpu.perform_and(Acc::B, operand);
         });
     }
 
@@ -737,7 +737,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_bitb(operand);
+            cpu.perform_bit(Acc::B, operand);
         });
     }
 
@@ -750,7 +750,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_eorb(operand);
+            cpu.perform_eor(Acc::B, operand);
         });
     }
 
@@ -763,7 +763,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_adcb(operand);
+            cpu.perform_adc(Acc::B, operand);
         });
     }
 
@@ -776,7 +776,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_orb(operand);
+            cpu.perform_or(Acc::B, operand);
         });
     }
 
@@ -789,7 +789,7 @@ impl M6809 {
         master: BusMaster,
     ) {
         self.alu_extended(opcode, cycle, bus, master, |cpu, operand| {
-            cpu.perform_addb(operand);
+            cpu.perform_add(Acc::B, operand);
         });
     }
 
@@ -803,7 +803,9 @@ impl M6809 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_suba(op));
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| {
+            cpu.perform_sub(Acc::A, op)
+        });
     }
 
     /// CMPA indexed (0xA1)
@@ -814,7 +816,9 @@ impl M6809 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_cmpa(op));
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| {
+            cpu.perform_cmp(Acc::A, op)
+        });
     }
 
     /// SBCA indexed (0xA2)
@@ -825,7 +829,9 @@ impl M6809 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_sbca(op));
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| {
+            cpu.perform_sbc(Acc::A, op)
+        });
     }
 
     /// ANDA indexed (0xA4)
@@ -836,7 +842,9 @@ impl M6809 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_anda(op));
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| {
+            cpu.perform_and(Acc::A, op)
+        });
     }
 
     /// BITA indexed (0xA5)
@@ -847,7 +855,9 @@ impl M6809 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_bita(op));
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| {
+            cpu.perform_bit(Acc::A, op)
+        });
     }
 
     /// EORA indexed (0xA8)
@@ -858,7 +868,9 @@ impl M6809 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_eora(op));
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| {
+            cpu.perform_eor(Acc::A, op)
+        });
     }
 
     /// ADCA indexed (0xA9)
@@ -869,7 +881,9 @@ impl M6809 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_adca(op));
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| {
+            cpu.perform_adc(Acc::A, op)
+        });
     }
 
     /// ORA indexed (0xAA)
@@ -880,7 +894,9 @@ impl M6809 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_ora(op));
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| {
+            cpu.perform_or(Acc::A, op)
+        });
     }
 
     /// ADDA indexed (0xAB)
@@ -891,7 +907,9 @@ impl M6809 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_adda(op));
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| {
+            cpu.perform_add(Acc::A, op)
+        });
     }
 
     // --- Indexed addressing mode (B register) ---
@@ -904,7 +922,9 @@ impl M6809 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_subb(op));
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| {
+            cpu.perform_sub(Acc::B, op)
+        });
     }
 
     /// CMPB indexed (0xE1)
@@ -915,7 +935,9 @@ impl M6809 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_cmpb(op));
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| {
+            cpu.perform_cmp(Acc::B, op)
+        });
     }
 
     /// SBCB indexed (0xE2)
@@ -926,7 +948,9 @@ impl M6809 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_sbcb(op));
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| {
+            cpu.perform_sbc(Acc::B, op)
+        });
     }
 
     /// ANDB indexed (0xE4)
@@ -937,7 +961,9 @@ impl M6809 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_andb(op));
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| {
+            cpu.perform_and(Acc::B, op)
+        });
     }
 
     /// BITB indexed (0xE5)
@@ -948,7 +974,9 @@ impl M6809 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_bitb(op));
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| {
+            cpu.perform_bit(Acc::B, op)
+        });
     }
 
     /// EORB indexed (0xE8)
@@ -959,7 +987,9 @@ impl M6809 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_eorb(op));
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| {
+            cpu.perform_eor(Acc::B, op)
+        });
     }
 
     /// ADCB indexed (0xE9)
@@ -970,7 +1000,9 @@ impl M6809 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_adcb(op));
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| {
+            cpu.perform_adc(Acc::B, op)
+        });
     }
 
     /// ORB indexed (0xEA)
@@ -981,7 +1013,9 @@ impl M6809 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_orb(op));
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| {
+            cpu.perform_or(Acc::B, op)
+        });
     }
 
     /// ADDB indexed (0xEB)
@@ -992,6 +1026,8 @@ impl M6809 {
         bus: &mut B,
         master: BusMaster,
     ) {
-        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| cpu.perform_addb(op));
+        self.alu_indexed(opcode, cycle, bus, master, |cpu, op| {
+            cpu.perform_add(Acc::B, op)
+        });
     }
 }

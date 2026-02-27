@@ -13,7 +13,7 @@ use crate::cpu::{
 use phosphor_macros::Saveable;
 
 pub use super::m68xx::CcFlag;
-use super::m68xx::M68xxAlu;
+use super::m68xx::{Acc, M68xxAlu};
 
 /// Interrupt type being processed by the M6809 interrupt state machine.
 /// SWI/SWI2/SWI3 have their own handlers and do not use this enum.
@@ -121,12 +121,11 @@ impl M6809 {
 
 impl M68xxAlu for M6809 {
     #[inline]
-    fn reg_a(&mut self) -> &mut u8 {
-        &mut self.a
-    }
-    #[inline]
-    fn reg_b(&mut self) -> &mut u8 {
-        &mut self.b
+    fn reg(&mut self, acc: Acc) -> &mut u8 {
+        match acc {
+            Acc::A => &mut self.a,
+            Acc::B => &mut self.b,
+        }
     }
     #[inline]
     fn reg_cc(&mut self) -> &mut u8 {

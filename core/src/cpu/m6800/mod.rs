@@ -12,7 +12,7 @@ use crate::cpu::{
 use crate::prelude::Saveable;
 
 pub use super::m68xx::CcFlag;
-use super::m68xx::M68xxAlu;
+use super::m68xx::{Acc, M68xxAlu};
 
 /// Bits 6-7 of the CC register are unused on the M6800 and always read as 1.
 const CC_UNUSED_BITS: u8 = 0xC0;
@@ -77,12 +77,11 @@ impl Default for M6800 {
 
 impl M68xxAlu for M6800 {
     #[inline]
-    fn reg_a(&mut self) -> &mut u8 {
-        &mut self.a
-    }
-    #[inline]
-    fn reg_b(&mut self) -> &mut u8 {
-        &mut self.b
+    fn reg(&mut self, acc: Acc) -> &mut u8 {
+        match acc {
+            Acc::A => &mut self.a,
+            Acc::B => &mut self.b,
+        }
     }
     #[inline]
     fn reg_cc(&mut self) -> &mut u8 {

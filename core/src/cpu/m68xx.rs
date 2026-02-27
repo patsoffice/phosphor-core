@@ -23,13 +23,19 @@ impl From<CcFlag> for u8 {
     }
 }
 
+/// Accumulator selector for the M68xx register-pair ALU operations.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Acc {
+    A,
+    B,
+}
+
 /// Shared ALU operations for the M68xx CPU family.
 ///
 /// Implementors provide register accessors; all ALU logic is provided as
 /// default methods. These are monomorphized at compile time for zero overhead.
 pub trait M68xxAlu {
-    fn reg_a(&mut self) -> &mut u8;
-    fn reg_b(&mut self) -> &mut u8;
+    fn reg(&mut self, acc: Acc) -> &mut u8;
     fn reg_cc(&mut self) -> &mut u8;
 
     // --- Flag helpers ---
@@ -86,192 +92,98 @@ pub trait M68xxAlu {
 
     // --- Binary ALU operations ---
 
-    /// ADD A: A = A + operand. Sets H, N, Z, V, C.
+    /// ADD: acc = acc + operand. Sets H, N, Z, V, C.
     #[inline]
-    fn perform_adda(&mut self, operand: u8) {
-        let a = *self.reg_a();
-        let (result, carry) = a.overflowing_add(operand);
-        let half_carry = (a & 0x0F) + (operand & 0x0F) > 0x0F;
-        let overflow = (a ^ operand) & 0x80 == 0 && (a ^ result) & 0x80 != 0;
-        *self.reg_a() = result;
+    fn perform_add(&mut self, acc: Acc, operand: u8) {
+        let r = *self.reg(acc);
+        let (result, carry) = r.overflowing_add(operand);
+        let half_carry = (r & 0x0F) + (operand & 0x0F) > 0x0F;
+        let overflow = (r ^ operand) & 0x80 == 0 && (r ^ result) & 0x80 != 0;
+        *self.reg(acc) = result;
         self.set_flag(CcFlag::H, half_carry);
         self.set_flags_arithmetic(result, overflow, carry);
     }
 
-    /// ADD B: B = B + operand. Sets H, N, Z, V, C.
+    /// ADC: acc = acc + operand + C. Sets H, N, Z, V, C.
     #[inline]
-    fn perform_addb(&mut self, operand: u8) {
-        let b = *self.reg_b();
-        let (result, carry) = b.overflowing_add(operand);
-        let half_carry = (b & 0x0F) + (operand & 0x0F) > 0x0F;
-        let overflow = (b ^ operand) & 0x80 == 0 && (b ^ result) & 0x80 != 0;
-        *self.reg_b() = result;
-        self.set_flag(CcFlag::H, half_carry);
-        self.set_flags_arithmetic(result, overflow, carry);
-    }
-
-    /// ADC A: A = A + operand + C. Sets H, N, Z, V, C.
-    #[inline]
-    fn perform_adca(&mut self, operand: u8) {
+    fn perform_adc(&mut self, acc: Acc, operand: u8) {
         let carry_in = (*self.reg_cc() & CcFlag::C as u8) as u16;
-        let a = *self.reg_a();
-        let a_u16 = a as u16;
+        let r = *self.reg(acc);
+        let r_u16 = r as u16;
         let m_u16 = operand as u16;
-        let sum = a_u16 + m_u16 + carry_in;
+        let sum = r_u16 + m_u16 + carry_in;
         let result = sum as u8;
         let carry_out = sum > 0xFF;
-        let half_carry = (a & 0x0F) + (operand & 0x0F) + (carry_in as u8) > 0x0F;
-        let overflow = (a ^ operand) & 0x80 == 0 && (a ^ result) & 0x80 != 0;
-        *self.reg_a() = result;
+        let half_carry = (r & 0x0F) + (operand & 0x0F) + (carry_in as u8) > 0x0F;
+        let overflow = (r ^ operand) & 0x80 == 0 && (r ^ result) & 0x80 != 0;
+        *self.reg(acc) = result;
         self.set_flag(CcFlag::H, half_carry);
         self.set_flags_arithmetic(result, overflow, carry_out);
     }
 
-    /// ADC B: B = B + operand + C. Sets H, N, Z, V, C.
+    /// SUB: acc = acc - operand. Sets N, Z, V, C.
     #[inline]
-    fn perform_adcb(&mut self, operand: u8) {
-        let carry_in = (*self.reg_cc() & CcFlag::C as u8) as u16;
-        let b = *self.reg_b();
-        let b_u16 = b as u16;
-        let m_u16 = operand as u16;
-        let sum = b_u16 + m_u16 + carry_in;
-        let result = sum as u8;
-        let carry_out = sum > 0xFF;
-        let half_carry = (b & 0x0F) + (operand & 0x0F) + (carry_in as u8) > 0x0F;
-        let overflow = (b ^ operand) & 0x80 == 0 && (b ^ result) & 0x80 != 0;
-        *self.reg_b() = result;
-        self.set_flag(CcFlag::H, half_carry);
-        self.set_flags_arithmetic(result, overflow, carry_out);
-    }
-
-    /// SUB A: A = A - operand. Sets N, Z, V, C.
-    #[inline]
-    fn perform_suba(&mut self, operand: u8) {
-        let a = *self.reg_a();
-        let (result, borrow) = a.overflowing_sub(operand);
-        let overflow = (a ^ operand) & 0x80 != 0 && (a ^ result) & 0x80 != 0;
-        *self.reg_a() = result;
+    fn perform_sub(&mut self, acc: Acc, operand: u8) {
+        let r = *self.reg(acc);
+        let (result, borrow) = r.overflowing_sub(operand);
+        let overflow = (r ^ operand) & 0x80 != 0 && (r ^ result) & 0x80 != 0;
+        *self.reg(acc) = result;
         self.set_flags_arithmetic(result, overflow, borrow);
     }
 
-    /// SUB B: B = B - operand. Sets N, Z, V, C.
+    /// SBC: acc = acc - operand - C. Sets N, Z, V, C.
     #[inline]
-    fn perform_subb(&mut self, operand: u8) {
-        let b = *self.reg_b();
-        let (result, borrow) = b.overflowing_sub(operand);
-        let overflow = (b ^ operand) & 0x80 != 0 && (b ^ result) & 0x80 != 0;
-        *self.reg_b() = result;
-        self.set_flags_arithmetic(result, overflow, borrow);
-    }
-
-    /// SBC A: A = A - operand - C. Sets N, Z, V, C.
-    #[inline]
-    fn perform_sbca(&mut self, operand: u8) {
+    fn perform_sbc(&mut self, acc: Acc, operand: u8) {
         let carry = (*self.reg_cc() & CcFlag::C as u8) as u16;
-        let a = *self.reg_a();
-        let a16 = a as u16;
+        let r = *self.reg(acc);
+        let r16 = r as u16;
         let m = operand as u16;
-        let diff = a16.wrapping_sub(m).wrapping_sub(carry);
+        let diff = r16.wrapping_sub(m).wrapping_sub(carry);
         let result = diff as u8;
-        let borrow = a16 < m + carry;
-        let overflow = (a ^ operand) & 0x80 != 0 && (a ^ result) & 0x80 != 0;
-        *self.reg_a() = result;
+        let borrow = r16 < m + carry;
+        let overflow = (r ^ operand) & 0x80 != 0 && (r ^ result) & 0x80 != 0;
+        *self.reg(acc) = result;
         self.set_flags_arithmetic(result, overflow, borrow);
     }
 
-    /// SBC B: B = B - operand - C. Sets N, Z, V, C.
+    /// CMP: acc - operand (discard result). Sets N, Z, V, C.
     #[inline]
-    fn perform_sbcb(&mut self, operand: u8) {
-        let carry = (*self.reg_cc() & CcFlag::C as u8) as u16;
-        let b = *self.reg_b();
-        let b16 = b as u16;
-        let m = operand as u16;
-        let diff = b16.wrapping_sub(m).wrapping_sub(carry);
-        let result = diff as u8;
-        let borrow = b16 < m + carry;
-        let overflow = (b ^ operand) & 0x80 != 0 && (b ^ result) & 0x80 != 0;
-        *self.reg_b() = result;
+    fn perform_cmp(&mut self, acc: Acc, operand: u8) {
+        let r = *self.reg(acc);
+        let (result, borrow) = r.overflowing_sub(operand);
+        let overflow = (r ^ operand) & 0x80 != 0 && (r ^ result) & 0x80 != 0;
         self.set_flags_arithmetic(result, overflow, borrow);
     }
 
-    /// CMP A: A - operand (discard result). Sets N, Z, V, C.
+    /// AND: acc = acc & operand. Sets N, Z. V cleared.
     #[inline]
-    fn perform_cmpa(&mut self, operand: u8) {
-        let a = *self.reg_a();
-        let (result, borrow) = a.overflowing_sub(operand);
-        let overflow = (a ^ operand) & 0x80 != 0 && (a ^ result) & 0x80 != 0;
-        self.set_flags_arithmetic(result, overflow, borrow);
+    fn perform_and(&mut self, acc: Acc, operand: u8) {
+        *self.reg(acc) &= operand;
+        let r = *self.reg(acc);
+        self.set_flags_logical(r);
     }
 
-    /// CMP B: B - operand (discard result). Sets N, Z, V, C.
+    /// BIT: acc & operand (discard result). Sets N, Z. V cleared.
     #[inline]
-    fn perform_cmpb(&mut self, operand: u8) {
-        let b = *self.reg_b();
-        let (result, borrow) = b.overflowing_sub(operand);
-        let overflow = (b ^ operand) & 0x80 != 0 && (b ^ result) & 0x80 != 0;
-        self.set_flags_arithmetic(result, overflow, borrow);
-    }
-
-    /// AND A: A = A & operand. Sets N, Z. V cleared.
-    #[inline]
-    fn perform_anda(&mut self, operand: u8) {
-        *self.reg_a() &= operand;
-        let a = *self.reg_a();
-        self.set_flags_logical(a);
-    }
-
-    /// AND B: B = B & operand. Sets N, Z. V cleared.
-    #[inline]
-    fn perform_andb(&mut self, operand: u8) {
-        *self.reg_b() &= operand;
-        let b = *self.reg_b();
-        self.set_flags_logical(b);
-    }
-
-    /// BIT A: A & operand (discard result). Sets N, Z. V cleared.
-    #[inline]
-    fn perform_bita(&mut self, operand: u8) {
-        let result = *self.reg_a() & operand;
+    fn perform_bit(&mut self, acc: Acc, operand: u8) {
+        let result = *self.reg(acc) & operand;
         self.set_flags_logical(result);
     }
 
-    /// BIT B: B & operand (discard result). Sets N, Z. V cleared.
+    /// EOR: acc = acc ^ operand. Sets N, Z. V cleared.
     #[inline]
-    fn perform_bitb(&mut self, operand: u8) {
-        let result = *self.reg_b() & operand;
-        self.set_flags_logical(result);
+    fn perform_eor(&mut self, acc: Acc, operand: u8) {
+        *self.reg(acc) ^= operand;
+        let r = *self.reg(acc);
+        self.set_flags_logical(r);
     }
 
-    /// EOR A: A = A ^ operand. Sets N, Z. V cleared.
+    /// OR: acc = acc | operand. Sets N, Z. V cleared.
     #[inline]
-    fn perform_eora(&mut self, operand: u8) {
-        *self.reg_a() ^= operand;
-        let a = *self.reg_a();
-        self.set_flags_logical(a);
-    }
-
-    /// EOR B: B = B ^ operand. Sets N, Z. V cleared.
-    #[inline]
-    fn perform_eorb(&mut self, operand: u8) {
-        *self.reg_b() ^= operand;
-        let b = *self.reg_b();
-        self.set_flags_logical(b);
-    }
-
-    /// OR A: A = A | operand. Sets N, Z. V cleared.
-    #[inline]
-    fn perform_ora(&mut self, operand: u8) {
-        *self.reg_a() |= operand;
-        let a = *self.reg_a();
-        self.set_flags_logical(a);
-    }
-
-    /// OR B: B = B | operand. Sets N, Z. V cleared.
-    #[inline]
-    fn perform_orb(&mut self, operand: u8) {
-        *self.reg_b() |= operand;
-        let b = *self.reg_b();
-        self.set_flags_logical(b);
+    fn perform_or(&mut self, acc: Acc, operand: u8) {
+        *self.reg(acc) |= operand;
+        let r = *self.reg(acc);
+        self.set_flags_logical(r);
     }
 
     // --- Unary ALU operations ---
