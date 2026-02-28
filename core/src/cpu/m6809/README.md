@@ -93,18 +93,19 @@ Supports TSC (three-state control) via the `Bus::is_halted_for()` trait method, 
 
 ## File Structure
 
-```
+```text
 core/src/cpu/m6809/
-  mod.rs        -- M6809 struct, state machine, dispatch (648 lines)
-  alu.rs        -- Flag helpers, addressing mode helpers (777 lines)
-  alu/binary.rs -- ADD, SUB, CMP, SBC, ADC, AND, BIT, EOR, ORA
-  alu/shift.rs  -- ASL, ASR, LSR, ROL, ROR
-  alu/unary.rs  -- NEG, COM, CLR, INC, DEC, TST, MUL
-  alu/word.rs   -- ADDD, SUBD, CMPX, CMPY, CMPD, CMPU, CMPS
-  branch.rs     -- Branches, BSR, LBRA, LBSR, JMP, JSR (851 lines)
-  load_store.rs -- LDA/B/D/X/Y/U/S, STA/B/D/X/Y/U/S, LEA (1,412 lines)
-  stack.rs      -- PSHS/U, PULS/U, SWI/2/3, RTI, CWAI, SYNC (825 lines)
-  transfer.rs   -- TFR, EXG (127 lines)
+  mod.rs         -- M6809 struct, state machine, dispatch
+  alu.rs         -- Flag helpers, addressing mode helpers
+  alu/binary.rs  -- ADD, SUB, CMP, SBC, ADC, AND, BIT, EOR, ORA
+  alu/shift.rs   -- ASL, ASR, LSR, ROL, ROR
+  alu/unary.rs   -- NEG, COM, CLR, INC, DEC, TST, MUL
+  alu/word.rs    -- ADDD, SUBD, CMPX, CMPY, CMPD, CMPU, CMPS
+  branch.rs      -- Branches, BSR, LBRA, LBSR, JMP, JSR
+  load_store.rs  -- LDA/B/D/X/Y/U/S, STA/B/D/X/Y/U/S, LEA
+  stack.rs       -- PSHS/U, PULS/U, SWI/2/3, RTI, CWAI, SYNC
+  transfer.rs    -- TFR, EXG
+  disasm.rs      -- Instruction disassembler
 ```
 
 ## Resources

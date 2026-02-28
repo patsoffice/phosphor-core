@@ -158,10 +158,3 @@ Phosphor also validates against its own test vectors as a Rust integration test:
 ```bash
 cargo test -p phosphor-cpu-validation
 ```
-
-## Files
-
-| File | Purpose |
-|------|---------|
-| `cpu-validation/src/bin/gen_i8035_tests.rs` | Test vector generator (229 opcodes x 1,000 vectors) |
-| `cross-validation/validate_i8035.cpp` | Cross-validation harness (skeleton, awaiting MAME vendor) |

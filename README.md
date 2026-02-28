@@ -4,7 +4,7 @@
 
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-2238%20passing-brightgreen.svg)](core/tests/)
+[![Tests](https://img.shields.io/badge/tests-2674%20passing-brightgreen.svg)](core/tests/)
 
 A modular emulator framework for retro CPUs, designed for extensibility and educational purposes. Features a trait-based architecture that allows easy addition of new CPUs, peripherals, and complete systems.
 
@@ -28,88 +28,55 @@ cargo build
 cargo test
 
 # Expected output:
-#   test result: ok. 2238 passed; 0 failed
+#   test result: ok. XXXX passed; 0 failed
 ```
 
 ### Running the Emulator
 
 ```bash
 # MAME-style rompath (directory containing joust.zip)
-cargo run --package phosphor-frontend -- joust /path/to/roms --scale 3
+cargo run --package phosphor-frontend -- joust /path/to/roms
 
 # Direct ZIP file
-cargo run --package phosphor-frontend -- joust /path/to/joust.zip --scale 3
+cargo run --package phosphor-frontend -- joust /path/to/joust.zip
 
 # Extracted ROM directory (backward compatible)
-cargo run --package phosphor-frontend -- joust /path/to/extracted/roms --scale 3
+cargo run --package phosphor-frontend -- joust /path/to/extracted/roms
 
 # Start with debug panel open (paused at first instruction)
-cargo run --package phosphor-frontend -- joust /path/to/roms --scale 3 --debug
+cargo run --package phosphor-frontend -- joust /path/to/roms --debug
 ```
 
 ROMs are matched by CRC32 checksum, so any MAME ROM naming convention works. All three Joust label variants are supported: Green (parent), Yellow, and Red.
 
 **Controls:**
 
-| Key              | Action              |
-| ---------------- | ----------------    |
-| Arrow Left/Right | P1 Move             |
-| Space            | P1 Flap             |
-| 1                | P1 Start            |
-| A/D              | P2 Move             |
-| W                | P2 Flap             |
-| 2                | P2 Start            |
-| 5                | Insert Coin         |
-| F1               | Toggle Debug Panel  |
-| F2               | Step Instruction    |
-| F3               | Step Cycle          |
-| F4               | Continue (Resume)   |
-| F5               | Reset Machine       |
-| F6               | Quick Save          |
-| F7               | Quick Load          |
-| F9               | Toggle Throttle     |
-| F10              | Toggle Debug Overlay|
-| F11              | Toggle Mouse Grab   |
-| Escape           | Quit                |
+| Key              | Action                                        |
+| ---------------- | --------------------------------------------- |
+| Arrows           | P1 Move                                       |
+| Space            | P1 Fire / Flap                                |
+| Left Ctrl        | P1 Flap                                       |
+| Left Shift       | P1 Jump                                       |
+| I / K / J / L    | P1 Fire Up / Down / Left / Right (Robotron)   |
+| Z / X / C        | Fire Left / Center / Right (Missile Command)  |
+| 1                | P1 Start                                      |
+| W / A / S / D    | P2 Move                                       |
+| E                | P2 Fire / Jump                                |
+| 2                | P2 Start                                      |
+| 5                | Insert Coin                                   |
+| Mouse            | Trackball (Crystal Castles, Missile Command)  |
+| F1               | Toggle Debug Panel                            |
+| F2 / F3 / F4     | Step Instruction / Step Cycle / Continue      |
+| F5               | Reset Machine                                 |
+| F6 / F7          | Quick Save / Quick Load                       |
+| F9               | Toggle Throttle                               |
+| F10              | Toggle Debug Overlay                          |
+| F11              | Toggle Mouse Grab                             |
+| Escape           | Quit                                          |
+
+Game controllers are auto-mapped (D-pad, left stick, face buttons, right stick for twin-stick games). Place a [gamecontrollerdb.txt](https://github.com/mdqinc/SDL_GameControllerDB) in the working directory or `~/.config/phosphor/` for broader controller support.
 
 > `.cargo/config.toml` sets the Homebrew library path for aarch64-apple-darwin automatically, so no manual `LIBRARY_PATH` is needed.
-
-## Implementation Status
-
-| Component | Status | Notes |
-| --------- | ------ | ----- |
-| **Core Framework** | Complete | Bus trait, Machine trait, MemoryMap (page-table dispatch + backing memory), debug traits |
-| **M6809 CPU** | Complete | 285 opcodes, cycle-accurate, all addressing modes. [Details](core/src/cpu/m6809/README.md) |
-| **M6800 CPU** | Complete | 192 opcodes, cycle-accurate, all addressing modes. [Details](core/src/cpu/m6800/README.md) |
-| **M6502 CPU** | Complete | 151 opcodes, cycle-accurate with bus-level traces. [Details](core/src/cpu/m6502/README.md) |
-| **Z80 CPU** | Complete | 1604 opcodes, cycle-accurate, all prefix groups (CB/DD/ED/FD/DDCB/FDCB). [Details](core/src/cpu/z80/README.md) |
-| **I8088 CPU** | In Progress | 279 opcodes, instruction-level execution, 20-bit segmented addressing. [Details](core/src/cpu/i8088/README.md) |
-| **MC6821 PIA** | Complete | Full register set, interrupts, edge detection, control lines |
-| **Williams SC1/SC2 Blitter** | Complete | DMA block copy/fill, mask, shift, foreground-only modes |
-| **AY-8910 PSG** | Complete | 3-channel square wave + noise + envelope, dual I/O ports |
-| **POKEY** | Complete | 4-channel audio, polynomial counters, timer/IRQ, pot scanning |
-| **Namco WSG** | Complete | 3-voice wavetable synthesizer (Pac-Man, Ms. Pac-Man, Dig Dug) |
-| **Z80 CTC** | Complete | 4-channel counter/timer, IM2 vectored interrupts, cascading |
-| **Intel 8257 DMA** | Complete | 4-channel DMA controller with auto-load and rotating priority |
-| **Atari DVG** | Complete | Digital Vector Generator: 8 opcodes, 7497 BRM, hardware clipping |
-| **MC1408 DAC** | Complete | 8-bit digital-to-analog converter for sound output |
-| **74LS259 Latch** | Complete | 8-bit addressable output latch for control signals |
-| **AudioResampler** | Complete | Bresenham box-filter downsampler (CPU clock → 44.1 kHz), i16 and f32 variants |
-| **ClockDivider** | Complete | Bresenham fractional clock divider for cross-domain ticking |
-| **DK Discrete** | Complete | Donkey Kong analog sound effects (walk, jump, stomp) |
-| **SSIO Sound Board** | Complete | Midway MCR sound board: Z80 + 2×AY-8910, command latches, input routing |
-| **CMOS RAM** | Complete | 1KB battery-backed RAM with save/load persistence |
-| **DirtyBitset** | Complete | Fixed-capacity dirty-tracking bitset with O(1) bulk invalidation |
-| **GfxCache** | Complete | Pre-decoded tile/sprite pixel cache, ROM format decoders (Pac-Man, DK, MCR) |
-| **ROM Loader** | Complete | MAME ZIP support, CRC32-based ROM matching, multi-variant support |
-| **Joust System** | Complete | Williams board: CPU + video RAM + PIAs + blitter + CMOS + ROM |
-| **Machine Trait** | Complete | Frontend-agnostic interface: display, input, render, reset |
-| **Atari DVG** | Complete | Digital Vector Generator: 8 opcodes, 7497 BRM drawing, hardware clipping |
-| **CPU Validation** | Complete | M6809: 266K vectors (100%), M6800: 192K vectors (99.998%), M6502: 1.51M vectors (100%), Z80: 1.60M vectors (100%), I8088: 2.58M vectors (100%) |
-| **Satan's Hollow System** | Complete | Bally Midway MCR II: Z80 + SSIO + CTC + tile dirty tracking + sprite compositing |
-| **Crystal Castles System** | Complete | Atari arcade: M6502 + 2×POKEY + bitmap video + sprites + trackball |
-| **Device Trait** | Complete | Common interface for all peripherals: reset, read/write, tick, debug |
-| **Test Suite** | Complete | 2238 tests across core, devices, and machine integration |
 
 ## Workspace Architecture
 
@@ -129,7 +96,7 @@ Contains all reusable components — zero external dependencies:
 - ClockDivider (Bresenham fractional clock divider for cross-domain ticking)
 - DirtyBitset (fixed-capacity dirty-tracking bitset with O(1) bulk invalidation for tile/scanline change tracking)
 - GFX utilities (GfxCache pre-decoded tile/sprite pixels, ROM decoders for Pac-Man/DK/MCR families, cache-friendly blocked rotation, sprite clipping, tilemap rendering)
-- Peripheral devices (MC6821 PIA, AY-8910, POKEY, Namco WSG, Z80 CTC, Williams SC1/SC2 blitter, DVG, I8257 DMA, MC1408 DAC, 74LS259 latch, SSIO sound board, CMOS RAM)
+- Peripheral devices (MC6821 PIA, AY-8910, POKEY, Namco WSG, Z80 CTC, Williams SC1/SC2 blitter, DVG, I8257 DMA, MC1408 DAC, 74LS259 latch, SSIO sound board, CMOS RAM, MOS 6532 RIOT)
 
 ### Machines Crate (`phosphor-machines`)
 
@@ -145,6 +112,7 @@ Complete system implementations that wire core components together:
 - **MsPacmanSystem** — Ms. Pac-Man on shared Namco Pac board (auxiliary decode latch + ROM encryption)
 - **RobotronSystem** — Williams twin-stick arcade (M6809 + blitter + PIAs)
 - **SatansHollowSystem** — Satan's Hollow on shared MCR II board (Z80 + SSIO + CTC + tile dirty tracking)
+- **QbertSystem** — Q*Bert on shared Gottlieb System 80 board (I8088 + M6502 sound + RIOT + DAC)
 - **GridleeSystem** — Videa arcade (M6809 + bitmap video + trackball — freely distributable ROMs)
 - Simple6502System, Simple6800System, Simple6809System, SimpleZ80System (test harnesses)
 
@@ -188,168 +156,34 @@ C++ harnesses that validate phosphor-core's test vectors against independent ref
 ## Project Structure
 
 ```text
-phosphor-core/
-├── Cargo.toml                      # [workspace] members = ["core", "machines", "cpu-validation", "frontend"]
-├── .cargo/config.toml              # Homebrew library path for aarch64-apple-darwin
-├── core/                           # phosphor-core crate
-│   ├── Cargo.toml                  # Core crate manifest (zero dependencies)
-│   ├── src/
-│   │   ├── lib.rs                  # Library root, exports core, cpu, device, audio, gfx
-│   │   ├── audio/                  # Shared audio utilities
-│   │   │   └── mod.rs              # AudioResampler (i16), AudioResamplerF32 (f32)
-│   │   ├── dirty_bitset.rs         # DirtyBitset (fixed-capacity dirty tracking for tiles/scanlines)
-│   │   ├── gfx/                    # Graphics utilities
-│   │   │   ├── mod.rs              # Rotation helpers (CCW indexed, cache-friendly blocked)
-│   │   │   ├── decode.rs           # GfxCache (pre-decoded pixels), ROM decoders (Pac-Man, DK, MCR)
-│   │   │   ├── sprite.rs           # Sprite clipping and rendering helpers
-│   │   │   └── tilemap.rs          # TilemapConfig and tilemap rendering helpers
-│   │   ├── core/                   # Core abstractions (complete)
-│   │   │   ├── bus.rs              # Bus trait, BusMaster, InterruptState
-│   │   │   ├── clock.rs            # ClockDivider (Bresenham fractional clock)
-│   │   │   ├── component.rs        # BusMasterComponent trait
-│   │   │   ├── debug.rs            # Debuggable, DebugCpu, BusDebug traits
-│   │   │   ├── machine.rs          # Machine trait, InputButton (frontend interface)
-│   │   │   ├── memory_map.rs       # MemoryMap (page-table dispatch, backing memory, watchpoints)
-│   │   │   └── mod.rs              # Module exports
-│   │   ├── cpu/                    # CPU implementations
-│   │   │   ├── mod.rs              # Generic Cpu trait + CpuStateTrait
-│   │   │   ├── state.rs            # CpuStateTrait + state structs
-│   │   │   ├── m6800/              # M6800 CPU (192 opcodes) — see [README](core/src/cpu/m6800/README.md)
-│   │   │   ├── m6809/              # M6809 CPU (285 opcodes) — see [README](core/src/cpu/m6809/README.md)
-│   │   │   ├── m6502/              # M6502 CPU (151 opcodes) — see [README](core/src/cpu/m6502/README.md)
-│   │   │   ├── z80/                # Z80 CPU (1604 opcodes) — see [README](core/src/cpu/z80/README.md)
-│   │   │   ├── i8035/              # I8035 CPU (229 opcodes, MCS-48) — see [README](core/src/cpu/i8035/README.md)
-│   │   │   └── i8088/              # I8088 CPU (279 opcodes, x86 8-bit bus) — see [README](core/src/cpu/i8088/README.md)
-│   │   └── device/                 # Peripheral devices (all implement Device trait)
-│   │       ├── mod.rs              # Device trait + module exports
-│   │       ├── pia6820.rs          # MC6821 PIA (registers, interrupts, edge detection)
-│   │       ├── ay8910.rs           # AY-8910 PSG (3-ch square + noise + envelope)
-│   │       ├── pokey.rs            # Atari POKEY (4-ch audio, timers, pot scanning)
-│   │       ├── namco_wsg.rs        # Namco WSG (3-voice wavetable synthesizer)
-│   │       ├── z80ctc.rs           # Z80 CTC (4-ch counter/timer, IM2 interrupts)
-│   │       ├── williams_blitter.rs # Williams SC1/SC2 DMA blitter (copy/fill/shift/mask)
-│   │       ├── dvg.rs              # Atari Digital Vector Generator
-│   │       ├── i8257.rs            # Intel 8257 DMA controller (4-channel)
-│   │       ├── dac.rs              # MC1408 8-bit DAC
-│   │       ├── output_latch.rs     # 74LS259 8-bit addressable latch
-│   │       ├── dkong_discrete.rs   # Donkey Kong discrete analog sounds
-│   │       ├── cmos_ram.rs         # 1KB battery-backed CMOS RAM
-│   │       └── ssio.rs             # Midway SSIO sound board (Z80 + 2×AY-8910)
-│   └── tests/                      # Integration tests
-│       ├── common/mod.rs           # TestBus harness
-│       ├── m6809_*_test.rs         # M6809 tests
-│       ├── m6800_*_test.rs         # M6800 tests
-│       ├── m6502_*_test.rs         # M6502 tests
-│       ├── i8035_*_test.rs         # I8035 tests (148 tests across 4 files)
-│       ├── pia6820_test.rs         # MC6821 PIA tests
-│       ├── williams_blitter_test.rs # Blitter tests
-│       └── z80_*_test.rs           # Z80 tests (241 tests across 11 files)
-├── macros/                         # phosphor-macros crate (proc macros)
-│   ├── Cargo.toml
+phosphor-emulator/
+├── core/                        # phosphor-core — zero external dependencies
 │   └── src/
-│       └── lib.rs                  # #[derive(BusDebug)] + #[derive(MemoryRegion)] proc macros
-├── machines/                       # phosphor-machines crate
-│   ├── Cargo.toml
-│   ├── src/
-│   │   ├── lib.rs                  # Exports system types
-│   │   ├── registry.rs             # Machine registry (name → constructor mapping)
-│   │   ├── williams.rs             # Shared Williams gen-1 board (M6809 + M6800 + PIAs + blitter)
-│   │   ├── joust.rs                # Joust arcade board (Williams gen-1)
-│   │   ├── robotron.rs             # Robotron 2084 arcade board (Williams gen-1)
-│   │   ├── tkg04.rs                # Shared Nintendo TKG-04 board (Z80 + I8035 + I8257 DMA + tile/sprite)
-│   │   ├── donkey_kong.rs          # Donkey Kong (TKG-04, 16KB ROM)
-│   │   ├── donkey_kong_jr.rs       # Donkey Kong Junior (TKG-04, 24KB ROM, gfx bank)
-│   │   ├── asteroids.rs            # Asteroids (Atari: M6502 + DVG vector display)
-│   │   ├── missile_command.rs      # Missile Command (Atari: M6502 + POKEY + trackball)
-│   │   ├── ccastles.rs             # Crystal Castles (Atari: M6502 + 2×POKEY + bitmap + sprites)
-│   │   ├── namco_pac.rs             # Shared Namco Pac-Man board (Z80 + WSG + tile/sprite video)
-│   │   ├── pacman.rs               # Pac-Man (Namco Pac board)
-│   │   ├── mspacman.rs             # Ms. Pac-Man (Namco Pac board + auxiliary decode latch)
-│   │   ├── mcr2.rs                 # Shared Bally Midway MCR II board (Z80 + SSIO + CTC + tile/sprite)
-│   │   ├── satans_hollow.rs        # Satan's Hollow (MCR II board)
-│   │   ├── gridlee.rs              # Gridlee (Videa: M6809 + bitmap video + trackball)
-│   │   ├── rom_loader.rs           # ROM loading with CRC32 matching, multi-variant support
-│   │   ├── simple6800.rs           # M6800 + RAM/ROM
-│   │   ├── simple6809.rs           # M6809 + RAM/ROM
-│   │   ├── simple6502.rs           # M6502 + flat memory
-│   │   └── simplez80.rs            # Z80 + flat memory
-│   └── tests/
-│       ├── joust_test.rs           # Joust system integration tests (39 tests)
-│       ├── robotron_test.rs        # Robotron system integration tests
-│       └── missile_command_test.rs # Missile Command system integration tests
-├── cpu-validation/                 # phosphor-cpu-validation crate
-│   ├── Cargo.toml                  # Deps: phosphor-core, serde, rand
-│   ├── README_6809.md              # M6809 cross-validation details
-│   ├── README_6800.md              # M6800 cross-validation details & MAME differences
-│   ├── README_6502.md              # M6502 cross-validation details & bus quirks
-│   ├── README_i8035.md             # I8035 cross-validation details
-│   ├── README_i8088.md             # I8088 cross-validation details
-│   ├── src/
-│   │   ├── lib.rs                  # TracingBus + JSON types
-│   │   └── bin/
-│   │       ├── gen_m6809_tests.rs  # M6809 test vector generator
-│   │       ├── gen_m6800_tests.rs  # M6800 test vector generator
-│   │       └── gen_i8035_tests.rs  # I8035 test vector generator
-│   ├── tests/
-│   │   ├── m6809_single_step_test.rs  # Validates M6809 against JSON
-│   │   ├── m6800_single_step_test.rs  # Validates M6800 against JSON
-│   │   ├── m6502_single_step_test.rs  # Validates M6502 against SingleStepTests/65x02
-│   │   ├── z80_single_step_test.rs   # Validates Z80 against SingleStepTests/z80
-│   │   └── i8088_single_step_test.rs # Validates I8088 against SingleStepTests/8088
-│   └── test_data/
-│       ├── m6809/                  # Generated M6809 test vectors
-│       ├── m6800/                  # Generated M6800 test vectors
-│       ├── i8035/                  # Generated I8035 test vectors
-│       ├── 65x02/                  # Git submodule: SingleStepTests/65x02
-│       ├── z80/                    # Git submodule: SingleStepTests/z80
-│       └── 8088/                   # Git submodule: SingleStepTests/8088
-├── frontend/                       # phosphor-frontend crate (SDL2 + egui frontend)
-│   ├── Cargo.toml                  # Deps: phosphor-core, phosphor-machines, sdl2, zip, egui
-│   └── src/
-│       ├── main.rs                 # CLI args, machine selection, ROM loading
-│       ├── rom_path.rs             # ROM path resolution (ZIP, rompath, directory)
-│       ├── emulator.rs             # Main loop: tick, render, input, frame timing
-│       ├── debug_ui.rs             # egui debug panel: CPU/device registers, step controls
-│       ├── video.rs                # SDL window/texture setup, framebuffer blit, egui integration
-│       ├── input.rs                # Keyboard/controller → Machine::set_input() mapping
-│       ├── audio.rs                # SDL audio callback with ring buffer
-│       └── overlay.rs              # Debug overlay (FPS, machine stats, 4x5 bitmap font)
-└── cross-validation/               # C++ reference validation
-    ├── Makefile
-    ├── validate_m6809.cpp          # M6809 harness using elmerucr/MC6809
-    ├── validate_m6809_mame.cpp     # M6809 harness using mame4all
-    ├── validate_m6800.cpp          # M6800 harness using mame4all
-    ├── validate_i8035.cpp          # I8035 (MCS-48) harness using mame4all
-    ├── bin/                        # Compiled binaries (gitignored)
-    ├── mc6809/                     # Git submodule: elmerucr/MC6809
-    ├── mame4all/                   # Git submodule: mame4all (ValveSoftware/steamlink-sdk)
-    ├── m6809/                      # mame4all M6809 shim headers
-    ├── m6800/                      # mame4all M6800 shim headers
-    ├── i8039/                      # mame4all I8039 shim headers
-    └── include/nlohmann/json.hpp   # Single-header JSON parser
+│       ├── core/                #   Bus, Machine, MemoryMap, ClockDivider, debug traits
+│       ├── cpu/                 #   M6800, M6809, M6502, Z80, I8035, I8088
+│       ├── device/              #   PIA, AY-8910, POKEY, WSG, Z80 CTC, blitter, DVG, DMA, RIOT, SSIO, ...
+│       ├── audio/               #   Resampler utilities
+│       └── gfx/                 #   Tile/sprite decode, rotation, tilemap rendering
+├── machines/                    # phosphor-machines — arcade board implementations
+│   └── src/                     #   Shared boards (Williams, TKG-04, Namco Pac, MCR II, Gottlieb)
+│                                #   + per-game wiring (Joust, Robotron, Pac-Man, DK, Q*Bert, ...)
+├── macros/                      # phosphor-macros — #[derive(BusDebug)], #[derive(MemoryRegion)]
+├── frontend/                    # phosphor-frontend — SDL2 + egui windowed emulator
+│   └── src/                     #   Main loop, video, audio, input, debug panel, overlay
+├── cpu-validation/              # phosphor-cpu-validation — test vector generation & validation
+│   ├── src/bin/                 #   Test generators (M6809, M6800, I8035)
+│   ├── tests/                   #   Single-step validators (M6809, M6800, M6502, Z80, I8088)
+│   └── test_data/               #   Generated vectors + SingleStepTests submodules
+└── cross-validation/            # C++ harnesses validating against reference emulators
 ```
 
 ## How It Works
 
 ### Execution Model
 
-The emulator uses a **cycle-accurate, state-machine-based** execution model:
+Each CPU is a **cycle-accurate state machine**. A call to `tick()` advances exactly **one CPU cycle**, performing a single bus read or write just like the real hardware. All CPUs follow the same `Fetch → Execute → Fetch` pattern, with CPU-specific states for prefixed opcodes, halt/wait modes, and interrupt sequencing.
 
-```rust
-// State machine in M6809
-enum ExecState {
-    Fetch,                          // Read next opcode
-    Execute(u8, u8),                // Execute opcode at cycle N
-    ExecutePage2(u8, u8),           // Execute Page 2 (0x10 prefix) opcode
-    ExecutePage3(u8, u8),           // Execute Page 3 (0x11 prefix) opcode
-    Halted { .. },                  // TSC/RDY asserted
-    Interrupt(u8),                  // Hardware interrupt response sequence
-    WaitForInterrupt,               // CWAI wait state
-    SyncWait,                       // SYNC wait state
-}
-```
-
-**Execution flow for `LDA #$42`** (opcode 0x86):
+**Example: M6809 executing `LDA #$42`** (opcode 0x86):
 
 ```text
 Cycle 0 (Fetch):  Read 0x86 from memory[PC=0] → PC=1, state=Execute(0x86, 0)
@@ -357,175 +191,59 @@ Cycle 1 (Exec 0): Read 0x42 from memory[PC=1] → A=0x42, PC=2, state=Fetch
 Cycle 2 (Fetch):  Read next opcode...
 ```
 
-Each `tick()` advances exactly **one CPU cycle**, matching hardware timing.
+### Architecture
 
-### Bus Architecture
+The `Bus` trait connects CPUs to their board's address space using associated types for address and data width — compile-time polymorphism with no vtable overhead. Each board struct implements `Bus` to wire memory regions, I/O devices, interrupt lines, and bus arbitration (halt/DMA) together.
 
-The generic `Bus` trait enables different CPUs with zero runtime overhead:
+- **`BusMasterComponent`** — anything that drives the bus (CPUs, DMA controllers)
+- **`Device`** — uniform interface for peripherals (PIAs, sound chips, timers): register read/write, tick, reset, plus debug inspection and save/load via supertraits
+- **`MemoryMap`** — page-table address decoding with backing memory for side-effect-free debug reads, watchpoints, and bank switching
+- **`BusDebug`** — auto-derived via `#[derive(BusDebug)]`, layers debug access on top for the frontend's register inspector, memory viewer, and device discovery
 
-```rust
-pub trait Bus {
-    type Address: Copy + Into<u64>;  // u16 for 6809, u32 for 68000
-    type Data;                       // u8 or u16
+### Testing CPUs
 
-    fn read(&mut self, master: BusMaster, addr: Self::Address) -> Self::Data;
-    fn write(&mut self, master: BusMaster, addr: Self::Address, data: Self::Data);
-
-    // Arbitration: CPU must check before each cycle
-    fn is_halted_for(&self, master: BusMaster) -> bool;
-
-    // Interrupt polling at instruction boundaries
-    fn check_interrupts(&mut self, target: BusMaster) -> InterruptState;
-}
-```
-
-- `BusMaster` enum identifies bus requestor (CPU 0, CPU 1, DMA)
-- Supports TSC/RDY/BUSREQ halt signals via `is_halted_for()`
-- Generic interrupt delivery via `InterruptState` (NMI, IRQ, FIRQ)
-- Associated types = compile-time polymorphism, no vtable overhead
-
-### Component Interface
+A `TestBus` harness lets you exercise any CPU in isolation — load machine code, tick cycle-by-cycle, and assert results. Example with the M6809:
 
 ```rust
-// Devices that access the bus (CPUs, DMA controllers)
-pub trait BusMasterComponent {
-    type Bus: Bus + ?Sized;
-    fn tick_with_bus(&mut self, bus: &mut Self::Bus, master: BusMaster) -> bool;
-}
-
-// Peripherals (sound chips, PIAs, blitters, timers)
-pub trait Device: Debuggable + Saveable {
-    fn name(&self) -> &'static str;
-    fn reset(&mut self);
-    fn read(&mut self, offset: u16) -> u8 { 0xFF }
-    fn write(&mut self, offset: u16, data: u8) {}
-    fn tick(&mut self) {}
-}
-```
-
-`BusMasterComponent` is for devices that drive the address/data bus (CPUs, DMA). `Device` provides a uniform interface for peripherals: register access, reset, tick, plus debug inspection and save/load via supertraits.
-
-### Using the Emulator
-
-The project uses a **TestBus** pattern for direct CPU testing:
-
-```rust
-use phosphor_core::core::{BusMaster, BusMasterComponent};
-use phosphor_core::cpu::m6809::M6809;
-mod common;
-use common::TestBus;
-
 let mut cpu = M6809::new();
 let mut bus = TestBus::new();
 
-// Load code into memory
-bus.load(0, &[
-    0x86, 0x42,  // LDA #$42
-    0x97, 0x10,  // STA $10
-]);
+bus.load(0, &[0x86, 0x42, 0x97, 0x10]);  // LDA #$42; STA $10
 
-// Execute cycle-by-cycle
-for cycle in 0..5 {
+for _ in 0..5 {
     cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
-    println!("Cycle {}: PC=0x{:04X}", cycle, cpu.pc);
 }
 
-// Verify results
 assert_eq!(cpu.a, 0x42);
 assert_eq!(bus.memory[0x10], 0x42);
-assert_eq!(cpu.pc, 0x04);
 ```
 
-**Output:**
+## Future
 
-```text
-Cycle 0: PC=0x0001  (fetched LDA opcode)
-Cycle 1: PC=0x0002  (executed LDA, loaded A)
-Cycle 2: PC=0x0003  (fetched STA opcode)
-Cycle 3: PC=0x0004  (fetched address)
-Cycle 4: PC=0x0004  (stored A to memory, back to Fetch)
-```
+### CPUs
 
-## Roadmap
+- Motorola 68000 (32-bit address space, 16-bit data bus)
 
-### Phase 1: M6809 CPU ✅
+### Peripherals
 
-285 opcodes implemented (280 documented + 15 undocumented aliases), integration tests passing. Complete hardware interrupt handling (NMI, FIRQ, IRQ), CWAI, SYNC. Cycle-accurate timing validated against independent reference emulator.
+- Votrax SC-01 speech synthesizer
+- Atari AVG vector generator (Tempest, Star Wars)
+- Math box (Tempest, Star Wars)
+- TMS5220 speech synthesizer (Star Wars)
+- Starfield generator (Galaga)
 
-### Phase 2: Core Infrastructure
+### Games
 
-- [x] Interrupt handling (IRQ, FIRQ, NMI)
-- [x] CWAI and SYNC instructions
-- [x] Move SimpleSystem components to separate crate
-- [x] Cycle-accurate timing validation (M6809: 266K tests vs elmerucr/MC6809, M6800: 192K tests vs mame4all)
-- [x] Reset vector fetch from 0xFFFE/0xFFFF
-- [x] Instruction disassembler (I8035, M6800, M6502, M6809, Z80; common `Disassemble` trait)
-- [x] Save state support (quick save/load with F6/F7)
+- Dig Dug — in progress (Namco: 3×Z80 + WSG)
+- Radar Scope (Nintendo TKG-04)
+- Galaga (Namco: 3×Z80 + WSG + starfield)
+- Food Fight (Atari: 68000 + 3×POKEY)
+- Tempest (Atari: M6502 + AVG + math box)
+- Star Wars (Atari: 2×M6809 + AVG + math box)
 
-### Phase 3: Additional CPUs
+### Tools
 
-- [x] Motorola 6800 CPU (192 opcodes, cross-validated against mame4all)
-- [x] MOS 6502 CPU (151 opcodes, cross-validated against SingleStepTests/65x02)
-- [x] Zilog Z80 CPU (1604 opcodes, cross-validated against SingleStepTests/z80)
-- [x] Intel I8035 CPU (229 opcodes, MCS-48 family, cross-validated against MAME)
-- [x] Intel I8088 CPU (279 opcodes, x86 16-bit ISA, 8-bit data bus, 20-bit segmented addressing)
-- [ ] Motorola 68000 CPU (32-bit address space, 16-bit data bus)
-
-### Phase 4: Peripherals & Systems
-
-- [x] Device trait (common peripheral interface: reset, read/write, tick, debug integration)
-- [x] MC6821 PIA (full register set, interrupts, edge detection)
-- [x] AY-8910 PSG (3-ch square wave + noise + envelope, I/O ports)
-- [x] POKEY (4-ch audio, polynomial counters, timer/IRQ, pot scanning)
-- [x] Namco WSG (3-voice wavetable synthesizer)
-- [x] Z80 CTC (4-ch counter/timer, IM2 vectored interrupts, cascading)
-- [x] Williams SC1/SC2 blitter (DMA copy/fill, mask, shift, foreground-only)
-- [x] Intel 8257 DMA controller (4-channel, rotating priority, auto-load)
-- [x] MC1408 DAC, 74LS259 output latch, DK discrete analog sounds
-- [x] SSIO sound board (Midway MCR: Z80 + 2×AY-8910, command latches, input routing)
-- [x] CMOS RAM (1KB battery-backed, save/load persistence)
-- [x] ROM loader (MAME ZIP support, CRC32-based matching, multi-variant ROM sets)
-- [x] GfxCache (pre-decoded tile/sprite pixels, ROM decoders for Pac-Man, DK, MCR families)
-- [x] DirtyBitset (fixed-capacity dirty tracking for tile-level change detection)
-- [ ] MOS 6532 RIOT (128B RAM, 2 I/O ports, programmable interval timer, PA7 edge detect)
-- [ ] Votrax SC-01 speech synthesizer (stub: phoneme accept + request line)
-- [x] Machine trait (frontend-agnostic display/input/render interface)
-- [x] Joust arcade board (Williams 2nd-gen: M6809 + video RAM + PIAs + blitter + CMOS + ROM)
-- [ ] Namco 06xx custom I/O arbiter (Dig Dug, Galaga)
-- [ ] Namco 51xx input multiplexer (Dig Dug, Galaga)
-- [ ] Namco 54xx noise generator (Galaga)
-- [ ] Starfield generator (Galaga)
-- [x] Atari DVG vector generator (Asteroids)
-- [ ] Atari AVG vector generator (Tempest, Star Wars)
-- [ ] Math box (Tempest, Star Wars)
-- [ ] TMS5220 speech synthesizer (Star Wars)
-
-### Phase 5: Frontend & Developer Tools
-
-- [x] SDL2 frontend (renders any Machine impl, keyboard input, VSync timing)
-- [x] Joypad, mouse and trackball input
-- [x] Debug panel with CPU/device register inspection and step execution (F1 toggle, `--debug` flag)
-- [x] Debugger: breakpoints, memory viewer, disassembly viewer
-- [ ] Performance profiler
-
-### Phase 6: More Games
-
-- [x] Robotron 2084 (Williams: twin-stick M6809 + blitter)
-- [x] Missile Command (Atari: M6502 + POKEY + trackball)
-- [x] Pac-Man (Namco Pac board: Z80 + WSG + tile/sprite video)
-- [x] Ms. Pac-Man (Namco Pac board: auxiliary decode latch + ROM encryption)
-- [x] Donkey Kong (Nintendo TKG-04: Z80 + I8035 + I8257 DMA + tile/sprite video)
-- [x] Donkey Kong Junior (Nintendo TKG-04: shared board, 24KB ROM, gfx bank)
-- [ ] Radar Scope (Nintendo TKG-04: shared board, star field + grid overlay)
-- [x] Asteroids (Atari: M6502 + DVG vector display)
-- [x] Gridlee (Videa: M6809 + bitmap video + trackball — freely distributable ROMs)
-- [ ] Dig Dug (Namco: 3×Z80 + WSG + 06xx/51xx)
-- [ ] Galaga (Namco: 3×Z80 + WSG + 06xx/51xx/54xx + starfield)
-- [x] Satan's Hollow (Bally Midway MCR II: Z80 + SSIO + CTC + tile dirty tracking)
-- [x] Crystal Castles (Atari: M6502 + 2×POKEY + bitmap video + sprites + trackball)
-- [ ] Q*Bert (Gottlieb System 80: I8088 + M6502 sound + 6532 RIOT + DAC + Votrax)
-- [ ] Tempest (Atari: M6502 + 2×POKEY + AVG + math box)
-- [ ] Star Wars (Atari: 2×M6809 + 4×POKEY + TMS5220 + AVG + math box)
+- Performance profiler
 
 ## License
 

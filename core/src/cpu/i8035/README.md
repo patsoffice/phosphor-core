@@ -132,12 +132,13 @@ enum ExecState {
 
 ## File Structure
 
-```
+```text
 core/src/cpu/i8035/
-  mod.rs        -- I8035 struct, state machine, dispatch, control ops (643 lines)
-  alu.rs        -- Flag helpers, ALU operations (126 lines)
-  branch.rs     -- Jumps, calls, returns, conditional branches (353 lines)
-  load_store.rs -- Data movement, MOVX, MOVP, port I/O, expander ports (536 lines)
+  mod.rs        -- I8035 struct, state machine, dispatch, control ops
+  alu.rs        -- Flag helpers, ALU operations
+  branch.rs     -- Jumps, calls, returns, conditional branches
+  load_store.rs -- Data movement, MOVX, MOVP, port I/O, expander ports
+  disasm.rs     -- Instruction disassembler
 ```
 
 ## Resources

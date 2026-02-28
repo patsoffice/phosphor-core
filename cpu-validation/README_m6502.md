@@ -128,11 +128,3 @@ All 151 legal NMOS 6502 opcodes:
 | Transfer | 6 | TAX, TAY, TXA, TYA, TSX, TXS |
 | Register INC/DEC | 4 | INX, INY, DEX, DEY |
 | Misc | 2 | NOP, BRK |
-
-## Files
-
-| File | Purpose |
-|------|---------|
-| `cpu-validation/src/lib.rs` | TracingBus, M6502TestCase/M6502CpuState JSON types |
-| `cpu-validation/tests/m6502_single_step_test.rs` | Validation runner (151 opcodes x 10,000 vectors) |
-| `cpu-validation/test_data/65x02/` | Git submodule: SingleStepTests/65x02 reference vectors |

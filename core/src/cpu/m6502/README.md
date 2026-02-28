@@ -86,6 +86,7 @@ The NMOS 6502 performs a bus read or write on **every** cycle -- there are no in
 ### BCD Arithmetic
 
 The 6502's decimal mode (D flag) implements NMOS-specific flag behavior:
+
 - **ADC**: N and V from intermediate binary result, Z from binary result, C from BCD result
 - **SBC**: All flags from binary result; only the accumulator gets BCD correction
 
@@ -107,16 +108,17 @@ BRK and IRQ are distinguished by the B flag in the pushed status byte.
 
 ## File Structure
 
-```
+```text
 core/src/cpu/m6502/
-  mod.rs        -- M6502 struct, state machine, dispatch, implied ops (610 lines)
-  alu.rs        -- Flag helpers, addressing mode helpers (960 lines)
-  binary.rs     -- ADC, SBC, CMP, CPX, CPY, AND, ORA, EOR, BIT (624 lines)
-  shift.rs      -- ASL, LSR, ROL, ROR memory modes (172 lines)
-  unary.rs      -- INC, DEC memory modes (120 lines)
-  load_store.rs -- LDA, LDX, LDY, STA, STX, STY (393 lines)
-  branch.rs     -- Branches, JMP, JSR, RTS, RTI (326 lines)
-  stack.rs      -- PHA, PLA, PHP, PLP, BRK, interrupt handler (162 lines)
+  mod.rs        -- M6502 struct, state machine, dispatch, implied ops
+  alu.rs        -- Flag helpers, addressing mode helpers
+  binary.rs     -- ADC, SBC, CMP, CPX, CPY, AND, ORA, EOR, BIT
+  shift.rs      -- ASL, LSR, ROL, ROR memory modes
+  unary.rs      -- INC, DEC memory modes
+  load_store.rs -- LDA, LDX, LDY, STA, STX, STY
+  branch.rs     -- Branches, JMP, JSR, RTS, RTI
+  stack.rs      -- PHA, PLA, PHP, PLP, BRK, interrupt handler
+  disasm.rs     -- Instruction disassembler
 ```
 
 ## Resources

@@ -115,10 +115,3 @@ the IDIV quotient is correctly handled and validated.
 
 **IDIV range quirk**: The 8088 treats quotient = -128 (byte) or -32768 (word) as a
 divide error, making the valid range -127..=127 and -32767..=32767 respectively.
-
-## Files
-
-| File | Purpose |
-|------|---------|
-| `cpu-validation/tests/i8088_single_step_test.rs` | Validation harness (279 opcodes, ~1000 vectors each) |
-| `cpu-validation/test_data/8088/v2/` | Git submodule: SingleStepTests/8088 test vectors |

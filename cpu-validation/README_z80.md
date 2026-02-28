@@ -149,11 +149,3 @@ and increment R.
 | DDCB | 256 | 256,000 | IX+d indexed bit operations |
 | FDCB | 256 | 256,000 | IY+d indexed bit operations |
 | **Total** | **1604** | **1,604,000** | |
-
-## Files
-
-| File | Purpose |
-|------|---------|
-| `cpu-validation/src/lib.rs` | TracingBus (with I/O port queue), Z80TestCase/Z80CpuState JSON types |
-| `cpu-validation/tests/z80_single_step_test.rs` | Validation runner (1604 opcodes x 1000 vectors) |
-| `cpu-validation/test_data/z80/` | Git submodule: SingleStepTests/z80 reference vectors |

@@ -137,14 +137,3 @@ The optimization causes mame4all to report a different cycle count than the
 expected 4 cycles. Phosphor correctly executes the branch as a normal 4-cycle
 instruction. These failures are harmless and represent a mame4all optimization,
 not a hardware accuracy difference.
-
-## Files
-
-| File | Purpose |
-|------|---------|
-| `cpu-validation/src/bin/gen_m6800_tests.rs` | Test vector generator (192 opcodes × 1,000 vectors) |
-| `cpu-validation/tests/m6800_single_step_test.rs` | Self-validation (phosphor against its own vectors) |
-| `cross-validation/validate_m6800.cpp` | Cross-validation harness |
-| `cross-validation/m6800/m6800.cpp` | Mame4all M6800 CPU core |
-| `cross-validation/m6800/6800ops.cpp` | Mame4all opcode implementations |
-| `cross-validation/m6800/mame_shim.h` | MAME API compatibility shim |

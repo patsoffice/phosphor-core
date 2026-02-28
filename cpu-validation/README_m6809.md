@@ -132,13 +132,3 @@ cargo test -p phosphor-cpu-validation
 This runs `m6809_single_step_test.rs`, which loads every JSON file and replays
 each test case against phosphor-core, asserting registers, memory, cycle count,
 and per-cycle bus traces.
-
-## Files
-
-| File | Purpose |
-|------|---------|
-| `cpu-validation/src/lib.rs` | TracingBus, JSON types (shared by M6809 and M6800) |
-| `cpu-validation/src/bin/gen_m6809_tests.rs` | Test vector generator (266 opcodes x 1,000 vectors) |
-| `cpu-validation/tests/m6809_single_step_test.rs` | Self-validation (phosphor against its own vectors) |
-| `cross-validation/validate_m6809.cpp` | Cross-validation harness |
-| `cross-validation/mc6809/` | Git submodule: elmerucr/MC6809 reference emulator |

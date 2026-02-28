@@ -99,16 +99,17 @@ enum ExecState {
 
 ## File Structure
 
-```
+```text
 core/src/cpu/m6800/
-  mod.rs        -- M6800 struct, state machine, dispatch, inherent ops (731 lines)
-  alu.rs        -- Flag helpers, addressing mode helpers (547 lines)
+  mod.rs        -- M6800 struct, state machine, dispatch, inherent ops
+  alu.rs        -- Flag helpers, addressing mode helpers
   alu/binary.rs -- ADD, SUB, CMP, SBC, ADC, AND, BIT, EOR, ORA
   alu/shift.rs  -- ASL, ASR, LSR, ROL, ROR
   alu/unary.rs  -- NEG, COM, CLR, INC, DEC, TST
-  branch.rs     -- Branches, BSR, JMP, JSR (407 lines)
-  load_store.rs -- LDA/B, STA/B, LDX, STX, LDS, STS, CPX (481 lines)
-  stack.rs      -- PSH/PUL, SWI, WAI, RTI, interrupt handler (353 lines)
+  branch.rs     -- Branches, BSR, JMP, JSR
+  load_store.rs -- LDA/B, STA/B, LDX, STX, LDS, STS, CPX
+  stack.rs      -- PSH/PUL, SWI, WAI, RTI, interrupt handler
+  disasm.rs     -- Instruction disassembler
 ```
 
 ## Resources

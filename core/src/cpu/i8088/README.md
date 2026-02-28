@@ -145,15 +145,15 @@ Verified against SingleStepTests hardware captures:
 
 ## File Structure
 
-```
+```text
 core/src/cpu/i8088/
-  mod.rs         -- I8088 struct, state machine, interrupt dispatch (521 lines)
-  registers.rs   -- Reg8, Reg16, SegReg enums and accessors (351 lines)
-  flags.rs       -- FLAGS register helpers, parity table (178 lines)
-  decode.rs      -- Prefix consumption, ModR/M parsing, push/pop (331 lines)
-  addressing.rs  -- Operand resolution, effective address calculation (759 lines)
-  alu.rs         -- Arithmetic/logic operations, shifts, BCD (895 lines)
-  execute.rs     -- Opcode dispatch, instruction implementation, tests (4791 lines)
+  mod.rs        -- I8088 struct, state machine, interrupt dispatch
+  registers.rs  -- Reg8, Reg16, SegReg enums and accessors
+  flags.rs      -- FLAGS register helpers, parity table
+  decode.rs     -- Prefix consumption, ModR/M parsing, push/pop
+  addressing.rs -- Operand resolution, effective address calculation
+  alu.rs        -- Arithmetic/logic operations, shifts, BCD
+  execute.rs    -- Opcode dispatch, instruction implementation, tests
 ```
 
 ## Skipped Test Vectors

@@ -145,15 +145,16 @@ All undocumented behaviors verified against SingleStepTests:
 
 ## File Structure
 
-```
+```text
 core/src/cpu/z80/
-  mod.rs        -- Z80 struct, state machine, dispatch, prefix handling (837 lines)
-  alu.rs        -- 8/16-bit ALU, rotates, DAA, CPL, SCF, CCF, NEG, RRD/RLD (670 lines)
-  load_store.rs -- Loads, stores, exchanges, I/O, LD A,I/R (807 lines)
-  block.rs      -- Block transfer (LDI/LDIR), compare (CPI/CPIR), I/O (INI/OTIR) (481 lines)
-  branch.rs     -- JP, JR, DJNZ, CALL, RET, RST, condition evaluation (448 lines)
-  bit.rs        -- CB prefix: BIT/SET/RES, shifts/rotates (277 lines)
-  stack.rs      -- PUSH/POP (64 lines)
+  mod.rs        -- Z80 struct, state machine, dispatch, prefix handling
+  alu.rs        -- 8/16-bit ALU, rotates, DAA, CPL, SCF, CCF, NEG, RRD/RLD
+  load_store.rs -- Loads, stores, exchanges, I/O, LD A,I/R
+  block.rs      -- Block transfer (LDI/LDIR), compare (CPI/CPIR), I/O (INI/OTIR)
+  branch.rs     -- JP, JR, DJNZ, CALL, RET, RST, condition evaluation
+  bit.rs        -- CB prefix: BIT/SET/RES, shifts/rotates
+  stack.rs      -- PUSH/POP
+  disasm.rs     -- Instruction disassembler
 ```
 
 ## Resources
