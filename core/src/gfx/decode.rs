@@ -154,74 +154,6 @@ pub fn decode_gfx_element(
 }
 
 // ---------------------------------------------------------------------------
-// Donkey Kong / TKG-04 family ROM layouts
-// ---------------------------------------------------------------------------
-
-/// Decode separated-plane 2bpp tiles: 8x8.
-///
-/// Plane 0 is at `base`, plane 1 is at `base + plane1_offset`. Each plane
-/// stores 8 bytes per tile (one byte per row), MSB-first (bit 7 = leftmost
-/// pixel). 8 bytes per tile per plane.
-pub fn decode_planar_2bpp_tiles(
-    rom: &[u8],
-    base: usize,
-    plane1_offset: usize,
-    count: usize,
-) -> GfxCache {
-    let mut cache = GfxCache::new(count, 8, 8);
-    for code in 0..count {
-        let tile_offset = base + code * 8;
-        for py in 0..8usize {
-            let addr0 = tile_offset + py;
-            let addr1 = tile_offset + plane1_offset + py;
-            let plane0 = if addr0 < rom.len() { rom[addr0] } else { 0 };
-            let plane1 = if addr1 < rom.len() { rom[addr1] } else { 0 };
-            for px in 0..8usize {
-                let bit_mask = 0x80 >> px;
-                let p0 = u8::from(plane0 & bit_mask != 0);
-                let p1 = u8::from(plane1 & bit_mask != 0);
-                cache.set_pixel(code, px, py, p0 | (p1 << 1));
-            }
-        }
-    }
-    cache
-}
-
-/// Decode Donkey Kong family sprites: 16x16, 2bpp, 4-ROM interleaved.
-///
-/// 4 ROM regions of 2KB each store left/right halves of planes 0/1:
-///   - `base + 0x0000`: plane 0, left half (px 0-7)
-///   - `base + 0x0800`: plane 0, right half (px 8-15)
-///   - `base + 0x1000`: plane 1, left half (px 0-7)
-///   - `base + 0x1800`: plane 1, right half (px 8-15)
-///
-/// Within each region: 16 bytes per sprite (one byte per row), MSB-first.
-pub fn decode_dkong_sprites(rom: &[u8], base: usize, count: usize) -> GfxCache {
-    let mut cache = GfxCache::new(count, 16, 16);
-    for code in 0..count {
-        let spr_offset = base + code * 16;
-        for py in 0..16usize {
-            for px in 0..16usize {
-                let (p0_base, p1_base) = if px < 8 {
-                    (spr_offset, 0x1000 + spr_offset)
-                } else {
-                    (0x0800 + spr_offset, 0x1800 + spr_offset)
-                };
-                let addr0 = p0_base + py;
-                let addr1 = p1_base + py;
-                let byte0 = if addr0 < rom.len() { rom[addr0] } else { 0 };
-                let byte1 = if addr1 < rom.len() { rom[addr1] } else { 0 };
-                let bit_mask = 0x80 >> (px & 7);
-                let p0 = u8::from(byte0 & bit_mask != 0);
-                let p1 = u8::from(byte1 & bit_mask != 0);
-                cache.set_pixel(code, px, py, p0 | (p1 << 1));
-            }
-        }
-    }
-    cache
-}
-
-// ---------------------------------------------------------------------------
 // Midway MCR family ROM layouts
 // ---------------------------------------------------------------------------
 
@@ -377,42 +309,6 @@ mod tests {
         cache.set_pixel(0, 3, 5, 2);
         assert_eq!(cache.pixel(0, 3, 5), 2);
         assert_eq!(cache.pixel(1, 3, 5), 0); // different code, still 0
-    }
-
-    #[test]
-    fn decode_planar_2bpp_tiles_known_pattern() {
-        // 1 tile, plane1 offset = 8.
-        // Plane 0, row 0: 0b11000000 -> px0=1, px1=1, rest 0
-        // Plane 1, row 0: 0b10000000 -> px0=1, rest 0
-        // pixel = p0 | (p1 << 1): px0 = 1|2 = 3, px1 = 1|0 = 1
-        let mut rom = [0u8; 16];
-        rom[0] = 0xC0; // plane 0, row 0
-        rom[8] = 0x80; // plane 1, row 0
-
-        let cache = decode_planar_2bpp_tiles(&rom, 0, 8, 1);
-        assert_eq!(cache.pixel(0, 0, 0), 3); // px=0, py=0
-        assert_eq!(cache.pixel(0, 1, 0), 1); // px=1, py=0
-        assert_eq!(cache.pixel(0, 2, 0), 0); // px=2, py=0
-    }
-
-    #[test]
-    fn decode_dkong_sprites_known_pattern() {
-        // 1 sprite. Plane 0 left (offset 0), plane 1 left (offset 0x1000).
-        // Sprite code 0, row 0, left half.
-        // Plane 0 byte: 0xFF -> all 8 left pixels have p0=1
-        // Plane 1 byte: 0x00 -> all 8 left pixels have p1=0
-        // pixel = 1 | 0 = 1 for all left pixels
-        let mut rom = vec![0u8; 0x2000];
-        rom[0] = 0xFF; // plane 0, code 0, row 0
-        // plane 1 at 0x1000 stays 0
-
-        let cache = decode_dkong_sprites(&rom, 0, 1);
-        for px in 0..8 {
-            assert_eq!(cache.pixel(0, px, 0), 1, "px={px}");
-        }
-        for px in 8..16 {
-            assert_eq!(cache.pixel(0, px, 0), 0, "px={px}");
-        }
     }
 
     // -- MCR tile/sprite decode tests --
@@ -604,46 +500,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn generic_matches_planar_2bpp_tiles() {
-        let plane1_offset: usize = 2048; // DK: 256 tiles * 8 bytes
-        let mut rom = vec![0u8; plane1_offset * 2];
-        fill_prng(&mut rom);
-        let count = plane1_offset / 8;
-        let old = decode_planar_2bpp_tiles(&rom, 0, plane1_offset, count);
-        let plane1_bits = plane1_offset * 8;
-        let planes: [usize; 2] = [0, plane1_bits];
-        let new = decode_gfx(&rom, 0, count, &GfxLayout {
-            plane_offsets: &planes,
-            x_offsets: &[0, 1, 2, 3, 4, 5, 6, 7],
-            y_offsets: &[0, 8, 16, 24, 32, 40, 48, 56],
-            char_increment: 64,
-        });
-        assert_caches_equal(&old, &new, "planar_2bpp_tiles");
-    }
-
-    #[test]
-    fn generic_matches_dkong_sprites() {
-        let mut rom = vec![0u8; 0x2000];
-        fill_prng(&mut rom);
-        let count = rom.len() / 4 / 16; // 128
-        let q = rom.len() / 4; // 0x800
-        let q8 = q * 8;
-        let old = decode_dkong_sprites(&rom, 0, count);
-        let planes: [usize; 2] = [0, 2 * q8];
-        let x_offsets: [usize; 16] = std::array::from_fn(|px| {
-            if px < 8 { px } else { q8 + (px - 8) }
-        });
-        let y_offsets: [usize; 16] = std::array::from_fn(|py| py * 8);
-        let new = decode_gfx(&rom, 0, count, &GfxLayout {
-            plane_offsets: &planes,
-            x_offsets: &x_offsets,
-            y_offsets: &y_offsets,
-            char_increment: 128,
-        });
-        assert_caches_equal(&old, &new, "dkong_sprites");
     }
 
     #[test]

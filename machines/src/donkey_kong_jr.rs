@@ -256,7 +256,7 @@ impl DkongJrSystem {
             .copy_from_slice(&prom_data[0x200..0x300]);
 
         self.board.build_palette();
-        self.board.decode_gfx();
+        self.board.decode_gfx_roms();
         Ok(())
     }
 }

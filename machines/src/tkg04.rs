@@ -10,6 +10,7 @@ use phosphor_core::device::dkong_discrete::DkongDiscrete;
 use phosphor_core::device::i8257::I8257;
 use phosphor_core::device::output_latch::OutputLatch;
 use phosphor_core::gfx;
+use phosphor_core::gfx::decode::{decode_gfx, GfxLayout};
 use phosphor_macros::{BusDebug, MemoryRegion};
 
 // ---------------------------------------------------------------------------
@@ -262,18 +263,33 @@ impl Tkg04Board {
 
     /// Pre-decode tile and sprite ROMs into GFX caches.
     /// Call after loading tile_rom and sprite_rom.
-    pub fn decode_gfx(&mut self) {
-        // tile_plane1_offset bytes per plane, 8 bytes per tile
+    pub fn decode_gfx_roms(&mut self) {
+        // Tiles: separated-plane 2bpp, 8x8
         let tile_count = self.tile_plane1_offset / 8; // DK: 256, DK Jr: 512
-        self.tile_cache = gfx::decode::decode_planar_2bpp_tiles(
-            &self.tile_rom,
-            0,
-            self.tile_plane1_offset,
-            tile_count,
-        );
-        // 4 interleaved ROM regions, each tile_plane1_offset bytes, 16 bytes per sprite
+        let plane1_bits = self.tile_plane1_offset * 8;
+        let tile_planes: [usize; 2] = [0, plane1_bits];
+        self.tile_cache = decode_gfx(&self.tile_rom, 0, tile_count, &GfxLayout {
+            plane_offsets: &tile_planes,
+            x_offsets: &[0, 1, 2, 3, 4, 5, 6, 7],
+            y_offsets: &[0, 8, 16, 24, 32, 40, 48, 56],
+            char_increment: 64,
+        });
+
+        // Sprites: 4-ROM interleaved 2bpp, 16x16
         let sprite_count = self.sprite_rom.len() / 4 / 16; // 128
-        self.sprite_cache = gfx::decode::decode_dkong_sprites(&self.sprite_rom, 0, sprite_count);
+        let q = self.sprite_rom.len() / 4;
+        let q8 = q * 8;
+        let sprite_planes: [usize; 2] = [0, 2 * q8];
+        let x_offsets: [usize; 16] = std::array::from_fn(|px| {
+            if px < 8 { px } else { q8 + (px - 8) }
+        });
+        let y_offsets: [usize; 16] = std::array::from_fn(|py| py * 8);
+        self.sprite_cache = decode_gfx(&self.sprite_rom, 0, sprite_count, &GfxLayout {
+            plane_offsets: &sprite_planes,
+            x_offsets: &x_offsets,
+            y_offsets: &y_offsets,
+            char_increment: 128,
+        });
     }
 
     // -----------------------------------------------------------------------
