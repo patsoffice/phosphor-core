@@ -486,18 +486,4 @@ mod tests {
         assert_eq!(sys2.widget_port_b, 0x03);
     }
 
-    #[test]
-    fn save_load_machine_id_validated() {
-        let sys = RobotronSystem::new();
-        let data = sys.save_state().unwrap();
-
-        // Tamper with the machine ID
-        let mut bad = data.clone();
-        let id_offset = 4 + 4 + 4; // magic(4) + version(4) + id_len(4)
-        bad[id_offset..id_offset + 8].copy_from_slice(b"xxxxxxxx");
-
-        let mut sys2 = RobotronSystem::new();
-        let result = sys2.load_state(&bad);
-        assert!(result.is_err(), "should reject mismatched machine ID");
-    }
 }

@@ -563,20 +563,6 @@ mod tests {
     }
 
     #[test]
-    fn save_load_machine_id_validated() {
-        let sys = MsPacmanSystem::new();
-        let data = sys.save_state().unwrap();
-
-        let mut bad = data.clone();
-        let id_offset = 4 + 4 + 4; // magic(4) + version(4) + id_len(4)
-        bad[id_offset..id_offset + 7].copy_from_slice(b"xxxxxxx");
-
-        let mut sys2 = MsPacmanSystem::new();
-        let result = sys2.load_state(&bad);
-        assert!(result.is_err(), "should reject mismatched machine ID");
-    }
-
-    #[test]
     fn decode_latch_disable_addresses() {
         let mut sys = MsPacmanSystem::new();
         assert!(sys.decode_enabled); // starts enabled

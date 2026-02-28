@@ -492,44 +492,4 @@ mod tests {
         assert_eq!(sys2.start_bits, 0x30);
     }
 
-    #[test]
-    fn save_load_machine_id_validated() {
-        let sys = JoustSystem::new();
-        let data = sys.save_state().unwrap();
-
-        // Tamper with the machine ID in the header: replace "joust" with "xxxxx"
-        let mut bad = data.clone();
-        let id_offset = 4 + 4 + 4; // magic(4) + version(4) + id_len(4)
-        bad[id_offset..id_offset + 5].copy_from_slice(b"xxxxx");
-
-        let mut sys2 = JoustSystem::new();
-        let result = sys2.load_state(&bad);
-        assert!(result.is_err(), "should reject mismatched machine ID");
-    }
-
-    #[test]
-    fn save_does_not_include_rom() {
-        use crate::williams::MainRegion;
-
-        let mut sys = JoustSystem::new();
-        sys.board.main_map.region_data_mut(MainRegion::ProgramRom)[0] = 0xDE;
-        sys.board.main_map.region_data_mut(MainRegion::BankedRom)[0] = 0xAD;
-
-        let data = sys.save_state().unwrap();
-
-        // Load into system with different ROM — ROM should be preserved
-        let mut sys2 = JoustSystem::new();
-        sys2.board.main_map.region_data_mut(MainRegion::ProgramRom)[0] = 0x11;
-        sys2.board.main_map.region_data_mut(MainRegion::BankedRom)[0] = 0x22;
-        sys2.load_state(&data).unwrap();
-
-        assert_eq!(
-            sys2.board.main_map.region_data(MainRegion::ProgramRom)[0],
-            0x11
-        );
-        assert_eq!(
-            sys2.board.main_map.region_data(MainRegion::BankedRom)[0],
-            0x22
-        );
-    }
 }

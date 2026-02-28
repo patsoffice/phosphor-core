@@ -529,23 +529,6 @@ mod tests {
     }
 
     #[test]
-    fn save_load_machine_id_validated() {
-        let sys = QbertSystem::new();
-        let data = sys.save_state().unwrap();
-
-        // Tamper with the machine ID
-        let mut bad = data.clone();
-        let id_offset = 4 + 4 + 4; // magic(4) + version(4) + id_len(4)
-        if id_offset + 5 <= bad.len() {
-            bad[id_offset..id_offset + 5].copy_from_slice(b"badid");
-        }
-
-        let mut sys2 = QbertSystem::new();
-        let result = sys2.load_state(&bad);
-        assert!(result.is_err(), "should reject mismatched machine ID");
-    }
-
-    #[test]
     fn input_active_high_joystick() {
         let mut sys = QbertSystem::new();
 

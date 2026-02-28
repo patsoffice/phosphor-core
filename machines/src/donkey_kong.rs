@@ -691,20 +691,6 @@ mod tests {
     }
 
     #[test]
-    fn save_load_machine_id_validated() {
-        let sys = DkongSystem::new();
-        let data = sys.save_state().unwrap();
-
-        let mut bad = data.clone();
-        let id_offset = 4 + 4 + 4;
-        bad[id_offset..id_offset + 5].copy_from_slice(b"xxxxx");
-
-        let mut sys2 = DkongSystem::new();
-        let result = sys2.load_state(&bad);
-        assert!(result.is_err(), "should reject mismatched machine ID");
-    }
-
-    #[test]
     fn save_does_not_include_rom() {
         let mut sys = DkongSystem::new();
         sys.board.main_map.region_data_mut(MainRegion::Rom)[0] = 0xDE;

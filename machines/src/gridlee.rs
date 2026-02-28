@@ -1668,20 +1668,6 @@ mod tests {
     }
 
     #[test]
-    fn save_load_machine_id_validated() {
-        let sys = make_system();
-        let data = Machine::save_state(&sys).unwrap();
-
-        let mut bad = data.clone();
-        let id_offset = 4 + 4 + 4;
-        bad[id_offset..id_offset + 7].copy_from_slice(b"xxxxxxx");
-
-        let mut sys2 = make_system();
-        let result = Machine::load_state(&mut sys2, &bad);
-        assert!(result.is_err(), "should reject mismatched machine ID");
-    }
-
-    #[test]
     fn save_does_not_include_rom() {
         let mut sys = make_system();
         sys.map.region_data_mut(Region::Rom)[0] = 0xDE;

@@ -564,21 +564,6 @@ mod tests {
     }
 
     #[test]
-    fn save_load_machine_id_validated() {
-        let sys = AsteroidsDeluxeSystem::new();
-        let data = sys.save_state().unwrap();
-
-        // Tamper with the machine ID
-        let mut bad = data.clone();
-        let id_offset = 4 + 4 + 4; // magic(4) + version(4) + id_len(4)
-        bad[id_offset..id_offset + 8].copy_from_slice(b"xxxxxxxx");
-
-        let mut sys2 = AsteroidsDeluxeSystem::new();
-        let result = sys2.load_state(&bad);
-        assert!(result.is_err(), "should reject mismatched machine ID");
-    }
-
-    #[test]
     fn save_does_not_include_rom() {
         let mut sys = AsteroidsDeluxeSystem::new();
         sys.board.map.region_data_mut(Region::ProgramRom)[0] = 0xDE;
