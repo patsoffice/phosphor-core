@@ -73,10 +73,7 @@ pub mod registry;
 pub mod robotron;
 pub mod rom_loader;
 pub mod satans_hollow;
-pub mod simple6502;
-pub mod simple6800;
-pub mod simple6809;
-pub mod simplez80;
+pub mod simple_system;
 pub mod tkg04;
 pub mod williams;
 
@@ -96,7 +93,7 @@ pub use pacman::PacmanSystem;
 pub use qbert::QbertSystem;
 pub use robotron::RobotronSystem;
 pub use satans_hollow::SatansHollowSystem;
-pub use simple6502::Simple6502System;
-pub use simple6800::Simple6800System;
-pub use simple6809::Simple6809System;
-pub use simplez80::SimpleZ80System;
+pub use simple_system::{
+    Simple6502System, Simple6800System, Simple6809System, SimpleI8035System, SimpleI8088System,
+    SimpleSystem, SimpleSystem32, SimpleZ80System,
+};
