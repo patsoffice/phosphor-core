@@ -2,7 +2,7 @@ pub mod decode;
 pub mod sprite;
 pub mod tilemap;
 
-pub use decode::GfxCache;
+pub use decode::{GfxCache, GfxLayout};
 pub use tilemap::TilemapConfig;
 
 /// Rotate an RGB24 buffer 90° counter-clockwise.

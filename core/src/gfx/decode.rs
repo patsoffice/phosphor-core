@@ -3,9 +3,10 @@
 //! ROM graphics data comes in many different planar layouts across arcade
 //! hardware. Rather than parameterising these layouts at render time, we
 //! decode once at ROM load into a uniform `[code][py][px] -> palette_index`
-//! representation. Each game provides a decode function matching its ROM
-//! format; the scanline renderer then uses the resulting cache via a simple
-//! array lookup.
+//! representation. Each game defines a [`GfxLayout`] describing its ROM
+//! format; the generic [`decode_gfx`] function reads bits at the positions
+//! specified by the layout and assembles pixel values. The scanline renderer
+//! then uses the resulting cache via a simple array lookup.
 
 /// Pre-decoded tile or sprite pixel cache.
 ///
@@ -66,6 +67,89 @@ impl GfxCache {
 
     pub fn height(&self) -> usize {
         self.height
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MAME-style GfxLayout descriptor and generic decoder
+// ---------------------------------------------------------------------------
+
+/// Describes a ROM graphics layout using MAME-style bit offsets.
+///
+/// Each pixel at position `(px, py)` in element `code` is assembled from
+/// `plane_offsets.len()` bitplanes. The bit position for plane `p` is:
+///
+/// ```text
+/// bit_pos = base*8 + code * char_increment
+///           + plane_offsets[p] + x_offsets[px] + y_offsets[py]
+/// ```
+///
+/// Bits are read MSB-first (matching MAME `readbit`):
+/// `byte = bit_pos / 8`, `bit = 7 - (bit_pos % 8)`.
+///
+/// Plane 0 maps to pixel bit 0 (LSB), plane 1 to bit 1, etc.
+pub struct GfxLayout<'a> {
+    pub plane_offsets: &'a [usize],
+    pub x_offsets: &'a [usize],
+    pub y_offsets: &'a [usize],
+    pub char_increment: usize,
+}
+
+/// Decode ROM graphics into a [`GfxCache`] using a [`GfxLayout`].
+///
+/// `rom` is the full graphics ROM region. `base` is the byte offset of the
+/// first element. `count` is the number of elements to decode.
+pub fn decode_gfx(rom: &[u8], base: usize, count: usize, layout: &GfxLayout) -> GfxCache {
+    let width = layout.x_offsets.len();
+    let height = layout.y_offsets.len();
+    let mut cache = GfxCache::new(count, width, height);
+    let base_bits = base * 8;
+
+    for code in 0..count {
+        let code_bits = base_bits + code * layout.char_increment;
+        for (py, &y_off) in layout.y_offsets.iter().enumerate() {
+            for (px, &x_off) in layout.x_offsets.iter().enumerate() {
+                let mut pixel: u8 = 0;
+                let xy_bits = x_off + y_off;
+                for (p, &plane_off) in layout.plane_offsets.iter().enumerate() {
+                    let bit_pos = code_bits + plane_off + xy_bits;
+                    let byte_idx = bit_pos / 8;
+                    if byte_idx < rom.len() {
+                        pixel |= ((rom[byte_idx] >> (7 - (bit_pos & 7))) & 1) << p;
+                    }
+                }
+                cache.set_pixel(code, px, py, pixel);
+            }
+        }
+    }
+    cache
+}
+
+/// Re-decode a single element into an existing [`GfxCache`].
+///
+/// Updates the pixels for `code` in-place. Useful for runtime character RAM
+/// updates (e.g. Gottlieb charram writes).
+pub fn decode_gfx_element(
+    rom: &[u8],
+    base: usize,
+    code: usize,
+    layout: &GfxLayout,
+    cache: &mut GfxCache,
+) {
+    let code_bits = base * 8 + code * layout.char_increment;
+    for (py, &y_off) in layout.y_offsets.iter().enumerate() {
+        for (px, &x_off) in layout.x_offsets.iter().enumerate() {
+            let mut pixel: u8 = 0;
+            let xy_bits = x_off + y_off;
+            for (p, &plane_off) in layout.plane_offsets.iter().enumerate() {
+                let bit_pos = code_bits + plane_off + xy_bits;
+                let byte_idx = bit_pos / 8;
+                if byte_idx < rom.len() {
+                    pixel |= ((rom[byte_idx] >> (7 - (bit_pos & 7))) & 1) << p;
+                }
+            }
+            cache.set_pixel(code, px, py, pixel);
+        }
     }
 }
 
@@ -707,5 +791,262 @@ mod tests {
         let cache = decode_gottlieb_sprites(&rom, 1);
         assert_eq!(cache.pixel(0, 8, 0), 0x01); // only plane 0
         assert_eq!(cache.pixel(0, 0, 0), 0x00); // byte 0 is clear
+    }
+
+    // -----------------------------------------------------------------------
+    // GfxLayout equivalence tests — verify generic decoder matches each old
+    // decoder pixel-for-pixel on pseudo-random ROM data.
+    // -----------------------------------------------------------------------
+
+    /// Fill a ROM buffer with deterministic pseudo-random data.
+    fn fill_prng(rom: &mut [u8]) {
+        for (i, b) in rom.iter_mut().enumerate() {
+            *b = (i.wrapping_mul(0x9E37_79B9) >> 24) as u8;
+        }
+    }
+
+    /// Assert two caches are pixel-identical.
+    fn assert_caches_equal(old: &GfxCache, new: &GfxCache, label: &str) {
+        assert_eq!(old.count(), new.count(), "{label}: count mismatch");
+        assert_eq!(old.width(), new.width(), "{label}: width mismatch");
+        assert_eq!(old.height(), new.height(), "{label}: height mismatch");
+        for code in 0..old.count() {
+            for py in 0..old.height() {
+                for px in 0..old.width() {
+                    assert_eq!(
+                        old.pixel(code, px, py),
+                        new.pixel(code, px, py),
+                        "{label}: mismatch at code={code}, px={px}, py={py}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn generic_matches_pacman_tiles() {
+        let mut rom = vec![0u8; 256 * 16];
+        fill_prng(&mut rom);
+        let old = decode_pacman_tiles(&rom, 0, 256);
+        let new = decode_gfx(&rom, 0, 256, &GfxLayout {
+            plane_offsets: &[4, 0],
+            x_offsets: &[64, 65, 66, 67, 0, 1, 2, 3],
+            y_offsets: &[0, 8, 16, 24, 32, 40, 48, 56],
+            char_increment: 128,
+        });
+        assert_caches_equal(&old, &new, "pacman_tiles");
+    }
+
+    #[test]
+    fn generic_matches_pacman_sprites() {
+        let mut rom = vec![0u8; 64 * 64];
+        fill_prng(&mut rom);
+        let old = decode_pacman_sprites(&rom, 0, 64);
+        let new = decode_gfx(&rom, 0, 64, &GfxLayout {
+            plane_offsets: &[4, 0],
+            x_offsets: &[
+                64, 65, 66, 67, 128, 129, 130, 131,
+                192, 193, 194, 195, 0, 1, 2, 3,
+            ],
+            y_offsets: &[
+                0, 8, 16, 24, 32, 40, 48, 56,
+                256, 264, 272, 280, 288, 296, 304, 312,
+            ],
+            char_increment: 512,
+        });
+        assert_caches_equal(&old, &new, "pacman_sprites");
+    }
+
+    #[test]
+    fn generic_matches_planar_2bpp_tiles() {
+        let plane1_offset: usize = 2048; // DK: 256 tiles * 8 bytes
+        let mut rom = vec![0u8; plane1_offset * 2];
+        fill_prng(&mut rom);
+        let count = plane1_offset / 8;
+        let old = decode_planar_2bpp_tiles(&rom, 0, plane1_offset, count);
+        let plane1_bits = plane1_offset * 8;
+        let planes: [usize; 2] = [0, plane1_bits];
+        let new = decode_gfx(&rom, 0, count, &GfxLayout {
+            plane_offsets: &planes,
+            x_offsets: &[0, 1, 2, 3, 4, 5, 6, 7],
+            y_offsets: &[0, 8, 16, 24, 32, 40, 48, 56],
+            char_increment: 64,
+        });
+        assert_caches_equal(&old, &new, "planar_2bpp_tiles");
+    }
+
+    #[test]
+    fn generic_matches_dkong_sprites() {
+        let mut rom = vec![0u8; 0x2000];
+        fill_prng(&mut rom);
+        let count = rom.len() / 4 / 16; // 128
+        let q = rom.len() / 4; // 0x800
+        let q8 = q * 8;
+        let old = decode_dkong_sprites(&rom, 0, count);
+        let planes: [usize; 2] = [0, 2 * q8];
+        let x_offsets: [usize; 16] = std::array::from_fn(|px| {
+            if px < 8 { px } else { q8 + (px - 8) }
+        });
+        let y_offsets: [usize; 16] = std::array::from_fn(|py| py * 8);
+        let new = decode_gfx(&rom, 0, count, &GfxLayout {
+            plane_offsets: &planes,
+            x_offsets: &x_offsets,
+            y_offsets: &y_offsets,
+            char_increment: 128,
+        });
+        assert_caches_equal(&old, &new, "dkong_sprites");
+    }
+
+    #[test]
+    fn generic_matches_digdug_chars() {
+        let mut rom = vec![0u8; 128 * 8];
+        fill_prng(&mut rom);
+        let old = decode_digdug_chars(&rom, 0, 128);
+        let new = decode_gfx(&rom, 0, 128, &GfxLayout {
+            plane_offsets: &[0],
+            x_offsets: &[0, 1, 2, 3, 4, 5, 6, 7],
+            y_offsets: &[0, 8, 16, 24, 32, 40, 48, 56],
+            char_increment: 64,
+        });
+        assert_caches_equal(&old, &new, "digdug_chars");
+    }
+
+    #[test]
+    fn generic_matches_galaga_sprites() {
+        let mut rom = vec![0u8; 64 * 64];
+        fill_prng(&mut rom);
+        let old = decode_galaga_sprites(&rom, 0, 64);
+        let new = decode_gfx(&rom, 0, 64, &GfxLayout {
+            plane_offsets: &[4, 0],
+            x_offsets: &[
+                0, 1, 2, 3, 64, 65, 66, 67,
+                128, 129, 130, 131, 192, 193, 194, 195,
+            ],
+            y_offsets: &[
+                0, 8, 16, 24, 32, 40, 48, 56,
+                256, 264, 272, 280, 288, 296, 304, 312,
+            ],
+            char_increment: 512,
+        });
+        assert_caches_equal(&old, &new, "galaga_sprites");
+    }
+
+    #[test]
+    fn generic_matches_mcr_tiles() {
+        let mut rom = vec![0u8; 256 * 32]; // 256 tiles, 32 bytes each (16+16)
+        fill_prng(&mut rom);
+        let count = rom.len() / 32;
+        let half_bits = (rom.len() / 2) * 8;
+        let old = decode_mcr_tiles(&rom, count);
+        let planes: [usize; 4] = [1, 0, half_bits + 1, half_bits];
+        let new = decode_gfx(&rom, 0, count, &GfxLayout {
+            plane_offsets: &planes,
+            x_offsets: &[0, 2, 4, 6, 8, 10, 12, 14],
+            y_offsets: &[0, 16, 32, 48, 64, 80, 96, 112],
+            char_increment: 128,
+        });
+        assert_caches_equal(&old, &new, "mcr_tiles");
+    }
+
+    #[test]
+    fn generic_matches_mcr_sprites() {
+        let mut rom = vec![0u8; 4 * 128 * 8]; // 8 sprites
+        fill_prng(&mut rom);
+        let count = rom.len() / 512;
+        let q8 = (rom.len() / 4) * 8;
+        let old = decode_mcr_sprites(&rom, count);
+        let x_offsets: [usize; 32] = std::array::from_fn(|px| {
+            ((px / 2) % 4) * q8 + (px / 8) * 8 + (px % 2) * 4
+        });
+        let y_offsets: [usize; 32] = std::array::from_fn(|py| py * 32);
+        let new = decode_gfx(&rom, 0, count, &GfxLayout {
+            plane_offsets: &[3, 2, 1, 0],
+            x_offsets: &x_offsets,
+            y_offsets: &y_offsets,
+            char_increment: 1024,
+        });
+        assert_caches_equal(&old, &new, "mcr_sprites");
+    }
+
+    #[test]
+    fn generic_matches_gottlieb_tiles() {
+        let mut rom = vec![0u8; 64 * 32];
+        fill_prng(&mut rom);
+        let old = decode_gottlieb_tiles(&rom, 0, 64);
+        let new = decode_gfx(&rom, 0, 64, &GfxLayout {
+            plane_offsets: &[3, 2, 1, 0],
+            x_offsets: &[0, 4, 8, 12, 16, 20, 24, 28],
+            y_offsets: &[0, 32, 64, 96, 128, 160, 192, 224],
+            char_increment: 256,
+        });
+        assert_caches_equal(&old, &new, "gottlieb_tiles");
+    }
+
+    #[test]
+    fn generic_matches_gottlieb_sprites() {
+        let mut rom = vec![0u8; 4 * 32 * 16]; // 16 sprites
+        fill_prng(&mut rom);
+        let count = rom.len() / 128;
+        let quarter = rom.len() / 4;
+        let old = decode_gottlieb_sprites(&rom, count);
+        let planes: [usize; 4] = std::array::from_fn(|p| p * quarter * 8);
+        let y_offsets: [usize; 16] = std::array::from_fn(|py| py * 16);
+        let new = decode_gfx(&rom, 0, count, &GfxLayout {
+            plane_offsets: &planes,
+            x_offsets: &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+            y_offsets: &y_offsets,
+            char_increment: 256,
+        });
+        assert_caches_equal(&old, &new, "gottlieb_sprites");
+    }
+
+    #[test]
+    fn generic_element_matches_gottlieb_tile_into() {
+        let mut rom = vec![0u8; 4 * 32];
+        fill_prng(&mut rom);
+        // Old way: decode one tile into code slot 2
+        let mut old_cache = GfxCache::new(4, 8, 8);
+        decode_gottlieb_tile_into(&mut old_cache, 2, &rom[2 * 32..]);
+        // New way: decode_gfx_element
+        let layout = GfxLayout {
+            plane_offsets: &[3, 2, 1, 0],
+            x_offsets: &[0, 4, 8, 12, 16, 20, 24, 28],
+            y_offsets: &[0, 32, 64, 96, 128, 160, 192, 224],
+            char_increment: 256,
+        };
+        let mut new_cache = GfxCache::new(4, 8, 8);
+        decode_gfx_element(&rom, 0, 2, &layout, &mut new_cache);
+        for py in 0..8 {
+            for px in 0..8 {
+                assert_eq!(
+                    old_cache.pixel(2, px, py),
+                    new_cache.pixel(2, px, py),
+                    "gottlieb_tile_into: mismatch at px={px}, py={py}"
+                );
+            }
+        }
+        // Code 0 should be untouched (still zero)
+        assert_eq!(new_cache.pixel(0, 0, 0), 0);
+    }
+
+    #[test]
+    fn generic_pacman_tiles_with_base_offset() {
+        // Verify the base parameter works: decode sprites at offset 0x1000
+        let mut rom = vec![0u8; 0x1000 + 64 * 64];
+        fill_prng(&mut rom);
+        let old = decode_pacman_sprites(&rom, 0x1000, 64);
+        let new = decode_gfx(&rom, 0x1000, 64, &GfxLayout {
+            plane_offsets: &[4, 0],
+            x_offsets: &[
+                64, 65, 66, 67, 128, 129, 130, 131,
+                192, 193, 194, 195, 0, 1, 2, 3,
+            ],
+            y_offsets: &[
+                0, 8, 16, 24, 32, 40, 48, 56,
+                256, 264, 272, 280, 288, 296, 304, 312,
+            ],
+            char_increment: 512,
+        });
+        assert_caches_equal(&old, &new, "pacman_sprites_with_base");
     }
 }
