@@ -7,6 +7,7 @@ use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
 use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
 use phosphor_core::core::{Bus, BusMaster, TimingConfig};
 use phosphor_core::cpu::m6502::M6502;
+use phosphor_core::gfx::decode::{decode_gfx, GfxCache, GfxLayout};
 use phosphor_core::cpu::state::M6502State;
 use phosphor_core::cpu::{Cpu, CpuStateTrait};
 use phosphor_core::device::output_latch::OutputLatch;
@@ -254,6 +255,16 @@ const WEIGHT_22K: u16 = 36;
 const WEIGHT_10K: u16 = 75;
 const WEIGHT_4K7: u16 = 144;
 
+// 8×16 sprites, 3bpp across two ROM halves (0x0000 and 0x2000).
+// Plane 2 (MSB) from first-half low nibble, planes 1 and 0 from second-half
+// high and low nibbles respectively. 32 bytes per sprite, 256 sprites.
+const CCASTLES_SPRITE_LAYOUT: GfxLayout<'static> = GfxLayout {
+    plane_offsets: &[0x10004, 0x10000, 4],
+    x_offsets: &[0, 1, 2, 3, 8, 9, 10, 11],
+    y_offsets: &[0, 16, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240],
+    char_increment: 256,
+};
+
 /// Crystal Castles Arcade System (Atari, 1983)
 ///
 /// Hardware: MOS 6502 @ 1.25 MHz, 2× POKEY for sound.
@@ -294,6 +305,7 @@ pub struct CrystalCastlesSystem {
     map: MemoryMap,
 
     gfx_rom: [u8; 0x4000],  // 16KB sprite graphics (not CPU-addressable)
+    sprite_cache: GfxCache,  // Pre-decoded 256 sprites (8×16, 3bpp)
     sync_prom: [u8; 0x100], // VBLANK/IRQ timing
     wp_prom: [u8; 0x100],   // Write-protect
     pri_prom: [u8; 0x100],  // Priority compositing
@@ -414,6 +426,7 @@ impl CrystalCastlesSystem {
 
             map: Self::build_map(),
             gfx_rom: [0; 0x4000],
+            sprite_cache: GfxCache::new(256, 8, 16),
             sync_prom: [0; 0x100],
             wp_prom: [0; 0x100],
             pri_prom: [0; 0x100],
@@ -468,6 +481,7 @@ impl CrystalCastlesSystem {
 
         let gfx = CCASTLES_GFX_ROM.load(rom_set)?;
         self.gfx_rom.copy_from_slice(&gfx);
+        self.sprite_cache = decode_gfx(&self.gfx_rom, 0, 256, &CCASTLES_SPRITE_LAYOUT);
 
         let sync = CCASTLES_SYNC_PROM.load(rom_set)?;
         self.sync_prom.copy_from_slice(&sync);
@@ -488,6 +502,12 @@ impl CrystalCastlesSystem {
 
     pub fn get_cpu_state(&self) -> M6502State {
         self.cpu.snapshot()
+    }
+
+    /// Rebuild sprite cache from gfx_rom (for tests that modify ROM data directly).
+    #[cfg(test)]
+    fn decode_sprite_cache(&mut self) {
+        self.sprite_cache = decode_gfx(&self.gfx_rom, 0, 256, &CCASTLES_SPRITE_LAYOUT);
     }
 
     // -----------------------------------------------------------------------
@@ -635,36 +655,6 @@ impl CrystalCastlesSystem {
     // Sprite rendering
     // -----------------------------------------------------------------------
 
-    /// Extract a single 3bpp pixel from the GFX ROM.
-    ///
-    /// GFX layout (from MAME gfx_layout):
-    ///   8×16 pixels, 3 bitplanes, 32 bytes/sprite, 256 sprites total.
-    ///   Plane offsets: { 4, RGN_FRAC(1,2)+0, RGN_FRAC(1,2)+4 }
-    ///   X offsets: { 0,1,2,3, 8,9,10,11 } — 4 pixels per byte, MSB-first
-    ///   Y offsets: { 0*16, 1*16, ..., 15*16 } — 2 bytes per row
-    ///
-    /// MAME readbit uses MSB-first: src[bitnum/8] & (0x80 >> (bitnum%8))
-    /// For column c (0-3), the bit position within a nibble is (3 - c).
-    ///   Plane 0 (MSB): first-half ROM, LOW nibble  (plane offset +4)
-    ///   Plane 1:       second-half ROM, HIGH nibble (plane offset +RGN_FRAC(1,2))
-    ///   Plane 2 (LSB): second-half ROM, LOW nibble  (plane offset +RGN_FRAC(1,2)+4)
-    ///
-    /// Returns 0-7 where 7 is the transparent pen.
-    fn get_sprite_pixel(&self, which: u8, row: u8, col: u8) -> u8 {
-        let base = (which as usize) * 32 + (row as usize) * 2;
-        let byte_idx = (col / 4) as usize;
-        let bit = (3 - col % 4) as usize; // MSB-first within nibble
-
-        // Plane 0 (MSB): first-half ROM, low nibble
-        let p0 = (self.gfx_rom[base + byte_idx] >> bit) & 1;
-        // Plane 1: second-half ROM, high nibble
-        let p1 = (self.gfx_rom[0x2000 + base + byte_idx] >> (4 + bit)) & 1;
-        // Plane 2 (LSB): second-half ROM, low nibble
-        let p2 = (self.gfx_rom[0x2000 + base + byte_idx] >> bit) & 1;
-
-        (p0 << 2) | (p1 << 1) | p2
-    }
-
     /// Render all sprites from the active MOB buffer into the sprite buffer.
     ///
     /// Called once per frame at VBLANK start. The sprite buffer is a 256×256
@@ -693,17 +683,17 @@ impl CrystalCastlesSystem {
             let color_base = (sprites[buf_offset + offs + 2] >> 7) * 8;
             let sx = sprites[buf_offset + offs + 3] as u16;
 
-            for row in 0..16u8 {
-                for col in 0..8u8 {
+            for row in 0..16u16 {
+                for col in 0..8u16 {
                     let r = if flip { 15 - row } else { row };
                     let c = if flip { 7 - col } else { col };
-                    let pixel = self.get_sprite_pixel(which, r, c);
+                    let pixel = self.sprite_cache.pixel(which as usize, c as usize, r as usize);
                     if pixel == 7 {
                         continue; // transparent pen
                     }
 
-                    let dy = sy.wrapping_add(row as u16) & 0xFF;
-                    let dx = sx.wrapping_add(col as u16) & 0xFF;
+                    let dy = sy.wrapping_add(row) & 0xFF;
+                    let dx = sx.wrapping_add(col) & 0xFF;
                     self.sprite_buffer[(dy as usize) * 256 + (dx as usize)] = color_base | pixel;
                 }
             }
@@ -1370,26 +1360,22 @@ mod tests {
     fn sprite_pixel_extraction() {
         let mut sys = CrystalCastlesSystem::new();
         // Set up GFX ROM for sprite 0, row 0:
-        // MAME uses MSB-first bit ordering: bit position = 3 - (col % 4)
-        //   Plane 0 (MSB): first-half ROM, LOW nibble (bits 3-0)
-        //   Plane 1:       second-half ROM, HIGH nibble (bits 7-4)
-        //   Plane 2 (LSB): second-half ROM, LOW nibble (bits 3-0)
-        //
         // gfx_rom[0] = 0x0B = 0000_1011 → low nibble bits 3,2,1,0 = 1,0,1,1
         // gfx_rom[0x2000] = 0xD6 = 1101_0110
         //   high nibble bits 7,6,5,4 = 1,1,0,1
         //   low nibble bits 3,2,1,0 = 0,1,1,0
         sys.gfx_rom[0x0000] = 0x0B;
         sys.gfx_rom[0x2000] = 0xD6;
+        sys.decode_sprite_cache();
 
-        // Pixel 0 (bit=3): p0=bit3(0x0B)=1, p1=bit7(0xD6)=1, p2=bit3(0xD6)=0 → 0b110 = 6
-        assert_eq!(sys.get_sprite_pixel(0, 0, 0), 6);
-        // Pixel 1 (bit=2): p0=bit2(0x0B)=0, p1=bit6(0xD6)=1, p2=bit2(0xD6)=1 → 0b011 = 3
-        assert_eq!(sys.get_sprite_pixel(0, 0, 1), 3);
-        // Pixel 2 (bit=1): p0=bit1(0x0B)=1, p1=bit5(0xD6)=0, p2=bit1(0xD6)=1 → 0b101 = 5
-        assert_eq!(sys.get_sprite_pixel(0, 0, 2), 5);
-        // Pixel 3 (bit=0): p0=bit0(0x0B)=1, p1=bit4(0xD6)=1, p2=bit0(0xD6)=0 → 0b110 = 6
-        assert_eq!(sys.get_sprite_pixel(0, 0, 3), 6);
+        // Pixel 0: p2=bit3(0x0B)=1, p1=bit7(0xD6)=1, p0=bit3(0xD6)=0 → 0b110 = 6
+        assert_eq!(sys.sprite_cache.pixel(0, 0, 0), 6);
+        // Pixel 1: p2=bit2(0x0B)=0, p1=bit6(0xD6)=1, p0=bit2(0xD6)=1 → 0b011 = 3
+        assert_eq!(sys.sprite_cache.pixel(0, 1, 0), 3);
+        // Pixel 2: p2=bit1(0x0B)=1, p1=bit5(0xD6)=0, p0=bit1(0xD6)=1 → 0b101 = 5
+        assert_eq!(sys.sprite_cache.pixel(0, 2, 0), 5);
+        // Pixel 3: p2=bit0(0x0B)=1, p1=bit4(0xD6)=1, p0=bit0(0xD6)=0 → 0b110 = 6
+        assert_eq!(sys.sprite_cache.pixel(0, 3, 0), 6);
     }
 
     #[test]
@@ -1402,6 +1388,7 @@ mod tests {
         // Plane 2 (second half, low nibble): all 1s → 0x0F
         sys.gfx_rom[0..0x2000].fill(0x0F);
         sys.gfx_rom[0x2000..0x4000].fill(0xFF); // 0xF0 | 0x0F
+        sys.decode_sprite_cache();
 
         // Place sprite 0 at position (100, 100)
         let sprites = sys.map.region_data_mut(Region::SpriteRam);
@@ -1430,6 +1417,7 @@ mod tests {
         //   Plane 1 (high nibble) bit 7 → clear (want p1=0)
         //   Plane 2 (low nibble) bit 3 → set bit 3 = 0x08
         sys.gfx_rom[0x2020] = 0x08;
+        sys.decode_sprite_cache();
 
         // Place sprite with code 1 at (50, 200)
         let sprites = sys.map.region_data_mut(Region::SpriteRam);
