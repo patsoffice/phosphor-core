@@ -207,6 +207,64 @@ pub fn decode_dkong_sprites(rom: &[u8], base: usize, count: usize) -> GfxCache {
 }
 
 // ---------------------------------------------------------------------------
+// Namco Galaga family ROM layouts
+// ---------------------------------------------------------------------------
+
+/// Decode Dig Dug style characters: 8x8, 1bpp.
+///
+/// ROM layout (charlayout_digdug): 1 plane, MSB-first (bit 7 = leftmost
+/// pixel). 8 bytes per tile, one byte per row. Output pixel value is 0 or 1.
+pub fn decode_digdug_chars(rom: &[u8], base: usize, count: usize) -> GfxCache {
+    let mut cache = GfxCache::new(count, 8, 8);
+    for code in 0..count {
+        let tile_base = base + code * 8;
+        for py in 0..8usize {
+            let addr = tile_base + py;
+            let byte = if addr < rom.len() { rom[addr] } else { 0 };
+            for px in 0..8usize {
+                let pixel = (byte >> (7 - px)) & 1;
+                cache.set_pixel(code, px, py, pixel);
+            }
+        }
+    }
+    cache
+}
+
+/// Decode Galaga-family sprites: 16x16, 2bpp.
+///
+/// Same plane interleaving as Pac-Man ({0, 4} within each byte). 64 bytes per
+/// sprite. X mapping uses 4 groups of 4 pixels at byte offsets [0, 8, 16, 24]
+/// (differs from Pac-Man's [8, 16, 24, 0]).
+/// Y mapping splits at row 8: rows 0-7 at offset +0, rows 8-15 at offset +32.
+pub fn decode_galaga_sprites(rom: &[u8], base: usize, count: usize) -> GfxCache {
+    let mut cache = GfxCache::new(count, 16, 16);
+    for code in 0..count {
+        let spr_base = base + code * 64;
+        for py in 0..16usize {
+            for px in 0..16usize {
+                let (x_byte_off, bit) = match px {
+                    0..=3 => (0, px),
+                    4..=7 => (8, px - 4),
+                    8..=11 => (16, px - 8),
+                    12..=15 => (24, px - 12),
+                    _ => unreachable!(),
+                };
+                let y_byte_off = if py < 8 { py } else { 32 + (py - 8) };
+                let byte_addr = spr_base + x_byte_off + y_byte_off;
+                if byte_addr >= rom.len() {
+                    continue;
+                }
+                let byte = rom[byte_addr];
+                let plane_hi = (byte >> (7 - bit)) & 1;
+                let plane_lo = (byte >> (3 - bit)) & 1;
+                cache.set_pixel(code, px, py, plane_lo | (plane_hi << 1));
+            }
+        }
+    }
+    cache
+}
+
+// ---------------------------------------------------------------------------
 // Midway MCR family ROM layouts
 // ---------------------------------------------------------------------------
 
@@ -417,6 +475,77 @@ mod tests {
         for px in 8..16 {
             assert_eq!(cache.pixel(0, px, 0), 0, "px={px}");
         }
+    }
+
+    // -- Galaga family decode tests --
+
+    #[test]
+    fn decode_digdug_chars_known_pattern() {
+        // 1 tile, 8 bytes. Row 0 = 0xA5 = 10100101.
+        // MSB-first: px0=1, px1=0, px2=1, px3=0, px4=0, px5=1, px6=0, px7=1
+        let mut rom = [0u8; 8];
+        rom[0] = 0xA5;
+
+        let cache = decode_digdug_chars(&rom, 0, 1);
+        assert_eq!(cache.pixel(0, 0, 0), 1);
+        assert_eq!(cache.pixel(0, 1, 0), 0);
+        assert_eq!(cache.pixel(0, 2, 0), 1);
+        assert_eq!(cache.pixel(0, 3, 0), 0);
+        assert_eq!(cache.pixel(0, 4, 0), 0);
+        assert_eq!(cache.pixel(0, 5, 0), 1);
+        assert_eq!(cache.pixel(0, 6, 0), 0);
+        assert_eq!(cache.pixel(0, 7, 0), 1);
+    }
+
+    #[test]
+    fn decode_digdug_chars_all_rows() {
+        // Verify each row is read from successive bytes.
+        let mut rom = [0u8; 8];
+        rom.fill(0x80); // only px=0 set for each row
+
+        let cache = decode_digdug_chars(&rom, 0, 1);
+        for py in 0..8 {
+            assert_eq!(cache.pixel(0, 0, py), 1, "py={py}");
+            assert_eq!(cache.pixel(0, 1, py), 0, "py={py}");
+        }
+    }
+
+    #[test]
+    fn decode_galaga_sprites_known_pattern() {
+        // 1 sprite, 64 bytes. Byte at offset 0 (x group 0, py=0).
+        // Same plane encoding as Pac-Man ({0,4}), but x groups are {0,8,16,24}.
+        // Byte 0xA5 = 10100101: hi-plane bits 7-4 = 1010, lo-plane bits 3-0 = 0101
+        //   px0: hi=(byte>>7)&1=1, lo=(byte>>3)&1=0 -> 2
+        //   px1: hi=(byte>>6)&1=0, lo=(byte>>2)&1=1 -> 1
+        //   px2: hi=(byte>>5)&1=1, lo=(byte>>1)&1=0 -> 2
+        //   px3: hi=(byte>>4)&1=0, lo=(byte>>0)&1=1 -> 1
+        let mut rom = [0u8; 64];
+        rom[0] = 0xA5; // x_byte_off=0, py=0
+
+        let cache = decode_galaga_sprites(&rom, 0, 1);
+        assert_eq!(cache.pixel(0, 0, 0), 2); // px=0
+        assert_eq!(cache.pixel(0, 1, 0), 1); // px=1
+        assert_eq!(cache.pixel(0, 2, 0), 2); // px=2
+        assert_eq!(cache.pixel(0, 3, 0), 1); // px=3
+    }
+
+    #[test]
+    fn decode_galaga_sprites_x_groups() {
+        // Verify x group ordering: {0, 8, 16, 24} (not Pac-Man's {8, 16, 24, 0}).
+        let mut rom = [0u8; 64];
+        rom[0] = 0x80; // group 0 (px 0-3), py=0: px0 has hi=1
+        rom[8] = 0x80; // group 1 (px 4-7), py=0: px4 has hi=1
+        rom[16] = 0x80; // group 2 (px 8-11), py=0: px8 has hi=1
+        rom[24] = 0x80; // group 3 (px 12-15), py=0: px12 has hi=1
+
+        let cache = decode_galaga_sprites(&rom, 0, 1);
+        assert_eq!(cache.pixel(0, 0, 0), 2); // group 0
+        assert_eq!(cache.pixel(0, 4, 0), 2); // group 1
+        assert_eq!(cache.pixel(0, 8, 0), 2); // group 2
+        assert_eq!(cache.pixel(0, 12, 0), 2); // group 3
+        // Intermediate pixels should be 0
+        assert_eq!(cache.pixel(0, 1, 0), 0);
+        assert_eq!(cache.pixel(0, 5, 0), 0);
     }
 
     // -- MCR tile/sprite decode tests --
