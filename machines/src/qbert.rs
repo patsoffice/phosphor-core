@@ -1,0 +1,660 @@
+//! Q*Bert (1982, Gottlieb) — Gottlieb System 80 (GG-III) platform.
+//!
+//! Thin wrapper around `GottliebBoard` providing game-specific ROM loading,
+//! input wiring, and `Bus` implementation for the main I8088's memory map.
+
+use phosphor_core::bus_split;
+use phosphor_core::core::bus::InterruptState;
+use phosphor_core::core::machine::{
+    AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
+};
+use phosphor_core::core::save_state::{self, SaveError, StateWriter};
+use phosphor_core::core::{Bus, BusMaster};
+use phosphor_core::cpu::Cpu;
+
+use crate::gottlieb::{self, GottliebBoard};
+use crate::registry::MachineEntry;
+use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
+use crate::set_bit_active_high;
+
+// ---------------------------------------------------------------------------
+// ROM definitions (from MAME gottlieb.cpp — qbert parent set)
+// ---------------------------------------------------------------------------
+
+static QBERT_PROGRAM_ROM: RomRegion = RomRegion {
+    size: 0x6000, // 24KB (3 × 8KB)
+    entries: &[
+        RomEntry {
+            name: "qb-rom2.bin",
+            size: 0x2000,
+            offset: 0x0000,
+            crc32: &[0xfe434526],
+        },
+        RomEntry {
+            name: "qb-rom1.bin",
+            size: 0x2000,
+            offset: 0x2000,
+            crc32: &[0x55635447],
+        },
+        RomEntry {
+            name: "qb-rom0.bin",
+            size: 0x2000,
+            offset: 0x4000,
+            crc32: &[0x8e318641],
+        },
+    ],
+};
+
+static QBERT_SOUND_ROM: RomRegion = RomRegion {
+    size: 0x2000, // 8KB (2 × 2KB, loaded at end of region)
+    entries: &[
+        RomEntry {
+            name: "qb-snd1.bin",
+            size: 0x0800,
+            offset: 0x1000,
+            crc32: &[0x15787c07],
+        },
+        RomEntry {
+            name: "qb-snd2.bin",
+            size: 0x0800,
+            offset: 0x1800,
+            crc32: &[0x58437508],
+        },
+    ],
+};
+
+static QBERT_TILE_ROM: RomRegion = RomRegion {
+    size: 0x2000, // 8KB (2 × 4KB)
+    entries: &[
+        RomEntry {
+            name: "qb-bg0.bin",
+            size: 0x1000,
+            offset: 0x0000,
+            crc32: &[0x7a9ba824],
+        },
+        RomEntry {
+            name: "qb-bg1.bin",
+            size: 0x1000,
+            offset: 0x1000,
+            crc32: &[0x22e5b891],
+        },
+    ],
+};
+
+static QBERT_SPRITE_ROM: RomRegion = RomRegion {
+    size: 0x8000, // 32KB (4 × 8KB — one per bitplane)
+    entries: &[
+        RomEntry {
+            name: "qb-fg3.bin",
+            size: 0x2000,
+            offset: 0x0000,
+            crc32: &[0xdd436d3a],
+        },
+        RomEntry {
+            name: "qb-fg2.bin",
+            size: 0x2000,
+            offset: 0x2000,
+            crc32: &[0xf69b9483],
+        },
+        RomEntry {
+            name: "qb-fg1.bin",
+            size: 0x2000,
+            offset: 0x4000,
+            crc32: &[0x224e8356],
+        },
+        RomEntry {
+            name: "qb-fg0.bin",
+            size: 0x2000,
+            offset: 0x6000,
+            crc32: &[0x2f695b85],
+        },
+    ],
+};
+
+// ---------------------------------------------------------------------------
+// Input definitions
+// ---------------------------------------------------------------------------
+
+// IN1: start/coin (active-high except service)
+const INPUT_START1: u8 = 0;
+const INPUT_START2: u8 = 1;
+const INPUT_COIN1: u8 = 2;
+const INPUT_COIN2: u8 = 3;
+const INPUT_SERVICE: u8 = 4;
+
+// IN4: joystick (active-high)
+const INPUT_RIGHT: u8 = 10;
+const INPUT_LEFT: u8 = 11;
+const INPUT_UP: u8 = 12;
+const INPUT_DOWN: u8 = 13;
+
+const QBERT_INPUT_MAP: &[InputButton] = &[
+    InputButton {
+        id: INPUT_COIN1,
+        name: "Coin 1",
+    },
+    InputButton {
+        id: INPUT_COIN2,
+        name: "Coin 2",
+    },
+    InputButton {
+        id: INPUT_START1,
+        name: "P1 Start",
+    },
+    InputButton {
+        id: INPUT_START2,
+        name: "P2 Start",
+    },
+    InputButton {
+        id: INPUT_SERVICE,
+        name: "Service",
+    },
+    InputButton {
+        id: INPUT_RIGHT,
+        name: "P1 Right",
+    },
+    InputButton {
+        id: INPUT_LEFT,
+        name: "P1 Left",
+    },
+    InputButton {
+        id: INPUT_UP,
+        name: "P1 Up",
+    },
+    InputButton {
+        id: INPUT_DOWN,
+        name: "P1 Down",
+    },
+];
+
+// ---------------------------------------------------------------------------
+// QbertSystem
+// ---------------------------------------------------------------------------
+
+/// Q*Bert (1982, Gottlieb) on the Gottlieb System 80 (GG-III) platform.
+///
+/// Wraps `GottliebBoard` with Q*Bert-specific ROM loading, input mapping,
+/// and `Bus<Address = u32>` implementation for the I8088 main CPU.
+pub struct QbertSystem {
+    pub board: GottliebBoard,
+}
+
+impl QbertSystem {
+    pub fn new() -> Self {
+        let mut board = GottliebBoard::new();
+        // IN1 default: service bit 6 is active-LOW (idle high)
+        board.input_ports[0] = 0x40;
+        Self { board }
+    }
+
+    pub fn load_rom_set(&mut self, rom_set: &RomSet) -> Result<(), RomLoadError> {
+        // Program ROM (24KB, loaded at end of 0x6000-0xFFFF region → 0xA000-0xFFFF)
+        let prog_data = QBERT_PROGRAM_ROM.load(rom_set)?;
+        self.board.load_program_rom(&prog_data);
+
+        // Sound ROM (8KB, loaded into sound board)
+        let sound_data = QBERT_SOUND_ROM.load(rom_set)?;
+        self.board.load_sound_rom(&sound_data);
+
+        // GFX ROMs
+        let tile_data = QBERT_TILE_ROM.load(rom_set)?;
+        let sprite_data = QBERT_SPRITE_ROM.load(rom_set)?;
+        self.board.decode_gfx(&tile_data, &sprite_data);
+
+        // Q*Bert uses ROM tiles for all codes (init_romtiles)
+        self.board.gfxcharlo = true;
+        self.board.gfxcharhi = true;
+
+        // IN1 default: service bit 6 is active-LOW (idle high)
+        self.board.input_ports[0] = 0x40;
+
+        Ok(())
+    }
+}
+
+impl Default for QbertSystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bus — I8088 main CPU memory map (20-bit address masked to 16-bit)
+// ---------------------------------------------------------------------------
+
+impl Bus for QbertSystem {
+    type Address = u32;
+    type Data = u8;
+
+    fn read(&mut self, _master: BusMaster, addr: u32) -> u8 {
+        let addr16 = (addr & 0xFFFF) as u16;
+        let data = match addr16 {
+            // NVRAM: 0x0000-0x0FFF
+            0x0000..=0x0FFF => self.board.map.read_backing(addr16),
+
+            // RAM: 0x1000-0x2FFF
+            0x1000..=0x2FFF => self.board.map.read_backing(addr16),
+
+            // Sprite RAM: 0x3000-0x37FF (256 bytes mirrored)
+            0x3000..=0x37FF => {
+                let offset = addr16 & 0xFF;
+                self.board.map.read_backing(0x3000 + offset)
+            }
+
+            // Video RAM: 0x3800-0x3FFF (1KB mirrored)
+            0x3800..=0x3FFF => {
+                let offset = addr16 & 0x3FF;
+                self.board.map.read_backing(0x3800 + offset)
+            }
+
+            // Char RAM: 0x4000-0x4FFF
+            0x4000..=0x4FFF => self.board.map.read_backing(addr16),
+
+            // Palette RAM: 0x5000-0x57FF (32 bytes mirrored)
+            0x5000..=0x57FF => {
+                let offset = (addr16 & 0x1F) as usize;
+                self.board.palette_ram[offset]
+            }
+
+            // I/O ports: 0x5800-0x5FFF (3-bit decode)
+            0x5800..=0x5FFF => self.board.io_port_read(addr16 as u8),
+
+            // Program ROM: 0x6000-0xFFFF
+            0x6000..=0xFFFF => self.board.map.read_backing(addr16),
+        };
+        self.board.map.check_read_watch(addr16, data);
+        data
+    }
+
+    fn write(&mut self, _master: BusMaster, addr: u32, data: u8) {
+        let addr16 = (addr & 0xFFFF) as u16;
+        self.board.map.check_write_watch(addr16, data);
+        match addr16 {
+            // NVRAM: 0x0000-0x0FFF
+            0x0000..=0x0FFF => self.board.map.write_backing(addr16, data),
+
+            // RAM: 0x1000-0x2FFF
+            0x1000..=0x2FFF => self.board.map.write_backing(addr16, data),
+
+            // Sprite RAM: 0x3000-0x37FF (256 bytes mirrored)
+            0x3000..=0x37FF => {
+                let offset = addr16 & 0xFF;
+                self.board.map.write_backing(0x3000 + offset, data);
+            }
+
+            // Video RAM: 0x3800-0x3FFF (1KB mirrored)
+            0x3800..=0x3FFF => {
+                let offset = addr16 & 0x3FF;
+                self.board.map.write_backing(0x3800 + offset, data);
+            }
+
+            // Char RAM: 0x4000-0x4FFF
+            0x4000..=0x4FFF => {
+                let offset = (addr16 - 0x4000) as usize;
+                self.board.charram_write(offset, data);
+            }
+
+            // Palette RAM: 0x5000-0x57FF (32 bytes mirrored)
+            0x5000..=0x57FF => {
+                let offset = (addr16 & 0x1F) as usize;
+                self.board.update_palette(offset, data);
+            }
+
+            // I/O ports: 0x5800-0x5FFF
+            0x5800..=0x5FFF => self.board.io_port_write(addr16 as u8, data),
+
+            _ => {} // ROM and unmapped: writes ignored
+        }
+    }
+
+    fn is_halted_for(&self, _master: BusMaster) -> bool {
+        false
+    }
+
+    fn check_interrupts(&mut self, target: BusMaster) -> InterruptState {
+        match target {
+            BusMaster::Cpu(0) => {
+                // VBLANK NMI: asserted during blanking period (scanlines 240-255)
+                let scanline = self.board.clock / gottlieb::TIMING.cycles_per_scanline
+                    % gottlieb::TIMING.total_scanlines;
+                let in_vblank = scanline >= gottlieb::VISIBLE_LINES;
+                InterruptState {
+                    nmi: in_vblank,
+                    ..Default::default()
+                }
+            }
+            _ => InterruptState::default(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Machine trait implementations
+// ---------------------------------------------------------------------------
+
+impl Renderable for QbertSystem {
+    fn display_size(&self) -> (u32, u32) {
+        gottlieb::TIMING.display_size()
+    }
+
+    fn render_frame(&self, buffer: &mut [u8]) {
+        self.board.render_frame(buffer);
+    }
+}
+
+impl AudioSource for QbertSystem {
+    fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
+        self.board.fill_audio(buffer)
+    }
+
+    fn audio_sample_rate(&self) -> u32 {
+        44100
+    }
+}
+
+impl InputReceiver for QbertSystem {
+    fn set_input(&mut self, button: u8, pressed: bool) {
+        match button {
+            // IN1: start/coin (active-high, bits 0-3; service active-low, bit 6)
+            INPUT_START1 => {
+                set_bit_active_high(&mut self.board.input_ports[0], 0, pressed);
+            }
+            INPUT_START2 => {
+                set_bit_active_high(&mut self.board.input_ports[0], 1, pressed);
+            }
+            INPUT_COIN1 => {
+                set_bit_active_high(&mut self.board.input_ports[0], 2, pressed);
+            }
+            INPUT_COIN2 => {
+                set_bit_active_high(&mut self.board.input_ports[0], 3, pressed);
+            }
+            INPUT_SERVICE => {
+                // Active-LOW: clear on press, set on release
+                crate::set_bit_active_low(&mut self.board.input_ports[0], 6, pressed);
+            }
+            // IN4: joystick (active-high, bits 0-3)
+            INPUT_RIGHT => {
+                set_bit_active_high(&mut self.board.input_ports[3], 0, pressed);
+            }
+            INPUT_LEFT => {
+                set_bit_active_high(&mut self.board.input_ports[3], 1, pressed);
+            }
+            INPUT_UP => {
+                set_bit_active_high(&mut self.board.input_ports[3], 2, pressed);
+            }
+            INPUT_DOWN => {
+                set_bit_active_high(&mut self.board.input_ports[3], 3, pressed);
+            }
+            _ => {}
+        }
+    }
+
+    fn input_map(&self) -> &[InputButton] {
+        QBERT_INPUT_MAP
+    }
+}
+
+impl MachineDebug for QbertSystem {
+    fn debug_bus(&self) -> Option<&dyn phosphor_core::core::debug::BusDebug> {
+        Some(&self.board)
+    }
+
+    fn debug_bus_mut(&mut self) -> Option<&mut dyn phosphor_core::core::debug::BusDebug> {
+        Some(&mut self.board)
+    }
+
+    fn cycles_per_frame(&self) -> u64 {
+        gottlieb::TIMING.cycles_per_frame()
+    }
+
+    fn debug_tick(&mut self) -> u32 {
+        bus_split!(self, bus : u32 => {
+            self.board.tick(bus);
+        });
+        self.board.debug_tick_boundaries()
+    }
+}
+
+impl Machine for QbertSystem {
+    fn save_nvram(&self) -> Option<&[u8]> {
+        Some(self.board.map.region_data(gottlieb::Region::Nvram))
+    }
+
+    fn load_nvram(&mut self, data: &[u8]) {
+        let nvram = self.board.map.region_data_mut(gottlieb::Region::Nvram);
+        let len = data.len().min(nvram.len());
+        nvram[..len].copy_from_slice(&data[..len]);
+    }
+
+    fn frame_rate_hz(&self) -> f64 {
+        gottlieb::TIMING.frame_rate_hz()
+    }
+
+    fn run_frame(&mut self) {
+        bus_split!(self, bus : u32 => {
+            for _ in 0..gottlieb::TIMING.cycles_per_frame() {
+                self.board.tick(bus);
+            }
+        });
+        self.board.render_frame_internal();
+    }
+
+    fn reset(&mut self) {
+        self.board.reset_board();
+        bus_split!(self, bus : u32 => {
+            self.board.cpu.reset(bus, BusMaster::Cpu(0));
+        });
+        // Re-initialize IN1 idle state
+        self.board.input_ports[0] = 0x40;
+    }
+
+    fn machine_id(&self) -> &str {
+        "qbert"
+    }
+
+    fn save_state(&self) -> Option<Vec<u8>> {
+        let mut w = StateWriter::new();
+        save_state::write_header(&mut w, self.machine_id());
+        self.board.save_board_state(&mut w);
+        Some(w.into_vec())
+    }
+
+    fn load_state(&mut self, data: &[u8]) -> Result<(), SaveError> {
+        let mut r = save_state::read_header(data, self.machine_id())?;
+        self.board.load_board_state(&mut r)?;
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Machine registry
+// ---------------------------------------------------------------------------
+
+fn create_machine(rom_set: &RomSet) -> Result<Box<dyn Machine>, RomLoadError> {
+    let mut sys = QbertSystem::new();
+    sys.load_rom_set(rom_set)?;
+    Ok(Box::new(sys))
+}
+
+inventory::submit! {
+    MachineEntry::new("qbert", "qbert", create_machine)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use phosphor_core::core::machine::Machine;
+
+    #[test]
+    fn save_load_round_trip() {
+        let mut sys = QbertSystem::new();
+
+        // Set known state
+        sys.board.map.region_data_mut(gottlieb::Region::Nvram)[0x100] = 0xAA;
+        sys.board.map.region_data_mut(gottlieb::Region::Ram)[0x50] = 0xBB;
+        sys.board.map.region_data_mut(gottlieb::Region::VideoRam)[0x10] = 0xCC;
+        sys.board.palette_ram[0] = 0x55;
+        sys.board.clock = 50_000;
+        sys.board.watchdog_counter = 42;
+        sys.board.video_control = 1;
+        sys.board.sprite_bank = 2;
+
+        // Save
+        let data = sys.save_state().expect("save_state should return Some");
+
+        // Load into fresh system
+        let mut sys2 = QbertSystem::new();
+        sys2.load_state(&data).unwrap();
+
+        // Verify
+        assert_eq!(
+            sys2.board.map.region_data(gottlieb::Region::Nvram)[0x100],
+            0xAA
+        );
+        assert_eq!(
+            sys2.board.map.region_data(gottlieb::Region::Ram)[0x50],
+            0xBB
+        );
+        assert_eq!(
+            sys2.board.map.region_data(gottlieb::Region::VideoRam)[0x10],
+            0xCC
+        );
+        assert_eq!(sys2.board.palette_ram[0], 0x55);
+        assert_eq!(sys2.board.clock, 50_000);
+        assert_eq!(sys2.board.watchdog_counter, 42);
+        assert_eq!(sys2.board.video_control, 1);
+        assert_eq!(sys2.board.sprite_bank, 2);
+    }
+
+    #[test]
+    fn save_load_machine_id_validated() {
+        let sys = QbertSystem::new();
+        let data = sys.save_state().unwrap();
+
+        // Tamper with the machine ID
+        let mut bad = data.clone();
+        let id_offset = 4 + 4 + 4; // magic(4) + version(4) + id_len(4)
+        if id_offset + 5 <= bad.len() {
+            bad[id_offset..id_offset + 5].copy_from_slice(b"badid");
+        }
+
+        let mut sys2 = QbertSystem::new();
+        let result = sys2.load_state(&bad);
+        assert!(result.is_err(), "should reject mismatched machine ID");
+    }
+
+    #[test]
+    fn input_active_high_joystick() {
+        let mut sys = QbertSystem::new();
+
+        // Initially joystick is idle (0x00)
+        assert_eq!(sys.board.input_ports[3], 0x00);
+
+        // Press right
+        sys.set_input(INPUT_RIGHT, true);
+        assert_eq!(sys.board.input_ports[3], 0x01); // bit 0 set
+
+        // Release right
+        sys.set_input(INPUT_RIGHT, false);
+        assert_eq!(sys.board.input_ports[3], 0x00);
+
+        // Press up
+        sys.set_input(INPUT_UP, true);
+        assert_eq!(sys.board.input_ports[3], 0x04); // bit 2 set
+    }
+
+    #[test]
+    fn input_coin_and_start() {
+        let mut sys = QbertSystem::new();
+
+        // IN1 starts with service bit 6 idle high
+        assert_eq!(sys.board.input_ports[0], 0x40);
+
+        // Press coin 1 (active-high, bit 2)
+        sys.set_input(INPUT_COIN1, true);
+        assert_eq!(sys.board.input_ports[0], 0x44);
+
+        // Press service (active-low, bit 6 → clear)
+        sys.set_input(INPUT_SERVICE, true);
+        assert_eq!(sys.board.input_ports[0], 0x04); // bit 6 cleared
+
+        // Release service (bit 6 → set)
+        sys.set_input(INPUT_SERVICE, false);
+        assert_eq!(sys.board.input_ports[0], 0x44);
+    }
+
+    #[test]
+    fn palette_rgb_decode() {
+        let mut sys = QbertSystem::new();
+
+        // Write palette entry 0: even byte G=0xF B=0x0, odd byte R=0xF
+        Bus::write(&mut sys, BusMaster::Cpu(0), 0x5000, 0xF0); // G=15, B=0
+        Bus::write(&mut sys, BusMaster::Cpu(0), 0x5001, 0x0F); // R=15
+
+        assert_eq!(sys.board.palette_rgb[0], (255, 255, 0)); // R=255, G=255, B=0
+    }
+
+    #[test]
+    fn palette_resistor_weighted() {
+        let mut sys = QbertSystem::new();
+
+        // Value 4 (0100): resistor DAC = 70, not linear 68
+        Bus::write(&mut sys, BusMaster::Cpu(0), 0x5000, 0x40); // G=4, B=0
+        Bus::write(&mut sys, BusMaster::Cpu(0), 0x5001, 0x04); // R=4
+        assert_eq!(sys.board.palette_rgb[0], (70, 70, 0));
+
+        // Value 12 (1100): resistor DAC = 206, not linear 204
+        Bus::write(&mut sys, BusMaster::Cpu(0), 0x5002, 0xC0); // G=12, B=0
+        Bus::write(&mut sys, BusMaster::Cpu(0), 0x5003, 0x0C); // R=12
+        assert_eq!(sys.board.palette_rgb[1], (206, 206, 0));
+    }
+
+    #[test]
+    fn palette_mirror() {
+        let mut sys = QbertSystem::new();
+
+        // Write through mirror (0x5020 maps to same as 0x5000)
+        Bus::write(&mut sys, BusMaster::Cpu(0), 0x5020, 0xAB);
+        assert_eq!(sys.board.palette_ram[0], 0xAB);
+    }
+
+    #[test]
+    fn memory_map_ram_read_write() {
+        let mut sys = QbertSystem::new();
+
+        Bus::write(&mut sys, BusMaster::Cpu(0), 0x1000, 0x55);
+        assert_eq!(Bus::read(&mut sys, BusMaster::Cpu(0), 0x1000), 0x55);
+    }
+
+    #[test]
+    fn sprite_ram_mirror() {
+        let mut sys = QbertSystem::new();
+
+        Bus::write(&mut sys, BusMaster::Cpu(0), 0x3010, 0xBB);
+        // Mirror: 0x3110 maps to 0x3010 (offset 0x10)
+        assert_eq!(Bus::read(&mut sys, BusMaster::Cpu(0), 0x3110), 0xBB);
+        assert_eq!(Bus::read(&mut sys, BusMaster::Cpu(0), 0x3210), 0xBB);
+    }
+
+    #[test]
+    fn video_ram_mirror() {
+        let mut sys = QbertSystem::new();
+
+        Bus::write(&mut sys, BusMaster::Cpu(0), 0x3900, 0xCC);
+        // Mirror: 0x3D00 maps to 0x3900 (offset 0x100, bit 10 don't-care)
+        assert_eq!(Bus::read(&mut sys, BusMaster::Cpu(0), 0x3D00), 0xCC);
+    }
+
+    #[test]
+    fn address_wraps_to_16_bit() {
+        let mut sys = QbertSystem::new();
+
+        // I8088 physical address 0x10042 should wrap to 0x0042 (NVRAM)
+        Bus::write(&mut sys, BusMaster::Cpu(0), 0x10042, 0xDD);
+        assert_eq!(Bus::read(&mut sys, BusMaster::Cpu(0), 0x0042), 0xDD);
+    }
+}

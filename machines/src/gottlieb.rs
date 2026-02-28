@@ -1,0 +1,730 @@
+//! Gottlieb System 80 (GG-III) shared arcade hardware.
+//!
+//! Self-contained board struct supporting the ~17 games built on Gottlieb's
+//! System 80 platform (Reactor, Q*Bert, Mad Planets, Krull, etc.).
+//!
+//! # Hardware
+//!
+//! - **Main CPU**: Intel 8088 @ 5 MHz (15 MHz XTAL / 3)
+//! - **Sound CPU**: MOS 6502 @ 894,886 Hz (3.579545 MHz XTAL / 4)
+//! - **Screen**: 256×240 visible, 318×256 total, ~61.42 Hz, 5 MHz pixel clock
+//! - **Video**: 32×32 tilemap (8×8, 4bpp packed) + 64 sprites (16×16, 4bpp planar)
+//! - **Palette**: 16 colors × 2 bytes = 32 bytes palette RAM (4-bit RGB)
+//! - **Sound**: MC1408 DAC (Votrax SC-01A speech stubbed)
+//! - **I/O**: MOS 6532 RIOT (128B RAM, 2 ports, timer, edge detect)
+//! - **NMI**: VBLANK → main CPU NMI; RIOT IRQ → sound CPU IRQ
+
+use phosphor_core::audio::AudioResampler;
+use phosphor_core::bus_split;
+use phosphor_core::core::debug::{DebugRegister, Debuggable};
+use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
+use phosphor_core::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
+use phosphor_core::core::{Bus, BusMaster, ClockDivider, InterruptState, TimingConfig};
+use phosphor_core::cpu::Cpu;
+use phosphor_core::cpu::i8088::I8088;
+use phosphor_core::cpu::m6502::M6502;
+use phosphor_core::device::{Mc1408Dac, Riot6532};
+use phosphor_core::gfx;
+
+use phosphor_macros::{BusDebug, MemoryRegion};
+
+// ---------------------------------------------------------------------------
+// Memory map regions
+// ---------------------------------------------------------------------------
+
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, MemoryRegion)]
+pub(crate) enum Region {
+    Nvram = 1,
+    Ram = 2,
+    SpriteRam = 3,
+    VideoRam = 4,
+    CharRam = 5,
+    ProgramRom = 6,
+}
+
+// ---------------------------------------------------------------------------
+// Timing constants
+// ---------------------------------------------------------------------------
+
+// Master pixel clock: 20 MHz / 4 = 5 MHz (= CPU clock)
+// HTOTAL: 318 pixel clocks per scanline
+// VTOTAL: 256 lines per field
+// Visible: 256×240 (HBSTART=256, VBSTART=240)
+// Frame: 318 × 256 = 81,408 CPU cycles per field
+
+pub const TIMING: TimingConfig = TimingConfig {
+    cpu_clock_hz: 5_000_000,
+    cycles_per_scanline: 318,
+    total_scanlines: 256,
+    display_width: NATIVE_HEIGHT as u32, // 240 (rotated 270° CW for Q*Bert)
+    display_height: NATIVE_WIDTH as u32, // 256
+};
+
+pub const VISIBLE_LINES: u64 = 240;
+pub const OUTPUT_SAMPLE_RATE: u64 = 44_100;
+
+pub const NATIVE_WIDTH: usize = 256;
+pub const NATIVE_HEIGHT: usize = 240;
+
+// Tilemap dimensions (32×32 grid, only 32×30 visible)
+const TILE_COLS: usize = 32;
+const TILE_ROWS: usize = 30;
+
+// Sound CPU ratio: 894,886 / 5,000,000 ≈ 179/1000
+const SOUND_CLOCK_NUM: u32 = 179;
+const SOUND_CLOCK_DEN: u32 = 1000;
+
+// Sound CPU clock (for audio resampler)
+const SOUND_CLOCK_HZ: u64 = 894_886;
+
+/// 4-bit resistor-weighted DAC lookup table.
+///
+/// Gottlieb palette DAC uses resistors {2000, 1000, 470, 240}Ω with a 180Ω
+/// pulldown. Values computed from MAME's `compute_resistor_weights` formula:
+/// for each bit i, weight = maxval × R0 / (R[i] + R0) where R0 is the
+/// parallel resistance of the pulldown and all other resistors to ground.
+/// Weights are auto-scaled so that all-bits-on = 255.
+const RESISTOR_DAC: [u8; 16] = [
+    0, 16, 33, 49, 70, 86, 102, 119, 136, 153, 169, 185, 206, 222, 239, 255,
+];
+
+// ---------------------------------------------------------------------------
+// Gottlieb Sound Board (Rev 1)
+// ---------------------------------------------------------------------------
+
+/// Self-contained sound board with M6502, RIOT, and DAC.
+///
+/// The main board sends sound commands by writing to the RIOT's Port A
+/// through [`write_sound_command`]. The RIOT PA7 edge triggers an IRQ
+/// to wake the M6502, which reads the command and drives the DAC.
+pub(crate) struct GottliebSoundBoard {
+    cpu: M6502,
+    riot: Riot6532,
+    dac: Mc1408Dac,
+    resampler: AudioResampler,
+    sound_rom: Vec<u8>, // 8KB (mapped at 0x6000-0x7FFF in 15-bit space)
+    clock: u64,
+}
+
+impl GottliebSoundBoard {
+    fn new() -> Self {
+        Self {
+            cpu: M6502::new(),
+            riot: Riot6532::new(),
+            dac: Mc1408Dac::new(),
+            resampler: AudioResampler::new(SOUND_CLOCK_HZ, OUTPUT_SAMPLE_RATE),
+            sound_rom: vec![0xFF; 0x2000],
+            clock: 0,
+        }
+    }
+
+    /// Load sound ROM data (up to 8KB, mapped at 0x6000-0x7FFF).
+    fn load_rom(&mut self, data: &[u8]) {
+        let len = data.len().min(self.sound_rom.len());
+        self.sound_rom[..len].copy_from_slice(&data[..len]);
+    }
+
+    /// Send a sound command from the main CPU.
+    ///
+    /// Inverts bits 0-5, computes PA7 = NAND(bits 0-3), and writes to
+    /// the RIOT's Port A with mask 0xBF (bits 0-5 and 7, leaving bit 6).
+    fn write_sound_command(&mut self, data: u8) {
+        let pa0_5 = !data & 0x3F;
+        let pa7 = u8::from((data & 0x0F) != 0x0F);
+        self.riot.set_pa_input_masked(pa0_5 | (pa7 << 7), 0xBF);
+    }
+
+    /// Advance the sound board by one sound CPU tick.
+    fn tick(&mut self) {
+        // Execute one M6502 cycle
+        bus_split!(self, bus => {
+            self.cpu.execute_cycle(bus, BusMaster::Cpu(1));
+        });
+
+        // Tick RIOT timer (clocked at same rate as M6502)
+        self.riot.tick();
+
+        // Audio: sample DAC and resample to output rate
+        let sample = self.dac.sample_i16();
+        self.resampler.tick(sample);
+
+        self.clock += 1;
+    }
+
+    fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
+        self.resampler.fill_audio(buffer)
+    }
+
+    fn reset(&mut self) {
+        bus_split!(self, bus => {
+            self.cpu.reset(bus, BusMaster::Cpu(1));
+        });
+        self.riot.reset();
+        self.dac.reset();
+        self.resampler.reset();
+        self.clock = 0;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sound board Bus impl (M6502 memory map, 15-bit address space)
+// ---------------------------------------------------------------------------
+
+impl Bus for GottliebSoundBoard {
+    type Address = u16;
+    type Data = u8;
+
+    fn read(&mut self, _master: BusMaster, addr: u16) -> u8 {
+        let addr = addr & 0x7FFF;
+        match addr {
+            // RIOT: 0x0000-0x0FFF (mirrored). A9 selects RAM vs I/O registers.
+            0x0000..=0x0FFF => {
+                if addr & 0x200 != 0 {
+                    self.riot.read_io((addr & 0x1F) as u8)
+                } else {
+                    self.riot.read_ram((addr & 0x7F) as u8)
+                }
+            }
+
+            // Sound ROM: 0x6000-0x7FFF
+            0x6000..=0x7FFF => self.sound_rom[(addr - 0x6000) as usize],
+
+            _ => 0xFF,
+        }
+    }
+
+    fn write(&mut self, _master: BusMaster, addr: u16, data: u8) {
+        let addr = addr & 0x7FFF;
+        match addr {
+            // RIOT: 0x0000-0x0FFF
+            0x0000..=0x0FFF => {
+                if addr & 0x200 != 0 {
+                    self.riot.write_io((addr & 0x1F) as u8, data);
+                } else {
+                    self.riot.write_ram((addr & 0x7F) as u8, data);
+                }
+            }
+
+            // DAC write: 0x1000-0x1FFF
+            0x1000..=0x1FFF => self.dac.write(data),
+
+            // Votrax data: 0x2000-0x2FFF (stub)
+            0x2000..=0x2FFF => {}
+
+            // Speech clock DAC: 0x3000-0x3FFF (stub)
+            0x3000..=0x3FFF => {}
+
+            _ => {}
+        }
+    }
+
+    fn is_halted_for(&self, _master: BusMaster) -> bool {
+        false
+    }
+
+    fn check_interrupts(&mut self, _target: BusMaster) -> InterruptState {
+        InterruptState {
+            irq: self.riot.irq_active(),
+            ..Default::default()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sound board Debuggable (for BusDebug derive on GottliebBoard)
+// ---------------------------------------------------------------------------
+
+impl Saveable for GottliebSoundBoard {
+    fn save_state(&self, w: &mut StateWriter) {
+        w.write_version(1);
+        self.cpu.save_state(w);
+        self.riot.save_state(w);
+        self.dac.save_state(w);
+        self.resampler.save_state(w);
+        w.write_u64_le(self.clock);
+    }
+
+    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        r.read_version(1)?;
+        self.cpu.load_state(r)?;
+        self.riot.load_state(r)?;
+        self.dac.load_state(r)?;
+        self.resampler.load_state(r)?;
+        self.clock = r.read_u64_le()?;
+        Ok(())
+    }
+}
+
+impl phosphor_core::device::Device for GottliebSoundBoard {
+    fn name(&self) -> &'static str {
+        "Gottlieb Sound Rev 1"
+    }
+
+    fn reset(&mut self) {
+        self.reset(); // Calls inherent method (shadowing)
+    }
+}
+
+impl Debuggable for GottliebSoundBoard {
+    fn debug_registers(&self) -> Vec<DebugRegister> {
+        vec![
+            DebugRegister {
+                name: "SND_CLK",
+                value: self.clock,
+                width: 32,
+            },
+            DebugRegister {
+                name: "DAC",
+                value: self.dac.debug_registers()[0].value,
+                width: 8,
+            },
+            DebugRegister {
+                name: "RIOT_IRQ",
+                value: u64::from(self.riot.irq_active()),
+                width: 1,
+            },
+        ]
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GottliebBoard — shared Gottlieb System 80 arcade hardware
+// ---------------------------------------------------------------------------
+
+/// Shared hardware for the Gottlieb System 80 (GG-III) platform.
+///
+/// Hardware: I8088 @ 5 MHz (main), M6502 @ 894 kHz (sound) with RIOT + DAC.
+/// Video: 32×32 tilemap (8×8 tiles, 4bpp) + 64 sprites (16×16, 4bpp),
+/// 16-color programmable palette, ROT270 display orientation.
+#[derive(BusDebug)]
+pub struct GottliebBoard {
+    // Main CPU (I8088 @ 5 MHz)
+    #[debug_cpu("I8088 Main")]
+    pub(crate) cpu: I8088,
+
+    // Sound board (M6502 + RIOT + DAC)
+    #[debug_device("Sound Board")]
+    pub(crate) sound: GottliebSoundBoard,
+
+    // Memory
+    #[debug_map(cpu = 0)]
+    pub(crate) map: MemoryMap,
+
+    // GFX caches
+    pub(crate) tile_rom_cache: gfx::GfxCache,
+    pub(crate) charram_cache: gfx::GfxCache,
+    pub(crate) sprite_cache: gfx::GfxCache,
+
+    // Palette (16 entries, 4-bit RGB per channel)
+    pub(crate) palette_ram: [u8; 32],
+    pub(crate) palette_rgb: [(u8, u8, u8); 16],
+
+    // Framebuffer (256×240 palette indices)
+    pub(crate) pixel_buffer: Vec<u8>,
+
+    // Video state
+    pub(crate) video_control: u8,
+    pub(crate) sprite_bank: u8,
+
+    // Tile source selection (true = ROM, false = charram)
+    pub(crate) gfxcharlo: bool, // codes 0x00-0x7F
+    pub(crate) gfxcharhi: bool, // codes 0x80-0xFF
+
+    // I/O ports (active-high for Q*Bert joystick/buttons)
+    pub(crate) input_ports: [u8; 4], // IN1-IN4
+    pub(crate) dsw: u8,
+
+    // Timing
+    pub(crate) clock: u64,
+    pub(crate) sound_clock: ClockDivider,
+    pub(crate) watchdog_counter: u16,
+}
+
+impl GottliebBoard {
+    pub fn new() -> Self {
+        Self {
+            cpu: I8088::new(),
+            sound: GottliebSoundBoard::new(),
+            map: Self::build_map(),
+            tile_rom_cache: gfx::GfxCache::new(0, 8, 8),
+            charram_cache: gfx::GfxCache::new(128, 8, 8),
+            sprite_cache: gfx::GfxCache::new(0, 16, 16),
+            palette_ram: [0; 32],
+            palette_rgb: [(0, 0, 0); 16],
+            pixel_buffer: vec![0u8; NATIVE_WIDTH * NATIVE_HEIGHT],
+            video_control: 0,
+            sprite_bank: 0,
+            gfxcharlo: false,
+            gfxcharhi: false,
+            input_ports: [0; 4],
+            dsw: 0,
+            clock: 0,
+            sound_clock: ClockDivider::new(SOUND_CLOCK_NUM, SOUND_CLOCK_DEN),
+            watchdog_counter: 0,
+        }
+    }
+
+    fn build_map() -> MemoryMap {
+        let mut map = MemoryMap::new();
+        map.region(
+            Region::Nvram,
+            "NVRAM",
+            0x0000,
+            0x1000,
+            AccessKind::ReadWrite,
+        )
+        .region(Region::Ram, "RAM", 0x1000, 0x2000, AccessKind::ReadWrite)
+        .region(
+            Region::SpriteRam,
+            "Sprite RAM",
+            0x3000,
+            0x0800,
+            AccessKind::ReadWrite,
+        )
+        .region(
+            Region::VideoRam,
+            "Video RAM",
+            0x3800,
+            0x0800,
+            AccessKind::ReadWrite,
+        )
+        .region(
+            Region::CharRam,
+            "Char RAM",
+            0x4000,
+            0x1000,
+            AccessKind::ReadWrite,
+        )
+        .region(
+            Region::ProgramRom,
+            "Program ROM",
+            0x6000,
+            0xA000,
+            AccessKind::ReadOnly,
+        );
+        map
+    }
+
+    /// Load program ROM data into the memory map.
+    ///
+    /// `data` is loaded at the END of the 0x6000-0xFFFF region, so
+    /// a 24KB ROM occupies 0xA000-0xFFFF (offset 0x4000 in the region).
+    pub fn load_program_rom(&mut self, data: &[u8]) {
+        let region = self.map.region_data_mut(Region::ProgramRom);
+        let start = region.len().saturating_sub(data.len());
+        region[start..start + data.len()].copy_from_slice(data);
+    }
+
+    /// Load sound ROM data.
+    pub fn load_sound_rom(&mut self, data: &[u8]) {
+        self.sound.load_rom(data);
+    }
+
+    /// Pre-decode tile and sprite ROMs into GFX caches.
+    pub fn decode_gfx(&mut self, tile_rom: &[u8], sprite_rom: &[u8]) {
+        let tile_count = tile_rom.len() / 32;
+        self.tile_rom_cache = gfx::decode::decode_gottlieb_tiles(tile_rom, 0, tile_count);
+        let sprite_count = sprite_rom.len() / 128; // 4 planes × 32 bytes/plane
+        self.sprite_cache = gfx::decode::decode_gottlieb_sprites(sprite_rom, sprite_count);
+    }
+
+    // -----------------------------------------------------------------------
+    // I/O port handling (called by game wrapper's Bus impl)
+    // -----------------------------------------------------------------------
+
+    /// Read an I/O port (address bits 2:0).
+    pub fn io_port_read(&self, port: u8) -> u8 {
+        match port & 0x07 {
+            0 => self.dsw,
+            1 => self.input_ports[0],
+            2 => self.input_ports[1],
+            3 => self.input_ports[2],
+            4 => self.input_ports[3],
+            _ => 0xFF,
+        }
+    }
+
+    /// Write an I/O port (address bits 2:0).
+    pub fn io_port_write(&mut self, port: u8, data: u8) {
+        match port & 0x07 {
+            0 => self.watchdog_counter = 0,
+            2 => self.sound.write_sound_command(data),
+            3 => self.video_control = data,
+            4 => self.sprite_bank = (data >> 2) & 3,
+            _ => {}
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Palette
+    // -----------------------------------------------------------------------
+
+    /// Update a palette entry from a palette RAM write.
+    ///
+    /// Even byte: G[7:4] B[3:0]. Odd byte: xxxx R[3:0].
+    /// Uses resistor-weighted DAC (2000/1000/470/240Ω + 180Ω pulldown)
+    /// matching MAME's `compute_resistor_weights` / `combine_weights`.
+    pub fn update_palette(&mut self, offset: usize, data: u8) {
+        let offset = offset & 0x1F;
+        self.palette_ram[offset] = data;
+        let entry = offset / 2;
+        let even = self.palette_ram[entry * 2];
+        let odd = self.palette_ram[entry * 2 + 1];
+        let r = RESISTOR_DAC[(odd & 0x0F) as usize];
+        let g = RESISTOR_DAC[(even >> 4) as usize];
+        let b = RESISTOR_DAC[(even & 0x0F) as usize];
+        self.palette_rgb[entry] = (r, g, b);
+    }
+
+    /// Rebuild the entire palette from palette_ram (after state load).
+    fn rebuild_palette(&mut self) {
+        for entry in 0..16 {
+            let even = self.palette_ram[entry * 2];
+            let odd = self.palette_ram[entry * 2 + 1];
+            let r = RESISTOR_DAC[(odd & 0x0F) as usize];
+            let g = RESISTOR_DAC[(even >> 4) as usize];
+            let b = RESISTOR_DAC[(even & 0x0F) as usize];
+            self.palette_rgb[entry] = (r, g, b);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Char RAM re-decode
+    // -----------------------------------------------------------------------
+
+    /// Re-decode a single charram tile after a write to character generator RAM.
+    pub fn charram_write(&mut self, offset: usize, data: u8) {
+        self.map.region_data_mut(Region::CharRam)[offset] = data;
+        let tile_code = offset / 32;
+        if tile_code < 128 {
+            let tile_start = tile_code * 32;
+            let charram = self.map.region_data(Region::CharRam);
+            gfx::decode::decode_gottlieb_tile_into(
+                &mut self.charram_cache,
+                tile_code,
+                &charram[tile_start..],
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Core tick
+    // -----------------------------------------------------------------------
+
+    /// Execute one CPU cycle at the I8088 clock rate (5 MHz).
+    pub fn tick(&mut self, bus: &mut dyn Bus<Address = u32, Data = u8>) {
+        // Execute main CPU cycle
+        self.cpu.execute_cycle(bus, BusMaster::Cpu(0));
+
+        // Tick sound board at fractional rate
+        if self.sound_clock.tick() {
+            self.sound.tick();
+        }
+
+        self.clock += 1;
+        self.watchdog_counter = self.watchdog_counter.wrapping_add(1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Frame rendering
+    // -----------------------------------------------------------------------
+
+    /// Render the full frame into the indexed pixel buffer.
+    pub fn render_frame_internal(&mut self) {
+        let bg_priority = self.video_control & 0x01 != 0;
+
+        // Clear to background (palette index 0)
+        self.pixel_buffer.fill(0);
+
+        if bg_priority {
+            // Background priority: sprites behind tiles
+            self.render_sprites();
+            self.render_tiles();
+        } else {
+            // Normal: tiles behind sprites
+            self.render_tiles();
+            self.render_sprites();
+        }
+    }
+
+    /// Render tiles from video RAM.
+    fn render_tiles(&mut self) {
+        let video_ram = self.map.region_data(Region::VideoRam);
+
+        for tile_row in 0..TILE_ROWS {
+            for tile_col in 0..TILE_COLS {
+                let tile_index = tile_row * TILE_COLS + tile_col;
+                let code = video_ram[tile_index & 0x3FF] as usize;
+
+                // Select tile source: bit 7 selects gfxcharhi/gfxcharlo
+                let use_rom = if code & 0x80 != 0 {
+                    self.gfxcharhi
+                } else {
+                    self.gfxcharlo
+                };
+                let cache = if use_rom {
+                    &self.tile_rom_cache
+                } else {
+                    &self.charram_cache
+                };
+
+                // ROM tiles use the full code; charram tiles use code & 0x7F
+                let cache_code = if use_rom {
+                    code % cache.count().max(1)
+                } else {
+                    (code & 0x7F) % cache.count().max(1)
+                };
+
+                let screen_x = tile_col * 8;
+                let screen_y = tile_row * 8;
+
+                for py in 0..8usize {
+                    let sy = screen_y + py;
+                    if sy >= NATIVE_HEIGHT {
+                        break;
+                    }
+                    let row = cache.row_slice(cache_code, py);
+                    let row_base = sy * NATIVE_WIDTH + screen_x;
+                    for (px, &pixel) in row.iter().enumerate().take(8) {
+                        if pixel != 0 {
+                            self.pixel_buffer[row_base + px] = pixel;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Render sprites from sprite RAM.
+    fn render_sprites(&mut self) {
+        let sprite_ram = self.map.region_data(Region::SpriteRam);
+        let sprite_count = self.sprite_cache.count().max(1);
+
+        for entry in 0..64usize {
+            let offs = entry * 4;
+            let sy_raw = sprite_ram[offs & 0xFF];
+            let sx_raw = sprite_ram[(offs + 1) & 0xFF];
+            let code_raw = sprite_ram[(offs + 2) & 0xFF];
+
+            let sx = sx_raw as i32 - 4;
+            let sy = sy_raw as i32 - 13;
+            let code = ((255 ^ code_raw) as usize + 256 * self.sprite_bank as usize) % sprite_count;
+
+            for py in 0..16usize {
+                let screen_y = sy + py as i32;
+                if screen_y < 0 || screen_y >= NATIVE_HEIGHT as i32 {
+                    continue;
+                }
+                for px in 0..16usize {
+                    let screen_x = sx + px as i32;
+                    if screen_x < 0 || screen_x >= NATIVE_WIDTH as i32 {
+                        continue;
+                    }
+                    let pixel = self.sprite_cache.pixel(code, px, py);
+                    if pixel != 0 {
+                        let buf_idx = screen_y as usize * NATIVE_WIDTH + screen_x as usize;
+                        self.pixel_buffer[buf_idx] = pixel;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Convert the indexed pixel buffer to RGB24 with 270° CW rotation.
+    pub fn render_frame(&self, buffer: &mut [u8]) {
+        gfx::rotate_270_indexed(
+            &self.pixel_buffer,
+            buffer,
+            NATIVE_WIDTH,
+            NATIVE_HEIGHT,
+            &self.palette_rgb,
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Audio
+    // -----------------------------------------------------------------------
+
+    pub fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
+        self.sound.fill_audio(buffer)
+    }
+
+    // -----------------------------------------------------------------------
+    // Reset
+    // -----------------------------------------------------------------------
+
+    pub fn reset_board(&mut self) {
+        self.sound.reset();
+        self.map.region_data_mut(Region::Ram).fill(0);
+        self.map.region_data_mut(Region::SpriteRam).fill(0);
+        self.map.region_data_mut(Region::VideoRam).fill(0);
+        self.map.region_data_mut(Region::CharRam).fill(0);
+        self.palette_ram.fill(0);
+        self.rebuild_palette();
+        self.pixel_buffer.fill(0);
+        self.video_control = 0;
+        self.sprite_bank = 0;
+        self.clock = 0;
+        self.sound_clock.reset();
+        self.watchdog_counter = 0;
+        // NVRAM is NOT cleared (battery-backed)
+    }
+
+    // -----------------------------------------------------------------------
+    // Debug
+    // -----------------------------------------------------------------------
+
+    pub fn debug_tick_boundaries(&self) -> u32 {
+        if self.cpu.at_instruction_boundary() {
+            1
+        } else {
+            0
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Save / Load state
+    // -----------------------------------------------------------------------
+
+    pub(crate) fn save_board_state(&self, w: &mut StateWriter) {
+        self.cpu.save_state(w);
+        self.sound.save_state(w);
+        w.write_bytes(self.map.region_data(Region::Nvram));
+        w.write_bytes(self.map.region_data(Region::Ram));
+        w.write_bytes(self.map.region_data(Region::SpriteRam));
+        w.write_bytes(self.map.region_data(Region::VideoRam));
+        w.write_bytes(self.map.region_data(Region::CharRam));
+        w.write_bytes(&self.palette_ram);
+        w.write_u8(self.video_control);
+        w.write_u8(self.sprite_bank);
+        w.write_u64_le(self.clock);
+        self.sound_clock.save_state(w);
+        w.write_u16_le(self.watchdog_counter);
+    }
+
+    pub(crate) fn load_board_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        self.cpu.load_state(r)?;
+        self.sound.load_state(r)?;
+        r.read_bytes_into(self.map.region_data_mut(Region::Nvram))?;
+        r.read_bytes_into(self.map.region_data_mut(Region::Ram))?;
+        r.read_bytes_into(self.map.region_data_mut(Region::SpriteRam))?;
+        r.read_bytes_into(self.map.region_data_mut(Region::VideoRam))?;
+        r.read_bytes_into(self.map.region_data_mut(Region::CharRam))?;
+        r.read_bytes_into(&mut self.palette_ram)?;
+        self.video_control = r.read_u8()?;
+        self.sprite_bank = r.read_u8()?;
+        self.clock = r.read_u64_le()?;
+        self.sound_clock.load_state(r)?;
+        self.watchdog_counter = r.read_u16_le()?;
+        // Rebuild derived state
+        self.rebuild_palette();
+        Ok(())
+    }
+}
+
+impl Default for GottliebBoard {
+    fn default() -> Self {
+        Self::new()
+    }
+}

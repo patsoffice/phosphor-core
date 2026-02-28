@@ -435,6 +435,32 @@ impl Debuggable for I8088 {
     }
 }
 
+impl crate::core::debug::DebugCpu for I8088 {
+    fn debug_pc(&self) -> u16 {
+        self.ip
+    }
+
+    fn debug_at_instruction_boundary(&self) -> bool {
+        self.at_instruction_boundary()
+    }
+
+    fn debug_disassemble(
+        &self,
+        _addr: u16,
+        bytes: &[u8],
+    ) -> crate::cpu::disasm::DisassembledInstruction {
+        // Stub disassembler: show raw opcode byte. Full x86 disassembly TBD.
+        let opcode = if bytes.is_empty() { 0 } else { bytes[0] };
+        crate::cpu::disasm::DisassembledInstruction {
+            mnemonic: "DB",
+            operands: format!("${opcode:02X}"),
+            byte_len: 1,
+            bytes: [opcode, 0, 0, 0, 0, 0],
+            target_addr: None,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

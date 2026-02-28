@@ -91,6 +91,37 @@ pub fn rotate_90_ccw_indexed_blocked(
     }
 }
 
+/// Rotate an indexed pixel buffer 270° CW (= 90° CCW), applying an RGB palette.
+///
+/// Transforms a `src_w × src_h` image into a `src_h × src_w` output.
+/// Native pixel `(nx, ny)` maps to output pixel `(ny, src_w - 1 - nx)`.
+///
+/// This is the opposite direction of `rotate_90_ccw_indexed` and is used
+/// for MAME ROT270 games (e.g., Q*Bert on the Gottlieb platform).
+pub fn rotate_270_indexed(
+    src: &[u8],
+    dst: &mut [u8],
+    src_w: usize,
+    src_h: usize,
+    palette: &[(u8, u8, u8)],
+) {
+    let dst_w = src_h;
+    let mask = palette.len() - 1;
+    for ny in 0..src_h {
+        let src_row = ny * src_w;
+        let ox = ny;
+        for nx in 0..src_w {
+            let oy = src_w - 1 - nx;
+            let idx = src[src_row + nx] as usize & mask;
+            let (r, g, b) = palette[idx];
+            let di = (oy * dst_w + ox) * 3;
+            dst[di] = r;
+            dst[di + 1] = g;
+            dst[di + 2] = b;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

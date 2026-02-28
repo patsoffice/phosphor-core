@@ -288,6 +288,65 @@ pub fn decode_mcr_sprites(rom: &[u8], count: usize) -> GfxCache {
     cache
 }
 
+// ---------------------------------------------------------------------------
+// Gottlieb System 80 (GG-III) ROM layouts
+// ---------------------------------------------------------------------------
+
+/// Decode Gottlieb tiles: 8x8, 4bpp packed MSB.
+///
+/// 32 bytes per tile. Each byte stores two 4-bit pixels: high nibble = left
+/// pixel (even column), low nibble = right pixel (odd column). Row stride
+/// is 4 bytes (8 pixels / 2 pixels per byte).
+pub fn decode_gottlieb_tiles(rom: &[u8], base: usize, count: usize) -> GfxCache {
+    let mut cache = GfxCache::new(count, 8, 8);
+    for code in 0..count {
+        decode_gottlieb_tile_into(&mut cache, code, &rom[base + code * 32..]);
+    }
+    cache
+}
+
+/// Decode a single 8x8 4bpp packed-MSB tile into an existing cache.
+///
+/// Used for runtime charram re-decode when character generator RAM is written.
+/// `data` must be at least 32 bytes.
+pub fn decode_gottlieb_tile_into(cache: &mut GfxCache, code: usize, data: &[u8]) {
+    for py in 0..8usize {
+        for px in 0..8usize {
+            let byte = data[py * 4 + px / 2];
+            let pixel = if px & 1 == 0 {
+                (byte >> 4) & 0x0F
+            } else {
+                byte & 0x0F
+            };
+            cache.set_pixel(code, px, py, pixel);
+        }
+    }
+}
+
+/// Decode Gottlieb sprites: 16x16, 4bpp planar.
+///
+/// ROM data is divided into 4 equal regions, each storing one bitplane.
+/// Within each region: 32 bytes per sprite (16 rows × 2 bytes), MSB-first
+/// (bit 7 of first byte = leftmost pixel).
+pub fn decode_gottlieb_sprites(rom: &[u8], count: usize) -> GfxCache {
+    let quarter = rom.len() / 4;
+    let mut cache = GfxCache::new(count, 16, 16);
+    for code in 0..count {
+        for py in 0..16usize {
+            for px in 0..16usize {
+                let byte_off = code * 32 + py * 2 + px / 8;
+                let bit = 7 - (px & 7);
+                let mut pixel = 0u8;
+                for plane in 0..4 {
+                    pixel |= ((rom[quarter * plane + byte_off] >> bit) & 1) << plane;
+                }
+                cache.set_pixel(code, px, py, pixel);
+            }
+        }
+    }
+    cache
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -441,5 +500,83 @@ mod tests {
         assert_eq!(cache.pixel(0, 4, 0), 0x03);
         // px=6: ROM3, even -> high nibble = 0x4
         assert_eq!(cache.pixel(0, 6, 0), 0x04);
+    }
+
+    // -- Gottlieb tile/sprite decode tests --
+
+    #[test]
+    fn decode_gottlieb_tiles_packed_msb() {
+        // 1 tile, 32 bytes. High nibble = left pixel, low nibble = right pixel.
+        let mut rom = [0u8; 32];
+        rom[0] = 0xAB; // row 0: px=0 → 0xA, px=1 → 0xB
+        rom[1] = 0xCD; // row 0: px=2 → 0xC, px=3 → 0xD
+
+        let cache = decode_gottlieb_tiles(&rom, 0, 1);
+        assert_eq!(cache.pixel(0, 0, 0), 0x0A);
+        assert_eq!(cache.pixel(0, 1, 0), 0x0B);
+        assert_eq!(cache.pixel(0, 2, 0), 0x0C);
+        assert_eq!(cache.pixel(0, 3, 0), 0x0D);
+    }
+
+    #[test]
+    fn decode_gottlieb_tiles_row_stride() {
+        // Row 1 starts at byte offset 4.
+        let mut rom = [0u8; 32];
+        rom[4] = 0x12; // row 1: px=0 → 1, px=1 → 2
+
+        let cache = decode_gottlieb_tiles(&rom, 0, 1);
+        assert_eq!(cache.pixel(0, 0, 0), 0); // row 0
+        assert_eq!(cache.pixel(0, 0, 1), 1); // row 1
+        assert_eq!(cache.pixel(0, 1, 1), 2);
+    }
+
+    #[test]
+    fn decode_gottlieb_tile_into_charram() {
+        let mut cache = GfxCache::new(2, 8, 8);
+        let mut data = [0u8; 32];
+        data[0] = 0x12;
+
+        decode_gottlieb_tile_into(&mut cache, 1, &data);
+        assert_eq!(cache.pixel(1, 0, 0), 0x01);
+        assert_eq!(cache.pixel(1, 1, 0), 0x02);
+        // Code 0 is untouched
+        assert_eq!(cache.pixel(0, 0, 0), 0x00);
+    }
+
+    #[test]
+    fn decode_gottlieb_sprites_planar() {
+        // 1 sprite, 4 planes. Each quarter = 32 bytes.
+        let mut rom = vec![0u8; 128];
+        // Plane 0: bit 7 set → px=0 has plane 0
+        rom[0] = 0x80;
+        // Plane 1: bit 7 set → px=0 has plane 1
+        rom[32] = 0x80;
+
+        let cache = decode_gottlieb_sprites(&rom, 1);
+        assert_eq!(cache.pixel(0, 0, 0), 0x03); // plane 0 + plane 1
+        assert_eq!(cache.pixel(0, 1, 0), 0x00);
+    }
+
+    #[test]
+    fn decode_gottlieb_sprites_all_planes() {
+        let mut rom = vec![0u8; 128];
+        rom[0] = 0x80; // plane 0
+        rom[32] = 0x80; // plane 1
+        rom[64] = 0x80; // plane 2
+        rom[96] = 0x80; // plane 3
+
+        let cache = decode_gottlieb_sprites(&rom, 1);
+        assert_eq!(cache.pixel(0, 0, 0), 0x0F);
+    }
+
+    #[test]
+    fn decode_gottlieb_sprites_second_byte() {
+        // px=8 reads from the second byte (byte offset 1) within each plane.
+        let mut rom = vec![0u8; 128];
+        rom[1] = 0x80; // plane 0, byte 1, bit 7 → px=8
+
+        let cache = decode_gottlieb_sprites(&rom, 1);
+        assert_eq!(cache.pixel(0, 8, 0), 0x01); // only plane 0
+        assert_eq!(cache.pixel(0, 0, 0), 0x00); // byte 0 is clear
     }
 }
