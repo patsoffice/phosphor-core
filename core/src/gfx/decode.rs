@@ -189,39 +189,6 @@ pub fn decode_pacman_tiles(rom: &[u8], base: usize, count: usize) -> GfxCache {
     cache
 }
 
-/// Decode Pac-Man style sprites: 16x16, 2bpp.
-///
-/// Same plane interleaving as tiles ({0, 4} within each byte). 64 bytes per
-/// sprite. X mapping uses 4 groups of 4 pixels at byte offsets [8, 16, 24, 0].
-/// Y mapping splits at row 8: rows 0-7 at offset +0, rows 8-15 at offset +32.
-pub fn decode_pacman_sprites(rom: &[u8], base: usize, count: usize) -> GfxCache {
-    let mut cache = GfxCache::new(count, 16, 16);
-    for code in 0..count {
-        let spr_base = base + code * 64;
-        for py in 0..16usize {
-            for px in 0..16usize {
-                let (x_byte_off, bit) = match px {
-                    0..=3 => (8, px),
-                    4..=7 => (16, px - 4),
-                    8..=11 => (24, px - 8),
-                    12..=15 => (0, px - 12),
-                    _ => unreachable!(),
-                };
-                let y_byte_off = if py < 8 { py } else { 32 + (py - 8) };
-                let byte_addr = spr_base + x_byte_off + y_byte_off;
-                if byte_addr >= rom.len() {
-                    continue;
-                }
-                let byte = rom[byte_addr];
-                let plane_hi = (byte >> (7 - bit)) & 1;
-                let plane_lo = (byte >> (3 - bit)) & 1;
-                cache.set_pixel(code, px, py, plane_lo | (plane_hi << 1));
-            }
-        }
-    }
-    cache
-}
-
 // ---------------------------------------------------------------------------
 // Donkey Kong / TKG-04 family ROM layouts
 // ---------------------------------------------------------------------------
@@ -838,26 +805,6 @@ mod tests {
     }
 
     #[test]
-    fn generic_matches_pacman_sprites() {
-        let mut rom = vec![0u8; 64 * 64];
-        fill_prng(&mut rom);
-        let old = decode_pacman_sprites(&rom, 0, 64);
-        let new = decode_gfx(&rom, 0, 64, &GfxLayout {
-            plane_offsets: &[4, 0],
-            x_offsets: &[
-                64, 65, 66, 67, 128, 129, 130, 131,
-                192, 193, 194, 195, 0, 1, 2, 3,
-            ],
-            y_offsets: &[
-                0, 8, 16, 24, 32, 40, 48, 56,
-                256, 264, 272, 280, 288, 296, 304, 312,
-            ],
-            char_increment: 512,
-        });
-        assert_caches_equal(&old, &new, "pacman_sprites");
-    }
-
-    #[test]
     fn generic_matches_planar_2bpp_tiles() {
         let plane1_offset: usize = 2048; // DK: 256 tiles * 8 bytes
         let mut rom = vec![0u8; plane1_offset * 2];
@@ -1029,24 +976,4 @@ mod tests {
         assert_eq!(new_cache.pixel(0, 0, 0), 0);
     }
 
-    #[test]
-    fn generic_pacman_tiles_with_base_offset() {
-        // Verify the base parameter works: decode sprites at offset 0x1000
-        let mut rom = vec![0u8; 0x1000 + 64 * 64];
-        fill_prng(&mut rom);
-        let old = decode_pacman_sprites(&rom, 0x1000, 64);
-        let new = decode_gfx(&rom, 0x1000, 64, &GfxLayout {
-            plane_offsets: &[4, 0],
-            x_offsets: &[
-                64, 65, 66, 67, 128, 129, 130, 131,
-                192, 193, 194, 195, 0, 1, 2, 3,
-            ],
-            y_offsets: &[
-                0, 8, 16, 24, 32, 40, 48, 56,
-                256, 264, 272, 280, 288, 296, 304, 312,
-            ],
-            char_increment: 512,
-        });
-        assert_caches_equal(&old, &new, "pacman_sprites_with_base");
-    }
 }

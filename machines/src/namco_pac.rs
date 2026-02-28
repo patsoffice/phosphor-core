@@ -7,6 +7,7 @@ use phosphor_core::cpu::state::Z80State;
 use phosphor_core::cpu::z80::Z80;
 use phosphor_core::device::namco_wsg::NamcoWsg;
 use phosphor_core::gfx;
+use phosphor_core::gfx::decode::{decode_gfx, GfxLayout};
 use phosphor_macros::{BusDebug, MemoryRegion};
 
 // ---------------------------------------------------------------------------
@@ -112,6 +113,24 @@ pub const VISIBLE_LINES: u64 = 224;
 const R_WEIGHTS: [f64; 3] = [1000.0, 470.0, 220.0];
 const G_WEIGHTS: [f64; 3] = [1000.0, 470.0, 220.0];
 const B_WEIGHTS: [f64; 2] = [470.0, 220.0];
+
+// ---------------------------------------------------------------------------
+// GfxLayout descriptors for Pac-Man hardware
+// ---------------------------------------------------------------------------
+
+pub(crate) const PACMAN_TILE_LAYOUT: GfxLayout<'static> = GfxLayout {
+    plane_offsets: &[4, 0],
+    x_offsets: &[64, 65, 66, 67, 0, 1, 2, 3],
+    y_offsets: &[0, 8, 16, 24, 32, 40, 48, 56],
+    char_increment: 128,
+};
+
+const PACMAN_SPRITE_LAYOUT: GfxLayout<'static> = GfxLayout {
+    plane_offsets: &[4, 0],
+    x_offsets: &[64, 65, 66, 67, 128, 129, 130, 131, 192, 193, 194, 195, 0, 1, 2, 3],
+    y_offsets: &[0, 8, 16, 24, 32, 40, 48, 56, 256, 264, 272, 280, 288, 296, 304, 312],
+    char_increment: 512,
+};
 
 // ---------------------------------------------------------------------------
 // NamcoPacBoard — shared hardware for the Namco Pac-Man platform
@@ -382,8 +401,8 @@ impl NamcoPacBoard {
     }
 
     pub fn load_gfx_rom(&mut self, gfx_data: &[u8]) {
-        self.tile_cache = gfx::decode::decode_pacman_tiles(gfx_data, 0x0000, 256);
-        self.sprite_cache = gfx::decode::decode_pacman_sprites(gfx_data, 0x1000, 64);
+        self.tile_cache = decode_gfx(gfx_data, 0x0000, 256, &PACMAN_TILE_LAYOUT);
+        self.sprite_cache = decode_gfx(gfx_data, 0x1000, 64, &PACMAN_SPRITE_LAYOUT);
     }
 
     pub fn load_color_proms(&mut self, color_data: &[u8]) {
