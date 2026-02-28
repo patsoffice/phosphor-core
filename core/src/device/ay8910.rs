@@ -30,6 +30,7 @@
 //! | R15 | PORT_B    | I/O Port B data                                      |
 
 use crate::audio::AudioResampler;
+use phosphor_macros::Saveable;
 
 /// AY-8910 DAC volume table (logarithmic, ~3 dB per step).
 ///
@@ -41,6 +42,8 @@ const VOLUME_TABLE: [i32; 16] = [
 ];
 
 /// AY-8910 Programmable Sound Generator.
+#[derive(Saveable)]
+#[save_version(1)]
 pub struct Ay8910 {
     registers: [u8; 16],
     address_latch: u8,
@@ -440,83 +443,12 @@ impl Debuggable for Ay8910 {
     }
 }
 
-// -- Save state support ------------------------------------------------------
-
-use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
-
-impl Saveable for Ay8910 {
-    fn save_state(&self, w: &mut StateWriter) {
-        w.write_version(1);
-        w.write_bytes(&self.registers);
-        w.write_u8(self.address_latch);
-
-        for i in 0..3 {
-            w.write_u16_le(self.tone_counters[i]);
-            w.write_bool(self.tone_outputs[i]);
-        }
-
-        w.write_u16_le(self.noise_counter);
-        w.write_bool(self.noise_prescaler);
-        w.write_u32_le(self.noise_lfsr);
-
-        w.write_u16_le(self.envelope_counter);
-        w.write_u16_le(self.envelope_step as u16);
-        w.write_u8(self.envelope_attack);
-        w.write_bool(self.envelope_alternate);
-        w.write_bool(self.envelope_hold);
-        w.write_bool(self.envelope_holding);
-        w.write_u8(self.envelope_volume);
-
-        w.write_u8(self.port_a_in);
-        w.write_u8(self.port_b_in);
-        w.write_u8(self.prescaler_count);
-
-        self.resampler.save_state(w);
-
-        for i in 0..3 {
-            w.write_u8(self.channel_gain[i]);
-        }
-    }
-
-    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
-        r.read_version(1)?;
-        r.read_bytes_into(&mut self.registers)?;
-        self.address_latch = r.read_u8()?;
-
-        for i in 0..3 {
-            self.tone_counters[i] = r.read_u16_le()?;
-            self.tone_outputs[i] = r.read_bool()?;
-        }
-
-        self.noise_counter = r.read_u16_le()?;
-        self.noise_prescaler = r.read_bool()?;
-        self.noise_lfsr = r.read_u32_le()?;
-
-        self.envelope_counter = r.read_u16_le()?;
-        self.envelope_step = r.read_u16_le()? as i16;
-        self.envelope_attack = r.read_u8()?;
-        self.envelope_alternate = r.read_bool()?;
-        self.envelope_hold = r.read_bool()?;
-        self.envelope_holding = r.read_bool()?;
-        self.envelope_volume = r.read_u8()?;
-
-        self.port_a_in = r.read_u8()?;
-        self.port_b_in = r.read_u8()?;
-        self.prescaler_count = r.read_u8()?;
-
-        self.resampler.load_state(r)?;
-
-        for i in 0..3 {
-            self.channel_gain[i] = r.read_u8()?;
-        }
-
-        Ok(())
-    }
-}
+// Save state support: derived via #[derive(Saveable)] on the struct.
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::save_state::{Saveable, StateReader, StateWriter};
 
     #[test]
     fn initial_state_is_silent() {

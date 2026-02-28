@@ -506,12 +506,10 @@ impl Mcr2Board {
             0
         }
     }
+}
 
-    // -----------------------------------------------------------------------
-    // Save / Load state
-    // -----------------------------------------------------------------------
-
-    pub(crate) fn save_board_state(&self, w: &mut StateWriter) {
+impl Saveable for Mcr2Board {
+    fn save_state(&self, w: &mut StateWriter) {
         self.cpu.save_state(w);
         self.ctc.save_state(w);
         self.ssio.save_state(w);
@@ -524,7 +522,7 @@ impl Mcr2Board {
         w.write_u16_le(self.watchdog_counter);
     }
 
-    pub(crate) fn load_board_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
         self.cpu.load_state(r)?;
         self.ctc.load_state(r)?;
         self.ssio.load_state(r)?;

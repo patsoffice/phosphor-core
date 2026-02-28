@@ -4,7 +4,7 @@ use phosphor_core::core::machine::{
     AnalogInput, AudioSource, InputButton, InputReceiver, Machine, Renderable,
 };
 use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
-use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
+use phosphor_core::core::save_state::{self, SaveError, Saveable, StateReader, StateWriter};
 use phosphor_core::core::{Bus, BusMaster, TimingConfig};
 use phosphor_core::cpu::m6502::M6502;
 use phosphor_core::cpu::state::M6502State;
@@ -1037,6 +1037,72 @@ impl InputReceiver for CrystalCastlesSystem {
 
 crate::impl_standalone_debug!(CrystalCastlesSystem);
 
+impl Saveable for CrystalCastlesSystem {
+    fn save_state(&self, w: &mut StateWriter) {
+        self.cpu.save_state(w);
+        self.pokey1.save_state(w);
+        self.pokey2.save_state(w);
+        w.write_bytes(self.map.region_data(Region::VideoRam));
+        w.write_bytes(self.map.region_data(Region::Sram));
+        w.write_bytes(self.map.region_data(Region::SpriteRam));
+        w.write_bytes(self.map.region_data(Region::Nvram));
+        w.write_bytes(&self.bitmode_addr);
+        w.write_u8(self.hscroll);
+        w.write_u8(self.vscroll);
+        w.write_bytes(&self.palette_ram);
+        self.outlatch0.save_state(w);
+        self.outlatch1.save_state(w);
+        w.write_u8(self.in0);
+        w.write_bytes(&self.trackball);
+        w.write_bool(self.trackball_l_pressed);
+        w.write_bool(self.trackball_r_pressed);
+        w.write_bool(self.trackball_u_pressed);
+        w.write_bool(self.trackball_d_pressed);
+        w.write_i32_le(self.mouse_accum_x);
+        w.write_i32_le(self.mouse_accum_y);
+        w.write_bool(self.irq_state);
+        w.write_u64_le(self.clock);
+        w.write_u8(self.watchdog_frame_count);
+        w.write_u8(self.dip_switches);
+    }
+
+    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        self.cpu.load_state(r)?;
+        self.pokey1.load_state(r)?;
+        self.pokey2.load_state(r)?;
+        r.read_bytes_into(self.map.region_data_mut(Region::VideoRam))?;
+        r.read_bytes_into(self.map.region_data_mut(Region::Sram))?;
+        r.read_bytes_into(self.map.region_data_mut(Region::SpriteRam))?;
+        r.read_bytes_into(self.map.region_data_mut(Region::Nvram))?;
+        r.read_bytes_into(&mut self.bitmode_addr)?;
+        self.hscroll = r.read_u8()?;
+        self.vscroll = r.read_u8()?;
+        r.read_bytes_into(&mut self.palette_ram)?;
+        self.outlatch0.load_state(r)?;
+        self.outlatch1.load_state(r)?;
+        self.in0 = r.read_u8()?;
+        r.read_bytes_into(&mut self.trackball)?;
+        self.trackball_l_pressed = r.read_bool()?;
+        self.trackball_r_pressed = r.read_bool()?;
+        self.trackball_u_pressed = r.read_bool()?;
+        self.trackball_d_pressed = r.read_bool()?;
+        self.mouse_accum_x = r.read_i32_le()?;
+        self.mouse_accum_y = r.read_i32_le()?;
+        self.irq_state = r.read_bool()?;
+        self.clock = r.read_u64_le()?;
+        self.watchdog_frame_count = r.read_u8()?;
+        self.dip_switches = r.read_u8()?;
+        // Recompute derived state
+        for i in 0..64 {
+            self.update_palette_entry(i);
+        }
+        self.update_rom_bank();
+        self.scanline_buffer_valid = false;
+        self.audio_buffer.clear();
+        Ok(())
+    }
+}
+
 impl Machine for CrystalCastlesSystem {
     fn run_frame(&mut self) {
         for _ in 0..TIMING.cycles_per_frame() {
@@ -1099,72 +1165,12 @@ impl Machine for CrystalCastlesSystem {
     }
 
     fn save_state(&self) -> Option<Vec<u8>> {
-        let mut w = StateWriter::new();
-        save_state::write_header(&mut w, self.machine_id());
-        self.cpu.save_state(&mut w);
-        self.pokey1.save_state(&mut w);
-        self.pokey2.save_state(&mut w);
-        w.write_bytes(self.map.region_data(Region::VideoRam));
-        w.write_bytes(self.map.region_data(Region::Sram));
-        w.write_bytes(self.map.region_data(Region::SpriteRam));
-        w.write_bytes(self.map.region_data(Region::Nvram));
-        w.write_bytes(&self.bitmode_addr);
-        w.write_u8(self.hscroll);
-        w.write_u8(self.vscroll);
-        w.write_bytes(&self.palette_ram);
-        self.outlatch0.save_state(&mut w);
-        self.outlatch1.save_state(&mut w);
-        w.write_u8(self.in0);
-        w.write_bytes(&self.trackball);
-        w.write_bool(self.trackball_l_pressed);
-        w.write_bool(self.trackball_r_pressed);
-        w.write_bool(self.trackball_u_pressed);
-        w.write_bool(self.trackball_d_pressed);
-        w.write_i32_le(self.mouse_accum_x);
-        w.write_i32_le(self.mouse_accum_y);
-        w.write_bool(self.irq_state);
-        w.write_u64_le(self.clock);
-        w.write_u8(self.watchdog_frame_count);
-        w.write_u8(self.dip_switches);
-        Some(w.into_vec())
+        Some(save_state::save_machine(self, self.machine_id()))
     }
 
     fn load_state(&mut self, data: &[u8]) -> Result<(), SaveError> {
-        let mut r = save_state::read_header(data, self.machine_id())?;
-        self.cpu.load_state(&mut r)?;
-        self.pokey1.load_state(&mut r)?;
-        self.pokey2.load_state(&mut r)?;
-        r.read_bytes_into(self.map.region_data_mut(Region::VideoRam))?;
-        r.read_bytes_into(self.map.region_data_mut(Region::Sram))?;
-        r.read_bytes_into(self.map.region_data_mut(Region::SpriteRam))?;
-        r.read_bytes_into(self.map.region_data_mut(Region::Nvram))?;
-        r.read_bytes_into(&mut self.bitmode_addr)?;
-        self.hscroll = r.read_u8()?;
-        self.vscroll = r.read_u8()?;
-        r.read_bytes_into(&mut self.palette_ram)?;
-        self.outlatch0.load_state(&mut r)?;
-        self.outlatch1.load_state(&mut r)?;
-        self.in0 = r.read_u8()?;
-        r.read_bytes_into(&mut self.trackball)?;
-        self.trackball_l_pressed = r.read_bool()?;
-        self.trackball_r_pressed = r.read_bool()?;
-        self.trackball_u_pressed = r.read_bool()?;
-        self.trackball_d_pressed = r.read_bool()?;
-        self.mouse_accum_x = r.read_i32_le()?;
-        self.mouse_accum_y = r.read_i32_le()?;
-        self.irq_state = r.read_bool()?;
-        self.clock = r.read_u64_le()?;
-        self.watchdog_frame_count = r.read_u8()?;
-        self.dip_switches = r.read_u8()?;
-        // Recompute derived state — process all 64 palette offsets so the
-        // last-written value for each pen (including red MSB from bit 5) wins.
-        for i in 0..64 {
-            self.update_palette_entry(i);
-        }
-        self.update_rom_bank();
-        self.scanline_buffer_valid = false;
-        self.audio_buffer.clear();
-        Ok(())
+        let id = self.machine_id().to_string();
+        save_state::load_machine(self, &id, data)
     }
 }
 
@@ -1213,11 +1219,11 @@ mod tests {
         sys.watchdog_frame_count = 3;
         sys.dip_switches = 0x55;
 
-        let data = sys.save_state().expect("save_state should return Some");
+        let data = Machine::save_state(&sys).expect("save_state should return Some");
         let cpu_snap = sys.cpu.snapshot();
 
         let mut sys2 = CrystalCastlesSystem::new();
-        sys2.load_state(&data).unwrap();
+        Machine::load_state(&mut sys2, &data).unwrap();
 
         assert_eq!(sys2.cpu.snapshot(), cpu_snap);
         assert_eq!(sys2.map.region_data(Region::VideoRam)[0x1000], 0xAB);

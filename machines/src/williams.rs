@@ -454,18 +454,18 @@ impl WilliamsBoard {
     pub fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
         self.resampler.fill_audio(buffer)
     }
+}
 
-    // --- Save state helpers (called by game wrappers) ---
-
-    pub(crate) fn save_board_state(&self, w: &mut StateWriter) {
+impl Saveable for WilliamsBoard {
+    fn save_state(&self, w: &mut StateWriter) {
         // CPUs
         self.cpu.save_state(w);
         self.sound_cpu.save_state(w);
-        // RAM (byte counts must match load_board_state for save state compat)
-        w.write_bytes(self.main_map.region_data(MainRegion::VideoRam)); // 0xC000
-        w.write_bytes(&self.main_map.region_data(MainRegion::Palette)[..16]); // 16
-        w.write_bytes(self.main_map.region_data(MainRegion::Cmos)); // 1024
-        w.write_bytes(self.sound_map.region_data(SoundRegion::Ram)); // 256
+        // RAM
+        w.write_bytes(self.main_map.region_data(MainRegion::VideoRam));
+        w.write_bytes(&self.main_map.region_data(MainRegion::Palette)[..16]);
+        w.write_bytes(self.main_map.region_data(MainRegion::Cmos));
+        w.write_bytes(self.sound_map.region_data(SoundRegion::Ram));
         // Peripherals
         self.widget_pia.save_state(w);
         self.rom_pia.save_state(w);
@@ -480,7 +480,7 @@ impl WilliamsBoard {
         w.write_u8(self.rom_pia_input);
     }
 
-    pub(crate) fn load_board_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
         // CPUs
         self.cpu.load_state(r)?;
         self.sound_cpu.load_state(r)?;
@@ -693,7 +693,7 @@ mod tests {
 
         // Save
         let mut w = StateWriter::new();
-        board.save_board_state(&mut w);
+        board.save_state(&mut w);
         let data = w.into_vec();
 
         // Mutate everything
@@ -707,7 +707,7 @@ mod tests {
 
         // Load
         let mut r = StateReader::new(&data);
-        board2.load_board_state(&mut r).unwrap();
+        board2.load_state(&mut r).unwrap();
 
         // Verify CPU state matches
         assert_eq!(
@@ -746,7 +746,7 @@ mod tests {
         board.sound_map.region_data_mut(SoundRegion::Rom)[0] = 0xBE;
 
         let mut w = StateWriter::new();
-        board.save_board_state(&mut w);
+        board.save_state(&mut w);
         let data = w.into_vec();
 
         // Load into a board with different ROM contents — ROM should NOT be overwritten
@@ -756,7 +756,7 @@ mod tests {
         board2.sound_map.region_data_mut(SoundRegion::Rom)[0] = 0x33;
 
         let mut r = StateReader::new(&data);
-        board2.load_board_state(&mut r).unwrap();
+        board2.load_state(&mut r).unwrap();
 
         assert_eq!(
             board2.main_map.region_data(MainRegion::ProgramRom)[0],

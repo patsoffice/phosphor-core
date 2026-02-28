@@ -2,12 +2,13 @@ use phosphor_core::bus_split;
 use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::debug::{BusDebug, DebugCpu, Debuggable};
 use phosphor_core::core::machine::{AudioSource, InputReceiver, Machine, MachineDebug, Renderable};
-use phosphor_core::core::save_state::{self, SaveError, StateWriter};
+use phosphor_core::core::save_state::{self, SaveError};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::Cpu;
 use phosphor_core::gfx;
 use phosphor_core::gfx::GfxCache;
 use phosphor_core::gfx::decode::{GfxLayout, decode_gfx};
+use phosphor_macros::Saveable;
 
 use crate::namco_galaga::{self, GALAGA_SPRITE_LAYOUT, NamcoGalagaBoard};
 use crate::namco_pac::PACMAN_TILE_LAYOUT;
@@ -486,6 +487,7 @@ static DIGDUGAT1_CONFIG: DigDugRomConfig = DigDugRomConfig {
 /// Hardware: 3×Z80 @ 3.072 MHz, Namco WSG 3-voice, Namco 06XX/51XX/53XX
 /// custom I/O. Video: 36×28 tilemap foreground, ROM-based background,
 /// 64 sprites (16×16 or 32×32). Screen: 288×224 rotated 90° CCW.
+#[derive(Saveable)]
 pub struct DigDugSystem {
     pub board: NamcoGalagaBoard,
 
@@ -495,7 +497,8 @@ pub struct DigDugSystem {
     obj_ram: [u8; 0x400],   // 0x8800-0x8BFF (sprite attribs + work)
     pos_ram: [u8; 0x400],   // 0x9000-0x93FF (sprite positions)
     flp_ram: [u8; 0x400],   // 0x9800-0x9BFF (sprite flip/size)
-    earom: [u8; 64],        // 0xB800-0xB83F (stubbed as volatile RAM)
+    #[save_skip]
+    earom: [u8; 64], // 0xB800-0xB83F (stubbed as volatile RAM)
     earom_control: u8,
 
     // Video latch state (written via 0xA000-0xA007)
@@ -505,16 +508,23 @@ pub struct DigDugSystem {
     bg_color_bank: u8,   // bits 4-5 (stored as 0x00 or 0x10/0x20/0x30)
 
     // GFX caches
-    char_cache: GfxCache,    // 1bpp 8×8 (256 tiles)
-    sprite_cache: GfxCache,  // 2bpp 16×16 (256 sprites)
+    #[save_skip]
+    char_cache: GfxCache, // 1bpp 8×8 (256 tiles)
+    #[save_skip]
+    sprite_cache: GfxCache, // 2bpp 16×16 (256 sprites)
+    #[save_skip]
     bg_tile_cache: GfxCache, // 2bpp 8×8 (256 tiles)
-    playfield_rom: Vec<u8>,  // Background tile codes (4 pages × 1KB)
+    #[save_skip]
+    playfield_rom: Vec<u8>, // Background tile codes (4 pages × 1KB)
 
     // Color lookup tables (from PROMs)
+    #[save_skip]
     sprite_lut: [u8; 256],
+    #[save_skip]
     bg_lut: [u8; 256],
 
     // Frame buffer (288 × 224 native, indexed — rotated to RGB in render_frame)
+    #[save_skip]
     native_buffer: Vec<u8>,
 }
 
@@ -1104,50 +1114,12 @@ impl Machine for DigDugSystem {
     }
 
     fn save_state(&self) -> Option<Vec<u8>> {
-        let mut w = StateWriter::new();
-        save_state::write_header(&mut w, self.machine_id());
-        self.board.save_board_state(&mut w);
-
-        // Game-specific RAM
-        w.write_bytes(&self.video_ram);
-        w.write_bytes(&self.work_ram);
-        w.write_bytes(&self.obj_ram);
-        w.write_bytes(&self.pos_ram);
-        w.write_bytes(&self.flp_ram);
-
-        // Video latch state
-        w.write_u8(self.bg_select);
-        w.write_bool(self.tx_color_mode);
-        w.write_bool(self.bg_disable);
-        w.write_u8(self.bg_color_bank);
-
-        // EAROM control
-        w.write_u8(self.earom_control);
-
-        Some(w.into_vec())
+        Some(save_state::save_machine(self, self.machine_id()))
     }
 
     fn load_state(&mut self, data: &[u8]) -> Result<(), SaveError> {
-        let mut r = save_state::read_header(data, self.machine_id())?;
-        self.board.load_board_state(&mut r)?;
-
-        // Game-specific RAM
-        r.read_bytes_into(&mut self.video_ram)?;
-        r.read_bytes_into(&mut self.work_ram)?;
-        r.read_bytes_into(&mut self.obj_ram)?;
-        r.read_bytes_into(&mut self.pos_ram)?;
-        r.read_bytes_into(&mut self.flp_ram)?;
-
-        // Video latch state
-        self.bg_select = r.read_u8()?;
-        self.tx_color_mode = r.read_bool()?;
-        self.bg_disable = r.read_bool()?;
-        self.bg_color_bank = r.read_u8()?;
-
-        // EAROM control
-        self.earom_control = r.read_u8()?;
-
-        Ok(())
+        let id = self.machine_id().to_string();
+        save_state::load_machine(self, &id, data)
     }
 
     fn save_nvram(&self) -> Option<&[u8]> {

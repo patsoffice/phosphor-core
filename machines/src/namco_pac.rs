@@ -622,12 +622,10 @@ impl NamcoPacBoard {
             0
         }
     }
+}
 
-    // -----------------------------------------------------------------------
-    // Save / Load state
-    // -----------------------------------------------------------------------
-
-    pub(crate) fn save_board_state(&self, w: &mut StateWriter) {
+impl Saveable for NamcoPacBoard {
+    fn save_state(&self, w: &mut StateWriter) {
         self.cpu.save_state(w);
         w.write_bytes(self.map.region_data(Region::VideoRam));
         w.write_bytes(self.map.region_data(Region::ColorRam));
@@ -645,7 +643,7 @@ impl NamcoPacBoard {
         w.write_u32_le(self.watchdog_counter);
     }
 
-    pub(crate) fn load_board_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
         self.cpu.load_state(r)?;
         r.read_bytes_into(self.map.region_data_mut(Region::VideoRam))?;
         r.read_bytes_into(self.map.region_data_mut(Region::ColorRam))?;
@@ -663,7 +661,9 @@ impl NamcoPacBoard {
         self.watchdog_counter = r.read_u32_le()?;
         Ok(())
     }
+}
 
+impl NamcoPacBoard {
     /// Dispatch an input event to the appropriate port bit (active-low).
     /// Called from game wrapper `InputReceiver` impls.
     pub fn handle_input(&mut self, button: u8, pressed: bool) {

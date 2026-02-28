@@ -4,7 +4,7 @@ use phosphor_core::core::machine::{
     AnalogInput, AudioSource, InputButton, InputReceiver, Machine, Renderable,
 };
 use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
-use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
+use phosphor_core::core::save_state::{self, SaveError, Saveable, StateReader, StateWriter};
 use phosphor_core::core::{Bus, BusMaster, ClockDivider, TimingConfig};
 use phosphor_core::cpu::m6809::M6809;
 use phosphor_core::cpu::state::M6809State;
@@ -898,6 +898,67 @@ impl InputReceiver for GridleeSystem {
 
 crate::impl_standalone_debug!(GridleeSystem);
 
+impl Saveable for GridleeSystem {
+    fn save_state(&self, w: &mut StateWriter) {
+        self.cpu.save_state(w);
+        w.write_bytes(self.map.region_data(Region::Ram));
+        w.write_bytes(self.map.region_data(Region::VideoRam));
+        w.write_bytes(self.map.region_data(Region::Nvram));
+        w.write_u8(self.palette_bank);
+        w.write_bytes(&self.palette_bank_per_scanline);
+        w.write_u8(self.fire_buttons);
+        w.write_u8(self.coin_start);
+        w.write_bool(self.cocktail_flip);
+        w.write_bool(self.track_u_pressed);
+        w.write_bool(self.track_d_pressed);
+        w.write_bool(self.track_l_pressed);
+        w.write_bool(self.track_r_pressed);
+        w.write_bytes(&self.last_analog_input);
+        w.write_bytes(&self.last_analog_output);
+        w.write_bytes(&self.trackball_pos);
+        w.write_bytes(&self.sound_data);
+        w.write_u64_le(self.tone_step);
+        w.write_u64_le(self.tone_fraction);
+        w.write_u8(self.tone_volume);
+        self.audio_clock.save_state(w);
+        w.write_bool(self.irq_pending);
+        w.write_bool(self.firq_pending);
+        w.write_u64_le(self.clock);
+        w.write_u64_le(self.cpu_cycles);
+        w.write_u8(self.watchdog_frame_count);
+    }
+
+    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        self.cpu.load_state(r)?;
+        r.read_bytes_into(self.map.region_data_mut(Region::Ram))?;
+        r.read_bytes_into(self.map.region_data_mut(Region::VideoRam))?;
+        r.read_bytes_into(self.map.region_data_mut(Region::Nvram))?;
+        self.palette_bank = r.read_u8()?;
+        r.read_bytes_into(&mut self.palette_bank_per_scanline)?;
+        self.fire_buttons = r.read_u8()?;
+        self.coin_start = r.read_u8()?;
+        self.cocktail_flip = r.read_bool()?;
+        self.track_u_pressed = r.read_bool()?;
+        self.track_d_pressed = r.read_bool()?;
+        self.track_l_pressed = r.read_bool()?;
+        self.track_r_pressed = r.read_bool()?;
+        r.read_bytes_into(&mut self.last_analog_input)?;
+        r.read_bytes_into(&mut self.last_analog_output)?;
+        r.read_bytes_into(&mut self.trackball_pos)?;
+        r.read_bytes_into(&mut self.sound_data)?;
+        self.tone_step = r.read_u64_le()?;
+        self.tone_fraction = r.read_u64_le()?;
+        self.tone_volume = r.read_u8()?;
+        self.audio_clock.load_state(r)?;
+        self.irq_pending = r.read_bool()?;
+        self.firq_pending = r.read_bool()?;
+        self.clock = r.read_u64_le()?;
+        self.cpu_cycles = r.read_u64_le()?;
+        self.watchdog_frame_count = r.read_u8()?;
+        Ok(())
+    }
+}
+
 impl Machine for GridleeSystem {
     fn run_frame(&mut self) {
         for _ in 0..TIMING.cycles_per_frame() {
@@ -946,66 +1007,12 @@ impl Machine for GridleeSystem {
     }
 
     fn save_state(&self) -> Option<Vec<u8>> {
-        let mut w = StateWriter::new();
-        save_state::write_header(&mut w, self.machine_id());
-        self.cpu.save_state(&mut w);
-        w.write_bytes(self.map.region_data(Region::Ram));
-        w.write_bytes(self.map.region_data(Region::VideoRam));
-        w.write_bytes(self.map.region_data(Region::Nvram));
-        w.write_u8(self.palette_bank);
-        w.write_bytes(&self.palette_bank_per_scanline);
-        w.write_u8(self.fire_buttons);
-        w.write_u8(self.coin_start);
-        w.write_bool(self.cocktail_flip);
-        w.write_bool(self.track_u_pressed);
-        w.write_bool(self.track_d_pressed);
-        w.write_bool(self.track_l_pressed);
-        w.write_bool(self.track_r_pressed);
-        w.write_bytes(&self.last_analog_input);
-        w.write_bytes(&self.last_analog_output);
-        w.write_bytes(&self.trackball_pos);
-        w.write_bytes(&self.sound_data);
-        w.write_u64_le(self.tone_step);
-        w.write_u64_le(self.tone_fraction);
-        w.write_u8(self.tone_volume);
-        self.audio_clock.save_state(&mut w);
-        w.write_bool(self.irq_pending);
-        w.write_bool(self.firq_pending);
-        w.write_u64_le(self.clock);
-        w.write_u64_le(self.cpu_cycles);
-        w.write_u8(self.watchdog_frame_count);
-        Some(w.into_vec())
+        Some(save_state::save_machine(self, self.machine_id()))
     }
 
     fn load_state(&mut self, data: &[u8]) -> Result<(), SaveError> {
-        let mut r = save_state::read_header(data, self.machine_id())?;
-        self.cpu.load_state(&mut r)?;
-        r.read_bytes_into(self.map.region_data_mut(Region::Ram))?;
-        r.read_bytes_into(self.map.region_data_mut(Region::VideoRam))?;
-        r.read_bytes_into(self.map.region_data_mut(Region::Nvram))?;
-        self.palette_bank = r.read_u8()?;
-        r.read_bytes_into(&mut self.palette_bank_per_scanline)?;
-        self.fire_buttons = r.read_u8()?;
-        self.coin_start = r.read_u8()?;
-        self.cocktail_flip = r.read_bool()?;
-        self.track_u_pressed = r.read_bool()?;
-        self.track_d_pressed = r.read_bool()?;
-        self.track_l_pressed = r.read_bool()?;
-        self.track_r_pressed = r.read_bool()?;
-        r.read_bytes_into(&mut self.last_analog_input)?;
-        r.read_bytes_into(&mut self.last_analog_output)?;
-        r.read_bytes_into(&mut self.trackball_pos)?;
-        r.read_bytes_into(&mut self.sound_data)?;
-        self.tone_step = r.read_u64_le()?;
-        self.tone_fraction = r.read_u64_le()?;
-        self.tone_volume = r.read_u8()?;
-        self.audio_clock.load_state(&mut r)?;
-        self.irq_pending = r.read_bool()?;
-        self.firq_pending = r.read_bool()?;
-        self.clock = r.read_u64_le()?;
-        self.cpu_cycles = r.read_u64_le()?;
-        self.watchdog_frame_count = r.read_u8()?;
-        Ok(())
+        let id = self.machine_id().to_string();
+        save_state::load_machine(self, &id, data)
     }
 }
 
@@ -1623,7 +1630,7 @@ mod tests {
         sys.watchdog_frame_count = 3;
 
         // Save
-        let data = sys.save_state().expect("save_state should return Some");
+        let data = Machine::save_state(&sys).expect("save_state should return Some");
         let cpu_snap = sys.cpu.snapshot();
 
         // Mutate everything
@@ -1632,7 +1639,7 @@ mod tests {
         sys2.clock = 999;
 
         // Load
-        sys2.load_state(&data).unwrap();
+        Machine::load_state(&mut sys2, &data).unwrap();
 
         // Verify
         assert_eq!(sys2.cpu.snapshot(), cpu_snap);
@@ -1663,14 +1670,14 @@ mod tests {
     #[test]
     fn save_load_machine_id_validated() {
         let sys = make_system();
-        let data = sys.save_state().unwrap();
+        let data = Machine::save_state(&sys).unwrap();
 
         let mut bad = data.clone();
         let id_offset = 4 + 4 + 4;
         bad[id_offset..id_offset + 7].copy_from_slice(b"xxxxxxx");
 
         let mut sys2 = make_system();
-        let result = sys2.load_state(&bad);
+        let result = Machine::load_state(&mut sys2, &bad);
         assert!(result.is_err(), "should reject mismatched machine ID");
     }
 
@@ -1680,10 +1687,10 @@ mod tests {
         sys.map.region_data_mut(Region::Rom)[0] = 0xDE;
         sys.gfx_rom[0] = 0xAD;
 
-        let data = sys.save_state().unwrap();
+        let data = Machine::save_state(&sys).unwrap();
 
         let mut sys2 = make_system();
-        sys2.load_state(&data).unwrap();
+        Machine::load_state(&mut sys2, &data).unwrap();
 
         assert_eq!(sys2.map.region_data_mut(Region::Rom)[0], 0x00);
         assert_eq!(sys2.gfx_rom[0], 0x00);

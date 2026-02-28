@@ -4,7 +4,7 @@ use phosphor_core::core::machine::{
     AnalogInput, AudioSource, InputButton, InputReceiver, Machine, Renderable,
 };
 use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
-use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
+use phosphor_core::core::save_state::{self, SaveError, Saveable, StateReader, StateWriter};
 use phosphor_core::core::{Bus, BusMaster, TimingConfig};
 use phosphor_core::cpu::m6502::M6502;
 use phosphor_core::cpu::state::M6502State;
@@ -812,6 +812,59 @@ impl InputReceiver for MissileCommandSystem {
 
 crate::impl_standalone_debug!(MissileCommandSystem);
 
+impl Saveable for MissileCommandSystem {
+    fn save_state(&self, w: &mut StateWriter) {
+        self.cpu.save_state(w);
+        self.pokey.save_state(w);
+        w.write_bytes(self.map.region_data(Region::Ram));
+        w.write_u8(self.in0);
+        w.write_u8(self.in1);
+        w.write_bool(self.ctrld);
+        w.write_bytes(&self.palette);
+        w.write_u8(self.trackball_x);
+        w.write_u8(self.trackball_y);
+        w.write_bool(self.trackball_l_pressed);
+        w.write_bool(self.trackball_r_pressed);
+        w.write_bool(self.trackball_u_pressed);
+        w.write_bool(self.trackball_d_pressed);
+        w.write_i32_le(self.mouse_accum_x);
+        w.write_i32_le(self.mouse_accum_y);
+        w.write_bool(self.irq_state);
+        w.write_u64_le(self.madsel_lastcycles);
+        w.write_u8(self.stall_cycles);
+        w.write_u64_le(self.clock);
+        w.write_u64_le(self.cpu_cycles);
+        w.write_u8(self.watchdog_frame_count);
+    }
+
+    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        self.cpu.load_state(r)?;
+        self.pokey.load_state(r)?;
+        r.read_bytes_into(self.map.region_data_mut(Region::Ram))?;
+        self.in0 = r.read_u8()?;
+        self.in1 = r.read_u8()?;
+        self.ctrld = r.read_bool()?;
+        r.read_bytes_into(&mut self.palette)?;
+        self.trackball_x = r.read_u8()?;
+        self.trackball_y = r.read_u8()?;
+        self.trackball_l_pressed = r.read_bool()?;
+        self.trackball_r_pressed = r.read_bool()?;
+        self.trackball_u_pressed = r.read_bool()?;
+        self.trackball_d_pressed = r.read_bool()?;
+        self.mouse_accum_x = r.read_i32_le()?;
+        self.mouse_accum_y = r.read_i32_le()?;
+        self.irq_state = r.read_bool()?;
+        self.madsel_lastcycles = r.read_u64_le()?;
+        self.stall_cycles = r.read_u8()?;
+        self.clock = r.read_u64_le()?;
+        self.cpu_cycles = r.read_u64_le()?;
+        self.watchdog_frame_count = r.read_u8()?;
+        self.scanline_buffer_valid = false;
+        self.audio_buffer.clear();
+        Ok(())
+    }
+}
+
 impl Machine for MissileCommandSystem {
     fn run_frame(&mut self) {
         for _ in 0..TIMING.cycles_per_frame() {
@@ -857,58 +910,12 @@ impl Machine for MissileCommandSystem {
     }
 
     fn save_state(&self) -> Option<Vec<u8>> {
-        let mut w = StateWriter::new();
-        save_state::write_header(&mut w, self.machine_id());
-        self.cpu.save_state(&mut w);
-        self.pokey.save_state(&mut w);
-        w.write_bytes(self.map.region_data(Region::Ram));
-        w.write_u8(self.in0);
-        w.write_u8(self.in1);
-        w.write_bool(self.ctrld);
-        w.write_bytes(&self.palette);
-        w.write_u8(self.trackball_x);
-        w.write_u8(self.trackball_y);
-        w.write_bool(self.trackball_l_pressed);
-        w.write_bool(self.trackball_r_pressed);
-        w.write_bool(self.trackball_u_pressed);
-        w.write_bool(self.trackball_d_pressed);
-        w.write_i32_le(self.mouse_accum_x);
-        w.write_i32_le(self.mouse_accum_y);
-        w.write_bool(self.irq_state);
-        w.write_u64_le(self.madsel_lastcycles);
-        w.write_u8(self.stall_cycles);
-        w.write_u64_le(self.clock);
-        w.write_u64_le(self.cpu_cycles);
-        w.write_u8(self.watchdog_frame_count);
-        Some(w.into_vec())
+        Some(save_state::save_machine(self, self.machine_id()))
     }
 
     fn load_state(&mut self, data: &[u8]) -> Result<(), SaveError> {
-        let mut r = save_state::read_header(data, self.machine_id())?;
-        self.cpu.load_state(&mut r)?;
-        self.pokey.load_state(&mut r)?;
-        r.read_bytes_into(self.map.region_data_mut(Region::Ram))?;
-        self.in0 = r.read_u8()?;
-        self.in1 = r.read_u8()?;
-        self.ctrld = r.read_bool()?;
-        r.read_bytes_into(&mut self.palette)?;
-        self.trackball_x = r.read_u8()?;
-        self.trackball_y = r.read_u8()?;
-        self.trackball_l_pressed = r.read_bool()?;
-        self.trackball_r_pressed = r.read_bool()?;
-        self.trackball_u_pressed = r.read_bool()?;
-        self.trackball_d_pressed = r.read_bool()?;
-        self.mouse_accum_x = r.read_i32_le()?;
-        self.mouse_accum_y = r.read_i32_le()?;
-        self.irq_state = r.read_bool()?;
-        self.madsel_lastcycles = r.read_u64_le()?;
-        self.stall_cycles = r.read_u8()?;
-        self.clock = r.read_u64_le()?;
-        self.cpu_cycles = r.read_u64_le()?;
-        self.watchdog_frame_count = r.read_u8()?;
-        self.scanline_buffer_valid = false;
-        self.audio_buffer.clear();
-        Ok(())
+        let id = self.machine_id().to_string();
+        save_state::load_machine(self, &id, data)
     }
 }
 
@@ -958,7 +965,7 @@ mod tests {
         sys.watchdog_frame_count = 5;
 
         // Save
-        let data = sys.save_state().expect("save_state should return Some");
+        let data = Machine::save_state(&sys).expect("save_state should return Some");
         let cpu_snap = sys.cpu.snapshot();
 
         // Mutate everything
@@ -967,7 +974,7 @@ mod tests {
         sys2.clock = 999;
 
         // Load
-        sys2.load_state(&data).unwrap();
+        Machine::load_state(&mut sys2, &data).unwrap();
 
         // Verify
         assert_eq!(sys2.cpu.snapshot(), cpu_snap);
@@ -994,14 +1001,14 @@ mod tests {
     #[test]
     fn save_load_machine_id_validated() {
         let sys = MissileCommandSystem::new();
-        let data = sys.save_state().unwrap();
+        let data = Machine::save_state(&sys).unwrap();
 
         let mut bad = data.clone();
         let id_offset = 4 + 4 + 4;
         bad[id_offset..id_offset + 15].copy_from_slice(b"xxxxxxxxxxxxxxx");
 
         let mut sys2 = MissileCommandSystem::new();
-        let result = sys2.load_state(&bad);
+        let result = Machine::load_state(&mut sys2, &bad);
         assert!(result.is_err(), "should reject mismatched machine ID");
     }
 
@@ -1010,10 +1017,10 @@ mod tests {
         let mut sys = MissileCommandSystem::new();
         sys.map.region_data_mut(Region::Rom)[0] = 0xDE;
 
-        let data = sys.save_state().unwrap();
+        let data = Machine::save_state(&sys).unwrap();
 
         let mut sys2 = MissileCommandSystem::new();
-        sys2.load_state(&data).unwrap();
+        Machine::load_state(&mut sys2, &data).unwrap();
 
         assert_eq!(sys2.map.region_data_mut(Region::Rom)[0], 0x00);
     }

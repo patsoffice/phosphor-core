@@ -3,9 +3,10 @@ use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::machine::{
     AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
 };
-use phosphor_core::core::save_state::{self, SaveError, StateWriter};
+use phosphor_core::core::save_state::{self, SaveError};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::Cpu;
+use phosphor_macros::Saveable;
 
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
@@ -199,6 +200,7 @@ const ROBOTRON_INPUT_MAP: &[InputButton] = &[
 /// Twin-stick controls: move stick on Widget PIA Port A bits 0-3,
 /// fire stick split across Port A bits 6-7 (up/down) and Port B bits 0-1 (left/right).
 /// No LS157 mux — all inputs directly wired.
+#[derive(Saveable)]
 pub struct RobotronSystem {
     pub board: WilliamsBoard,
 
@@ -395,20 +397,12 @@ impl Machine for RobotronSystem {
     }
 
     fn save_state(&self) -> Option<Vec<u8>> {
-        let mut w = StateWriter::new();
-        save_state::write_header(&mut w, self.machine_id());
-        self.board.save_board_state(&mut w);
-        w.write_u8(self.widget_port_a);
-        w.write_u8(self.widget_port_b);
-        Some(w.into_vec())
+        Some(save_state::save_machine(self, self.machine_id()))
     }
 
     fn load_state(&mut self, data: &[u8]) -> Result<(), SaveError> {
-        let mut r = save_state::read_header(data, self.machine_id())?;
-        self.board.load_board_state(&mut r)?;
-        self.widget_port_a = r.read_u8()?;
-        self.widget_port_b = r.read_u8()?;
-        Ok(())
+        let id = self.machine_id().to_string();
+        save_state::load_machine(self, &id, data)
     }
 }
 

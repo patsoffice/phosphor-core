@@ -529,12 +529,10 @@ impl NamcoGalagaBoard {
         }
         mask
     }
+}
 
-    // -----------------------------------------------------------------------
-    // Save / Load state
-    // -----------------------------------------------------------------------
-
-    pub(crate) fn save_board_state(&self, w: &mut StateWriter) {
+impl Saveable for NamcoGalagaBoard {
+    fn save_state(&self, w: &mut StateWriter) {
         // CPUs
         self.main_cpu.save_state(w);
         self.sub_cpu.save_state(w);
@@ -568,7 +566,7 @@ impl NamcoGalagaBoard {
         w.write_u32_le(self.watchdog_counter);
     }
 
-    pub(crate) fn load_board_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
         // CPUs
         self.main_cpu.load_state(r)?;
         self.sub_cpu.load_state(r)?;

@@ -3,9 +3,10 @@ use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::machine::{
     AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
 };
-use phosphor_core::core::save_state::{self, SaveError, StateWriter};
+use phosphor_core::core::save_state::{self, SaveError};
 use phosphor_core::core::{Bus, BusMaster};
-use phosphor_core::cpu::Cpu; // for .reset()
+use phosphor_core::cpu::Cpu;
+use phosphor_macros::Saveable;
 
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
@@ -215,6 +216,7 @@ const DKONGJR_INPUT_MAP: &[InputButton] = &[
 /// - Sound CPU MOVX reads sound latch directly (5 bits, no tune ROM banking)
 /// - P2 virtual port: bit 6 from ls259.4h, bit 4 from dev_6h bit 6, XOR 0x70
 /// - ls259.4h latch at 0x7C80-0x7C87 for sound/gfx control
+#[derive(Saveable)]
 pub struct DkongJrSystem {
     pub board: Tkg04Board,
 }
@@ -570,16 +572,12 @@ impl Machine for DkongJrSystem {
     }
 
     fn save_state(&self) -> Option<Vec<u8>> {
-        let mut w = StateWriter::new();
-        save_state::write_header(&mut w, self.machine_id());
-        self.board.save_board_state(&mut w);
-        Some(w.into_vec())
+        Some(save_state::save_machine(self, self.machine_id()))
     }
 
     fn load_state(&mut self, data: &[u8]) -> Result<(), SaveError> {
-        let mut r = save_state::read_header(data, self.machine_id())?;
-        self.board.load_board_state(&mut r)?;
-        Ok(())
+        let id = self.machine_id().to_string();
+        save_state::load_machine(self, &id, data)
     }
 }
 

@@ -4,11 +4,12 @@ use phosphor_core::core::machine::{
     AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
 };
 use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
-use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
+use phosphor_core::core::save_state::{self, SaveError};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::Cpu;
 use phosphor_core::device::dvg::VectorLine;
 use phosphor_core::device::pokey::Pokey;
+use phosphor_macros::Saveable;
 
 use crate::atari_dvg::{self, AtariDvgBoard, Region};
 use crate::registry::MachineEntry;
@@ -142,6 +143,7 @@ const ASTDELUX_INPUT_MAP: &[InputButton] = &[
 ///   0x4000–0x47FF  Vector RAM (2 KB, shared CPU/DVG)
 ///   0x4800–0x57FF  Vector ROM (4 KB)
 ///   0x6000–0x7FFF  Program ROM (8 KB)
+#[derive(Saveable)]
 pub struct AsteroidsDeluxeSystem {
     pub board: AtariDvgBoard,
 
@@ -152,6 +154,7 @@ pub struct AsteroidsDeluxeSystem {
     in0: u8,
     in1: u8,
     /// DIP switches (R5): default 0x00 (English, 2-4 ships, easy, 10K bonus).
+    #[save_skip]
     dip_switches: u8,
 
     // EAROM (ER2055): 64-byte non-volatile RAM for high scores
@@ -161,6 +164,7 @@ pub struct AsteroidsDeluxeSystem {
     earom_last_clock: bool,
 
     // Audio buffer from POKEY
+    #[save_skip(default)]
     audio_buffer: Vec<i16>,
 }
 
@@ -480,31 +484,12 @@ impl Machine for AsteroidsDeluxeSystem {
     }
 
     fn save_state(&self) -> Option<Vec<u8>> {
-        let mut w = StateWriter::new();
-        save_state::write_header(&mut w, self.machine_id());
-        self.board.save_board_state(&mut w);
-        self.pokey.save_state(&mut w);
-        w.write_u8(self.in0);
-        w.write_u8(self.in1);
-        w.write_bytes(&self.earom);
-        w.write_u8(self.earom_write_addr);
-        w.write_u8(self.earom_write_data);
-        w.write_bool(self.earom_last_clock);
-        Some(w.into_vec())
+        Some(save_state::save_machine(self, self.machine_id()))
     }
 
     fn load_state(&mut self, data: &[u8]) -> Result<(), SaveError> {
-        let mut r = save_state::read_header(data, self.machine_id())?;
-        self.board.load_board_state(&mut r)?;
-        self.pokey.load_state(&mut r)?;
-        self.in0 = r.read_u8()?;
-        self.in1 = r.read_u8()?;
-        r.read_bytes_into(&mut self.earom)?;
-        self.earom_write_addr = r.read_u8()?;
-        self.earom_write_data = r.read_u8()?;
-        self.earom_last_clock = r.read_bool()?;
-        self.audio_buffer.clear();
-        Ok(())
+        let id = self.machine_id().to_string();
+        save_state::load_machine(self, &id, data)
     }
 }
 

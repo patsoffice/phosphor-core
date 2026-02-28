@@ -1,9 +1,10 @@
 use phosphor_core::bus_split;
 use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::machine::{AudioSource, InputReceiver, Machine, MachineDebug, Renderable};
-use phosphor_core::core::save_state::{self, SaveError, StateWriter};
+use phosphor_core::core::save_state::{self, SaveError};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::Cpu;
+use phosphor_macros::Saveable;
 
 use crate::namco_pac::{self, NamcoPacBoard};
 use crate::registry::MachineEntry;
@@ -102,6 +103,7 @@ pub static PACMAN_SOUND_PROM: RomRegion = RomRegion {
 /// Hardware: Zilog Z80 @ 3.072 MHz, Namco WSG 3-voice wavetable sound.
 /// Video: 36×28 tile playfield + 8 sprites, 2bpp, PROM-based palette.
 /// Screen: 288×224 displayed rotated 90° CCW on vertical monitor.
+#[derive(Saveable)]
 pub struct PacmanSystem {
     pub board: NamcoPacBoard,
 }
@@ -268,16 +270,12 @@ impl Machine for PacmanSystem {
     }
 
     fn save_state(&self) -> Option<Vec<u8>> {
-        let mut w = StateWriter::new();
-        save_state::write_header(&mut w, self.machine_id());
-        self.board.save_board_state(&mut w);
-        Some(w.into_vec())
+        Some(save_state::save_machine(self, self.machine_id()))
     }
 
     fn load_state(&mut self, data: &[u8]) -> Result<(), SaveError> {
-        let mut r = save_state::read_header(data, self.machine_id())?;
-        self.board.load_board_state(&mut r)?;
-        Ok(())
+        let id = self.machine_id().to_string();
+        save_state::load_machine(self, &id, data)
     }
 }
 

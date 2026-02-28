@@ -15,4 +15,4 @@ pub use machine::{
     TimingConfig,
 };
 pub use memory_map::{MemoryMap, WatchpointHit, WatchpointKind};
-pub use save_state::{SaveError, Saveable, StateReader, StateWriter};
+pub use save_state::{SaveError, Saveable, StateReader, StateWriter, load_machine, save_machine};

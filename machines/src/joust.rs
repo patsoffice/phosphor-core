@@ -3,9 +3,10 @@ use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::machine::{
     AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
 };
-use phosphor_core::core::save_state::{self, SaveError, StateWriter};
+use phosphor_core::core::save_state::{self, SaveError};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::Cpu;
+use phosphor_macros::Saveable;
 
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
@@ -176,6 +177,7 @@ const JOUST_INPUT_MAP: &[InputButton] = &[
 ///
 /// Adds the LS157 mux for player input multiplexing (CB2 selects P1 vs P2)
 /// and Joust-specific ROM definitions.
+#[derive(Saveable)]
 pub struct JoustSystem {
     pub board: WilliamsBoard,
 
@@ -394,22 +396,12 @@ impl Machine for JoustSystem {
     }
 
     fn save_state(&self) -> Option<Vec<u8>> {
-        let mut w = StateWriter::new();
-        save_state::write_header(&mut w, self.machine_id());
-        self.board.save_board_state(&mut w);
-        w.write_u8(self.p1_controls);
-        w.write_u8(self.p2_controls);
-        w.write_u8(self.start_bits);
-        Some(w.into_vec())
+        Some(save_state::save_machine(self, self.machine_id()))
     }
 
     fn load_state(&mut self, data: &[u8]) -> Result<(), SaveError> {
-        let mut r = save_state::read_header(data, self.machine_id())?;
-        self.board.load_board_state(&mut r)?;
-        self.p1_controls = r.read_u8()?;
-        self.p2_controls = r.read_u8()?;
-        self.start_bits = r.read_u8()?;
-        Ok(())
+        let id = self.machine_id().to_string();
+        save_state::load_machine(self, &id, data)
     }
 }
 

@@ -86,6 +86,8 @@
 /// 7. **Mixing**: all four channels are summed and normalized.
 /// 8. **Resampling**: a Bresenham accumulator downsamples the 1.79 MHz
 ///    mixed output to the host audio sample rate using box-filter averaging.
+#[derive(phosphor_macros::Saveable)]
+#[save_version(1)]
 pub struct Pokey {
     resampler: crate::audio::AudioResamplerF32,
     // Audio channel registers (CPU-written)
@@ -757,124 +759,4 @@ impl Default for Pokey {
     }
 }
 
-use crate::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
-
-impl Saveable for Pokey {
-    fn save_state(&self, w: &mut StateWriter) {
-        w.write_version(1);
-        // Audio channel registers
-        for &v in &self.audf {
-            w.write_u8(v);
-        }
-        for &v in &self.audc {
-            w.write_u8(v);
-        }
-        w.write_u8(self.audctl);
-
-        // Audio channel runtime state
-        for &v in &self.divider {
-            w.write_u16_le(v);
-        }
-        for &v in &self.div_out {
-            w.write_bool(v);
-        }
-        for &v in &self.channel_out {
-            w.write_bool(v);
-        }
-        for &v in &self.hp_ff {
-            w.write_bool(v);
-        }
-
-        // Polynomial counters
-        w.write_u8(self.poly4);
-        w.write_u8(self.poly5);
-        w.write_u16_le(self.poly9);
-        w.write_u32_le(self.poly17);
-
-        // Base clock dividers
-        w.write_u8(self.base_div28);
-        w.write_u8(self.base_div114);
-
-        // Pot state
-        for &v in &self.pot_input {
-            w.write_u8(v);
-        }
-        for &v in &self.pot_counter {
-            w.write_u8(v);
-        }
-        w.write_u8(self.pot_done);
-        w.write_bool(self.pot_scanning);
-        w.write_u8(self.pot_scan_count);
-
-        // Keyboard / serial
-        w.write_u8(self.kbcode);
-        w.write_u8(self.serin);
-        w.write_u8(self.serout);
-        w.write_u8(self.skctl);
-        w.write_u8(self.skstat);
-
-        // IRQ state
-        w.write_u8(self.irqen);
-        w.write_u8(self.irqst);
-
-        // Resampling state
-        self.resampler.save_state(w);
-        w.write_u32_le(self.master_clock_hz);
-    }
-
-    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
-        r.read_version(1)?;
-        for v in &mut self.audf {
-            *v = r.read_u8()?;
-        }
-        for v in &mut self.audc {
-            *v = r.read_u8()?;
-        }
-        self.audctl = r.read_u8()?;
-
-        for v in &mut self.divider {
-            *v = r.read_u16_le()?;
-        }
-        for v in &mut self.div_out {
-            *v = r.read_bool()?;
-        }
-        for v in &mut self.channel_out {
-            *v = r.read_bool()?;
-        }
-        for v in &mut self.hp_ff {
-            *v = r.read_bool()?;
-        }
-
-        self.poly4 = r.read_u8()?;
-        self.poly5 = r.read_u8()?;
-        self.poly9 = r.read_u16_le()?;
-        self.poly17 = r.read_u32_le()?;
-
-        self.base_div28 = r.read_u8()?;
-        self.base_div114 = r.read_u8()?;
-
-        for v in &mut self.pot_input {
-            *v = r.read_u8()?;
-        }
-        for v in &mut self.pot_counter {
-            *v = r.read_u8()?;
-        }
-        self.pot_done = r.read_u8()?;
-        self.pot_scanning = r.read_bool()?;
-        self.pot_scan_count = r.read_u8()?;
-
-        self.kbcode = r.read_u8()?;
-        self.serin = r.read_u8()?;
-        self.serout = r.read_u8()?;
-        self.skctl = r.read_u8()?;
-        self.skstat = r.read_u8()?;
-
-        self.irqen = r.read_u8()?;
-        self.irqst = r.read_u8()?;
-
-        self.resampler.load_state(r)?;
-        self.master_clock_hz = r.read_u32_le()?;
-
-        Ok(())
-    }
-}
+// Save state support: derived via #[derive(Saveable)] on the struct.

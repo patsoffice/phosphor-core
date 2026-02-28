@@ -35,7 +35,7 @@ impl std::fmt::Display for SaveError {
 pub const SAVE_MAGIC: &[u8; 4] = b"PHOS";
 
 /// Current save-state format version.
-pub const SAVE_VERSION: u32 = 2;
+pub const SAVE_VERSION: u32 = 3;
 
 // -- Saveable trait ----------------------------------------------------------
 
@@ -72,6 +72,10 @@ impl StateWriter {
     }
 
     pub fn write_u64_le(&mut self, v: u64) {
+        self.data.extend_from_slice(&v.to_le_bytes());
+    }
+
+    pub fn write_i16_le(&mut self, v: i16) {
         self.data.extend_from_slice(&v.to_le_bytes());
     }
 
@@ -161,6 +165,11 @@ impl<'a> StateReader<'a> {
         Ok(u64::from_le_bytes([
             b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
         ]))
+    }
+
+    pub fn read_i16_le(&mut self) -> Result<i16, SaveError> {
+        let b = self.take(2)?;
+        Ok(i16::from_le_bytes([b[0], b[1]]))
     }
 
     pub fn read_i32_le(&mut self) -> Result<i32, SaveError> {
@@ -267,6 +276,24 @@ pub fn read_header<'a>(data: &'a [u8], expected_id: &str) -> Result<StateReader<
     Ok(r)
 }
 
+/// Serialize a `Saveable` struct with the standard machine header.
+pub fn save_machine(saveable: &impl Saveable, machine_id: &str) -> Vec<u8> {
+    let mut w = StateWriter::new();
+    write_header(&mut w, machine_id);
+    saveable.save_state(&mut w);
+    w.into_vec()
+}
+
+/// Deserialize a `Saveable` struct, validating the machine header first.
+pub fn load_machine(
+    saveable: &mut impl Saveable,
+    machine_id: &str,
+    data: &[u8],
+) -> Result<(), SaveError> {
+    let mut r = read_header(data, machine_id)?;
+    saveable.load_state(&mut r)
+}
+
 // -- Tests -------------------------------------------------------------------
 
 #[cfg(test)]
@@ -280,6 +307,7 @@ mod tests {
         w.write_u16_le(0x1234);
         w.write_u32_le(0xDEAD_BEEF);
         w.write_u64_le(0x0102_0304_0506_0708);
+        w.write_i16_le(-1234);
         w.write_i64_le(-42);
         w.write_f32_le(std::f32::consts::PI);
         w.write_f64_le(std::f64::consts::E);
@@ -294,6 +322,7 @@ mod tests {
         assert_eq!(r.read_u16_le().unwrap(), 0x1234);
         assert_eq!(r.read_u32_le().unwrap(), 0xDEAD_BEEF);
         assert_eq!(r.read_u64_le().unwrap(), 0x0102_0304_0506_0708);
+        assert_eq!(r.read_i16_le().unwrap(), -1234);
         assert_eq!(r.read_i64_le().unwrap(), -42);
         assert!((r.read_f32_le().unwrap() - std::f32::consts::PI).abs() < f32::EPSILON);
         assert!((r.read_f64_le().unwrap() - std::f64::consts::E).abs() < f64::EPSILON);

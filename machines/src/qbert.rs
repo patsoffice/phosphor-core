@@ -8,9 +8,10 @@ use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::machine::{
     AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
 };
-use phosphor_core::core::save_state::{self, SaveError, StateWriter};
+use phosphor_core::core::save_state::{self, SaveError};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::Cpu;
+use phosphor_macros::Saveable;
 
 use crate::gottlieb::{self, GottliebBoard};
 use crate::registry::MachineEntry;
@@ -175,6 +176,7 @@ const QBERT_INPUT_MAP: &[InputButton] = &[
 ///
 /// Wraps `GottliebBoard` with Q*Bert-specific ROM loading, input mapping,
 /// and `Bus<Address = u32>` implementation for the I8088 main CPU.
+#[derive(Saveable)]
 pub struct QbertSystem {
     pub board: GottliebBoard,
 }
@@ -453,16 +455,12 @@ impl Machine for QbertSystem {
     }
 
     fn save_state(&self) -> Option<Vec<u8>> {
-        let mut w = StateWriter::new();
-        save_state::write_header(&mut w, self.machine_id());
-        self.board.save_board_state(&mut w);
-        Some(w.into_vec())
+        Some(save_state::save_machine(self, self.machine_id()))
     }
 
     fn load_state(&mut self, data: &[u8]) -> Result<(), SaveError> {
-        let mut r = save_state::read_header(data, self.machine_id())?;
-        self.board.load_board_state(&mut r)?;
-        Ok(())
+        let id = self.machine_id().to_string();
+        save_state::load_machine(self, &id, data)
     }
 }
 

@@ -1,9 +1,10 @@
 use phosphor_core::bus_split;
 use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::machine::{AudioSource, InputReceiver, Machine, MachineDebug, Renderable};
-use phosphor_core::core::save_state::{self, SaveError, StateWriter};
+use phosphor_core::core::save_state::{self, SaveError};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::Cpu;
+use phosphor_macros::Saveable;
 
 use crate::namco_pac::{self, NamcoPacBoard};
 use crate::registry::MachineEntry;
@@ -111,6 +112,7 @@ const DECODE_ENABLE_TRAP: u16 = 0x3FF8;
 /// Pac-Man base hardware with auxiliary daughter card containing three encrypted
 /// ROMs (U5, U6, U7) and decode latch copy protection. The daughter card patches
 /// the base Pac-Man code with new maze layouts, character graphics, and intermissions.
+#[derive(Saveable)]
 pub struct MsPacmanSystem {
     pub board: NamcoPacBoard,
 
@@ -119,9 +121,11 @@ pub struct MsPacmanSystem {
     decode_enabled: bool,
 
     /// Fully decoded Ms. Pac-Man ROM (64KB: patched Pac-Man base + auxiliary code).
+    #[save_skip]
     decoded_rom: Vec<u8>,
 
     /// Undecoded ROM bank (64KB: original Pac-Man code + mirrors at 0x8000).
+    #[save_skip]
     undecoded_rom: Vec<u8>,
 }
 
@@ -447,18 +451,12 @@ impl Machine for MsPacmanSystem {
     }
 
     fn save_state(&self) -> Option<Vec<u8>> {
-        let mut w = StateWriter::new();
-        save_state::write_header(&mut w, self.machine_id());
-        self.board.save_board_state(&mut w);
-        w.write_bool(self.decode_enabled);
-        Some(w.into_vec())
+        Some(save_state::save_machine(self, self.machine_id()))
     }
 
     fn load_state(&mut self, data: &[u8]) -> Result<(), SaveError> {
-        let mut r = save_state::read_header(data, self.machine_id())?;
-        self.board.load_board_state(&mut r)?;
-        self.decode_enabled = r.read_bool()?;
-        Ok(())
+        let id = self.machine_id().to_string();
+        save_state::load_machine(self, &id, data)
     }
 }
 

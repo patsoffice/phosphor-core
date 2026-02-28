@@ -4,10 +4,11 @@ use phosphor_core::core::machine::{
     AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
 };
 use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
-use phosphor_core::core::save_state::{self, SaveError, StateWriter};
+use phosphor_core::core::save_state::{self, SaveError};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::Cpu;
 use phosphor_core::device::dvg::VectorLine;
+use phosphor_macros::Saveable;
 
 use crate::atari_dvg::{self, AtariDvgBoard, Region};
 use crate::registry::MachineEntry;
@@ -141,6 +142,7 @@ const LLANDER_INPUT_MAP: &[InputButton] = &[
 ///   0x4000–0x47FF  Vector RAM (2 KB, shared CPU/DVG)
 ///   0x4800–0x5FFF  Vector ROM (6 KB)
 ///   0x6000–0x7FFF  Program ROM (8 KB)
+#[derive(Saveable)]
 pub struct LunarLanderSystem {
     pub board: AtariDvgBoard,
 
@@ -150,6 +152,7 @@ pub struct LunarLanderSystem {
     // in1: active-LOW bits 1,3 idle HIGH; others idle LOW.
     in1: u8,
     /// DIP switches (P8): default 0x80 (English, 750 fuel/coin).
+    #[save_skip]
     dip_switches: u8,
 
     // Thrust pedal: analog value 0x00–0xFE.
@@ -429,22 +432,12 @@ impl Machine for LunarLanderSystem {
     }
 
     fn save_state(&self) -> Option<Vec<u8>> {
-        let mut w = StateWriter::new();
-        save_state::write_header(&mut w, self.machine_id());
-        self.board.save_board_state(&mut w);
-        w.write_u8(self.in0);
-        w.write_u8(self.in1);
-        w.write_u8(self.thrust_value);
-        Some(w.into_vec())
+        Some(save_state::save_machine(self, self.machine_id()))
     }
 
     fn load_state(&mut self, data: &[u8]) -> Result<(), SaveError> {
-        let mut r = save_state::read_header(data, self.machine_id())?;
-        self.board.load_board_state(&mut r)?;
-        self.in0 = r.read_u8()?;
-        self.in1 = r.read_u8()?;
-        self.thrust_value = r.read_u8()?;
-        Ok(())
+        let id = self.machine_id().to_string();
+        save_state::load_machine(self, &id, data)
     }
 }
 

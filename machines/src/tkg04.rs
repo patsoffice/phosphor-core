@@ -570,12 +570,10 @@ impl Tkg04Board {
         }
         result
     }
+}
 
-    // -----------------------------------------------------------------------
-    // Save / Load state
-    // -----------------------------------------------------------------------
-
-    pub(crate) fn save_board_state(&self, w: &mut StateWriter) {
+impl Saveable for Tkg04Board {
+    fn save_state(&self, w: &mut StateWriter) {
         self.cpu.save_state(w);
         self.sound_cpu.save_state(w);
         w.write_bytes(self.main_map.region_data(MainRegion::Ram));
@@ -602,7 +600,7 @@ impl Tkg04Board {
         w.write_bool(self.vblank_nmi_pending);
     }
 
-    pub(crate) fn load_board_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
         self.cpu.load_state(r)?;
         self.sound_cpu.load_state(r)?;
         r.read_bytes_into(self.main_map.region_data_mut(MainRegion::Ram))?;
@@ -629,7 +627,9 @@ impl Tkg04Board {
         self.vblank_nmi_pending = r.read_bool()?;
         Ok(())
     }
+}
 
+impl Tkg04Board {
     /// Check interrupt state for the given bus master.
     /// Main CPU: VBlank NMI (edge-triggered, gated by nmi_mask).
     /// Sound CPU: IRQ from main CPU.

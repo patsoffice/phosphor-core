@@ -159,10 +159,10 @@ impl AtariDvgBoard {
             0
         }
     }
+}
 
-    // --- Save/Load state helpers ---
-
-    pub(crate) fn save_board_state(&self, w: &mut StateWriter) {
+impl Saveable for AtariDvgBoard {
+    fn save_state(&self, w: &mut StateWriter) {
         self.cpu.save_state(w);
         self.dvg.save_state(w);
         w.write_bytes(self.map.region_data(Region::Ram));
@@ -173,7 +173,7 @@ impl AtariDvgBoard {
         w.write_u8(self.watchdog_frame_count);
     }
 
-    pub(crate) fn load_board_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
         self.cpu.load_state(r)?;
         self.dvg.load_state(r)?;
         r.read_bytes_into(self.map.region_data_mut(Region::Ram))?;

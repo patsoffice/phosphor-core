@@ -4,10 +4,11 @@ use phosphor_core::core::machine::{
     AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
 };
 use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
-use phosphor_core::core::save_state::{self, SaveError, StateWriter};
+use phosphor_core::core::save_state::{self, SaveError};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::Cpu;
 use phosphor_core::device::dvg::VectorLine;
+use phosphor_macros::Saveable;
 
 use crate::atari_dvg::{self, AtariDvgBoard, Region};
 use crate::registry::MachineEntry;
@@ -123,6 +124,7 @@ const ASTEROIDS_INPUT_MAP: &[InputButton] = &[
 ///   0x4000–0x47FF  Vector RAM (2 KB, shared CPU/DVG)
 ///   0x5000–0x57FF  Vector ROM (2 KB)
 ///   0x6800–0x7FFF  Program ROM (6 KB)
+#[derive(Saveable)]
 pub struct AsteroidsSystem {
     pub board: AtariDvgBoard,
 
@@ -130,6 +132,7 @@ pub struct AsteroidsSystem {
     in0: u8,
     in1: u8,
     /// DIP switches: default 0x84 (English, 3 lives, 1 coin/1 credit).
+    #[save_skip]
     dip_switches: u8,
 }
 
@@ -393,20 +396,12 @@ impl Machine for AsteroidsSystem {
     }
 
     fn save_state(&self) -> Option<Vec<u8>> {
-        let mut w = StateWriter::new();
-        save_state::write_header(&mut w, self.machine_id());
-        self.board.save_board_state(&mut w);
-        w.write_u8(self.in0);
-        w.write_u8(self.in1);
-        Some(w.into_vec())
+        Some(save_state::save_machine(self, self.machine_id()))
     }
 
     fn load_state(&mut self, data: &[u8]) -> Result<(), SaveError> {
-        let mut r = save_state::read_header(data, self.machine_id())?;
-        self.board.load_board_state(&mut r)?;
-        self.in0 = r.read_u8()?;
-        self.in1 = r.read_u8()?;
-        Ok(())
+        let id = self.machine_id().to_string();
+        save_state::load_machine(self, &id, data)
     }
 }
 

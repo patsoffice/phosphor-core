@@ -27,7 +27,7 @@ use phosphor_core::device::{Mc1408Dac, Riot6532};
 use phosphor_core::gfx;
 use phosphor_core::gfx::decode::{GfxLayout, decode_gfx, decode_gfx_element};
 
-use phosphor_macros::{BusDebug, MemoryRegion};
+use phosphor_macros::{BusDebug, MemoryRegion, Saveable};
 
 // ---------------------------------------------------------------------------
 // Memory map regions
@@ -107,11 +107,14 @@ const RESISTOR_DAC: [u8; 16] = [
 /// The main board sends sound commands by writing to the RIOT's Port A
 /// through [`write_sound_command`]. The RIOT PA7 edge triggers an IRQ
 /// to wake the M6502, which reads the command and drives the DAC.
+#[derive(Saveable)]
+#[save_version(1)]
 pub(crate) struct GottliebSoundBoard {
     cpu: M6502,
     riot: Riot6532,
     dac: Mc1408Dac,
     resampler: AudioResampler,
+    #[save_skip]
     sound_rom: Vec<u8>, // 8KB (mapped at 0x6000-0x7FFF in 15-bit space)
     clock: u64,
 }
@@ -244,26 +247,7 @@ impl Bus for GottliebSoundBoard {
 // Sound board Debuggable (for BusDebug derive on GottliebBoard)
 // ---------------------------------------------------------------------------
 
-impl Saveable for GottliebSoundBoard {
-    fn save_state(&self, w: &mut StateWriter) {
-        w.write_version(1);
-        self.cpu.save_state(w);
-        self.riot.save_state(w);
-        self.dac.save_state(w);
-        self.resampler.save_state(w);
-        w.write_u64_le(self.clock);
-    }
-
-    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
-        r.read_version(1)?;
-        self.cpu.load_state(r)?;
-        self.riot.load_state(r)?;
-        self.dac.load_state(r)?;
-        self.resampler.load_state(r)?;
-        self.clock = r.read_u64_le()?;
-        Ok(())
-    }
-}
+// Save state support: derived via #[derive(Saveable)] on the struct.
 
 impl phosphor_core::device::Device for GottliebSoundBoard {
     fn name(&self) -> &'static str {
@@ -707,12 +691,10 @@ impl GottliebBoard {
             0
         }
     }
+}
 
-    // -----------------------------------------------------------------------
-    // Save / Load state
-    // -----------------------------------------------------------------------
-
-    pub(crate) fn save_board_state(&self, w: &mut StateWriter) {
+impl Saveable for GottliebBoard {
+    fn save_state(&self, w: &mut StateWriter) {
         self.cpu.save_state(w);
         self.sound.save_state(w);
         w.write_bytes(self.map.region_data(Region::Nvram));
@@ -728,7 +710,7 @@ impl GottliebBoard {
         w.write_u16_le(self.watchdog_counter);
     }
 
-    pub(crate) fn load_board_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
         self.cpu.load_state(r)?;
         self.sound.load_state(r)?;
         r.read_bytes_into(self.map.region_data_mut(Region::Nvram))?;
