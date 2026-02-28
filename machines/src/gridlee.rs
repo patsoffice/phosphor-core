@@ -5,7 +5,7 @@ use phosphor_core::core::machine::{
 };
 use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
 use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
-use phosphor_core::core::{Bus, BusMaster, ClockDivider};
+use phosphor_core::core::{Bus, BusMaster, ClockDivider, TimingConfig};
 use phosphor_core::cpu::m6809::M6809;
 use phosphor_core::cpu::state::M6809State;
 use phosphor_core::cpu::{Cpu, CpuStateTrait};
@@ -205,13 +205,13 @@ const GRIDLEE_ANALOG_MAP: &[AnalogInput] = &[
 // VTOTAL: 264 scanlines per frame
 // Active: 256x240 pixels (VBEND=16, VBSTART=256)
 // Frame rate: 1,250,000 / (80 * 264) ≈ 59.185 Hz
-const CPU_CLOCK_HZ: u64 = 1_250_000;
-const CYCLES_PER_SCANLINE: u64 = 80;
-const SCANLINES_PER_FRAME: u64 = 264;
-const CYCLES_PER_FRAME: u64 = SCANLINES_PER_FRAME * CYCLES_PER_SCANLINE; // 21120
-
-const SCREEN_WIDTH: u32 = 256;
-const SCREEN_HEIGHT: u32 = 240;
+const TIMING: TimingConfig = TimingConfig {
+    cpu_clock_hz: 1_250_000, // 20 MHz / 16
+    cycles_per_scanline: 80, // 320 pixel clocks / 4
+    total_scanlines: 264,    // VTOTAL
+    display_width: 256,
+    display_height: 240,
+};
 const VBEND: u64 = 16; // First visible scanline
 const VBSTART: u64 = 256; // First blanking scanline
 const HBSTART_CYCLE: u64 = 64; // HBLANK at pixel 256 = CPU cycle 64 (of 80)
@@ -257,7 +257,7 @@ pub struct GridleeSystem {
     // Palette: pre-computed from 3x2KB PROMs (2048 entries, RGB)
     palette_rgb: [(u8, u8, u8); 2048],
     palette_bank: u8, // Current bank (6 bits, 0-63)
-    palette_bank_per_scanline: [u8; SCANLINES_PER_FRAME as usize], // Latched per-scanline
+    palette_bank_per_scanline: [u8; TIMING.total_scanlines as usize], // Latched per-scanline
 
     // I/O — coin/start and fire buttons are ACTIVE LOW (1 = not pressed, 0 = pressed)
     fire_buttons: u8, // 0x9502: bit 0 = P1 fire, bit 1 = P2 fire (active low)
@@ -306,7 +306,7 @@ impl GridleeSystem {
             gfx_rom: [0; 0x4000],
             palette_rgb: [(0, 0, 0); 2048],
             palette_bank: 0,
-            palette_bank_per_scanline: [0; SCANLINES_PER_FRAME as usize],
+            palette_bank_per_scanline: [0; TIMING.total_scanlines as usize],
             fire_buttons: 0xFF, // Active low: all bits high = no buttons pressed
             coin_start: 0xCF,   // Active low: bits 0-3 + 6-7 high, coinage DIP bits 4-5 = 0 (1C_1C)
             dip_switches: 0x05, // 3 lives (bits 3-2=01), bonus 10000 (bits 1-0=01)
@@ -324,13 +324,16 @@ impl GridleeSystem {
             tone_fraction: 0,
             tone_volume: 0,
             audio_buffer: Vec::with_capacity(1024),
-            audio_clock: ClockDivider::new(SAMPLE_RATE as u32, CPU_CLOCK_HZ as u32),
+            audio_clock: ClockDivider::new(SAMPLE_RATE as u32, TIMING.cpu_clock_hz as u32),
             irq_pending: false,
             firq_pending: false,
             clock: 0,
             cpu_cycles: 0,
             watchdog_frame_count: 0,
-            scanline_buffer: vec![0u8; SCREEN_WIDTH as usize * SCREEN_HEIGHT as usize * 3],
+            scanline_buffer: vec![
+                0u8;
+                TIMING.display_width as usize * TIMING.display_height as usize * 3
+            ],
         }
     }
 
@@ -347,11 +350,11 @@ impl GridleeSystem {
 
     /// Current scanline (0-263).
     fn current_scanline(&self) -> u64 {
-        (self.clock % CYCLES_PER_FRAME) / CYCLES_PER_SCANLINE
+        (self.clock % TIMING.cycles_per_frame()) / TIMING.cycles_per_scanline
     }
 
     pub fn tick(&mut self) {
-        let frame_cycle = self.clock % CYCLES_PER_FRAME;
+        let frame_cycle = self.clock % TIMING.cycles_per_frame();
 
         // Trackball movement simulation: increment raw position while keys held.
         // 8 counts/frame. 21120 cycles/frame ÷ 8 ≈ 2640 cycles/count.
@@ -372,8 +375,8 @@ impl GridleeSystem {
         }
 
         // Per-scanline processing at scanline boundaries
-        if frame_cycle.is_multiple_of(CYCLES_PER_SCANLINE) {
-            let scanline = frame_cycle / CYCLES_PER_SCANLINE;
+        if frame_cycle.is_multiple_of(TIMING.cycles_per_scanline) {
+            let scanline = frame_cycle / TIMING.cycles_per_scanline;
 
             // Latch palette bank for this scanline
             self.palette_bank_per_scanline[scanline as usize] = self.palette_bank;
@@ -397,7 +400,7 @@ impl GridleeSystem {
 
         // Clear IRQ/FIRQ at HBLANK start (pixel 256 = CPU cycle 64 within scanline).
         // This gives the CPU 64 cycles to respond.
-        let cycle_in_scanline = frame_cycle % CYCLES_PER_SCANLINE;
+        let cycle_in_scanline = frame_cycle % TIMING.cycles_per_scanline;
         if cycle_in_scanline == HBSTART_CYCLE {
             self.irq_pending = false;
             self.firq_pending = false;
@@ -539,12 +542,12 @@ impl GridleeSystem {
     /// Render one visible scanline into the framebuffer.
     fn render_scanline(&mut self, scanline: usize) {
         let screen_y = scanline - VBEND as usize;
-        if screen_y >= SCREEN_HEIGHT as usize {
+        if screen_y >= TIMING.display_height as usize {
             return;
         }
 
         let palette_bank = self.palette_bank_per_scanline[scanline];
-        let row_offset = screen_y * SCREEN_WIDTH as usize * 3;
+        let row_offset = screen_y * TIMING.display_width as usize * 3;
 
         // Background: read VRAM row. Each byte = 2 pixels (upper nibble = left).
         if self.cocktail_flip {
@@ -639,7 +642,7 @@ impl GridleeSystem {
                         continue;
                     }
                     let px = (sprite_x + x_byte * 2 + dx) ^ x_xor;
-                    if px >= SCREEN_WIDTH as usize {
+                    if px >= TIMING.display_width as usize {
                         continue;
                     }
                     let color = self.resolve_color(palette_bank, idx);
@@ -798,7 +801,7 @@ impl Bus for GridleeSystem {
 
 impl Renderable for GridleeSystem {
     fn display_size(&self) -> (u32, u32) {
-        (SCREEN_WIDTH, SCREEN_HEIGHT)
+        TIMING.display_size()
     }
 
     fn render_frame(&self, buffer: &mut [u8]) {
@@ -888,7 +891,7 @@ crate::impl_standalone_debug!(GridleeSystem);
 
 impl Machine for GridleeSystem {
     fn run_frame(&mut self) {
-        for _ in 0..CYCLES_PER_FRAME {
+        for _ in 0..TIMING.cycles_per_frame() {
             self.tick();
         }
 
@@ -926,7 +929,7 @@ impl Machine for GridleeSystem {
     }
 
     fn frame_rate_hz(&self) -> f64 {
-        CPU_CLOCK_HZ as f64 / CYCLES_PER_FRAME as f64
+        TIMING.frame_rate_hz()
     }
 
     fn machine_id(&self) -> &str {
@@ -1140,7 +1143,7 @@ mod tests {
     fn vblank_inactive_during_active_display() {
         let mut sys = make_system();
         // Scanline 128 (within VBEND..VBSTART): active display
-        sys.clock = 128 * CYCLES_PER_SCANLINE;
+        sys.clock = 128 * TIMING.cycles_per_scanline;
         let status = Bus::read(&mut sys, BusMaster::Cpu(0), 0x9700);
         assert_eq!(
             status & 0x80,
@@ -1153,7 +1156,7 @@ mod tests {
     fn vblank_active_after_vbstart() {
         let mut sys = make_system();
         // Scanline 256 (>= VBSTART): in VBLANK
-        sys.clock = 256 * CYCLES_PER_SCANLINE;
+        sys.clock = 256 * TIMING.cycles_per_scanline;
         let status = Bus::read(&mut sys, BusMaster::Cpu(0), 0x9700);
         assert_ne!(status & 0x80, 0, "VBLANK should be active at scanline 256");
     }
@@ -1166,7 +1169,7 @@ mod tests {
     fn irq_not_asserted_at_scanline_0() {
         let mut sys = make_system();
         // Steady-state pattern is {64, 128, 192, 256}.
-        sys.clock = CYCLES_PER_FRAME; // Start of next frame = scanline 0
+        sys.clock = TIMING.cycles_per_frame(); // Start of next frame = scanline 0
         sys.tick();
         assert!(!sys.irq_pending, "IRQ should NOT fire at scanline 0");
     }
@@ -1174,7 +1177,7 @@ mod tests {
     #[test]
     fn irq_asserted_at_scanline_64() {
         let mut sys = make_system();
-        sys.clock = 64 * CYCLES_PER_SCANLINE;
+        sys.clock = 64 * TIMING.cycles_per_scanline;
         sys.tick();
         assert!(sys.irq_pending, "IRQ should be pending at scanline 64");
     }
@@ -1183,7 +1186,7 @@ mod tests {
     fn irq_asserted_at_scanline_256() {
         let mut sys = make_system();
         // Scanline 256 is the VBLANK IRQ
-        sys.clock = 256 * CYCLES_PER_SCANLINE;
+        sys.clock = 256 * TIMING.cycles_per_scanline;
         sys.tick();
         assert!(sys.irq_pending, "IRQ should fire at scanline 256");
     }
@@ -1191,7 +1194,7 @@ mod tests {
     #[test]
     fn firq_asserted_at_scanline_92() {
         let mut sys = make_system();
-        sys.clock = 92 * CYCLES_PER_SCANLINE;
+        sys.clock = 92 * TIMING.cycles_per_scanline;
         sys.tick();
         assert!(sys.firq_pending, "FIRQ should be pending at scanline 92");
     }
@@ -1200,11 +1203,11 @@ mod tests {
     fn irq_cleared_at_hblank() {
         let mut sys = make_system();
         // Assert IRQ at scanline 64
-        sys.clock = 64 * CYCLES_PER_SCANLINE;
+        sys.clock = 64 * TIMING.cycles_per_scanline;
         sys.tick();
         assert!(sys.irq_pending);
         // Cleared at HBSTART (CPU cycle 64 within scanline)
-        sys.clock = 64 * CYCLES_PER_SCANLINE + HBSTART_CYCLE;
+        sys.clock = 64 * TIMING.cycles_per_scanline + HBSTART_CYCLE;
         sys.tick();
         assert!(!sys.irq_pending, "IRQ should be cleared at HBLANK");
     }
@@ -1422,7 +1425,7 @@ mod tests {
 
         // Sprite should NOT appear (clipped). Check pixel at x=10.
         let screen_y = 20 - VBEND as usize;
-        let off = (screen_y * SCREEN_WIDTH as usize + 10) * 3;
+        let off = (screen_y * TIMING.display_width as usize + 10) * 3;
         // Should be background (black, since VRAM is zero → palette index 16)
         // not sprite color (255,0,0)
         assert_ne!(
@@ -1448,7 +1451,7 @@ mod tests {
 
         // Sprite SHOULD appear at x=0 on scanline 32
         let screen_y = 32 - VBEND as usize;
-        let off = (screen_y * SCREEN_WIDTH as usize) * 3;
+        let off = (screen_y * TIMING.display_width as usize) * 3;
         assert_eq!(
             (
                 sys.scanline_buffer[off],
@@ -1478,7 +1481,7 @@ mod tests {
 
         let screen_y = 32 - VBEND as usize;
         // x=0: should be background (transparent sprite pixel)
-        let off0 = (screen_y * SCREEN_WIDTH as usize) * 3;
+        let off0 = (screen_y * TIMING.display_width as usize) * 3;
         assert_eq!(
             (
                 sys.scanline_buffer[off0],
@@ -1489,7 +1492,7 @@ mod tests {
             "Sprite pixel 0 should be transparent (background shows through)"
         );
         // x=1: should be sprite color
-        let off1 = (screen_y * SCREEN_WIDTH as usize + 1) * 3;
+        let off1 = (screen_y * TIMING.display_width as usize + 1) * 3;
         assert_eq!(
             (
                 sys.scanline_buffer[off1],
@@ -1525,8 +1528,8 @@ mod tests {
         // and the nibbles swap: right nibble (0xB) becomes left pixel,
         // left nibble (0xA) becomes right pixel.
         let screen_y = 16 - VBEND as usize; // 0
-        let off0 = (screen_y * SCREEN_WIDTH as usize) * 3;
-        let off1 = (screen_y * SCREEN_WIDTH as usize + 1) * 3;
+        let off0 = (screen_y * TIMING.display_width as usize) * 3;
+        let off1 = (screen_y * TIMING.display_width as usize + 1) * 3;
         assert_eq!(
             (
                 sys.scanline_buffer[off0],

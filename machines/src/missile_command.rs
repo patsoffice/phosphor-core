@@ -5,7 +5,7 @@ use phosphor_core::core::machine::{
 };
 use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
 use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
-use phosphor_core::core::{Bus, BusMaster};
+use phosphor_core::core::{Bus, BusMaster, TimingConfig};
 use phosphor_core::cpu::m6502::M6502;
 use phosphor_core::cpu::state::M6502State;
 use phosphor_core::cpu::{Cpu, CpuStateTrait};
@@ -155,10 +155,13 @@ const MISSILE_ANALOG_MAP: &[AnalogInput] = &[
 // HTOTAL: 320 pixel clocks → 320/4 = 80 CPU cycles per scanline
 // VTOTAL: 256 scanlines per frame
 // Frame rate: 5 MHz / (320 * 256) ≈ 61.04 Hz
-const CPU_CLOCK_HZ: u64 = 1_250_000;
-const CYCLES_PER_SCANLINE: u64 = 80;
-const SCANLINES_PER_FRAME: u64 = 256;
-const CYCLES_PER_FRAME: u64 = SCANLINES_PER_FRAME * CYCLES_PER_SCANLINE;
+const TIMING: TimingConfig = TimingConfig {
+    cpu_clock_hz: 1_250_000, // 10 MHz / 8
+    cycles_per_scanline: 80, // 320 pixel clocks / 4
+    total_scanlines: 256,    // VTOTAL
+    display_width: 256,
+    display_height: 231,
+};
 
 /// Missile Command Arcade System (Atari, 1980)
 ///
@@ -293,8 +296,8 @@ impl MissileCommandSystem {
 
     /// Current scanline (V counter), 0-255.
     pub fn current_scanline(&self) -> u16 {
-        let frame_cycle = self.clock % CYCLES_PER_FRAME;
-        (frame_cycle / CYCLES_PER_SCANLINE) as u16
+        let frame_cycle = self.clock % TIMING.cycles_per_frame();
+        (frame_cycle / TIMING.cycles_per_scanline) as u16
     }
 
     pub fn tick(&mut self) {
@@ -335,9 +338,9 @@ impl MissileCommandSystem {
         // Per-scanline rendering: at each scanline boundary, render the current
         // scanline from VRAM + palette before the CPU processes it, matching
         // hardware CRT read timing (the beam scans using VRAM at line start).
-        let frame_cycle = self.clock % CYCLES_PER_FRAME;
-        if frame_cycle.is_multiple_of(CYCLES_PER_SCANLINE) {
-            let scanline = (frame_cycle / CYCLES_PER_SCANLINE) as u16;
+        let frame_cycle = self.clock % TIMING.cycles_per_frame();
+        if frame_cycle.is_multiple_of(TIMING.cycles_per_scanline) {
+            let scanline = (frame_cycle / TIMING.cycles_per_scanline) as u16;
             if scanline >= 25 {
                 self.render_scanline_to_buffer(scanline as usize);
             }
@@ -741,7 +744,7 @@ impl Bus for MissileCommandSystem {
 
 impl Renderable for MissileCommandSystem {
     fn display_size(&self) -> (u32, u32) {
-        (256, 231)
+        TIMING.display_size()
     }
 
     fn render_frame(&self, buffer: &mut [u8]) {
@@ -811,7 +814,7 @@ crate::impl_standalone_debug!(MissileCommandSystem);
 
 impl Machine for MissileCommandSystem {
     fn run_frame(&mut self) {
-        for _ in 0..CYCLES_PER_FRAME {
+        for _ in 0..TIMING.cycles_per_frame() {
             self.tick();
         }
         self.scanline_buffer_valid = true;
@@ -846,7 +849,7 @@ impl Machine for MissileCommandSystem {
     }
 
     fn frame_rate_hz(&self) -> f64 {
-        CPU_CLOCK_HZ as f64 / CYCLES_PER_FRAME as f64
+        TIMING.frame_rate_hz()
     }
 
     fn machine_id(&self) -> &str {

@@ -1,7 +1,7 @@
 use phosphor_core::core::machine::InputButton;
 use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
 use phosphor_core::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
-use phosphor_core::core::{Bus, BusMaster};
+use phosphor_core::core::{Bus, BusMaster, TimingConfig};
 use phosphor_core::cpu::CpuStateTrait;
 use phosphor_core::cpu::state::Z80State;
 use phosphor_core::cpu::z80::Z80;
@@ -97,16 +97,15 @@ pub const NAMCO_PAC_INPUT_MAP: &[InputButton] = &[
 // Frame:         192 × 264 = 50688 CPU cycles per frame
 // Frame rate:    3072000 / 50688 ≈ 60.61 Hz
 
-pub const CYCLES_PER_SCANLINE: u64 = 192;
+pub const TIMING: TimingConfig = TimingConfig {
+    cpu_clock_hz: 3_072_000,  // 18.432 MHz / 6
+    cycles_per_scanline: 192, // 384 pixels / 2
+    total_scanlines: 264,     // VTOTAL
+    display_width: 224,       // rotated 90° CCW from native 288×224
+    display_height: 288,
+};
+
 pub const VISIBLE_LINES: u64 = 224;
-pub const TOTAL_LINES: u64 = 264;
-pub const CYCLES_PER_FRAME: u64 = TOTAL_LINES * CYCLES_PER_SCANLINE;
-
-pub const CPU_CLOCK_HZ: u64 = 3_072_000;
-
-// Screen dimensions: Pac-Man's native 288×224 is rotated 90° CCW
-pub const SCREEN_WIDTH: u32 = 224;
-pub const SCREEN_HEIGHT: u32 = 288;
 
 // Resistor weights for palette PROM
 // 3-bit RGB channels with 1K/470/220 ohm resistors
@@ -182,7 +181,7 @@ impl NamcoPacBoard {
             cpu: Z80::new(),
             map: Self::build_map(),
             sprite_coords: [0; 0x10],
-            wsg: NamcoWsg::new(CPU_CLOCK_HZ),
+            wsg: NamcoWsg::new(TIMING.cpu_clock_hz),
             tile_cache: gfx::GfxCache::new(256, 8, 8),
             sprite_cache: gfx::GfxCache::new(64, 16, 16),
             palette_prom: [0; 32],
@@ -236,20 +235,20 @@ impl NamcoPacBoard {
     // -----------------------------------------------------------------------
 
     pub fn tick(&mut self, bus: &mut dyn Bus<Address = u16, Data = u8>) {
-        let frame_cycle = self.clock % CYCLES_PER_FRAME;
+        let frame_cycle = self.clock % TIMING.cycles_per_frame();
 
         // Per-scanline rendering: at each scanline boundary, render the current
         // scanline from VRAM + sprites before the CPU processes it, matching
         // hardware CRT read timing.
-        if frame_cycle.is_multiple_of(CYCLES_PER_SCANLINE) {
-            let scanline = (frame_cycle / CYCLES_PER_SCANLINE) as u16;
+        if frame_cycle.is_multiple_of(TIMING.cycles_per_scanline) {
+            let scanline = (frame_cycle / TIMING.cycles_per_scanline) as u16;
             if scanline < VISIBLE_LINES as u16 {
                 self.render_scanline(scanline as usize);
             }
         }
 
         // VBLANK interrupt: fire at the start of VBLANK (scanline 224)
-        let vblank_cycle = VISIBLE_LINES * CYCLES_PER_SCANLINE;
+        let vblank_cycle = VISIBLE_LINES * TIMING.cycles_per_scanline;
         if frame_cycle == vblank_cycle {
             self.vblank_irq_pending = true;
         }

@@ -35,7 +35,7 @@ macro_rules! impl_standalone_debug {
             }
 
             fn cycles_per_frame(&self) -> u64 {
-                CYCLES_PER_FRAME
+                TIMING.cycles_per_frame()
             }
 
             fn debug_tick(&mut self) -> u32 {

@@ -476,7 +476,7 @@ impl Bus for DkongJrSystem {
 
 impl Renderable for DkongJrSystem {
     fn display_size(&self) -> (u32, u32) {
-        (tkg04::SCREEN_WIDTH, tkg04::SCREEN_HEIGHT)
+        tkg04::TIMING.display_size()
     }
 
     fn render_frame(&self, buffer: &mut [u8]) {
@@ -532,7 +532,7 @@ impl MachineDebug for DkongJrSystem {
     }
 
     fn cycles_per_frame(&self) -> u64 {
-        tkg04::CYCLES_PER_FRAME
+        tkg04::TIMING.cycles_per_frame()
     }
 
     fn debug_tick(&mut self) -> u32 {
@@ -545,12 +545,12 @@ impl MachineDebug for DkongJrSystem {
 
 impl Machine for DkongJrSystem {
     fn frame_rate_hz(&self) -> f64 {
-        tkg04::CPU_CLOCK_HZ as f64 / tkg04::CYCLES_PER_FRAME as f64
+        tkg04::TIMING.frame_rate_hz()
     }
 
     fn run_frame(&mut self) {
         bus_split!(self, bus => {
-            for _ in 0..tkg04::CYCLES_PER_FRAME {
+            for _ in 0..tkg04::TIMING.cycles_per_frame() {
                 self.board.tick(bus);
             }
         });

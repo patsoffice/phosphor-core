@@ -346,7 +346,7 @@ impl Bus for SatansHollowSystem {
 
 impl Renderable for SatansHollowSystem {
     fn display_size(&self) -> (u32, u32) {
-        (mcr2::SCREEN_WIDTH, mcr2::SCREEN_HEIGHT)
+        mcr2::TIMING.display_size()
     }
 
     fn render_frame(&self, buffer: &mut [u8]) {
@@ -409,7 +409,7 @@ impl MachineDebug for SatansHollowSystem {
     }
 
     fn cycles_per_frame(&self) -> u64 {
-        mcr2::CYCLES_PER_FRAME
+        mcr2::TIMING.cycles_per_frame()
     }
 
     fn debug_tick(&mut self) -> u32 {
@@ -432,12 +432,12 @@ impl Machine for SatansHollowSystem {
     }
 
     fn frame_rate_hz(&self) -> f64 {
-        mcr2::CPU_CLOCK_HZ as f64 / mcr2::CYCLES_PER_FRAME as f64
+        mcr2::TIMING.frame_rate_hz()
     }
 
     fn run_frame(&mut self) {
         bus_split!(self, bus => {
-            for _ in 0..mcr2::CYCLES_PER_FRAME {
+            for _ in 0..mcr2::TIMING.cycles_per_frame() {
                 self.board.tick(bus);
             }
         });

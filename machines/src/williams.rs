@@ -2,7 +2,7 @@ use phosphor_core::audio::AudioResampler;
 use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
 use phosphor_core::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
-use phosphor_core::core::{Bus, BusMaster};
+use phosphor_core::core::{Bus, BusMaster, TimingConfig};
 use phosphor_core::cpu::CpuStateTrait;
 use phosphor_core::cpu::m6800::M6800;
 use phosphor_core::cpu::m6809::M6809;
@@ -46,20 +46,13 @@ pub(crate) enum SoundRegion {
 // Williams gen-1 hardware constants
 // ---------------------------------------------------------------------------
 
-/// CPU clock frequency: E clock = 1 MHz (from 4 MHz XTAL ÷ 4).
-pub const CPU_CLOCK_HZ: u64 = 1_000_000;
-
-/// CPU cycles per scanline (1 MHz CPU / ~15.6 kHz horizontal).
-pub const CYCLES_PER_SCANLINE: u64 = 64;
-
-/// CPU cycles per frame (260 scanlines × 64 cycles).
-pub const CYCLES_PER_FRAME: u64 = 260 * CYCLES_PER_SCANLINE; // 16640
-
-/// Native display width after cropping.
-pub const DISPLAY_WIDTH: u32 = 292;
-
-/// Native display height after cropping.
-pub const DISPLAY_HEIGHT: u32 = 240;
+pub const TIMING: TimingConfig = TimingConfig {
+    cpu_clock_hz: 1_000_000, // E clock = 4 MHz XTAL ÷ 4
+    cycles_per_scanline: 64, // 1 MHz / ~15.6 kHz horizontal
+    total_scanlines: 260,    // 260 lines per frame
+    display_width: 292,      // native display width after cropping
+    display_height: 240,     // native display height after cropping
+};
 
 // ---------------------------------------------------------------------------
 // Shared ROM definitions (common to all Williams gen-1 games)
@@ -170,7 +163,10 @@ impl WilliamsBoard {
             watchdog_counter: 0,
             clock: 0,
             rom_pia_input: 0,
-            scanline_buffer: vec![0u8; DISPLAY_WIDTH as usize * DISPLAY_HEIGHT as usize * 3],
+            scanline_buffer: vec![
+                0u8;
+                TIMING.display_width as usize * TIMING.display_height as usize * 3
+            ],
         }
     }
 
@@ -304,8 +300,8 @@ impl WilliamsBoard {
 
     /// Current scanline number derived from the master clock.
     fn current_scanline(&self) -> u8 {
-        let frame_cycle = self.clock % CYCLES_PER_FRAME;
-        (frame_cycle / CYCLES_PER_SCANLINE) as u8
+        let frame_cycle = self.clock % TIMING.cycles_per_frame();
+        (frame_cycle / TIMING.cycles_per_scanline) as u8
     }
 
     /// Render a single scanline from VRAM + palette into the internal scanline buffer.
@@ -365,9 +361,9 @@ impl WilliamsBoard {
         // Video timing signals on ROM PIA.
         // VA11 (scanline bit 5) → ROM PIA CB1, count240 → ROM PIA CA1.
         // These drive the main CPU's IRQ via ROM PIA interrupt outputs.
-        let frame_cycle = self.clock % CYCLES_PER_FRAME;
-        if frame_cycle.is_multiple_of(CYCLES_PER_SCANLINE) {
-            let scanline = (frame_cycle / CYCLES_PER_SCANLINE) as u16;
+        let frame_cycle = self.clock % TIMING.cycles_per_frame();
+        if frame_cycle.is_multiple_of(TIMING.cycles_per_scanline) {
+            let scanline = (frame_cycle / TIMING.cycles_per_scanline) as u16;
 
             // Render this scanline from current VRAM + palette before the CPU
             // processes it, matching hardware CRT read timing.

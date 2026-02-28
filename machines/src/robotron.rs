@@ -277,7 +277,7 @@ impl Bus for RobotronSystem {
 
 impl Renderable for RobotronSystem {
     fn display_size(&self) -> (u32, u32) {
-        (williams::DISPLAY_WIDTH, williams::DISPLAY_HEIGHT)
+        williams::TIMING.display_size()
     }
 
     fn render_frame(&self, buffer: &mut [u8]) {
@@ -341,7 +341,7 @@ impl MachineDebug for RobotronSystem {
     }
 
     fn cycles_per_frame(&self) -> u64 {
-        williams::CYCLES_PER_FRAME
+        williams::TIMING.cycles_per_frame()
     }
 
     fn debug_tick(&mut self) -> u32 {
@@ -364,7 +364,7 @@ impl Machine for RobotronSystem {
     }
 
     fn frame_rate_hz(&self) -> f64 {
-        williams::CPU_CLOCK_HZ as f64 / williams::CYCLES_PER_FRAME as f64
+        williams::TIMING.frame_rate_hz()
     }
 
     fn run_frame(&mut self) {
@@ -374,7 +374,7 @@ impl Machine for RobotronSystem {
             .rom_pia
             .set_port_a_input(self.board.rom_pia_input);
         bus_split!(self, bus => {
-            for _ in 0..williams::CYCLES_PER_FRAME {
+            for _ in 0..williams::TIMING.cycles_per_frame() {
                 self.board.tick(bus);
             }
         });

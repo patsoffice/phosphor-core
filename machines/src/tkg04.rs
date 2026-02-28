@@ -2,7 +2,7 @@ use phosphor_core::audio::AudioResampler;
 use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
 use phosphor_core::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
-use phosphor_core::core::{Bus, BusMaster, ClockDivider};
+use phosphor_core::core::{Bus, BusMaster, ClockDivider, TimingConfig};
 use phosphor_core::cpu::i8035::I8035;
 use phosphor_core::cpu::z80::Z80;
 use phosphor_core::device::dac::Mc1408Dac;
@@ -47,12 +47,15 @@ pub(crate) enum SoundRegion {
 // Frame:         192 × 264 = 50688 CPU cycles per frame
 // Frame rate:    3072000 / 50688 ≈ 60.61 Hz
 
-pub const CYCLES_PER_SCANLINE: u64 = 192;
-pub const VISIBLE_LINES: u64 = 240;
-pub const TOTAL_LINES: u64 = 264;
-pub const CYCLES_PER_FRAME: u64 = TOTAL_LINES * CYCLES_PER_SCANLINE;
+pub const TIMING: TimingConfig = TimingConfig {
+    cpu_clock_hz: 3_072_000,                            // 61.44 MHz / 5 / 4
+    cycles_per_scanline: 192,                           // 384 pixels / 2
+    total_scanlines: 264,                               // VTOTAL
+    display_width: (NATIVE_HEIGHT - VBLANK_END) as u32, // 224 (rotated 90° CCW)
+    display_height: NATIVE_WIDTH as u32,                // 256
+};
 
-pub const CPU_CLOCK_HZ: u64 = 3_072_000;
+pub const VISIBLE_LINES: u64 = 240;
 pub const OUTPUT_SAMPLE_RATE: u64 = 44_100;
 
 // Sound CPU: I8035 @ 6 MHz / 15 = 400 kHz machine cycles
@@ -65,8 +68,6 @@ pub const SOUND_TICK_DEN: u32 = 192;
 pub const NATIVE_WIDTH: usize = 256;
 pub const NATIVE_HEIGHT: usize = 240;
 pub const VBLANK_END: usize = 16; // first visible scanline
-pub const SCREEN_WIDTH: u32 = (NATIVE_HEIGHT - VBLANK_END) as u32; // 224
-pub const SCREEN_HEIGHT: u32 = NATIVE_WIDTH as u32; // 256
 
 // ---------------------------------------------------------------------------
 // Shared helper functions
@@ -226,7 +227,7 @@ impl Tkg04Board {
             dma: I8257::new(),
             sound_irq_pending: false,
             dac: Mc1408Dac::new(),
-            resampler: AudioResampler::new(CPU_CLOCK_HZ, OUTPUT_SAMPLE_RATE),
+            resampler: AudioResampler::new(TIMING.cpu_clock_hz, OUTPUT_SAMPLE_RATE),
             clock: 0,
             sound_clock: ClockDivider::new(SOUND_TICK_NUM, SOUND_TICK_DEN),
             vblank_nmi_pending: false,
@@ -421,18 +422,18 @@ impl Tkg04Board {
     /// The `bus` parameter is the game wrapper (which implements `Bus`) passed
     /// in from the wrapper's `run_frame()` / `debug_tick()`.
     pub fn tick(&mut self, bus: &mut dyn Bus<Address = u16, Data = u8>) {
-        let frame_cycle = self.clock % CYCLES_PER_FRAME;
+        let frame_cycle = self.clock % TIMING.cycles_per_frame();
 
         // Per-scanline rendering at scanline boundary
-        if frame_cycle.is_multiple_of(CYCLES_PER_SCANLINE) {
-            let scanline = (frame_cycle / CYCLES_PER_SCANLINE) as u16;
+        if frame_cycle.is_multiple_of(TIMING.cycles_per_scanline) {
+            let scanline = (frame_cycle / TIMING.cycles_per_scanline) as u16;
             if scanline < VISIBLE_LINES as u16 {
                 self.render_scanline(scanline as usize);
             }
         }
 
         // VBLANK NMI: assert at scanline 240
-        let vblank_cycle = VISIBLE_LINES * CYCLES_PER_SCANLINE;
+        let vblank_cycle = VISIBLE_LINES * TIMING.cycles_per_scanline;
         if frame_cycle == vblank_cycle {
             self.vblank_nmi_pending = true;
         }

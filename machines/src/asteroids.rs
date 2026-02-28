@@ -3,7 +3,7 @@ use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::machine::{AudioSource, InputButton, InputReceiver, Machine, Renderable};
 use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
 use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
-use phosphor_core::core::{Bus, BusMaster};
+use phosphor_core::core::{Bus, BusMaster, TimingConfig};
 use phosphor_core::cpu::Cpu;
 use phosphor_core::cpu::m6502::M6502;
 use phosphor_core::device::dvg::{Dvg, VectorLine};
@@ -119,16 +119,15 @@ const ASTEROIDS_INPUT_MAP: &[InputButton] = &[
 // CPU clock: 12.096 / 8 = 1.512 MHz
 // NMI: 3 KHz / 12 ≈ 250 Hz → every ~6048 CPU cycles
 // Frame: ~60 Hz → ~25200 CPU cycles
-const CPU_CLOCK_HZ: u64 = 1_512_000;
-const CYCLES_PER_FRAME: u64 = CPU_CLOCK_HZ / 60;
-const NMI_PERIOD_CYCLES: u64 = CPU_CLOCK_HZ / 250;
+const TIMING: TimingConfig = TimingConfig {
+    cpu_clock_hz: 1_512_000,     // 12.096 MHz / 8
+    cycles_per_scanline: 25_200, // no scanline hardware; whole frame
+    total_scanlines: 1,
+    display_width: 1024, // vector display
+    display_height: 1024,
+};
 
-// ---------------------------------------------------------------------------
-// Display constants
-// ---------------------------------------------------------------------------
-
-const DISPLAY_WIDTH: u32 = 1024;
-const DISPLAY_HEIGHT: u32 = 1024;
+const NMI_PERIOD_CYCLES: u64 = TIMING.cpu_clock_hz / 250;
 
 // ---------------------------------------------------------------------------
 // Asteroids system
@@ -392,7 +391,7 @@ impl Bus for AsteroidsSystem {
 
 impl Renderable for AsteroidsSystem {
     fn display_size(&self) -> (u32, u32) {
-        (DISPLAY_WIDTH, DISPLAY_HEIGHT)
+        TIMING.display_size()
     }
 
     fn render_frame(&self, buffer: &mut [u8]) {
@@ -430,7 +429,7 @@ crate::impl_standalone_debug!(AsteroidsSystem);
 
 impl Machine for AsteroidsSystem {
     fn run_frame(&mut self) {
-        for _ in 0..CYCLES_PER_FRAME {
+        for _ in 0..TIMING.cycles_per_frame() {
             self.tick();
         }
 
@@ -457,7 +456,7 @@ impl Machine for AsteroidsSystem {
     }
 
     fn frame_rate_hz(&self) -> f64 {
-        CPU_CLOCK_HZ as f64 / CYCLES_PER_FRAME as f64
+        TIMING.frame_rate_hz()
     }
 
     fn machine_id(&self) -> &str {
@@ -547,7 +546,7 @@ fn draw_line(buffer: &mut [u8], x0: i32, y0: i32, x1: i32, y1: i32, brightness: 
     loop {
         // Plot pixel with additive blending.
         if (0..1024).contains(&x) && (0..1024).contains(&y) {
-            let offset = ((y as usize) * DISPLAY_WIDTH as usize + x as usize) * 3;
+            let offset = ((y as usize) * TIMING.display_width as usize + x as usize) * 3;
             buffer[offset] = buffer[offset].saturating_add(brightness);
             buffer[offset + 1] = buffer[offset + 1].saturating_add(brightness);
             buffer[offset + 2] = buffer[offset + 2].saturating_add(brightness);

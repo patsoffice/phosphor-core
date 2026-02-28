@@ -194,7 +194,7 @@ impl Bus for PacmanSystem {
 
 impl Renderable for PacmanSystem {
     fn display_size(&self) -> (u32, u32) {
-        (namco_pac::SCREEN_WIDTH, namco_pac::SCREEN_HEIGHT)
+        namco_pac::TIMING.display_size()
     }
 
     fn render_frame(&self, buffer: &mut [u8]) {
@@ -232,7 +232,7 @@ impl MachineDebug for PacmanSystem {
     }
 
     fn cycles_per_frame(&self) -> u64 {
-        namco_pac::CYCLES_PER_FRAME
+        namco_pac::TIMING.cycles_per_frame()
     }
 
     fn debug_tick(&mut self) -> u32 {
@@ -245,12 +245,12 @@ impl MachineDebug for PacmanSystem {
 
 impl Machine for PacmanSystem {
     fn frame_rate_hz(&self) -> f64 {
-        namco_pac::CPU_CLOCK_HZ as f64 / namco_pac::CYCLES_PER_FRAME as f64
+        namco_pac::TIMING.frame_rate_hz()
     }
 
     fn run_frame(&mut self) {
         bus_split!(self, bus => {
-            for _ in 0..namco_pac::CYCLES_PER_FRAME {
+            for _ in 0..namco_pac::TIMING.cycles_per_frame() {
                 self.board.tick(bus);
             }
         });

@@ -5,7 +5,7 @@ use phosphor_core::core::machine::{
 };
 use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
 use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
-use phosphor_core::core::{Bus, BusMaster};
+use phosphor_core::core::{Bus, BusMaster, TimingConfig};
 use phosphor_core::cpu::m6502::M6502;
 use phosphor_core::cpu::state::M6502State;
 use phosphor_core::cpu::{Cpu, CpuStateTrait};
@@ -234,10 +234,13 @@ const CCASTLES_ANALOG_MAP: &[AnalogInput] = &[
 // VTOTAL: 256 scanlines per frame
 // VBLANK: scanlines 0-23 (sync PROM bit 0), visible: 24-255 (232 lines)
 // Frame rate: 5 MHz / (320 × 256) ≈ 61.04 Hz
-const CPU_CLOCK_HZ: u64 = 1_250_000;
-const CYCLES_PER_SCANLINE: u64 = 80;
-const SCANLINES_PER_FRAME: u64 = 256;
-const CYCLES_PER_FRAME: u64 = SCANLINES_PER_FRAME * CYCLES_PER_SCANLINE;
+const TIMING: TimingConfig = TimingConfig {
+    cpu_clock_hz: 1_250_000, // 10 MHz / 8
+    cycles_per_scanline: 80, // 320 pixel clocks / 4
+    total_scanlines: 256,    // VTOTAL
+    display_width: 256,
+    display_height: 232, // 256 - 24 vblank lines
+};
 
 // ---------------------------------------------------------------------------
 // Palette resistor weights (22K / 10K / 4.7K with 1K pulldown)
@@ -450,8 +453,8 @@ impl CrystalCastlesSystem {
 
     /// Current scanline (V counter), 0-255.
     pub fn current_scanline(&self) -> u16 {
-        let frame_cycle = self.clock % CYCLES_PER_FRAME;
-        (frame_cycle / CYCLES_PER_SCANLINE) as u16
+        let frame_cycle = self.clock % TIMING.cycles_per_frame();
+        (frame_cycle / TIMING.cycles_per_scanline) as u16
     }
 
     pub fn load_rom_set(&mut self, rom_set: &RomSet) -> Result<(), RomLoadError> {
@@ -815,9 +818,9 @@ impl CrystalCastlesSystem {
         }
 
         // Per-scanline processing: IRQ generation, VBLANK, and rendering
-        let frame_cycle = self.clock % CYCLES_PER_FRAME;
-        if frame_cycle.is_multiple_of(CYCLES_PER_SCANLINE) {
-            let scanline = (frame_cycle / CYCLES_PER_SCANLINE) as u8;
+        let frame_cycle = self.clock % TIMING.cycles_per_frame();
+        if frame_cycle.is_multiple_of(TIMING.cycles_per_scanline) {
+            let scanline = (frame_cycle / TIMING.cycles_per_scanline) as u8;
 
             // IRQ generation from sync PROM rising edges on bit 3
             let prev = if scanline == 0 { 255 } else { scanline - 1 };
@@ -989,7 +992,7 @@ impl Bus for CrystalCastlesSystem {
 
 impl Renderable for CrystalCastlesSystem {
     fn display_size(&self) -> (u32, u32) {
-        (256, 232)
+        TIMING.display_size()
     }
 
     fn render_frame(&self, buffer: &mut [u8]) {
@@ -1052,7 +1055,7 @@ crate::impl_standalone_debug!(CrystalCastlesSystem);
 
 impl Machine for CrystalCastlesSystem {
     fn run_frame(&mut self) {
-        for _ in 0..CYCLES_PER_FRAME {
+        for _ in 0..TIMING.cycles_per_frame() {
             self.tick();
         }
         self.scanline_buffer_valid = true;
@@ -1104,7 +1107,7 @@ impl Machine for CrystalCastlesSystem {
     }
 
     fn frame_rate_hz(&self) -> f64 {
-        CPU_CLOCK_HZ as f64 / CYCLES_PER_FRAME as f64
+        TIMING.frame_rate_hz()
     }
 
     fn machine_id(&self) -> &str {

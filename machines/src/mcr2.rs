@@ -1,6 +1,6 @@
-use phosphor_core::core::ClockDivider;
 use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
 use phosphor_core::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
+use phosphor_core::core::{ClockDivider, TimingConfig};
 use phosphor_core::cpu::z80::Z80;
 use phosphor_core::device::Z80Ctc;
 use phosphor_core::dirty_bitset::DirtyBitset;
@@ -29,11 +29,15 @@ pub(crate) enum Region {
 // VISIBLE: 240 scanlines per field (480 interlaced)
 // Frame: 256 × 264 = 67584 CPU cycles per field
 
-pub const CPU_CLOCK_HZ: u64 = 2_496_000;
-pub const CYCLES_PER_SCANLINE: u64 = 256;
-pub const TOTAL_LINES: u64 = 264;
+pub const TIMING: TimingConfig = TimingConfig {
+    cpu_clock_hz: 2_496_000,             // 19.968 MHz / 8
+    cycles_per_scanline: 256,            // 512 pixel clocks / 2
+    total_scanlines: 264,                // VTOTAL
+    display_width: NATIVE_HEIGHT as u32, // 480 (rotated 90° CW)
+    display_height: NATIVE_WIDTH as u32, // 512
+};
+
 pub const VISIBLE_LINES: u64 = 240;
-pub const CYCLES_PER_FRAME: u64 = TOTAL_LINES * CYCLES_PER_SCANLINE; // 67584
 
 pub const OUTPUT_SAMPLE_RATE: u64 = 44_100;
 
@@ -45,10 +49,6 @@ pub const SSIO_CLOCK_DEN: u32 = 156;
 // Each 8×8 ROM tile is displayed at 2× in both dimensions.
 pub const NATIVE_WIDTH: usize = 512;
 pub const NATIVE_HEIGHT: usize = 480;
-
-// After ROT90 CW: 480w × 512h output.
-pub const SCREEN_WIDTH: u32 = NATIVE_HEIGHT as u32; // 480
-pub const SCREEN_HEIGHT: u32 = NATIVE_WIDTH as u32; // 512
 
 // Tilemap dimensions
 pub(crate) const TILE_COLS: usize = 32;
@@ -255,11 +255,11 @@ impl Mcr2Board {
     /// The `bus` parameter is the game wrapper (which implements `Bus`) passed
     /// in from the wrapper's `run_frame()` / `debug_tick()`.
     pub fn tick(&mut self, bus: &mut dyn phosphor_core::core::Bus<Address = u16, Data = u8>) {
-        let frame_cycle = self.clock % CYCLES_PER_FRAME;
+        let frame_cycle = self.clock % TIMING.cycles_per_frame();
 
         // CTC triggers at scanline boundaries
-        if frame_cycle.is_multiple_of(CYCLES_PER_SCANLINE) {
-            let scanline = frame_cycle / CYCLES_PER_SCANLINE;
+        if frame_cycle.is_multiple_of(TIMING.cycles_per_scanline) {
+            let scanline = frame_cycle / TIMING.cycles_per_scanline;
 
             // CTC channel 2: triggered at scanlines 0 and 240 (VBLANK)
             if scanline == 0 || scanline == VISIBLE_LINES {

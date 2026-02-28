@@ -19,6 +19,38 @@ use super::memory_map::{MemoryMap, WatchpointHit, WatchpointKind};
 use super::save_state::SaveError;
 
 // ---------------------------------------------------------------------------
+// Timing configuration
+// ---------------------------------------------------------------------------
+
+/// Timing and display configuration for an emulated machine.
+///
+/// Provides a single source of truth for CPU clock rate, scanline timing,
+/// and display dimensions. Derived values ([`cycles_per_frame`](Self::cycles_per_frame),
+/// [`frame_rate_hz`](Self::frame_rate_hz)) are computed from these fields to
+/// prevent inconsistencies.
+pub struct TimingConfig {
+    pub cpu_clock_hz: u64,
+    pub cycles_per_scanline: u64,
+    pub total_scanlines: u64,
+    pub display_width: u32,
+    pub display_height: u32,
+}
+
+impl TimingConfig {
+    pub const fn cycles_per_frame(&self) -> u64 {
+        self.total_scanlines * self.cycles_per_scanline
+    }
+
+    pub const fn frame_rate_hz(&self) -> f64 {
+        self.cpu_clock_hz as f64 / self.cycles_per_frame() as f64
+    }
+
+    pub const fn display_size(&self) -> (u32, u32) {
+        (self.display_width, self.display_height)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Sub-traits
 // ---------------------------------------------------------------------------
 
