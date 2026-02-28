@@ -6,6 +6,7 @@ use phosphor_core::device::namco_wsg::NamcoWsg;
 use phosphor_core::device::namco06::Namco06;
 use phosphor_core::device::namco51::Namco51;
 use phosphor_core::device::namco53::Namco53;
+use phosphor_core::gfx::decode::GfxLayout;
 
 // ---------------------------------------------------------------------------
 // Input button IDs (shared across Galaga family)
@@ -118,6 +119,17 @@ const NAMCO06_BASE_DIVISOR: u32 = 64;
 const R_WEIGHTS: [f64; 3] = [1000.0, 470.0, 220.0];
 const G_WEIGHTS: [f64; 3] = [1000.0, 470.0, 220.0];
 const B_WEIGHTS: [f64; 2] = [470.0, 220.0];
+
+// ---------------------------------------------------------------------------
+// GfxLayout descriptors for Galaga-family hardware
+// ---------------------------------------------------------------------------
+
+pub(crate) const GALAGA_SPRITE_LAYOUT: GfxLayout<'static> = GfxLayout {
+    plane_offsets: &[4, 0],
+    x_offsets: &[0, 1, 2, 3, 64, 65, 66, 67, 128, 129, 130, 131, 192, 193, 194, 195],
+    y_offsets: &[0, 8, 16, 24, 32, 40, 48, 56, 256, 264, 272, 280, 288, 296, 304, 312],
+    char_increment: 512,
+};
 
 // ---------------------------------------------------------------------------
 // NamcoGalagaBoard — shared hardware for the Galaga platform

@@ -7,10 +7,23 @@ use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::Cpu;
 use phosphor_core::gfx;
 use phosphor_core::gfx::GfxCache;
+use phosphor_core::gfx::decode::{decode_gfx, GfxLayout};
 
-use crate::namco_galaga::{self, NamcoGalagaBoard};
+use crate::namco_galaga::{self, NamcoGalagaBoard, GALAGA_SPRITE_LAYOUT};
+use crate::namco_pac::PACMAN_TILE_LAYOUT;
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
+
+// ---------------------------------------------------------------------------
+// GfxLayout descriptors for Dig Dug
+// ---------------------------------------------------------------------------
+
+const DIGDUG_CHAR_LAYOUT: GfxLayout<'static> = GfxLayout {
+    plane_offsets: &[0],
+    x_offsets: &[0, 1, 2, 3, 4, 5, 6, 7],
+    y_offsets: &[0, 8, 16, 24, 32, 40, 48, 56],
+    char_increment: 64,
+};
 
 // ---------------------------------------------------------------------------
 // ROM definitions
@@ -551,13 +564,13 @@ impl DigDugSystem {
 
         // GFX ROMs
         let gfx1 = config.gfx1_rom.load(rom_set)?;
-        self.char_cache = gfx::decode::decode_digdug_chars(&gfx1, 0, gfx1.len() / 8);
+        self.char_cache = decode_gfx(&gfx1, 0, gfx1.len() / 8, &DIGDUG_CHAR_LAYOUT);
 
         let gfx2 = config.gfx2_rom.load(rom_set)?;
-        self.sprite_cache = gfx::decode::decode_galaga_sprites(&gfx2, 0, gfx2.len() / 64);
+        self.sprite_cache = decode_gfx(&gfx2, 0, gfx2.len() / 64, &GALAGA_SPRITE_LAYOUT);
 
         let gfx3 = config.gfx3_rom.load(rom_set)?;
-        self.bg_tile_cache = gfx::decode::decode_pacman_tiles(&gfx3, 0, gfx3.len() / 16);
+        self.bg_tile_cache = decode_gfx(&gfx3, 0, gfx3.len() / 16, &PACMAN_TILE_LAYOUT);
 
         self.playfield_rom = config.gfx4_rom.load(rom_set)?;
 
