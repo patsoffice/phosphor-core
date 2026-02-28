@@ -25,6 +25,7 @@ use phosphor_core::cpu::i8088::I8088;
 use phosphor_core::cpu::m6502::M6502;
 use phosphor_core::device::{Mc1408Dac, Riot6532};
 use phosphor_core::gfx;
+use phosphor_core::gfx::decode::{decode_gfx, decode_gfx_element, GfxLayout};
 
 use phosphor_macros::{BusDebug, MemoryRegion};
 
@@ -70,6 +71,14 @@ pub const NATIVE_HEIGHT: usize = 240;
 // Tilemap dimensions (32×32 grid, only 32×30 visible)
 const TILE_COLS: usize = 32;
 const TILE_ROWS: usize = 30;
+
+// GfxLayout for Gottlieb 8×8 4bpp packed tiles (also used for charram re-decode)
+const GOTTLIEB_TILE_LAYOUT: GfxLayout<'static> = GfxLayout {
+    plane_offsets: &[3, 2, 1, 0],
+    x_offsets: &[0, 4, 8, 12, 16, 20, 24, 28],
+    y_offsets: &[0, 32, 64, 96, 128, 160, 192, 224],
+    char_increment: 256,
+};
 
 // Sound CPU ratio: 894,886 / 5,000,000 ≈ 179/1000
 const SOUND_CLOCK_NUM: u32 = 179;
@@ -424,9 +433,19 @@ impl GottliebBoard {
     /// Pre-decode tile and sprite ROMs into GFX caches.
     pub fn decode_gfx(&mut self, tile_rom: &[u8], sprite_rom: &[u8]) {
         let tile_count = tile_rom.len() / 32;
-        self.tile_rom_cache = gfx::decode::decode_gottlieb_tiles(tile_rom, 0, tile_count);
-        let sprite_count = sprite_rom.len() / 128; // 4 planes × 32 bytes/plane
-        self.sprite_cache = gfx::decode::decode_gottlieb_sprites(sprite_rom, sprite_count);
+        self.tile_rom_cache = decode_gfx(tile_rom, 0, tile_count, &GOTTLIEB_TILE_LAYOUT);
+
+        // Sprites: 4bpp planar, 16x16, 4 equal ROM regions
+        let sprite_count = sprite_rom.len() / 128;
+        let quarter = sprite_rom.len() / 4;
+        let planes: [usize; 4] = std::array::from_fn(|p| p * quarter * 8);
+        let y_offsets: [usize; 16] = std::array::from_fn(|py| py * 16);
+        self.sprite_cache = decode_gfx(sprite_rom, 0, sprite_count, &GfxLayout {
+            plane_offsets: &planes,
+            x_offsets: &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+            y_offsets: &y_offsets,
+            char_increment: 256,
+        });
     }
 
     // -----------------------------------------------------------------------
@@ -498,13 +517,8 @@ impl GottliebBoard {
         self.map.region_data_mut(Region::CharRam)[offset] = data;
         let tile_code = offset / 32;
         if tile_code < 128 {
-            let tile_start = tile_code * 32;
             let charram = self.map.region_data(Region::CharRam);
-            gfx::decode::decode_gottlieb_tile_into(
-                &mut self.charram_cache,
-                tile_code,
-                &charram[tile_start..],
-            );
+            decode_gfx_element(charram, 0, tile_code, &GOTTLIEB_TILE_LAYOUT, &mut self.charram_cache);
         }
     }
 
