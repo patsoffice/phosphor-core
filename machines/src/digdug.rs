@@ -7,9 +7,9 @@ use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::Cpu;
 use phosphor_core::gfx;
 use phosphor_core::gfx::GfxCache;
-use phosphor_core::gfx::decode::{decode_gfx, GfxLayout};
+use phosphor_core::gfx::decode::{GfxLayout, decode_gfx};
 
-use crate::namco_galaga::{self, NamcoGalagaBoard, GALAGA_SPRITE_LAYOUT};
+use crate::namco_galaga::{self, GALAGA_SPRITE_LAYOUT, NamcoGalagaBoard};
 use crate::namco_pac::PACMAN_TILE_LAYOUT;
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};

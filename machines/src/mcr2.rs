@@ -5,7 +5,7 @@ use phosphor_core::cpu::z80::Z80;
 use phosphor_core::device::Z80Ctc;
 use phosphor_core::dirty_bitset::DirtyBitset;
 use phosphor_core::gfx;
-use phosphor_core::gfx::decode::{decode_gfx, GfxLayout};
+use phosphor_core::gfx::decode::{GfxLayout, decode_gfx};
 use phosphor_macros::{BusDebug, MemoryRegion};
 
 use phosphor_core::device::SsioBoard;
@@ -200,26 +200,35 @@ impl Mcr2Board {
         let tile_count = bg_rom.len() / 32;
         let half_bits = (bg_rom.len() / 2) * 8;
         let tile_planes: [usize; 4] = [1, 0, half_bits + 1, half_bits];
-        self.tile_cache = decode_gfx(bg_rom, 0, tile_count, &GfxLayout {
-            plane_offsets: &tile_planes,
-            x_offsets: &[0, 2, 4, 6, 8, 10, 12, 14],
-            y_offsets: &[0, 16, 32, 48, 64, 80, 96, 112],
-            char_increment: 128,
-        });
+        self.tile_cache = decode_gfx(
+            bg_rom,
+            0,
+            tile_count,
+            &GfxLayout {
+                plane_offsets: &tile_planes,
+                x_offsets: &[0, 2, 4, 6, 8, 10, 12, 14],
+                y_offsets: &[0, 16, 32, 48, 64, 80, 96, 112],
+                char_increment: 128,
+            },
+        );
 
         // Sprites: 4bpp, 32x32, 4 ROM quarters
         let sprite_count = fg_rom.len() / 512;
         let q8 = (fg_rom.len() / 4) * 8;
-        let x_offsets: [usize; 32] = std::array::from_fn(|px| {
-            ((px / 2) % 4) * q8 + (px / 8) * 8 + (px % 2) * 4
-        });
+        let x_offsets: [usize; 32] =
+            std::array::from_fn(|px| ((px / 2) % 4) * q8 + (px / 8) * 8 + (px % 2) * 4);
         let y_offsets: [usize; 32] = std::array::from_fn(|py| py * 32);
-        self.sprite_cache = decode_gfx(fg_rom, 0, sprite_count, &GfxLayout {
-            plane_offsets: &[3, 2, 1, 0],
-            x_offsets: &x_offsets,
-            y_offsets: &y_offsets,
-            char_increment: 1024,
-        });
+        self.sprite_cache = decode_gfx(
+            fg_rom,
+            0,
+            sprite_count,
+            &GfxLayout {
+                plane_offsets: &[3, 2, 1, 0],
+                x_offsets: &x_offsets,
+                y_offsets: &y_offsets,
+                char_increment: 1024,
+            },
+        );
     }
 
     // -----------------------------------------------------------------------

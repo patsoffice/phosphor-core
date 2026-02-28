@@ -7,9 +7,9 @@ use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
 use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
 use phosphor_core::core::{Bus, BusMaster, ClockDivider, TimingConfig};
 use phosphor_core::cpu::m6809::M6809;
-use phosphor_core::gfx::decode::{decode_gfx, GfxCache, GfxLayout};
 use phosphor_core::cpu::state::M6809State;
 use phosphor_core::cpu::{Cpu, CpuStateTrait};
+use phosphor_core::gfx::decode::{GfxCache, GfxLayout, decode_gfx};
 use phosphor_macros::{BusDebug, MemoryRegion};
 
 use crate::registry::MachineEntry;
@@ -264,7 +264,7 @@ pub struct GridleeSystem {
     map: MemoryMap,
 
     // Graphics ROMs (not CPU-addressable)
-    gfx_rom: [u8; 0x4000], // 16KB sprite graphics
+    gfx_rom: [u8; 0x4000],  // 16KB sprite graphics
     sprite_cache: GfxCache, // Pre-decoded 256 sprites (8×16, 4bpp)
 
     // Palette: pre-computed from 3x2KB PROMs (2048 entries, RGB)

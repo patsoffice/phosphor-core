@@ -7,11 +7,11 @@ use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
 use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
 use phosphor_core::core::{Bus, BusMaster, TimingConfig};
 use phosphor_core::cpu::m6502::M6502;
-use phosphor_core::gfx::decode::{decode_gfx, GfxCache, GfxLayout};
 use phosphor_core::cpu::state::M6502State;
 use phosphor_core::cpu::{Cpu, CpuStateTrait};
 use phosphor_core::device::output_latch::OutputLatch;
 use phosphor_core::device::pokey::Pokey;
+use phosphor_core::gfx::decode::{GfxCache, GfxLayout, decode_gfx};
 use phosphor_macros::{BusDebug, MemoryRegion};
 
 use crate::registry::MachineEntry;
@@ -243,17 +243,10 @@ const TIMING: TimingConfig = TimingConfig {
     display_height: 232, // 256 - 24 vblank lines
 };
 
-// ---------------------------------------------------------------------------
-// Palette resistor weights (22K / 10K / 4.7K with 1K pulldown)
-// ---------------------------------------------------------------------------
-// Each color channel uses a 3-bit inverted DAC through a resistor network:
-//   bit 0 → 22KΩ (weakest)
-//   bit 1 → 10KΩ
-//   bit 2 → 4.7KΩ (strongest)
-// With 1K pulldown to ground, the weights sum to 255.
-const WEIGHT_22K: u16 = 36;
-const WEIGHT_10K: u16 = 75;
-const WEIGHT_4K7: u16 = 144;
+// Palette resistor values: 22K / 10K / 4.7K with 1K pulldown.
+// Each color channel uses a 3-bit inverted DAC through this network.
+const PALETTE_RESISTORS: [f64; 3] = [22_000.0, 10_000.0, 4_700.0];
+const PALETTE_PULLDOWN: f64 = 1_000.0;
 
 // 8×16 sprites, 3bpp across two ROM halves (0x0000 and 0x2000).
 // Plane 2 (MSB) from first-half low nibble, planes 1 and 0 from second-half
@@ -261,7 +254,9 @@ const WEIGHT_4K7: u16 = 144;
 const CCASTLES_SPRITE_LAYOUT: GfxLayout<'static> = GfxLayout {
     plane_offsets: &[0x10004, 0x10000, 4],
     x_offsets: &[0, 1, 2, 3, 8, 9, 10, 11],
-    y_offsets: &[0, 16, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240],
+    y_offsets: &[
+        0, 16, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240,
+    ],
     char_increment: 256,
 };
 
@@ -305,7 +300,7 @@ pub struct CrystalCastlesSystem {
     map: MemoryMap,
 
     gfx_rom: [u8; 0x4000],  // 16KB sprite graphics (not CPU-addressable)
-    sprite_cache: GfxCache,  // Pre-decoded 256 sprites (8×16, 3bpp)
+    sprite_cache: GfxCache, // Pre-decoded 256 sprites (8×16, 3bpp)
     sync_prom: [u8; 0x100], // VBLANK/IRQ timing
     wp_prom: [u8; 0x100],   // Write-protect
     pri_prom: [u8; 0x100],  // Priority compositing
@@ -628,25 +623,22 @@ impl CrystalCastlesSystem {
     /// The 6-bit offset (0-63) provides the red MSB via bit 5.
     /// Weighted by 22K/10K/4.7K resistor network with 1K pulldown.
     fn update_palette_entry(&mut self, offset: usize) {
+        use phosphor_core::gfx::{combine_weights, compute_resistor_weights};
+
         let data = self.palette_ram[offset];
         let r_raw = ((data & 0xC0) >> 6) | (((offset as u8) & 0x20) >> 3);
         let b_raw = (data & 0x38) >> 3;
         let g_raw = data & 0x07;
 
-        // Invert all 3 bits, then weight
+        // Invert all 3 bits, then weight via resistor network
         let r_inv = r_raw ^ 0x07;
         let g_inv = g_raw ^ 0x07;
         let b_inv = b_raw ^ 0x07;
 
-        let r = (WEIGHT_22K * (r_inv & 1) as u16
-            + WEIGHT_10K * ((r_inv >> 1) & 1) as u16
-            + WEIGHT_4K7 * ((r_inv >> 2) & 1) as u16) as u8;
-        let g = (WEIGHT_22K * (g_inv & 1) as u16
-            + WEIGHT_10K * ((g_inv >> 1) & 1) as u16
-            + WEIGHT_4K7 * ((g_inv >> 2) & 1) as u16) as u8;
-        let b = (WEIGHT_22K * (b_inv & 1) as u16
-            + WEIGHT_10K * ((b_inv >> 1) & 1) as u16
-            + WEIGHT_4K7 * ((b_inv >> 2) & 1) as u16) as u8;
+        let w = compute_resistor_weights(&PALETTE_RESISTORS, Some(PALETTE_PULLDOWN));
+        let r = combine_weights(&w, &[r_inv & 1, (r_inv >> 1) & 1, (r_inv >> 2) & 1]);
+        let g = combine_weights(&w, &[g_inv & 1, (g_inv >> 1) & 1, (g_inv >> 2) & 1]);
+        let b = combine_weights(&w, &[b_inv & 1, (b_inv >> 1) & 1, (b_inv >> 2) & 1]);
 
         self.palette_rgb[offset & 0x1F] = (r, g, b);
     }
@@ -687,7 +679,9 @@ impl CrystalCastlesSystem {
                 for col in 0..8u16 {
                     let r = if flip { 15 - row } else { row };
                     let c = if flip { 7 - col } else { col };
-                    let pixel = self.sprite_cache.pixel(which as usize, c as usize, r as usize);
+                    let pixel = self
+                        .sprite_cache
+                        .pixel(which as usize, c as usize, r as usize);
                     if pixel == 7 {
                         continue; // transparent pen
                     }

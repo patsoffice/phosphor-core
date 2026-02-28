@@ -7,7 +7,7 @@ use phosphor_core::cpu::state::Z80State;
 use phosphor_core::cpu::z80::Z80;
 use phosphor_core::device::namco_wsg::NamcoWsg;
 use phosphor_core::gfx;
-use phosphor_core::gfx::decode::{decode_gfx, GfxLayout};
+use phosphor_core::gfx::decode::{GfxLayout, decode_gfx};
 use phosphor_macros::{BusDebug, MemoryRegion};
 
 // ---------------------------------------------------------------------------
@@ -127,8 +127,12 @@ pub(crate) const PACMAN_TILE_LAYOUT: GfxLayout<'static> = GfxLayout {
 
 const PACMAN_SPRITE_LAYOUT: GfxLayout<'static> = GfxLayout {
     plane_offsets: &[4, 0],
-    x_offsets: &[64, 65, 66, 67, 128, 129, 130, 131, 192, 193, 194, 195, 0, 1, 2, 3],
-    y_offsets: &[0, 8, 16, 24, 32, 40, 48, 56, 256, 264, 272, 280, 288, 296, 304, 312],
+    x_offsets: &[
+        64, 65, 66, 67, 128, 129, 130, 131, 192, 193, 194, 195, 0, 1, 2, 3,
+    ],
+    y_offsets: &[
+        0, 8, 16, 24, 32, 40, 48, 56, 256, 264, 272, 280, 288, 296, 304, 312,
+    ],
     char_increment: 512,
 };
 
@@ -369,24 +373,21 @@ impl NamcoPacBoard {
     /// Pre-compute the 32-entry RGB palette from the palette PROM using
     /// resistor-weighted DAC values.
     pub fn build_palette(&mut self) {
-        let r_scale = compute_resistor_scale(&R_WEIGHTS);
-        let g_scale = compute_resistor_scale(&G_WEIGHTS);
-        let b_scale = compute_resistor_scale(&B_WEIGHTS);
+        use phosphor_core::gfx::{combine_weights, compute_resistor_weights};
+
+        let r_w = compute_resistor_weights(&R_WEIGHTS, None);
+        let g_w = compute_resistor_weights(&G_WEIGHTS, None);
+        let b_w = compute_resistor_weights(&B_WEIGHTS, None);
 
         for i in 0..32 {
             let entry = self.palette_prom[i];
 
-            // Red: bits 0-2
-            let r = combine_weights_3(&r_scale, entry & 1, (entry >> 1) & 1, (entry >> 2) & 1);
-            // Green: bits 3-5
-            let g = combine_weights_3(
-                &g_scale,
-                (entry >> 3) & 1,
-                (entry >> 4) & 1,
-                (entry >> 5) & 1,
+            let r = combine_weights(&r_w, &[entry & 1, (entry >> 1) & 1, (entry >> 2) & 1]);
+            let g = combine_weights(
+                &g_w,
+                &[(entry >> 3) & 1, (entry >> 4) & 1, (entry >> 5) & 1],
             );
-            // Blue: bits 6-7
-            let b = combine_weights_2(&b_scale, (entry >> 6) & 1, (entry >> 7) & 1);
+            let b = combine_weights(&b_w, &[(entry >> 6) & 1, (entry >> 7) & 1]);
 
             self.palette_rgb[i] = (r, g, b);
         }
@@ -681,26 +682,4 @@ impl NamcoPacBoard {
             _ => {}
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Palette helpers
-// ---------------------------------------------------------------------------
-
-/// Compute normalization scale factors for resistor-weighted DAC.
-fn compute_resistor_scale(weights: &[f64]) -> Vec<f64> {
-    let total: f64 = weights.iter().map(|w| 1.0 / w).sum();
-    weights.iter().map(|w| (1.0 / w) / total).collect()
-}
-
-/// Combine 3 resistor-weighted bits into an 8-bit color value.
-fn combine_weights_3(scale: &[f64], bit0: u8, bit1: u8, bit2: u8) -> u8 {
-    let val = bit0 as f64 * scale[0] + bit1 as f64 * scale[1] + bit2 as f64 * scale[2];
-    (val * 255.0).round().min(255.0) as u8
-}
-
-/// Combine 2 resistor-weighted bits into an 8-bit color value.
-fn combine_weights_2(scale: &[f64], bit0: u8, bit1: u8) -> u8 {
-    let val = bit0 as f64 * scale[0] + bit1 as f64 * scale[1];
-    (val * 255.0).round().min(255.0) as u8
 }

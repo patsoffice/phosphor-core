@@ -1,8 +1,10 @@
 pub mod decode;
+pub mod resistor;
 pub mod sprite;
 pub mod tilemap;
 
 pub use decode::{GfxCache, GfxLayout};
+pub use resistor::{combine_weights, compute_resistor_net, compute_resistor_weights};
 pub use tilemap::TilemapConfig;
 
 /// Rotate an RGB24 buffer 90° counter-clockwise.

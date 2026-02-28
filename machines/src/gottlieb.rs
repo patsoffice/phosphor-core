@@ -25,7 +25,7 @@ use phosphor_core::cpu::i8088::I8088;
 use phosphor_core::cpu::m6502::M6502;
 use phosphor_core::device::{Mc1408Dac, Riot6532};
 use phosphor_core::gfx;
-use phosphor_core::gfx::decode::{decode_gfx, decode_gfx_element, GfxLayout};
+use phosphor_core::gfx::decode::{GfxLayout, decode_gfx, decode_gfx_element};
 
 use phosphor_macros::{BusDebug, MemoryRegion};
 
@@ -440,12 +440,17 @@ impl GottliebBoard {
         let quarter = sprite_rom.len() / 4;
         let planes: [usize; 4] = std::array::from_fn(|p| p * quarter * 8);
         let y_offsets: [usize; 16] = std::array::from_fn(|py| py * 16);
-        self.sprite_cache = decode_gfx(sprite_rom, 0, sprite_count, &GfxLayout {
-            plane_offsets: &planes,
-            x_offsets: &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
-            y_offsets: &y_offsets,
-            char_increment: 256,
-        });
+        self.sprite_cache = decode_gfx(
+            sprite_rom,
+            0,
+            sprite_count,
+            &GfxLayout {
+                plane_offsets: &planes,
+                x_offsets: &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+                y_offsets: &y_offsets,
+                char_increment: 256,
+            },
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -518,7 +523,13 @@ impl GottliebBoard {
         let tile_code = offset / 32;
         if tile_code < 128 {
             let charram = self.map.region_data(Region::CharRam);
-            decode_gfx_element(charram, 0, tile_code, &GOTTLIEB_TILE_LAYOUT, &mut self.charram_cache);
+            decode_gfx_element(
+                charram,
+                0,
+                tile_code,
+                &GOTTLIEB_TILE_LAYOUT,
+                &mut self.charram_cache,
+            );
         }
     }
 

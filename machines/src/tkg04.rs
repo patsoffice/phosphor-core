@@ -10,7 +10,7 @@ use phosphor_core::device::dkong_discrete::DkongDiscrete;
 use phosphor_core::device::i8257::I8257;
 use phosphor_core::device::output_latch::OutputLatch;
 use phosphor_core::gfx;
-use phosphor_core::gfx::decode::{decode_gfx, GfxLayout};
+use phosphor_core::gfx::decode::{GfxLayout, decode_gfx};
 use phosphor_macros::{BusDebug, MemoryRegion};
 
 // ---------------------------------------------------------------------------
@@ -70,35 +70,13 @@ pub const NATIVE_WIDTH: usize = 256;
 pub const NATIVE_HEIGHT: usize = 240;
 pub const VBLANK_END: usize = 16; // first visible scanline
 
-// ---------------------------------------------------------------------------
-// Shared helper functions
-// ---------------------------------------------------------------------------
-
-/// Darlington amplifier 3-bit resistor network (for R and G channels).
-/// Resistors: 1kΩ, 470Ω, 220Ω with 470Ω pulldown.
-pub(crate) fn darlington_3bit(bit0: f64, bit1: f64, bit2: f64) -> u8 {
-    // Conductances
-    let g0 = bit0 / 1000.0;
-    let g1 = bit1 / 470.0;
-    let g2 = bit2 / 220.0;
-    let g_pull = 1.0 / 470.0;
-    let total = g0 + g1 + g2 + g_pull;
-    let active = g0 + g1 + g2;
-    let voltage = if total > 0.0 { active / total } else { 0.0 };
-    (voltage * 255.0).round().min(255.0) as u8
-}
-
-/// Emitter follower 2-bit resistor network (for B channel).
-/// Resistors: 470Ω, 220Ω with 680Ω pulldown.
-pub(crate) fn emitter_2bit(bit0: f64, bit1: f64) -> u8 {
-    let g0 = bit0 / 470.0;
-    let g1 = bit1 / 220.0;
-    let g_pull = 1.0 / 680.0;
-    let total = g0 + g1 + g_pull;
-    let active = g0 + g1;
-    let voltage = if total > 0.0 { active / total } else { 0.0 };
-    (voltage * 255.0).round().min(255.0) as u8
-}
+// Resistor networks for palette PROM decoding.
+// Darlington amplifier (R and G): 1kΩ/470Ω/220Ω with 470Ω pulldown.
+// Emitter follower (B): 470Ω/220Ω with 680Ω pulldown.
+const DARLINGTON_RESISTORS: [f64; 3] = [1000.0, 470.0, 220.0];
+const DARLINGTON_PULLDOWN: f64 = 470.0;
+const EMITTER_RESISTORS: [f64; 2] = [470.0, 220.0];
+const EMITTER_PULLDOWN: f64 = 680.0;
 
 // ---------------------------------------------------------------------------
 // Tkg04Board — shared Nintendo TKG/TRS arcade hardware
@@ -268,28 +246,37 @@ impl Tkg04Board {
         let tile_count = self.tile_plane1_offset / 8; // DK: 256, DK Jr: 512
         let plane1_bits = self.tile_plane1_offset * 8;
         let tile_planes: [usize; 2] = [0, plane1_bits];
-        self.tile_cache = decode_gfx(&self.tile_rom, 0, tile_count, &GfxLayout {
-            plane_offsets: &tile_planes,
-            x_offsets: &[0, 1, 2, 3, 4, 5, 6, 7],
-            y_offsets: &[0, 8, 16, 24, 32, 40, 48, 56],
-            char_increment: 64,
-        });
+        self.tile_cache = decode_gfx(
+            &self.tile_rom,
+            0,
+            tile_count,
+            &GfxLayout {
+                plane_offsets: &tile_planes,
+                x_offsets: &[0, 1, 2, 3, 4, 5, 6, 7],
+                y_offsets: &[0, 8, 16, 24, 32, 40, 48, 56],
+                char_increment: 64,
+            },
+        );
 
         // Sprites: 4-ROM interleaved 2bpp, 16x16
         let sprite_count = self.sprite_rom.len() / 4 / 16; // 128
         let q = self.sprite_rom.len() / 4;
         let q8 = q * 8;
         let sprite_planes: [usize; 2] = [0, 2 * q8];
-        let x_offsets: [usize; 16] = std::array::from_fn(|px| {
-            if px < 8 { px } else { q8 + (px - 8) }
-        });
+        let x_offsets: [usize; 16] =
+            std::array::from_fn(|px| if px < 8 { px } else { q8 + (px - 8) });
         let y_offsets: [usize; 16] = std::array::from_fn(|py| py * 8);
-        self.sprite_cache = decode_gfx(&self.sprite_rom, 0, sprite_count, &GfxLayout {
-            plane_offsets: &sprite_planes,
-            x_offsets: &x_offsets,
-            y_offsets: &y_offsets,
-            char_increment: 128,
-        });
+        self.sprite_cache = decode_gfx(
+            &self.sprite_rom,
+            0,
+            sprite_count,
+            &GfxLayout {
+                plane_offsets: &sprite_planes,
+                x_offsets: &x_offsets,
+                y_offsets: &y_offsets,
+                char_increment: 128,
+            },
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -299,6 +286,8 @@ impl Tkg04Board {
     /// Pre-compute the 256-entry RGB palette from PROMs using resistor network
     /// decoding (Darlington amp for R/G, emitter follower for B).
     pub fn build_palette(&mut self) {
+        use phosphor_core::gfx::compute_resistor_net;
+
         for i in 0..256 {
             // PROMs are inverted (open-collector MB7052/MB7114)
             let c2k = !self.palette_prom[i]; // c-2k at offset 0x000
@@ -312,21 +301,24 @@ impl Tkg04Board {
             }
 
             // Red: 3 bits from c-2j (bits 1-3), Darlington amp
-            let r_bit0 = ((c2j >> 1) & 1) as f64;
-            let r_bit1 = ((c2j >> 2) & 1) as f64;
-            let r_bit2 = ((c2j >> 3) & 1) as f64;
-            let r = darlington_3bit(r_bit0, r_bit1, r_bit2);
+            let r_bits = [
+                ((c2j >> 1) & 1) as f64,
+                ((c2j >> 2) & 1) as f64,
+                ((c2j >> 3) & 1) as f64,
+            ];
+            let r = compute_resistor_net(&r_bits, &DARLINGTON_RESISTORS, DARLINGTON_PULLDOWN);
 
             // Green: c-2j bit 0 (MSB/220Ω) + c-2k bits 2-3 (LSB weights)
-            let g_bit0 = ((c2k >> 2) & 1) as f64;
-            let g_bit1 = ((c2k >> 3) & 1) as f64;
-            let g_bit2 = (c2j & 1) as f64;
-            let g = darlington_3bit(g_bit0, g_bit1, g_bit2);
+            let g_bits = [
+                ((c2k >> 2) & 1) as f64,
+                ((c2k >> 3) & 1) as f64,
+                (c2j & 1) as f64,
+            ];
+            let g = compute_resistor_net(&g_bits, &DARLINGTON_RESISTORS, DARLINGTON_PULLDOWN);
 
             // Blue: 2 bits from c-2k (bits 0-1), emitter follower
-            let b_bit0 = (c2k & 1) as f64;
-            let b_bit1 = ((c2k >> 1) & 1) as f64;
-            let b = emitter_2bit(b_bit0, b_bit1);
+            let b_bits = [(c2k & 1) as f64, ((c2k >> 1) & 1) as f64];
+            let b = compute_resistor_net(&b_bits, &EMITTER_RESISTORS, EMITTER_PULLDOWN);
 
             self.palette_rgb[i] = (r, g, b);
         }
