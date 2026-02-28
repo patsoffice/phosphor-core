@@ -70,13 +70,76 @@ pub const NATIVE_WIDTH: usize = 256;
 pub const NATIVE_HEIGHT: usize = 240;
 pub const VBLANK_END: usize = 16; // first visible scanline
 
-// Resistor networks for palette PROM decoding.
-// Darlington amplifier (R and G): 1kΩ/470Ω/220Ω with 470Ω pulldown.
-// Emitter follower (B): 470Ω/220Ω with 680Ω pulldown.
+// Resistor networks for palette PROM decoding (MB7052 TTL output PROMs).
+// Signal chain: PROM → resistor DAC → Darlington/emitter amp → SANYO EZV20 monitor.
+// Darlington amplifier (R and G): 1kΩ/470Ω/220Ω DAC with 470Ω pullup bias to VCC.
+// Emitter follower (B): 470Ω/220Ω DAC with 680Ω pullup bias to VCC.
 const DARLINGTON_RESISTORS: [f64; 3] = [1000.0, 470.0, 220.0];
-const DARLINGTON_PULLDOWN: f64 = 470.0;
+const DARLINGTON_BIAS_R: f64 = 470.0;
 const EMITTER_RESISTORS: [f64; 2] = [470.0, 220.0];
-const EMITTER_PULLDOWN: f64 = 680.0;
+const EMITTER_BIAS_R: f64 = 680.0;
+
+/// Compute a single color channel using the TKG-04 hardware signal chain.
+///
+/// Models the physical circuit: MB7052 PROM with TTL output levels drives a
+/// resistor DAC network with a VCC pullup bias resistor.  The DAC output feeds
+/// a Darlington or emitter-follower amplifier stage, then an inverting SANYO
+/// EZV20 monitor input circuit with ≈0.7 V diode drops.
+///
+/// `raw_bits` contains non-inverted PROM bit values (0.0 = TTL low/active,
+/// 1.0 = TTL high/inactive).  The function returns a raw floating-point
+/// intensity (not yet clamped to 0–255) suitable for palette normalization.
+fn compute_tkg04_channel(
+    raw_bits: &[f64],
+    resistors: &[f64],
+    bias_r: f64,
+    is_darlington: bool,
+) -> f64 {
+    const VCC: f64 = 5.0;
+    const V_BIAS: f64 = 5.0;
+    const V_OL: f64 = 0.05; // TTL low output voltage
+    const V_OH: f64 = 4.0; // TTL high output voltage
+    const TTL_H_RES: f64 = 50.0; // TTL high-state output impedance (Ω)
+
+    let mut r_total: f64 = 0.0;
+    let mut v: f64 = 0.0;
+
+    // First pass: low inputs (raw bit = 0, PROM output driving to vOL)
+    for (&bit, &r) in raw_bits.iter().zip(resistors) {
+        if r != 0.0 && bit == 0.0 {
+            r_total += 1.0 / r;
+            v += V_OL / r;
+        }
+    }
+
+    // Bias pullup to VCC
+    r_total += 1.0 / bias_r;
+    v += V_BIAS / bias_r;
+
+    // Second pass: high inputs (raw bit = 1, TTL high through R + output impedance)
+    for (&bit, &r) in raw_bits.iter().zip(resistors) {
+        if r != 0.0 && bit != 0.0 {
+            let r_eff = r + TTL_H_RES;
+            r_total += 1.0 / r_eff;
+            v += V_OH / r_eff;
+        }
+    }
+
+    // Node voltage (Thévenin equivalent)
+    let v_node = v / r_total;
+
+    // Amplifier stage
+    let v_amp = if is_darlington {
+        v_node.max(0.7) // Darlington: minimum output ≈ 0.7 V
+    } else {
+        (v_node - 0.7).max(0.0) // Emitter follower: base-emitter drop ≈ 0.7 V
+    };
+
+    // SANYO EZV20 monitor: inverting circuit with diode clipping
+    let v_inv = VCC - v_amp;
+    let v_clip = (v_inv - 0.7).clamp(0.0, VCC - 1.4);
+    v_clip / (VCC - 1.4) * 255.0
+}
 
 // ---------------------------------------------------------------------------
 // Tkg04Board — shared Nintendo TKG/TRS arcade hardware
@@ -283,22 +346,22 @@ impl Tkg04Board {
     // Palette
     // -----------------------------------------------------------------------
 
-    /// Pre-compute the 256-entry RGB palette from PROMs using resistor network
-    /// decoding (Darlington amp for R/G, emitter follower for B).
+    /// Pre-compute the 256-entry RGB palette from PROMs using a MAME-compatible
+    /// resistor network model that accounts for TTL output levels, Darlington/emitter
+    /// amplifier characteristics, and the SANYO EZV20 monitor inversion circuit.
     pub fn build_palette(&mut self) {
-        use phosphor_core::gfx::compute_resistor_net;
+        let mut raw: [(f64, f64, f64); 256] = [(0.0, 0.0, 0.0); 256];
 
-        for i in 0..256 {
-            // PROMs are inverted (open-collector MB7052/MB7114)
-            let c2k = !self.palette_prom[i]; // c-2k at offset 0x000
-            let c2j = !self.palette_prom[0x100 + i]; // c-2j at offset 0x100
-
-            // Special case: when (i & 0x03) == 0, output is forced black
-            // (tri-state NOR on the color decoder)
+        for (i, entry) in raw.iter_mut().enumerate() {
+            // Tri-state: NOR on color decoder forces output black
             if (i & 0x03) == 0x00 {
-                self.palette_rgb[i] = (0, 0, 0);
                 continue;
             }
+
+            // Raw (non-inverted) PROM bytes — inversion is handled by the
+            // TTL output model inside compute_tkg04_channel.
+            let c2k = self.palette_prom[i]; // first PROM (c-2k / c-2e)
+            let c2j = self.palette_prom[0x100 + i]; // second PROM (c-2j / c-2f)
 
             // Red: 3 bits from c-2j (bits 1-3), Darlington amp
             let r_bits = [
@@ -306,21 +369,39 @@ impl Tkg04Board {
                 ((c2j >> 2) & 1) as f64,
                 ((c2j >> 3) & 1) as f64,
             ];
-            let r = compute_resistor_net(&r_bits, &DARLINGTON_RESISTORS, DARLINGTON_PULLDOWN);
+            let r =
+                compute_tkg04_channel(&r_bits, &DARLINGTON_RESISTORS, DARLINGTON_BIAS_R, true);
 
-            // Green: c-2j bit 0 (MSB/220Ω) + c-2k bits 2-3 (LSB weights)
+            // Green: c-2k bits 2-3 + c-2j bit 0, Darlington amp
             let g_bits = [
                 ((c2k >> 2) & 1) as f64,
                 ((c2k >> 3) & 1) as f64,
                 (c2j & 1) as f64,
             ];
-            let g = compute_resistor_net(&g_bits, &DARLINGTON_RESISTORS, DARLINGTON_PULLDOWN);
+            let g =
+                compute_tkg04_channel(&g_bits, &DARLINGTON_RESISTORS, DARLINGTON_BIAS_R, true);
 
             // Blue: 2 bits from c-2k (bits 0-1), emitter follower
             let b_bits = [(c2k & 1) as f64, ((c2k >> 1) & 1) as f64];
-            let b = compute_resistor_net(&b_bits, &EMITTER_RESISTORS, EMITTER_PULLDOWN);
+            let b = compute_tkg04_channel(&b_bits, &EMITTER_RESISTORS, EMITTER_BIAS_R, false);
 
-            self.palette_rgb[i] = (r, g, b);
+            *entry = (r, g, b);
+        }
+
+        // Normalize palette range so maximum component reaches 255
+        // (matches MAME's palette.normalize_range)
+        let max_val = raw
+            .iter()
+            .flat_map(|&(r, g, b)| [r, g, b])
+            .fold(0.0f64, f64::max);
+        let scale = if max_val > 0.0 { 255.0 / max_val } else { 1.0 };
+
+        for (i, &(r, g, b)) in raw.iter().enumerate() {
+            self.palette_rgb[i] = (
+                (r * scale).round().min(255.0) as u8,
+                (g * scale).round().min(255.0) as u8,
+                (b * scale).round().min(255.0) as u8,
+            );
         }
     }
 
