@@ -74,6 +74,11 @@ pub fn run(
     let mut video = Video::new(&sdl_video, "Phosphor Emulator", width, height, scale);
     let mut event_pump = sdl_context.event_pump().expect("Failed to get event pump");
 
+    // Detect vector display machines and create GL renderer.
+    let mut vector_renderer = machine
+        .vector_display_list()
+        .map(|_| crate::vector_gl::VectorRenderer::new());
+
     let audio_state = crate::audio::init(&sdl_audio, machine.audio_sample_rate());
     let mut audio_started = false;
 
@@ -369,28 +374,75 @@ pub fn run(
             || last_render_time.elapsed() >= frame_duration;
 
         if should_render {
-            machine.render_frame(&mut framebuffer);
-
-            // FPS overlay onto framebuffer (only when debug panel is not active)
-            if show_fps && !debug_state.active {
-                let stats = machine.overlay_stats();
-                crate::overlay::draw_overlay(
-                    &mut framebuffer,
-                    width as usize,
-                    &fps_text,
-                    stats.as_deref(),
-                );
-            }
-
-            video.update_game_texture(&framebuffer);
-
-            if debug_state.active {
-                let bus_ref = machine.debug_bus();
-                video.present_with_debug(|ctx, tex_id, native_size| {
-                    debug_ui::draw_debug_ui(ctx, tex_id, native_size, &mut debug_state, bus_ref);
-                });
+            // Vector machines: render GL lines directly (no CPU framebuffer).
+            // Falls back to CPU rasterization in debug mode (needs a texture).
+            if let Some(ref mut renderer) = vector_renderer
+                && let Some(lines) = machine.vector_display_list()
+                && !debug_state.active
+            {
+                if show_fps {
+                    let fps = fps_text.clone();
+                    let stats = machine.overlay_stats();
+                    video.present_vectors_with_overlay(renderer, lines, |ctx| {
+                        egui::Window::new("fps_overlay")
+                            .title_bar(false)
+                            .resizable(false)
+                            .fixed_pos(egui::pos2(4.0, 4.0))
+                            .frame(egui::Frame::NONE)
+                            .show(ctx, |ui| {
+                                ui.set_min_width(120.0);
+                                ui.label(
+                                    egui::RichText::new(&fps)
+                                        .color(egui::Color32::WHITE)
+                                        .background_color(egui::Color32::from_black_alpha(160))
+                                        .monospace(),
+                                );
+                                if let Some(ref s) = stats {
+                                    ui.label(
+                                        egui::RichText::new(s)
+                                            .color(egui::Color32::WHITE)
+                                            .background_color(egui::Color32::from_black_alpha(160))
+                                            .monospace(),
+                                    );
+                                }
+                            });
+                    });
+                } else {
+                    // Still run egui pass to consume input events (prevents stale
+                    // state buildup), but render no UI widgets.
+                    video.present_vectors_with_overlay(renderer, lines, |_ctx| {});
+                }
             } else {
-                video.present_game_only();
+                // Raster machine (or debug mode): CPU framebuffer path.
+                machine.render_frame(&mut framebuffer);
+
+                // FPS overlay onto framebuffer (only when debug panel is not active)
+                if show_fps && !debug_state.active {
+                    let stats = machine.overlay_stats();
+                    crate::overlay::draw_overlay(
+                        &mut framebuffer,
+                        width as usize,
+                        &fps_text,
+                        stats.as_deref(),
+                    );
+                }
+
+                video.update_game_texture(&framebuffer);
+
+                if debug_state.active {
+                    let bus_ref = machine.debug_bus();
+                    video.present_with_debug(|ctx, tex_id, native_size| {
+                        debug_ui::draw_debug_ui(
+                            ctx,
+                            tex_id,
+                            native_size,
+                            &mut debug_state,
+                            bus_ref,
+                        );
+                    });
+                } else {
+                    video.present_game_only();
+                }
             }
             last_render_time = Instant::now();
         }

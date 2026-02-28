@@ -166,6 +166,27 @@ impl Video {
         self.egui_ctx.wants_keyboard_input()
     }
 
+    /// Render vector lines via OpenGL, then run an egui pass for overlays.
+    pub fn present_vectors_with_overlay(
+        &mut self,
+        renderer: &mut crate::vector_gl::VectorRenderer,
+        lines: &[phosphor_core::device::dvg::VectorLine],
+        overlay_fn: impl FnOnce(&egui::Context),
+    ) {
+        unsafe {
+            gl::ClearColor(0.0, 0.0, 0.0, 1.0);
+            gl::Clear(gl::COLOR_BUFFER_BIT);
+        }
+        let (w, h) = self.window.size();
+        renderer.render(lines, w, h);
+
+        // Run a minimal egui pass for overlay text on top of the vectors.
+        self.egui_state.input.time = Some(self.start_time.elapsed().as_secs_f64());
+        self.egui_ctx.begin_pass(self.egui_state.input.take());
+        overlay_fn(&self.egui_ctx);
+        self.finish_frame();
+    }
+
     /// Resize the window.
     pub fn resize_window(&mut self, width: u32, height: u32) {
         self.window

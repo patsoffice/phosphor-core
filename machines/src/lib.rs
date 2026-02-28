@@ -51,12 +51,15 @@ macro_rules! impl_standalone_debug {
 }
 pub(crate) use impl_standalone_debug;
 
+pub mod astdelux;
 pub mod asteroids;
+pub mod atari_dvg;
 pub mod ccastles;
 pub mod donkey_kong;
 pub mod donkey_kong_jr;
 pub mod gridlee;
 pub mod joust;
+pub mod llander;
 pub mod mcr2;
 pub mod missile_command;
 pub mod mspacman;
@@ -73,12 +76,15 @@ pub mod simplez80;
 pub mod tkg04;
 pub mod williams;
 
+pub use astdelux::AsteroidsDeluxeSystem;
 pub use asteroids::AsteroidsSystem;
+pub use atari_dvg::AtariDvgBoard;
 pub use ccastles::CrystalCastlesSystem;
 pub use donkey_kong::DkongSystem;
 pub use donkey_kong_jr::DkongJrSystem;
 pub use gridlee::GridleeSystem;
 pub use joust::JoustSystem;
+pub use llander::LunarLanderSystem;
 pub use missile_command::MissileCommandSystem;
 pub use mspacman::MsPacmanSystem;
 pub use pacman::PacmanSystem;

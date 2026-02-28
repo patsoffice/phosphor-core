@@ -14,6 +14,8 @@ pub struct AnalogInput {
     pub name: &'static str,
 }
 
+use crate::device::dvg::VectorLine;
+
 use super::debug::BusDebug;
 use super::memory_map::{MemoryMap, WatchpointHit, WatchpointKind};
 use super::save_state::SaveError;
@@ -73,6 +75,12 @@ pub trait Renderable {
     /// Returns a short string to display below the FPS counter when the
     /// overlay is active. Machines without stats return `None` (the default).
     fn overlay_stats(&self) -> Option<String> {
+        None
+    }
+
+    /// Return the vector display list for direct GL rendering, if this is
+    /// a vector display machine. Raster machines return `None` (the default).
+    fn vector_display_list(&self) -> Option<&[VectorLine]> {
         None
     }
 }

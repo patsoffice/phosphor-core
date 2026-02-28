@@ -6,6 +6,7 @@ mod emulator;
 mod input;
 mod overlay;
 mod rom_path;
+mod vector_gl;
 mod video;
 
 fn main() {

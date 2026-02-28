@@ -12,46 +12,66 @@ use phosphor_core::device::dvg::VectorLine;
 use crate::atari_dvg::{self, AtariDvgBoard, Region};
 use crate::registry::MachineEntry;
 use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
-use crate::set_bit_active_high;
+use crate::{set_bit_active_high, set_bit_active_low};
 
 // ---------------------------------------------------------------------------
-// ROM definitions (MAME `asteroid` parent set)
+// ROM definitions (MAME `llander` set, revision 2)
 // ---------------------------------------------------------------------------
 
-/// Program ROM: 6KB at CPU addresses 0x6800–0x7FFF.
+/// Program ROM: 8KB at CPU addresses 0x6000–0x7FFF.
 static PROGRAM_ROM: RomRegion = RomRegion {
-    size: 0x1800,
+    size: 0x2000,
     entries: &[
         RomEntry {
-            name: "035145-04e.ef2",
+            name: "034572-02.f1",
             size: 0x0800,
             offset: 0x0000,
-            crc32: &[0xb503eaf7],
+            crc32: &[0xb8763eea],
         },
         RomEntry {
-            name: "035144-04e.h2",
+            name: "034571-02.de1",
             size: 0x0800,
             offset: 0x0800,
-            crc32: &[0x25233192],
+            crc32: &[0x77da4b2f],
         },
         RomEntry {
-            name: "035143-02.j2",
+            name: "034570-01.c1",
             size: 0x0800,
             offset: 0x1000,
-            crc32: &[0x312caa02],
+            crc32: &[0x2724e591],
+        },
+        RomEntry {
+            name: "034569-02.b1",
+            size: 0x0800,
+            offset: 0x1800,
+            crc32: &[0x72837a4e],
         },
     ],
 };
 
-/// Vector ROM: 2KB at CPU address 0x5000–0x57FF.
+/// Vector ROM: 6KB at CPU addresses 0x4800–0x5FFF.
 static VECTOR_ROM: RomRegion = RomRegion {
-    size: 0x0800,
-    entries: &[RomEntry {
-        name: "035127-02.np3",
-        size: 0x0800,
-        offset: 0x0000,
-        crc32: &[0x8b71fd9e],
-    }],
+    size: 0x1800,
+    entries: &[
+        RomEntry {
+            name: "034599-01.r3",
+            size: 0x0800,
+            offset: 0x0000,
+            crc32: &[0x355a9371],
+        },
+        RomEntry {
+            name: "034598-01.np3",
+            size: 0x0800,
+            offset: 0x0800,
+            crc32: &[0x9c4ffa68],
+        },
+        RomEntry {
+            name: "034597-01.m3",
+            size: 0x0800,
+            offset: 0x1000,
+            crc32: &[0xebb744f2],
+        },
+    ],
 };
 
 // ---------------------------------------------------------------------------
@@ -59,38 +79,29 @@ static VECTOR_ROM: RomRegion = RomRegion {
 // ---------------------------------------------------------------------------
 
 pub const INPUT_COIN: u8 = 0;
-pub const INPUT_START1: u8 = 1;
-pub const INPUT_START2: u8 = 2;
-pub const INPUT_THRUST: u8 = 3;
-pub const INPUT_FIRE: u8 = 4;
-pub const INPUT_HYPERSPACE: u8 = 5;
-pub const INPUT_ROT_LEFT: u8 = 6;
-pub const INPUT_ROT_RIGHT: u8 = 7;
+pub const INPUT_START: u8 = 1;
+pub const INPUT_SELECT: u8 = 2;
+pub const INPUT_ABORT: u8 = 3;
+pub const INPUT_ROT_LEFT: u8 = 4;
+pub const INPUT_ROT_RIGHT: u8 = 5;
+pub const INPUT_THRUST: u8 = 6;
 
-const ASTEROIDS_INPUT_MAP: &[InputButton] = &[
+const LLANDER_INPUT_MAP: &[InputButton] = &[
     InputButton {
         id: INPUT_COIN,
         name: "Coin",
     },
     InputButton {
-        id: INPUT_START1,
+        id: INPUT_START,
         name: "P1 Start",
     },
     InputButton {
-        id: INPUT_START2,
-        name: "P2 Start",
+        id: INPUT_SELECT,
+        name: "P1 Select",
     },
     InputButton {
-        id: INPUT_THRUST,
-        name: "P1 Up",
-    },
-    InputButton {
-        id: INPUT_FIRE,
+        id: INPUT_ABORT,
         name: "P1 Fire",
-    },
-    InputButton {
-        id: INPUT_HYPERSPACE,
-        name: "P1 Jump",
     },
     InputButton {
         id: INPUT_ROT_LEFT,
@@ -100,44 +111,58 @@ const ASTEROIDS_INPUT_MAP: &[InputButton] = &[
         id: INPUT_ROT_RIGHT,
         name: "P1 Right",
     },
+    InputButton {
+        id: INPUT_THRUST,
+        name: "P1 Up",
+    },
 ];
 
 // ---------------------------------------------------------------------------
-// AsteroidsSystem — Atari DVG board configured for Asteroids (1979)
+// LunarLanderSystem — Atari DVG board configured for Lunar Lander (1979)
 // ---------------------------------------------------------------------------
 
-/// Asteroids-specific wrapper around the shared Atari DVG board.
+/// Lunar Lander-specific wrapper around the shared Atari DVG board.
+///
+/// Features an analog thrust pedal (mapped to digital button) and mission
+/// lamp outputs. Lunar Lander uses a flat IN0 byte read (not multiplexed)
+/// unlike Asteroids which uses an 8:1 multiplexer.
 ///
 /// Memory map (15-bit address bus, `addr & 0x7FFF`):
-///   0x0000–0x03FF  RAM (1 KB)
-///   0x2000–0x2007  IN0 read (buttons, 3 KHz clock, VG_HALT)
-///   0x2400–0x2407  IN1 read (coins, start, thrust, rotate)
+///   0x0000–0x00FF  RAM (256 bytes, mirrored)
+///   0x2000         IN0 read (flat byte: VG_HALT, service, tilt, clock)
+///   0x2400–0x2407  IN1 read (coins, start, select, abort, rotate)
 ///   0x2800–0x2803  DSW1 read (DIP switches)
+///   0x2C00         Thrust pedal read (analog, 0x00–0xFE)
 ///   0x3000         DVG GO write
-///   0x3200         Output latch write (74LS259)
+///   0x3200         Output latch write (mission lamps)
 ///   0x3400         Watchdog reset write
-///   0x3600         Explosion sound write
-///   0x3A00         Thump sound write
-///   0x3C00–0x3C07  Audio latch write (74LS259)
+///   0x3C00         Sound register write (thrust/tones/explosion)
 ///   0x3E00         Noise reset write
 ///   0x4000–0x47FF  Vector RAM (2 KB, shared CPU/DVG)
-///   0x5000–0x57FF  Vector ROM (2 KB)
-///   0x6800–0x7FFF  Program ROM (6 KB)
-pub struct AsteroidsSystem {
+///   0x4800–0x5FFF  Vector ROM (6 KB)
+///   0x6000–0x7FFF  Program ROM (8 KB)
+pub struct LunarLanderSystem {
     pub board: AtariDvgBoard,
 
-    // I/O — active-HIGH inputs (default 0x00 = all released)
+    // I/O — Lunar Lander uses mixed active-HIGH/LOW inputs.
+    // in0: active-LOW bits 1,2,3,4,5,7 idle HIGH; bits 0,6 are dynamic.
     in0: u8,
+    // in1: active-LOW bits 1,3 idle HIGH; others idle LOW.
     in1: u8,
-    /// DIP switches: default 0x84 (English, 3 lives, 1 coin/1 credit).
+    /// DIP switches (P8): default 0x80 (English, 750 fuel/coin).
     dip_switches: u8,
+
+    // Thrust pedal: analog value 0x00–0xFE.
+    // Digital button maps to 0xFE (full thrust) when pressed, 0x00 when released.
+    thrust_value: u8,
 }
 
-impl AsteroidsSystem {
+impl LunarLanderSystem {
     fn build_map() -> MemoryMap {
         let mut map = MemoryMap::new();
-        map.region(Region::Ram, "RAM", 0x0000, 0x0400, AccessKind::ReadWrite)
-            .mirror(0x0400, 0x0000, 0x0400)
+        // Lunar Lander has only 256 bytes of RAM, mirrored throughout 0x0000–0x01FF.
+        map.region(Region::Ram, "RAM", 0x0000, 0x0100, AccessKind::ReadWrite)
+            .mirror(0x0100, 0x0000, 0x0100)
             .region(Region::Io, "I/O", 0x2000, 0x2000, AccessKind::Io)
             .region(
                 Region::VectorRam,
@@ -149,15 +174,15 @@ impl AsteroidsSystem {
             .region(
                 Region::VectorRom,
                 "Vector ROM",
-                0x5000,
-                0x0800,
+                0x4800,
+                0x1800,
                 AccessKind::ReadOnly,
             )
             .region(
                 Region::ProgramRom,
                 "Program ROM",
-                0x6800,
-                0x1800,
+                0x6000,
+                0x2000,
                 AccessKind::ReadOnly,
             );
         map
@@ -165,11 +190,14 @@ impl AsteroidsSystem {
 
     pub fn new() -> Self {
         Self {
-            // Asteroids: VROM at DVG 0x1000, size 0x0800
-            board: AtariDvgBoard::new(Self::build_map(), 0x1000, 0x0800),
-            in0: 0x00,
-            in1: 0x00,
-            dip_switches: 0x84, // English, 3 lives, 1C/1C
+            // Lunar Lander: VROM at DVG 0x0800, size 0x1800
+            board: AtariDvgBoard::new(Self::build_map(), 0x0800, 0x1800),
+            // Active-LOW bits idle HIGH: IN0 bits 1,2,3,4,5,7
+            in0: 0xBE,
+            // Active-LOW bits idle HIGH: IN1 bits 1,3
+            in1: 0x0A,
+            dip_switches: 0x80,
+            thrust_value: 0x00,
         }
     }
 
@@ -182,7 +210,7 @@ impl AsteroidsSystem {
     }
 }
 
-impl Default for AsteroidsSystem {
+impl Default for LunarLanderSystem {
     fn default() -> Self {
         Self::new()
     }
@@ -192,7 +220,7 @@ impl Default for AsteroidsSystem {
 // Bus implementation
 // ---------------------------------------------------------------------------
 
-impl Bus for AsteroidsSystem {
+impl Bus for LunarLanderSystem {
     type Address = u16;
     type Data = u8;
 
@@ -209,47 +237,54 @@ impl Bus for AsteroidsSystem {
             }
 
             Region::IO => match addr {
-                // IN0: 0x2000–0x2007 — 74LS251 8:1 multiplexer.
-                // A0–A2 select which input bit to read; the selected bit appears on D7.
-                // The 6502 tests it via BIT (N flag = D7).
-                //   Bit 0: unused
-                //   Bit 1: 3 KHz clock (cpu total_cycles & 0x100)
-                //   Bit 2: VG_HALT (active-LOW: 0 = done, 1 = running)
-                //   Bit 3: Hyperspace     Bit 4: Fire
-                //   Bit 5: Diagnostic     Bit 6: Tilt     Bit 7: Self-test
-                0x2000..=0x2007 => {
-                    let offset = (addr & 7) as u8;
+                // IN0: 0x2000 — flat byte read (not multiplexed like Asteroids).
+                //   Bit 0: VG_HALT (1 = done)
+                //   Bit 1: Service switch (active-LOW)
+                //   Bit 2: Tilt (active-LOW)
+                //   Bit 3-5: unused (active-LOW)
+                //   Bit 6: 3 KHz clock
+                //   Bit 7: Diagnostic step (active-LOW)
+                0x2000 => {
                     let mut val = self.in0;
+                    // Bit 0: VG_HALT (1 = halted/done)
+                    if self.board.dvg.is_halted() {
+                        val |= 0x01;
+                    } else {
+                        val &= !0x01;
+                    }
+                    // Bit 6: 3 KHz clock
                     if self.board.clock & 0x100 != 0 {
-                        val |= 0x02;
+                        val |= 0x40;
                     } else {
-                        val &= !0x02;
+                        val &= !0x40;
                     }
-                    if !self.board.dvg.is_halted() {
-                        val |= 0x04;
-                    } else {
-                        val &= !0x04;
-                    }
-                    ((val >> offset) & 1) << 7
+                    val
                 }
 
                 // IN1: 0x2400–0x2407 — 74LS251 8:1 multiplexer.
-                //   Bit 0: Left coin   Bit 1: Center coin   Bit 2: Right coin
-                //   Bit 3: 1P Start    Bit 4: 2P Start
-                //   Bit 5: Thrust      Bit 6: Rotate right   Bit 7: Rotate left
+                //   Bit 0: Start (active-HIGH)
+                //   Bit 1: Coin1 (active-LOW)
+                //   Bit 2: Coin2 (active-HIGH)
+                //   Bit 3: Coin3 (active-LOW)
+                //   Bit 4: Select (active-HIGH)
+                //   Bit 5: Abort (active-HIGH)
+                //   Bit 6: Rotate right (active-HIGH)
+                //   Bit 7: Rotate left (active-HIGH)
                 0x2400..=0x2407 => {
                     let offset = (addr & 7) as u8;
                     ((self.in1 >> offset) & 1) << 7
                 }
 
                 // DSW1: 0x2800–0x2803 — 74LS253 dual 4:1 multiplexer.
-                // A0–A1 select a pair of DIP switch bits: even bit → D0, odd bit → D7.
                 0x2800..=0x2803 => {
                     let offset = (addr & 3) as u8;
                     let bit0 = (self.dip_switches >> (offset * 2)) & 1;
                     let bit7 = (self.dip_switches >> (offset * 2 + 1)) & 1;
                     bit0 | (bit7 << 7)
                 }
+
+                // Thrust pedal: 0x2C00 — analog value 0x00–0xFE.
+                0x2C00 => self.thrust_value,
 
                 _ => 0,
             },
@@ -271,12 +306,12 @@ impl Bus for AsteroidsSystem {
 
             Region::IO => match addr {
                 0x3000 => self.board.trigger_dvg(),
-                0x3200 => { /* output latch stub */ }
+                0x3200 => { /* output latch: mission lamps stub */ }
                 0x3400 => self.board.watchdog_frame_count = 0,
-                0x3600 => { /* audio stub */ }
-                0x3A00 => { /* audio stub */ }
-                0x3C00..=0x3C07 => { /* audio stub */ }
-                0x3E00 => { /* audio stub */ }
+                // Sound register: bits 0-2 thrust volume, bit 3 explosion,
+                // bit 4 3KHz tone, bit 5 6KHz tone
+                0x3C00 => { /* sound stub */ }
+                0x3E00 => { /* noise reset stub */ }
                 _ => {}
             },
 
@@ -298,7 +333,7 @@ impl Bus for AsteroidsSystem {
 // Machine implementation
 // ---------------------------------------------------------------------------
 
-impl Renderable for AsteroidsSystem {
+impl Renderable for LunarLanderSystem {
     fn display_size(&self) -> (u32, u32) {
         atari_dvg::TIMING.display_size()
     }
@@ -312,33 +347,34 @@ impl Renderable for AsteroidsSystem {
     }
 }
 
-impl AudioSource for AsteroidsSystem {} // no audio hardware emulated yet
+impl AudioSource for LunarLanderSystem {} // discrete audio, not yet emulated
 
-impl InputReceiver for AsteroidsSystem {
+impl InputReceiver for LunarLanderSystem {
     fn set_input(&mut self, button: u8, pressed: bool) {
         match button {
-            // IN1 (active-HIGH: set bit on press, clear on release)
-            INPUT_COIN => set_bit_active_high(&mut self.in1, 0, pressed),
-            INPUT_START1 => set_bit_active_high(&mut self.in1, 3, pressed),
-            INPUT_START2 => set_bit_active_high(&mut self.in1, 4, pressed),
-            INPUT_THRUST => set_bit_active_high(&mut self.in1, 5, pressed),
+            // IN1
+            INPUT_COIN => set_bit_active_low(&mut self.in1, 1, pressed),
+            INPUT_START => set_bit_active_high(&mut self.in1, 0, pressed),
+            INPUT_SELECT => set_bit_active_high(&mut self.in1, 4, pressed),
+            INPUT_ABORT => set_bit_active_high(&mut self.in1, 5, pressed),
             INPUT_ROT_RIGHT => set_bit_active_high(&mut self.in1, 6, pressed),
             INPUT_ROT_LEFT => set_bit_active_high(&mut self.in1, 7, pressed),
 
-            // IN0 (active-HIGH)
-            INPUT_FIRE => set_bit_active_high(&mut self.in0, 4, pressed),
-            INPUT_HYPERSPACE => set_bit_active_high(&mut self.in0, 3, pressed),
+            // Thrust pedal: digital approximation
+            INPUT_THRUST => {
+                self.thrust_value = if pressed { 0xFE } else { 0x00 };
+            }
 
             _ => {}
         }
     }
 
     fn input_map(&self) -> &[InputButton] {
-        ASTEROIDS_INPUT_MAP
+        LLANDER_INPUT_MAP
     }
 }
 
-impl MachineDebug for AsteroidsSystem {
+impl MachineDebug for LunarLanderSystem {
     fn debug_bus(&self) -> Option<&dyn phosphor_core::core::debug::BusDebug> {
         Some(&self.board)
     }
@@ -359,7 +395,7 @@ impl MachineDebug for AsteroidsSystem {
     }
 }
 
-impl Machine for AsteroidsSystem {
+impl Machine for LunarLanderSystem {
     fn run_frame(&mut self) {
         bus_split!(self, bus => {
             for _ in 0..atari_dvg::TIMING.cycles_per_frame() {
@@ -389,7 +425,7 @@ impl Machine for AsteroidsSystem {
     }
 
     fn machine_id(&self) -> &str {
-        "asteroids"
+        "llander"
     }
 
     fn save_state(&self) -> Option<Vec<u8>> {
@@ -398,6 +434,7 @@ impl Machine for AsteroidsSystem {
         self.board.save_board_state(&mut w);
         w.write_u8(self.in0);
         w.write_u8(self.in1);
+        w.write_u8(self.thrust_value);
         Some(w.into_vec())
     }
 
@@ -406,6 +443,7 @@ impl Machine for AsteroidsSystem {
         self.board.load_board_state(&mut r)?;
         self.in0 = r.read_u8()?;
         self.in1 = r.read_u8()?;
+        self.thrust_value = r.read_u8()?;
         Ok(())
     }
 }
@@ -415,13 +453,13 @@ impl Machine for AsteroidsSystem {
 // ---------------------------------------------------------------------------
 
 fn create_machine(rom_set: &RomSet) -> Result<Box<dyn Machine>, RomLoadError> {
-    let mut sys = AsteroidsSystem::new();
+    let mut sys = LunarLanderSystem::new();
     sys.load_rom_set(rom_set)?;
     Ok(Box::new(sys))
 }
 
 inventory::submit! {
-    MachineEntry::new("asteroid", "asteroid", create_machine)
+    MachineEntry::new("llander", "llander", create_machine)
 }
 
 #[cfg(test)]
@@ -433,25 +471,26 @@ mod tests {
 
     #[test]
     fn save_load_round_trip() {
-        let mut sys = AsteroidsSystem::new();
+        let mut sys = LunarLanderSystem::new();
 
         // Set known state
-        sys.board.map.region_data_mut(Region::Ram)[0x100] = 0xAA;
+        sys.board.map.region_data_mut(Region::Ram)[0x50] = 0xAA;
         sys.board.map.region_data_mut(Region::VectorRam)[0x200] = 0xBB;
-        sys.in0 = 0x18;
+        sys.in0 = 0x3C;
         sys.in1 = 0xE8;
         sys.board.clock = 75_000;
         sys.board.nmi_counter = 3000;
         sys.board.nmi_pending = true;
         sys.board.watchdog_frame_count = 5;
+        sys.thrust_value = 0x80;
 
         // Save
         let data = sys.save_state().expect("save_state should return Some");
         let cpu_snap = sys.board.cpu.snapshot();
 
         // Mutate everything
-        let mut sys2 = AsteroidsSystem::new();
-        sys2.board.map.region_data_mut(Region::Ram)[0x100] = 0xFF;
+        let mut sys2 = LunarLanderSystem::new();
+        sys2.board.map.region_data_mut(Region::Ram)[0x50] = 0xFF;
         sys2.in0 = 0xFF;
         sys2.board.clock = 999;
 
@@ -462,46 +501,44 @@ mod tests {
         assert_eq!(sys2.board.cpu.snapshot(), cpu_snap);
 
         // Verify memory
-        assert_eq!(sys2.board.map.region_data(Region::Ram)[0x100], 0xAA);
+        assert_eq!(sys2.board.map.region_data(Region::Ram)[0x50], 0xAA);
         assert_eq!(sys2.board.map.region_data(Region::VectorRam)[0x200], 0xBB);
 
         // Verify I/O and timing state
-        assert_eq!(sys2.in0, 0x18);
+        assert_eq!(sys2.in0, 0x3C);
         assert_eq!(sys2.in1, 0xE8);
         assert_eq!(sys2.board.clock, 75_000);
         assert_eq!(sys2.board.nmi_counter, 3000);
         assert!(sys2.board.nmi_pending);
         assert_eq!(sys2.board.watchdog_frame_count, 5);
-
-        // Transient state should be cleared
-        assert!(sys2.board.display_list.is_empty());
+        assert_eq!(sys2.thrust_value, 0x80);
     }
 
     #[test]
     fn save_load_machine_id_validated() {
-        let sys = AsteroidsSystem::new();
+        let sys = LunarLanderSystem::new();
         let data = sys.save_state().unwrap();
 
         // Tamper with the machine ID
         let mut bad = data.clone();
         let id_offset = 4 + 4 + 4; // magic(4) + version(4) + id_len(4)
-        bad[id_offset..id_offset + 9].copy_from_slice(b"xxxxxxxxx");
+        bad[id_offset..id_offset + 7].copy_from_slice(b"xxxxxxx");
 
-        let mut sys2 = AsteroidsSystem::new();
+        let mut sys2 = LunarLanderSystem::new();
         let result = sys2.load_state(&bad);
         assert!(result.is_err(), "should reject mismatched machine ID");
     }
 
     #[test]
     fn save_does_not_include_rom() {
-        let mut sys = AsteroidsSystem::new();
+        let mut sys = LunarLanderSystem::new();
         sys.board.map.region_data_mut(Region::ProgramRom)[0] = 0xDE;
         sys.board.map.region_data_mut(Region::VectorRom)[0] = 0xAD;
 
         let data = sys.save_state().unwrap();
 
         // Load into a fresh system (ROMs are zeroed)
-        let mut sys2 = AsteroidsSystem::new();
+        let mut sys2 = LunarLanderSystem::new();
         sys2.load_state(&data).unwrap();
 
         // ROMs should remain at their default (zeroed), not overwritten

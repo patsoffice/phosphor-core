@@ -4,10 +4,11 @@ use phosphor_core::core::machine::{
     AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
 };
 use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
-use phosphor_core::core::save_state::{self, SaveError, StateWriter};
+use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::Cpu;
 use phosphor_core::device::dvg::VectorLine;
+use phosphor_core::device::pokey::Pokey;
 
 use crate::atari_dvg::{self, AtariDvgBoard, Region};
 use crate::registry::MachineEntry;
@@ -15,43 +16,57 @@ use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
 use crate::set_bit_active_high;
 
 // ---------------------------------------------------------------------------
-// ROM definitions (MAME `asteroid` parent set)
+// ROM definitions (MAME `astdelux` set, revision 3)
 // ---------------------------------------------------------------------------
 
-/// Program ROM: 6KB at CPU addresses 0x6800–0x7FFF.
+/// Program ROM: 8KB at CPU addresses 0x6000–0x7FFF.
 static PROGRAM_ROM: RomRegion = RomRegion {
-    size: 0x1800,
+    size: 0x2000,
     entries: &[
         RomEntry {
-            name: "035145-04e.ef2",
+            name: "036430-02.d1",
             size: 0x0800,
             offset: 0x0000,
-            crc32: &[0xb503eaf7],
+            crc32: &[0xa4d7a525],
         },
         RomEntry {
-            name: "035144-04e.h2",
+            name: "036431-02.ef1",
             size: 0x0800,
             offset: 0x0800,
-            crc32: &[0x25233192],
+            crc32: &[0xd4004aae],
         },
         RomEntry {
-            name: "035143-02.j2",
+            name: "036432-02.fh1",
             size: 0x0800,
             offset: 0x1000,
-            crc32: &[0x312caa02],
+            crc32: &[0x6d720c41],
+        },
+        RomEntry {
+            name: "036433-03.j1",
+            size: 0x0800,
+            offset: 0x1800,
+            crc32: &[0x0dcc0be6],
         },
     ],
 };
 
-/// Vector ROM: 2KB at CPU address 0x5000–0x57FF.
+/// Vector ROM: 4KB at CPU addresses 0x4800–0x57FF.
 static VECTOR_ROM: RomRegion = RomRegion {
-    size: 0x0800,
-    entries: &[RomEntry {
-        name: "035127-02.np3",
-        size: 0x0800,
-        offset: 0x0000,
-        crc32: &[0x8b71fd9e],
-    }],
+    size: 0x1000,
+    entries: &[
+        RomEntry {
+            name: "036800-02.r2",
+            size: 0x0800,
+            offset: 0x0000,
+            crc32: &[0xbb8cabe1],
+        },
+        RomEntry {
+            name: "036799-01.np2",
+            size: 0x0800,
+            offset: 0x0800,
+            crc32: &[0x7d511572],
+        },
+    ],
 };
 
 // ---------------------------------------------------------------------------
@@ -63,11 +78,11 @@ pub const INPUT_START1: u8 = 1;
 pub const INPUT_START2: u8 = 2;
 pub const INPUT_THRUST: u8 = 3;
 pub const INPUT_FIRE: u8 = 4;
-pub const INPUT_HYPERSPACE: u8 = 5;
+pub const INPUT_SHIELD: u8 = 5;
 pub const INPUT_ROT_LEFT: u8 = 6;
 pub const INPUT_ROT_RIGHT: u8 = 7;
 
-const ASTEROIDS_INPUT_MAP: &[InputButton] = &[
+const ASTDELUX_INPUT_MAP: &[InputButton] = &[
     InputButton {
         id: INPUT_COIN,
         name: "Coin",
@@ -89,7 +104,7 @@ const ASTEROIDS_INPUT_MAP: &[InputButton] = &[
         name: "P1 Fire",
     },
     InputButton {
-        id: INPUT_HYPERSPACE,
+        id: INPUT_SHIELD,
         name: "P1 Jump",
     },
     InputButton {
@@ -103,41 +118,56 @@ const ASTEROIDS_INPUT_MAP: &[InputButton] = &[
 ];
 
 // ---------------------------------------------------------------------------
-// AsteroidsSystem — Atari DVG board configured for Asteroids (1979)
+// AsteroidsDeluxeSystem — Atari DVG board configured for Asteroids Deluxe (1980)
 // ---------------------------------------------------------------------------
 
-/// Asteroids-specific wrapper around the shared Atari DVG board.
+/// Asteroids Deluxe-specific wrapper around the shared Atari DVG board.
+///
+/// Adds POKEY sound chip at 0x2C00 and EAROM (ER2055) for high score storage.
 ///
 /// Memory map (15-bit address bus, `addr & 0x7FFF`):
 ///   0x0000–0x03FF  RAM (1 KB)
 ///   0x2000–0x2007  IN0 read (buttons, 3 KHz clock, VG_HALT)
 ///   0x2400–0x2407  IN1 read (coins, start, thrust, rotate)
 ///   0x2800–0x2803  DSW1 read (DIP switches)
+///   0x2C00–0x2C0F  POKEY read/write
+///   0x2C40–0x2C7F  EAROM data read
 ///   0x3000         DVG GO write
-///   0x3200         Output latch write (74LS259)
+///   0x3200–0x323F  EAROM data/address write
 ///   0x3400         Watchdog reset write
 ///   0x3600         Explosion sound write
-///   0x3A00         Thump sound write
+///   0x3A00         EAROM control write
 ///   0x3C00–0x3C07  Audio latch write (74LS259)
 ///   0x3E00         Noise reset write
 ///   0x4000–0x47FF  Vector RAM (2 KB, shared CPU/DVG)
-///   0x5000–0x57FF  Vector ROM (2 KB)
-///   0x6800–0x7FFF  Program ROM (6 KB)
-pub struct AsteroidsSystem {
+///   0x4800–0x57FF  Vector ROM (4 KB)
+///   0x6000–0x7FFF  Program ROM (8 KB)
+pub struct AsteroidsDeluxeSystem {
     pub board: AtariDvgBoard,
+
+    // POKEY sound chip at 0x2C00–0x2C0F
+    pokey: Pokey,
 
     // I/O — active-HIGH inputs (default 0x00 = all released)
     in0: u8,
     in1: u8,
-    /// DIP switches: default 0x84 (English, 3 lives, 1 coin/1 credit).
+    /// DIP switches (R5): default 0x00 (English, 2-4 ships, easy, 10K bonus).
     dip_switches: u8,
+
+    // EAROM (ER2055): 64-byte non-volatile RAM for high scores
+    earom: [u8; 64],
+    earom_write_addr: u8,
+    earom_write_data: u8,
+    earom_last_clock: bool,
+
+    // Audio buffer from POKEY
+    audio_buffer: Vec<i16>,
 }
 
-impl AsteroidsSystem {
+impl AsteroidsDeluxeSystem {
     fn build_map() -> MemoryMap {
         let mut map = MemoryMap::new();
         map.region(Region::Ram, "RAM", 0x0000, 0x0400, AccessKind::ReadWrite)
-            .mirror(0x0400, 0x0000, 0x0400)
             .region(Region::Io, "I/O", 0x2000, 0x2000, AccessKind::Io)
             .region(
                 Region::VectorRam,
@@ -149,15 +179,15 @@ impl AsteroidsSystem {
             .region(
                 Region::VectorRom,
                 "Vector ROM",
-                0x5000,
-                0x0800,
+                0x4800,
+                0x1000,
                 AccessKind::ReadOnly,
             )
             .region(
                 Region::ProgramRom,
                 "Program ROM",
-                0x6800,
-                0x1800,
+                0x6000,
+                0x2000,
                 AccessKind::ReadOnly,
             );
         map
@@ -165,11 +195,17 @@ impl AsteroidsSystem {
 
     pub fn new() -> Self {
         Self {
-            // Asteroids: VROM at DVG 0x1000, size 0x0800
-            board: AtariDvgBoard::new(Self::build_map(), 0x1000, 0x0800),
+            // Asteroids Deluxe: VROM at DVG 0x0800, size 0x1000
+            board: AtariDvgBoard::new(Self::build_map(), 0x0800, 0x1000),
+            pokey: Pokey::with_clock(1_512_000, 44100),
             in0: 0x00,
             in1: 0x00,
-            dip_switches: 0x84, // English, 3 lives, 1C/1C
+            dip_switches: 0x00,
+            earom: [0; 64],
+            earom_write_addr: 0,
+            earom_write_data: 0,
+            earom_last_clock: false,
+            audio_buffer: Vec::with_capacity(1024),
         }
     }
 
@@ -182,7 +218,7 @@ impl AsteroidsSystem {
     }
 }
 
-impl Default for AsteroidsSystem {
+impl Default for AsteroidsDeluxeSystem {
     fn default() -> Self {
         Self::new()
     }
@@ -192,7 +228,7 @@ impl Default for AsteroidsSystem {
 // Bus implementation
 // ---------------------------------------------------------------------------
 
-impl Bus for AsteroidsSystem {
+impl Bus for AsteroidsDeluxeSystem {
     type Address = u16;
     type Data = u8;
 
@@ -209,14 +245,10 @@ impl Bus for AsteroidsSystem {
             }
 
             Region::IO => match addr {
-                // IN0: 0x2000–0x2007 — 74LS251 8:1 multiplexer.
-                // A0–A2 select which input bit to read; the selected bit appears on D7.
-                // The 6502 tests it via BIT (N flag = D7).
-                //   Bit 0: unused
-                //   Bit 1: 3 KHz clock (cpu total_cycles & 0x100)
-                //   Bit 2: VG_HALT (active-LOW: 0 = done, 1 = running)
-                //   Bit 3: Hyperspace     Bit 4: Fire
-                //   Bit 5: Diagnostic     Bit 6: Tilt     Bit 7: Self-test
+                // IN0: 0x2000–0x2007 — 74LS251 8:1 multiplexer (same as Asteroids).
+                //   Bit 0: unused     Bit 1: 3 KHz clock     Bit 2: VG_HALT
+                //   Bit 3: Shield     Bit 4: Fire
+                //   Bit 5: Diagnostic Bit 6: Tilt     Bit 7: Self-test
                 0x2000..=0x2007 => {
                     let offset = (addr & 7) as u8;
                     let mut val = self.in0;
@@ -233,23 +265,25 @@ impl Bus for AsteroidsSystem {
                     ((val >> offset) & 1) << 7
                 }
 
-                // IN1: 0x2400–0x2407 — 74LS251 8:1 multiplexer.
-                //   Bit 0: Left coin   Bit 1: Center coin   Bit 2: Right coin
-                //   Bit 3: 1P Start    Bit 4: 2P Start
-                //   Bit 5: Thrust      Bit 6: Rotate right   Bit 7: Rotate left
+                // IN1: 0x2400–0x2407 — 74LS251 8:1 multiplexer (same as Asteroids).
                 0x2400..=0x2407 => {
                     let offset = (addr & 7) as u8;
                     ((self.in1 >> offset) & 1) << 7
                 }
 
-                // DSW1: 0x2800–0x2803 — 74LS253 dual 4:1 multiplexer.
-                // A0–A1 select a pair of DIP switch bits: even bit → D0, odd bit → D7.
+                // DSW1: 0x2800–0x2803 — 74LS253 dual 4:1 multiplexer (same as Asteroids).
                 0x2800..=0x2803 => {
                     let offset = (addr & 3) as u8;
                     let bit0 = (self.dip_switches >> (offset * 2)) & 1;
                     let bit7 = (self.dip_switches >> (offset * 2 + 1)) & 1;
                     bit0 | (bit7 << 7)
                 }
+
+                // POKEY: 0x2C00–0x2C0F
+                0x2C00..=0x2C0F => self.pokey.read(addr & 0x0F),
+
+                // EAROM data read: 0x2C40–0x2C7F
+                0x2C40..=0x2C7F => self.earom[(addr & 0x3F) as usize],
 
                 _ => 0,
             },
@@ -270,13 +304,38 @@ impl Bus for AsteroidsSystem {
             Region::RAM | Region::VECTOR_RAM => self.board.map.write_backing(addr, data),
 
             Region::IO => match addr {
+                // POKEY: 0x2C00–0x2C0F
+                0x2C00..=0x2C0F => self.pokey.write(addr & 0x0F, data),
+
                 0x3000 => self.board.trigger_dvg(),
-                0x3200 => { /* output latch stub */ }
+
+                // EAROM data/address write: 0x3200–0x323F
+                // Offset selects 6-bit address, data byte is the value to write.
+                0x3200..=0x323F => {
+                    self.earom_write_addr = (addr & 0x3F) as u8;
+                    self.earom_write_data = data;
+                }
+
                 0x3400 => self.board.watchdog_frame_count = 0,
-                0x3600 => { /* audio stub */ }
-                0x3A00 => { /* audio stub */ }
-                0x3C00..=0x3C07 => { /* audio stub */ }
-                0x3E00 => { /* audio stub */ }
+                0x3600 => { /* explosion sound stub */ }
+
+                // EAROM control: 0x3A00
+                // Bit 0: CK (clock), Bit 1: C2, Bit 2: !C1, Bit 3: CS1
+                0x3A00 => {
+                    let clock = data & 0x01 != 0;
+                    let c2 = data & 0x02 != 0;
+                    let c1 = data & 0x04 == 0; // inverted
+                    let cs1 = data & 0x08 != 0;
+
+                    // Write on rising clock edge with CS1, C1, and C2 active
+                    if clock && !self.earom_last_clock && cs1 && c1 && c2 {
+                        self.earom[self.earom_write_addr as usize] = self.earom_write_data;
+                    }
+                    self.earom_last_clock = clock;
+                }
+
+                0x3C00..=0x3C07 => { /* audio latch stub */ }
+                0x3E00 => { /* noise reset stub */ }
                 _ => {}
             },
 
@@ -287,7 +346,7 @@ impl Bus for AsteroidsSystem {
     fn check_interrupts(&mut self, _target: BusMaster) -> InterruptState {
         InterruptState {
             nmi: self.board.nmi_pending,
-            irq: false,
+            irq: self.pokey.irq(),
             firq: false,
             irq_vector: 0,
         }
@@ -298,7 +357,7 @@ impl Bus for AsteroidsSystem {
 // Machine implementation
 // ---------------------------------------------------------------------------
 
-impl Renderable for AsteroidsSystem {
+impl Renderable for AsteroidsDeluxeSystem {
     fn display_size(&self) -> (u32, u32) {
         atari_dvg::TIMING.display_size()
     }
@@ -312,12 +371,23 @@ impl Renderable for AsteroidsSystem {
     }
 }
 
-impl AudioSource for AsteroidsSystem {} // no audio hardware emulated yet
+impl AudioSource for AsteroidsDeluxeSystem {
+    fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
+        let n = buffer.len().min(self.audio_buffer.len());
+        buffer[..n].copy_from_slice(&self.audio_buffer[..n]);
+        self.audio_buffer.drain(..n);
+        n
+    }
 
-impl InputReceiver for AsteroidsSystem {
+    fn audio_sample_rate(&self) -> u32 {
+        44100
+    }
+}
+
+impl InputReceiver for AsteroidsDeluxeSystem {
     fn set_input(&mut self, button: u8, pressed: bool) {
         match button {
-            // IN1 (active-HIGH: set bit on press, clear on release)
+            // IN1 (active-HIGH)
             INPUT_COIN => set_bit_active_high(&mut self.in1, 0, pressed),
             INPUT_START1 => set_bit_active_high(&mut self.in1, 3, pressed),
             INPUT_START2 => set_bit_active_high(&mut self.in1, 4, pressed),
@@ -327,18 +397,18 @@ impl InputReceiver for AsteroidsSystem {
 
             // IN0 (active-HIGH)
             INPUT_FIRE => set_bit_active_high(&mut self.in0, 4, pressed),
-            INPUT_HYPERSPACE => set_bit_active_high(&mut self.in0, 3, pressed),
+            INPUT_SHIELD => set_bit_active_high(&mut self.in0, 3, pressed),
 
             _ => {}
         }
     }
 
     fn input_map(&self) -> &[InputButton] {
-        ASTEROIDS_INPUT_MAP
+        ASTDELUX_INPUT_MAP
     }
 }
 
-impl MachineDebug for AsteroidsSystem {
+impl MachineDebug for AsteroidsDeluxeSystem {
     fn debug_bus(&self) -> Option<&dyn phosphor_core::core::debug::BusDebug> {
         Some(&self.board)
     }
@@ -352,6 +422,7 @@ impl MachineDebug for AsteroidsSystem {
     }
 
     fn debug_tick(&mut self) -> u32 {
+        self.pokey.tick();
         bus_split!(self, bus => {
             self.board.tick(bus);
         });
@@ -359,13 +430,19 @@ impl MachineDebug for AsteroidsSystem {
     }
 }
 
-impl Machine for AsteroidsSystem {
+impl Machine for AsteroidsDeluxeSystem {
     fn run_frame(&mut self) {
         bus_split!(self, bus => {
             for _ in 0..atari_dvg::TIMING.cycles_per_frame() {
+                self.pokey.tick();
                 self.board.tick(bus);
             }
         });
+
+        // Drain POKEY audio samples
+        let samples = self.pokey.drain_audio();
+        self.audio_buffer
+            .extend(samples.iter().map(|&s| (s * 32767.0) as i16));
 
         // Clear NMI at frame boundary to avoid stale edges.
         self.board.nmi_pending = false;
@@ -379,6 +456,7 @@ impl Machine for AsteroidsSystem {
 
     fn reset(&mut self) {
         self.board.reset();
+        self.pokey.reset();
         bus_split!(self, bus => {
             self.board.cpu.reset(bus, BusMaster::Cpu(0));
         });
@@ -389,23 +467,43 @@ impl Machine for AsteroidsSystem {
     }
 
     fn machine_id(&self) -> &str {
-        "asteroids"
+        "astdelux"
+    }
+
+    fn save_nvram(&self) -> Option<&[u8]> {
+        Some(&self.earom)
+    }
+
+    fn load_nvram(&mut self, data: &[u8]) {
+        let len = data.len().min(64);
+        self.earom[..len].copy_from_slice(&data[..len]);
     }
 
     fn save_state(&self) -> Option<Vec<u8>> {
         let mut w = StateWriter::new();
         save_state::write_header(&mut w, self.machine_id());
         self.board.save_board_state(&mut w);
+        self.pokey.save_state(&mut w);
         w.write_u8(self.in0);
         w.write_u8(self.in1);
+        w.write_bytes(&self.earom);
+        w.write_u8(self.earom_write_addr);
+        w.write_u8(self.earom_write_data);
+        w.write_bool(self.earom_last_clock);
         Some(w.into_vec())
     }
 
     fn load_state(&mut self, data: &[u8]) -> Result<(), SaveError> {
         let mut r = save_state::read_header(data, self.machine_id())?;
         self.board.load_board_state(&mut r)?;
+        self.pokey.load_state(&mut r)?;
         self.in0 = r.read_u8()?;
         self.in1 = r.read_u8()?;
+        r.read_bytes_into(&mut self.earom)?;
+        self.earom_write_addr = r.read_u8()?;
+        self.earom_write_data = r.read_u8()?;
+        self.earom_last_clock = r.read_bool()?;
+        self.audio_buffer.clear();
         Ok(())
     }
 }
@@ -415,13 +513,13 @@ impl Machine for AsteroidsSystem {
 // ---------------------------------------------------------------------------
 
 fn create_machine(rom_set: &RomSet) -> Result<Box<dyn Machine>, RomLoadError> {
-    let mut sys = AsteroidsSystem::new();
+    let mut sys = AsteroidsDeluxeSystem::new();
     sys.load_rom_set(rom_set)?;
     Ok(Box::new(sys))
 }
 
 inventory::submit! {
-    MachineEntry::new("asteroid", "asteroid", create_machine)
+    MachineEntry::new("astdelux", "astdelux", create_machine)
 }
 
 #[cfg(test)]
@@ -433,7 +531,7 @@ mod tests {
 
     #[test]
     fn save_load_round_trip() {
-        let mut sys = AsteroidsSystem::new();
+        let mut sys = AsteroidsDeluxeSystem::new();
 
         // Set known state
         sys.board.map.region_data_mut(Region::Ram)[0x100] = 0xAA;
@@ -444,13 +542,15 @@ mod tests {
         sys.board.nmi_counter = 3000;
         sys.board.nmi_pending = true;
         sys.board.watchdog_frame_count = 5;
+        sys.earom[0] = 0x42;
+        sys.earom[63] = 0xEF;
 
         // Save
         let data = sys.save_state().expect("save_state should return Some");
         let cpu_snap = sys.board.cpu.snapshot();
 
         // Mutate everything
-        let mut sys2 = AsteroidsSystem::new();
+        let mut sys2 = AsteroidsDeluxeSystem::new();
         sys2.board.map.region_data_mut(Region::Ram)[0x100] = 0xFF;
         sys2.in0 = 0xFF;
         sys2.board.clock = 999;
@@ -473,39 +573,56 @@ mod tests {
         assert!(sys2.board.nmi_pending);
         assert_eq!(sys2.board.watchdog_frame_count, 5);
 
-        // Transient state should be cleared
-        assert!(sys2.board.display_list.is_empty());
+        // Verify EAROM
+        assert_eq!(sys2.earom[0], 0x42);
+        assert_eq!(sys2.earom[63], 0xEF);
     }
 
     #[test]
     fn save_load_machine_id_validated() {
-        let sys = AsteroidsSystem::new();
+        let sys = AsteroidsDeluxeSystem::new();
         let data = sys.save_state().unwrap();
 
         // Tamper with the machine ID
         let mut bad = data.clone();
         let id_offset = 4 + 4 + 4; // magic(4) + version(4) + id_len(4)
-        bad[id_offset..id_offset + 9].copy_from_slice(b"xxxxxxxxx");
+        bad[id_offset..id_offset + 8].copy_from_slice(b"xxxxxxxx");
 
-        let mut sys2 = AsteroidsSystem::new();
+        let mut sys2 = AsteroidsDeluxeSystem::new();
         let result = sys2.load_state(&bad);
         assert!(result.is_err(), "should reject mismatched machine ID");
     }
 
     #[test]
     fn save_does_not_include_rom() {
-        let mut sys = AsteroidsSystem::new();
+        let mut sys = AsteroidsDeluxeSystem::new();
         sys.board.map.region_data_mut(Region::ProgramRom)[0] = 0xDE;
         sys.board.map.region_data_mut(Region::VectorRom)[0] = 0xAD;
 
         let data = sys.save_state().unwrap();
 
         // Load into a fresh system (ROMs are zeroed)
-        let mut sys2 = AsteroidsSystem::new();
+        let mut sys2 = AsteroidsDeluxeSystem::new();
         sys2.load_state(&data).unwrap();
 
         // ROMs should remain at their default (zeroed), not overwritten
         assert_eq!(sys2.board.map.region_data(Region::ProgramRom)[0], 0x00);
         assert_eq!(sys2.board.map.region_data(Region::VectorRom)[0], 0x00);
+    }
+
+    #[test]
+    fn earom_write_read() {
+        let mut sys = AsteroidsDeluxeSystem::new();
+
+        // Write address 0x05 with data 0xAB
+        sys.write(BusMaster::Cpu(0), 0x3205, 0xAB);
+
+        // Commit with control: CS1=1, C1=1 (!C2=0), C2=1, clock rising edge
+        sys.earom_last_clock = false;
+        sys.write(BusMaster::Cpu(0), 0x3A00, 0x0B); // CS1(8) | C2(2) | CK(1) = 0x0B
+
+        // Read back
+        let val = sys.read(BusMaster::Cpu(0), 0x2C45);
+        assert_eq!(val, 0xAB);
     }
 }
