@@ -7,6 +7,7 @@ use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
 use phosphor_core::core::save_state::{self, SaveError, Saveable, StateWriter};
 use phosphor_core::core::{Bus, BusMaster, ClockDivider, TimingConfig};
 use phosphor_core::cpu::m6809::M6809;
+use phosphor_core::gfx::decode::{decode_gfx, GfxCache, GfxLayout};
 use phosphor_core::cpu::state::M6809State;
 use phosphor_core::cpu::{Cpu, CpuStateTrait};
 use phosphor_macros::{BusDebug, MemoryRegion};
@@ -222,6 +223,17 @@ const SAMPLE_RATE: u64 = 44100; // Audio output sample rate
 // LFSR constants (MM5837 noise generator, same polynomial as POKEY)
 const POLY17_SIZE: usize = (1 << 17) - 1; // 131071
 
+// 8×16 sprites, 4bpp packed (high nibble = left pixel, low nibble = right pixel).
+// 64 bytes per sprite (4 bytes/row × 16 rows), 256 sprites in 16KB ROM.
+const GRIDLEE_SPRITE_LAYOUT: GfxLayout<'static> = GfxLayout {
+    plane_offsets: &[3, 2, 1, 0],
+    x_offsets: &[0, 4, 8, 12, 16, 20, 24, 28],
+    y_offsets: &[
+        0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448, 480,
+    ],
+    char_increment: 512,
+};
+
 /// Gridlee Arcade System (Videa, 1982)
 ///
 /// Hardware: Motorola 6809 @ 1.25 MHz, custom raster video.
@@ -253,6 +265,7 @@ pub struct GridleeSystem {
 
     // Graphics ROMs (not CPU-addressable)
     gfx_rom: [u8; 0x4000], // 16KB sprite graphics
+    sprite_cache: GfxCache, // Pre-decoded 256 sprites (8×16, 4bpp)
 
     // Palette: pre-computed from 3x2KB PROMs (2048 entries, RGB)
     palette_rgb: [(u8, u8, u8); 2048],
@@ -304,6 +317,7 @@ impl GridleeSystem {
             cpu: M6809::new(),
             map: Self::build_map(),
             gfx_rom: [0; 0x4000],
+            sprite_cache: GfxCache::new(256, 8, 16),
             palette_rgb: [(0, 0, 0); 2048],
             palette_bank: 0,
             palette_bank_per_scanline: [0; TIMING.total_scanlines as usize],
@@ -624,30 +638,18 @@ impl GridleeSystem {
                 continue;
             }
 
-            // 4 bytes per row in GFX ROM, 64 bytes per image
-            let gfx_offset = image_num * 64 + row_in_sprite as usize * 4;
-
-            for x_byte in 0..4 {
-                let gfx_idx = gfx_offset + x_byte;
-                if gfx_idx >= self.gfx_rom.len() {
+            let row = row_in_sprite as usize;
+            for dx in 0..8 {
+                let idx = self.sprite_cache.pixel(image_num, dx, row);
+                if idx == 0 {
+                    continue; // transparent
+                }
+                let px = (sprite_x + dx) ^ x_xor;
+                if px >= TIMING.display_width as usize {
                     continue;
                 }
-                let gfx_byte = self.gfx_rom[gfx_idx];
-                let left_idx = (gfx_byte >> 4) & 0x0F;
-                let right_idx = gfx_byte & 0x0F;
-
-                // Sprites use palette indices 0-15; index 0 = transparent
-                for (dx, idx) in [(0usize, left_idx), (1, right_idx)] {
-                    if idx == 0 {
-                        continue;
-                    }
-                    let px = (sprite_x + x_byte * 2 + dx) ^ x_xor;
-                    if px >= TIMING.display_width as usize {
-                        continue;
-                    }
-                    let color = self.resolve_color(palette_bank, idx);
-                    self.write_pixel(row_offset, px, color);
-                }
+                let color = self.resolve_color(palette_bank, idx);
+                self.write_pixel(row_offset, px, color);
             }
         }
     }
@@ -701,6 +703,7 @@ impl GridleeSystem {
 
         let gfx_data = GRIDLEE_GFX_ROM.load(rom_set)?;
         self.gfx_rom.copy_from_slice(&gfx_data);
+        self.sprite_cache = decode_gfx(&self.gfx_rom, 0, 256, &GRIDLEE_SPRITE_LAYOUT);
 
         let prom_data = GRIDLEE_COLOR_PROMS.load(rom_set)?;
         self.build_palette(&prom_data);
@@ -712,6 +715,12 @@ impl GridleeSystem {
 
     pub fn get_cpu_state(&self) -> M6809State {
         self.cpu.snapshot()
+    }
+
+    /// Rebuild sprite cache from gfx_rom (for tests that modify ROM data directly).
+    #[cfg(test)]
+    fn decode_sprite_cache(&mut self) {
+        self.sprite_cache = decode_gfx(&self.gfx_rom, 0, 256, &GRIDLEE_SPRITE_LAYOUT);
     }
 }
 
@@ -1414,6 +1423,7 @@ mod tests {
         sys.map.region_data_mut(Region::Ram)[3] = 10; // x_pos
         // Put non-zero pixel data in GFX ROM for image 1
         sys.gfx_rom[64] = 0x12; // left=1, right=2
+        sys.decode_sprite_cache();
 
         // Build a simple palette so pixels would be visible
         sys.palette_rgb[1] = (255, 0, 0);
@@ -1444,6 +1454,7 @@ mod tests {
         sys.map.region_data_mut(Region::Ram)[3] = 0; // x_pos = 0
         // Non-zero pixel in image 0, row 0
         sys.gfx_rom[0] = 0x30; // left pixel = 3, right pixel = 0
+        sys.decode_sprite_cache();
 
         sys.palette_rgb[3] = (0, 0, 255);
         sys.palette_bank_per_scanline[32] = 0;
@@ -1472,6 +1483,7 @@ mod tests {
         sys.map.region_data_mut(Region::Ram)[3] = 0; // x_pos = 0
         // Pixel data: left=0 (transparent), right=5
         sys.gfx_rom[0] = 0x05;
+        sys.decode_sprite_cache();
 
         sys.palette_rgb[5] = (100, 200, 50);
         // Set background color (palette index 16) to something distinct
