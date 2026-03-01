@@ -89,7 +89,7 @@
 #[derive(phosphor_macros::Saveable)]
 #[save_version(1)]
 pub struct Pokey {
-    resampler: crate::audio::AudioResamplerF32,
+    resampler: crate::audio::AudioResampler<f32>,
     // Audio channel registers (CPU-written)
     audf: [u8; 4], // AUDF1-4: frequency divider reload values
     audc: [u8; 4], // AUDC1-4: volume (bits 3:0), distortion (bits 7:5), tone gate (bit 4)
@@ -176,7 +176,7 @@ impl Pokey {
     /// Missile Command uses 1.25 MHz vs the standard 1.79 MHz NTSC clock.
     pub fn with_clock(master_clock_hz: u32, output_sample_rate: u32) -> Self {
         Self {
-            resampler: crate::audio::AudioResamplerF32::new(
+            resampler: crate::audio::AudioResampler::new(
                 master_clock_hz as u64,
                 output_sample_rate as u64,
             ),

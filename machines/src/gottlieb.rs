@@ -113,7 +113,7 @@ pub(crate) struct GottliebSoundBoard {
     cpu: M6502,
     riot: Riot6532,
     dac: Mc1408Dac,
-    resampler: AudioResampler,
+    resampler: AudioResampler<i16>,
     #[save_skip]
     sound_rom: Vec<u8>, // 8KB (mapped at 0x6000-0x7FFF in 15-bit space)
     clock: u64,

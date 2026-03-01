@@ -73,7 +73,7 @@ pub struct Ay8910 {
     // Clock prescaler (chip_clock / 8)
     prescaler_count: u8,
 
-    resampler: AudioResampler,
+    resampler: AudioResampler<i16>,
 
     // Per-channel gain for external volume modulation (0–255, 255 = full)
     channel_gain: [u8; 3],

@@ -25,7 +25,7 @@ pub struct NamcoWsg {
 
     sound_enabled: bool,
 
-    resampler: AudioResampler,
+    resampler: AudioResampler<i16>,
 }
 
 #[derive(Default, Saveable)]

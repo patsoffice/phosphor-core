@@ -99,7 +99,7 @@ pub struct SsioBoard {
     mute: bool,
 
     // Audio resampler (mixes both AY outputs)
-    resampler: AudioResampler,
+    resampler: AudioResampler<i16>,
 
     // Clock state
     clock: u64,

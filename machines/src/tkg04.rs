@@ -221,7 +221,7 @@ pub struct Tkg04Board {
     // Audio output
     #[debug_device("DAC")]
     pub(crate) dac: Mc1408Dac,
-    pub(crate) resampler: AudioResampler,
+    pub(crate) resampler: AudioResampler<i16>,
 
     // Timing
     pub(crate) clock: u64,

@@ -126,7 +126,7 @@ pub struct WilliamsBoard {
     // Audio output
     #[debug_device("DAC")]
     pub(crate) dac: Mc1408Dac,
-    pub(crate) resampler: AudioResampler,
+    pub(crate) resampler: AudioResampler<i16>,
 
     // Memory maps (page-table dispatch + watchpoints + backing memory)
     // All RAM/ROM storage lives in the MemoryMap backing store.

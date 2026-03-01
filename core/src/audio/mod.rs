@@ -1,14 +1,84 @@
 //! Shared audio resampling utilities.
 //!
-//! Provides Bresenham box-filter downsamplers for converting high-frequency
-//! audio (at CPU clock rates) to standard output sample rates (e.g., 44.1 kHz).
-//! Two variants are provided: `AudioResampler` (i64/i16) for most devices,
-//! and `AudioResamplerF32` (f32) for POKEY and other float-based pipelines.
+//! Provides a generic Bresenham box-filter downsampler for converting
+//! high-frequency audio (at CPU clock rates) to standard output sample rates
+//! (e.g., 44.1 kHz). Use `AudioResampler<i16>` for integer pipelines (most
+//! devices) or `AudioResampler<f32>` for float pipelines (POKEY, etc.).
 
+use crate::core::save_state::{SaveError, StateReader, StateWriter};
 use crate::prelude::Saveable;
 
 // ---------------------------------------------------------------------------
-// AudioResampler (i64 accumulator, i16 output)
+// Sample trait
+// ---------------------------------------------------------------------------
+
+/// Trait abstracting over audio sample types (`i16`, `f32`).
+///
+/// Each sample type has an associated accumulator type used for precise
+/// averaging during downsampling (e.g., `i64` for `i16` to avoid overflow).
+pub trait Sample: Copy + Default {
+    /// Wider accumulator type used during box-filter averaging.
+    type Accum: Copy + Default;
+
+    /// Add a sample value to the accumulator.
+    fn accum_add(accum: &mut Self::Accum, sample: Self);
+
+    /// Compute the average from the accumulator and sample count.
+    fn accum_avg(accum: Self::Accum, count: u32) -> Self;
+
+    /// Save the accumulator to a state writer (format-preserving).
+    fn save_accum(accum: &Self::Accum, w: &mut StateWriter);
+
+    /// Load the accumulator from a state reader (format-preserving).
+    fn load_accum(r: &mut StateReader) -> Result<Self::Accum, SaveError>;
+}
+
+impl Sample for i16 {
+    type Accum = i64;
+
+    #[inline]
+    fn accum_add(accum: &mut i64, sample: i16) {
+        *accum += sample as i64;
+    }
+
+    #[inline]
+    fn accum_avg(accum: i64, count: u32) -> i16 {
+        (accum / count as i64) as i16
+    }
+
+    fn save_accum(accum: &i64, w: &mut StateWriter) {
+        w.write_i64_le(*accum);
+    }
+
+    fn load_accum(r: &mut StateReader) -> Result<i64, SaveError> {
+        r.read_i64_le()
+    }
+}
+
+impl Sample for f32 {
+    type Accum = f32;
+
+    #[inline]
+    fn accum_add(accum: &mut f32, sample: f32) {
+        *accum += sample;
+    }
+
+    #[inline]
+    fn accum_avg(accum: f32, count: u32) -> f32 {
+        accum / count as f32
+    }
+
+    fn save_accum(accum: &f32, w: &mut StateWriter) {
+        w.write_f32_le(*accum);
+    }
+
+    fn load_accum(r: &mut StateReader) -> Result<f32, SaveError> {
+        r.read_f32_le()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AudioResampler<T>
 // ---------------------------------------------------------------------------
 
 /// Bresenham box-filter audio resampler.
@@ -17,24 +87,16 @@ use crate::prelude::Saveable;
 /// box-filter averaging. Each `tick()` accumulates a sample; when the
 /// Bresenham phase crosses the threshold, the averaged sample is pushed
 /// to the internal buffer.
-#[derive(Saveable)]
-#[save_version(1)]
-pub struct AudioResampler {
-    // Saved fields (order matches serialization layout)
-    sample_accum: i64,
+pub struct AudioResampler<T: Sample> {
+    sample_accum: T::Accum,
     sample_count: u32,
     sample_phase: u64,
-
-    // Skipped fields
-    #[save_skip]
     input_rate: u64,
-    #[save_skip]
     output_rate: u64,
-    #[save_skip(default)]
-    buffer: Vec<i16>,
+    buffer: Vec<T>,
 }
 
-impl AudioResampler {
+impl<T: Sample> AudioResampler<T> {
     /// Create a new resampler.
     ///
     /// - `input_rate`: source clock rate in Hz (e.g., 3_072_000 for 3.072 MHz CPU)
@@ -43,7 +105,7 @@ impl AudioResampler {
         Self {
             input_rate,
             output_rate,
-            sample_accum: 0,
+            sample_accum: T::Accum::default(),
             sample_count: 0,
             sample_phase: 0,
             buffer: Vec::with_capacity(2048),
@@ -53,7 +115,7 @@ impl AudioResampler {
     /// Accumulate one input sample. If this tick completes an output sample,
     /// the box-filtered average is automatically pushed to the internal buffer.
     #[inline]
-    pub fn tick(&mut self, sample: i16) {
+    pub fn tick(&mut self, sample: T) {
         if let Some(avg) = self.tick_sample(sample) {
             self.buffer.push(avg);
         }
@@ -65,19 +127,19 @@ impl AudioResampler {
     /// Use this when you need to post-process (e.g., mix with another source)
     /// before calling [`push_sample`].
     #[inline]
-    pub fn tick_sample(&mut self, sample: i16) -> Option<i16> {
-        self.sample_accum += sample as i64;
+    pub fn tick_sample(&mut self, sample: T) -> Option<T> {
+        T::accum_add(&mut self.sample_accum, sample);
         self.sample_count += 1;
         self.sample_phase += self.output_rate;
 
         if self.sample_phase >= self.input_rate {
             self.sample_phase -= self.input_rate;
             let avg = if self.sample_count > 0 {
-                (self.sample_accum / self.sample_count as i64) as i16
+                T::accum_avg(self.sample_accum, self.sample_count)
             } else {
-                0
+                T::default()
             };
-            self.sample_accum = 0;
+            self.sample_accum = T::Accum::default();
             self.sample_count = 0;
             Some(avg)
         } else {
@@ -90,109 +152,63 @@ impl AudioResampler {
     /// Use after [`tick_sample`] returns `Some` and you've mixed or
     /// post-processed the averaged sample.
     #[inline]
-    pub fn push_sample(&mut self, sample: i16) {
+    pub fn push_sample(&mut self, sample: T) {
         self.buffer.push(sample);
     }
 
     /// Drain audio samples into the provided buffer. Returns the number
     /// of samples written.
-    pub fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
+    pub fn fill_audio(&mut self, buffer: &mut [T]) -> usize {
         let n = buffer.len().min(self.buffer.len());
         buffer[..n].copy_from_slice(&self.buffer[..n]);
         self.buffer.drain(..n);
         n
     }
 
-    /// Clear all runtime state (phase, accumulator, buffer).
-    pub fn reset(&mut self) {
-        self.sample_accum = 0;
-        self.sample_count = 0;
-        self.sample_phase = 0;
-        self.buffer.clear();
-    }
-}
-
-// ---------------------------------------------------------------------------
-// AudioResamplerF32 (f32 accumulator, f32 output)
-// ---------------------------------------------------------------------------
-
-/// Bresenham box-filter audio resampler (f32 variant).
-///
-/// Identical algorithm to [`AudioResampler`] but uses `f32` accumulator
-/// and buffer. Used by POKEY and other float-based audio pipelines.
-#[derive(Saveable)]
-#[save_version(1)]
-pub struct AudioResamplerF32 {
-    // Saved fields (order matches serialization layout)
-    sample_accum: f32,
-    sample_count: u32,
-    sample_phase: u64,
-
-    // Skipped fields
-    #[save_skip]
-    input_rate: u64,
-    #[save_skip]
-    output_rate: u64,
-    #[save_skip(default)]
-    buffer: Vec<f32>,
-}
-
-impl AudioResamplerF32 {
-    /// Create a new f32 resampler.
-    pub fn new(input_rate: u64, output_rate: u64) -> Self {
-        Self {
-            input_rate,
-            output_rate,
-            sample_accum: 0.0,
-            sample_count: 0,
-            sample_phase: 0,
-            buffer: Vec::with_capacity(2048),
-        }
-    }
-
-    /// Accumulate one input sample. If this tick completes an output sample,
-    /// the box-filtered average is pushed to the internal buffer.
-    #[inline]
-    pub fn tick(&mut self, sample: f32) {
-        self.sample_accum += sample;
-        self.sample_count += 1;
-        self.sample_phase += self.output_rate;
-
-        if self.sample_phase >= self.input_rate {
-            self.sample_phase -= self.input_rate;
-            let avg = if self.sample_count > 0 {
-                self.sample_accum / self.sample_count as f32
-            } else {
-                0.0
-            };
-            self.buffer.push(avg);
-            self.sample_accum = 0.0;
-            self.sample_count = 0;
-        }
-    }
-
     /// Take all buffered samples, leaving the buffer empty.
-    pub fn drain_audio(&mut self) -> Vec<f32> {
+    pub fn drain_audio(&mut self) -> Vec<T> {
         std::mem::take(&mut self.buffer)
     }
 
     /// Clear all runtime state (phase, accumulator, buffer).
     pub fn reset(&mut self) {
-        self.sample_accum = 0.0;
+        self.sample_accum = T::Accum::default();
         self.sample_count = 0;
         self.sample_phase = 0;
         self.buffer.clear();
+    }
+}
+
+/// Manual `Saveable` implementation preserving the existing save format:
+/// version(1) + accumulator + sample_count + sample_phase.
+/// Buffer and rates are transient and not serialized.
+impl<T: Sample> Saveable for AudioResampler<T> {
+    fn save_state(&self, w: &mut StateWriter) {
+        w.write_version(1);
+        T::save_accum(&self.sample_accum, w);
+        w.write_u32_le(self.sample_count);
+        w.write_u64_le(self.sample_phase);
+    }
+
+    fn load_state(&mut self, r: &mut StateReader) -> Result<(), SaveError> {
+        r.read_version(1)?;
+        self.sample_accum = T::load_accum(r)?;
+        self.sample_count = r.read_u32_le()?;
+        self.sample_phase = r.read_u64_le()?;
+        self.buffer = Vec::new();
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::save_state::{StateReader, StateWriter};
+
+    // -- AudioResampler<i16> tests --
 
     #[test]
     fn resampler_produces_correct_sample_count() {
-        let mut r = AudioResampler::new(1_000_000, 44_100);
+        let mut r = AudioResampler::<i16>::new(1_000_000, 44_100);
         for _ in 0..1_000_000 {
             r.tick(1000);
         }
@@ -208,7 +224,7 @@ mod tests {
     #[test]
     fn resampler_averages_correctly() {
         // Input rate 4, output rate 1: averages 4 samples into 1
-        let mut r = AudioResampler::new(4, 1);
+        let mut r = AudioResampler::<i16>::new(4, 1);
         r.tick(100);
         r.tick(200);
         r.tick(300);
@@ -222,7 +238,7 @@ mod tests {
 
     #[test]
     fn tick_sample_returns_average_without_pushing() {
-        let mut r = AudioResampler::new(4, 1);
+        let mut r = AudioResampler::<i16>::new(4, 1);
         assert_eq!(r.tick_sample(100), None);
         assert_eq!(r.tick_sample(200), None);
         assert_eq!(r.tick_sample(300), None);
@@ -235,7 +251,7 @@ mod tests {
 
     #[test]
     fn push_sample_adds_to_buffer() {
-        let mut r = AudioResampler::new(1_000_000, 44_100);
+        let mut r = AudioResampler::<i16>::new(1_000_000, 44_100);
         r.push_sample(42);
         r.push_sample(-100);
 
@@ -248,7 +264,7 @@ mod tests {
 
     #[test]
     fn fill_audio_drains_buffer() {
-        let mut r = AudioResampler::new(2, 1);
+        let mut r = AudioResampler::<i16>::new(2, 1);
         r.tick(100);
         r.tick(200); // produces one sample: avg 150
 
@@ -262,7 +278,7 @@ mod tests {
 
     #[test]
     fn reset_clears_all_state() {
-        let mut r = AudioResampler::new(2, 1);
+        let mut r = AudioResampler::<i16>::new(2, 1);
         r.tick(100);
         r.tick(200);
         r.reset();
@@ -275,7 +291,7 @@ mod tests {
 
     #[test]
     fn save_load_round_trip() {
-        let mut r = AudioResampler::new(1_000_000, 44_100);
+        let mut r = AudioResampler::<i16>::new(1_000_000, 44_100);
         for _ in 0..500 {
             r.tick(1234);
         }
@@ -284,7 +300,7 @@ mod tests {
         r.save_state(&mut w);
         let data = w.into_vec();
 
-        let mut r2 = AudioResampler::new(1_000_000, 44_100);
+        let mut r2 = AudioResampler::<i16>::new(1_000_000, 44_100);
         let mut reader = StateReader::new(&data);
         r2.load_state(&mut reader).unwrap();
 
@@ -293,11 +309,11 @@ mod tests {
         assert_eq!(r2.sample_phase, r.sample_phase);
     }
 
-    // -- AudioResamplerF32 tests --
+    // -- AudioResampler<f32> tests --
 
     #[test]
     fn f32_resampler_produces_correct_count() {
-        let mut r = AudioResamplerF32::new(1_000_000, 44_100);
+        let mut r = AudioResampler::<f32>::new(1_000_000, 44_100);
         for _ in 0..1_000_000 {
             r.tick(0.5);
         }
@@ -311,7 +327,7 @@ mod tests {
 
     #[test]
     fn f32_resampler_averages_correctly() {
-        let mut r = AudioResamplerF32::new(4, 1);
+        let mut r = AudioResampler::<f32>::new(4, 1);
         r.tick(0.1);
         r.tick(0.2);
         r.tick(0.3);
@@ -323,7 +339,7 @@ mod tests {
 
     #[test]
     fn f32_save_load_round_trip() {
-        let mut r = AudioResamplerF32::new(1_000_000, 44_100);
+        let mut r = AudioResampler::<f32>::new(1_000_000, 44_100);
         for _ in 0..500 {
             r.tick(0.42);
         }
@@ -332,7 +348,7 @@ mod tests {
         r.save_state(&mut w);
         let data = w.into_vec();
 
-        let mut r2 = AudioResamplerF32::new(1_000_000, 44_100);
+        let mut r2 = AudioResampler::<f32>::new(1_000_000, 44_100);
         let mut reader = StateReader::new(&data);
         r2.load_state(&mut reader).unwrap();
 
