@@ -3,9 +3,11 @@
 //! Thin wrapper around `GottliebBoard` providing game-specific ROM loading,
 //! input wiring, and `Bus` implementation for the main I8088's memory map.
 
+use std::time::Instant;
+
 use phosphor_core::bus_split;
 use phosphor_core::core::bus::InterruptState;
-use phosphor_core::core::machine::{InputButton, InputReceiver, Machine};
+use phosphor_core::core::machine::{InputButton, InputReceiver, Machine, ProfileSpan};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::Cpu;
 use phosphor_macros::Saveable;
@@ -405,12 +407,38 @@ impl Machine for QbertSystem {
     }
 
     fn run_frame(&mut self) {
+        let t0 = self.board.profiling.then(Instant::now);
+
         bus_split!(self, bus : u32 => {
             for _ in 0..gottlieb::TIMING.cycles_per_frame() {
                 self.board.tick(bus);
             }
         });
+
+        let t1 = self.board.profiling.then(Instant::now);
+
         self.board.render_frame_internal();
+
+        if let (Some(t0), Some(t1)) = (t0, t1) {
+            let t2 = Instant::now();
+            self.board.profile_spans.clear();
+            self.board.profile_spans.push(ProfileSpan {
+                name: "cpu",
+                duration: t1 - t0,
+            });
+            self.board.profile_spans.push(ProfileSpan {
+                name: "gfx",
+                duration: t2 - t1,
+            });
+        }
+    }
+
+    fn set_profiling(&mut self, enabled: bool) {
+        self.board.profiling = enabled;
+    }
+
+    fn frame_profile_spans(&self) -> &[ProfileSpan] {
+        &self.board.profile_spans
     }
 
     fn reset(&mut self) {

@@ -17,6 +17,7 @@
 use phosphor_core::audio::AudioResampler;
 use phosphor_core::bus_split;
 use phosphor_core::core::debug::{DebugRegister, Debuggable};
+use phosphor_core::core::machine::ProfileSpan;
 use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
 use phosphor_core::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
 use phosphor_core::core::{Bus, BusMaster, ClockDivider, InterruptState, TimingConfig};
@@ -404,6 +405,10 @@ pub struct GottliebBoard {
     pub(crate) sound_clock: ClockDivider,
     pub(crate) votrax_clock: ClockDivider,
     pub(crate) watchdog_counter: u16,
+
+    // Profiling (not saved)
+    pub(crate) profiling: bool,
+    pub(crate) profile_spans: Vec<ProfileSpan>,
 }
 
 impl GottliebBoard {
@@ -428,6 +433,8 @@ impl GottliebBoard {
             sound_clock: ClockDivider::new(SOUND_CLOCK_NUM, SOUND_CLOCK_DEN),
             votrax_clock: ClockDivider::new(VOTRAX_CLOCK_NUM, VOTRAX_CLOCK_DEN),
             watchdog_counter: 0,
+            profiling: false,
+            profile_spans: Vec::new(),
         }
     }
 

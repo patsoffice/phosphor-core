@@ -16,10 +16,11 @@ fn main() {
 
     let machine_name = args
         .get(1)
-        .expect("Usage: phosphor <machine> <rom-path> [--scale N] [--debug]");
+        .expect("Usage: phosphor <machine> <rom-path> [--scale N] [--debug] [--profile]");
     let rom_path = args.get(2).expect("ROM path required");
     let explicit_scale = parse_scale_arg(&args);
     let start_in_debug = args.iter().any(|a| a == "--debug");
+    let start_in_profile = args.iter().any(|a| a == "--profile");
 
     let entry = registry::find(machine_name).unwrap_or_else(|| {
         let names: Vec<_> = registry::all().iter().map(|e| e.name).collect();
@@ -51,6 +52,7 @@ fn main() {
         scale,
         &save_path,
         start_in_debug,
+        start_in_profile,
     );
 
     // Save battery-backed NVRAM to disk on exit

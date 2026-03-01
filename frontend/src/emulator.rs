@@ -16,6 +16,7 @@ pub fn run(
     scale: u32,
     save_path: &Path,
     start_in_debug: bool,
+    start_in_profile: bool,
 ) {
     // Enable controller backends before SDL init — needed for Xbox on macOS
     sdl2::hint::set("SDL_JOYSTICK_HIDAPI", "1");
@@ -118,8 +119,26 @@ pub fn run(
     if start_in_debug && has_debug {
         debug_state.active = true;
         debug_state.run_mode = RunMode::Paused;
-        let dw = debug_state.debug_panel_width();
-        video.resize_window(width * scale + dw, height * scale);
+    }
+    if start_in_profile {
+        machine.set_profiling(true);
+        profile_state.start();
+    }
+    // Resize window if any side panels are active at startup
+    {
+        let dw = if debug_state.active {
+            debug_state.debug_panel_width()
+        } else {
+            0
+        };
+        let pw = if profile_state.active {
+            crate::profile::PANEL_WIDTH
+        } else {
+            0
+        };
+        if dw + pw > 0 {
+            video.resize_window(width * scale + dw + pw, height * scale);
+        }
     }
 
     'main: loop {
