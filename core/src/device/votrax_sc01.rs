@@ -161,13 +161,11 @@ pub struct VotraxSc01 {
     #[save_skip]
     rom: Vec<u8>,
     #[save_skip]
-    #[allow(dead_code)] // Used in Phase 3 filter coefficient calculation
+    #[allow(dead_code)]
     main_clock_hz: u64,
     #[save_skip]
-    #[allow(dead_code)] // Used in Phase 3 filter coefficient calculation
     sclock: f64,
     #[save_skip]
-    #[allow(dead_code)] // Used in Phase 3 filter coefficient calculation
     cclock: f64,
     #[save_skip]
     resampler: AudioResampler<f32>,
@@ -316,8 +314,6 @@ impl VotraxSc01 {
     /// Always updates FA, FC, VA (amplitude params). Only updates formant
     /// filter coefficients (F1, F2, F2Q, F3) when they actually change,
     /// unless `force` is true (e.g., on reset).
-    ///
-    /// Filter coefficient recalculation will be added in Phase 3.
     fn filters_commit(&mut self, force: bool) {
         self.filt_fa = self.cur_fa >> 4;
         self.filt_fc = self.cur_fc >> 4;
@@ -326,7 +322,19 @@ impl VotraxSc01 {
         let new_f1 = self.cur_f1 >> 4;
         if force || self.filt_f1 != new_f1 {
             self.filt_f1 = new_f1;
-            // Phase 3: build_standard_filter for F1
+            Self::build_standard_filter(
+                &mut self.f1_a,
+                &mut self.f1_b,
+                self.sclock,
+                self.cclock,
+                11247.0,
+                11797.0,
+                949.0,
+                52067.0,
+                2280.0
+                    + Self::bits_to_caps(self.filt_f1 as u32, &[2546.0, 4973.0, 9861.0, 19724.0]),
+                166272.0,
+            );
         }
 
         let new_f2 = self.cur_f2 >> 3; // 5 bits — extra precision
@@ -334,19 +342,245 @@ impl VotraxSc01 {
         if force || self.filt_f2 != new_f2 || self.filt_f2q != new_f2q {
             self.filt_f2 = new_f2;
             self.filt_f2q = new_f2q;
-            // Phase 3: build_standard_filter for F2 voice
-            // Phase 3: build_injection_filter for F2 noise
+
+            let f2q_caps = 829.0
+                + Self::bits_to_caps(self.filt_f2q as u32, &[1390.0, 2965.0, 5875.0, 11297.0]);
+            let f2_caps = 2352.0
+                + Self::bits_to_caps(
+                    self.filt_f2 as u32,
+                    &[833.0, 1663.0, 3164.0, 6327.0, 12654.0],
+                );
+
+            Self::build_standard_filter(
+                &mut self.f2v_a,
+                &mut self.f2v_b,
+                self.sclock,
+                self.cclock,
+                24840.0,
+                29154.0,
+                f2q_caps,
+                38180.0,
+                f2_caps,
+                34270.0,
+            );
+            Self::build_injection_filter(
+                &mut self.f2n_a,
+                &mut self.f2n_b,
+                self.sclock,
+                self.cclock,
+                29154.0,
+                f2q_caps,
+                38180.0,
+                f2_caps,
+                34270.0,
+            );
         }
 
         let new_f3 = self.cur_f3 >> 4;
         if force || self.filt_f3 != new_f3 {
             self.filt_f3 = new_f3;
-            // Phase 3: build_standard_filter for F3
+            Self::build_standard_filter(
+                &mut self.f3_a,
+                &mut self.f3_b,
+                self.sclock,
+                self.cclock,
+                0.0,
+                17594.0,
+                868.0,
+                18828.0,
+                8480.0
+                    + Self::bits_to_caps(self.filt_f3 as u32, &[2226.0, 4485.0, 9056.0, 18111.0]),
+                50019.0,
+            );
         }
 
         if force {
-            // Phase 3: build fixed filters (F4, FX, FN)
+            Self::build_standard_filter(
+                &mut self.f4_a,
+                &mut self.f4_b,
+                self.sclock,
+                self.cclock,
+                0.0,
+                28810.0,
+                1165.0,
+                21457.0,
+                8558.0,
+                7289.0,
+            );
+            Self::build_lowpass_filter(
+                &mut self.fx_a,
+                &mut self.fx_b,
+                self.sclock,
+                self.cclock,
+                1122.0,
+                23131.0,
+            );
+            Self::build_noise_shaper_filter(
+                &mut self.fn_a,
+                &mut self.fn_b,
+                self.sclock,
+                self.cclock,
+                15500.0,
+                14854.0,
+                8450.0,
+                9523.0,
+                14083.0,
+            );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Filter coefficient calculation
+    // -----------------------------------------------------------------------
+
+    /// Sum capacitor values for bits that are set in `value`.
+    ///
+    /// Each bit position selects a capacitor from the array. Capacitor
+    /// values are in square micrometers (proportional to capacitance in
+    /// the switched-capacitor design).
+    fn bits_to_caps(value: u32, caps: &[f64]) -> f64 {
+        let mut total = 0.0;
+        let mut v = value;
+        for &cap in caps {
+            if v & 1 != 0 {
+                total += cap;
+            }
+            v >>= 1;
+        }
+        total
+    }
+
+    /// Build a standard 2nd-order bandpass IIR filter (4 coefficients each).
+    ///
+    /// Models the SC-01's switched-capacitor op-amp circuit:
+    /// - Input through parallel R1||C1 (c1t unswitched, c1b switched)
+    /// - Feedback through parallel R2||C2 (c2t unswitched, c2b switched)
+    /// - Inter-stage cap C3 and output feedback cap C4
+    ///
+    /// Transfer function: H(s) = (1 + k0·s) / (1 + k1·s + k2·s²)
+    ///
+    /// Uses bilinear z-transform with frequency pre-warping at the
+    /// estimated peak frequency.
+    #[allow(clippy::too_many_arguments)]
+    fn build_standard_filter(
+        a: &mut [f64; 4],
+        b: &mut [f64; 4],
+        sclock: f64,
+        cclock: f64,
+        c1t: f64,
+        c1b: f64,
+        c2t: f64,
+        c2b: f64,
+        c3: f64,
+        c4: f64,
+    ) {
+        let k0 = c1t / (cclock * c1b);
+        let k1 = c4 * c2t / (cclock * c1b * c3);
+        let k2 = c4 * c2b / (cclock * cclock * c1b * c3);
+
+        let fpeak = (k0 * k1 - k2).abs().sqrt() / (2.0 * std::f64::consts::PI * k2);
+        let zc = 2.0 * std::f64::consts::PI * fpeak / (std::f64::consts::PI * fpeak / sclock).tan();
+
+        let m0 = zc * k0;
+        let m1 = zc * k1;
+        let m2 = zc * zc * k2;
+
+        a[0] = 1.0 + m0;
+        a[1] = 3.0 + m0;
+        a[2] = 3.0 - m0;
+        a[3] = 1.0 - m0;
+        b[0] = 1.0 + m1 + m2;
+        b[1] = 3.0 + m1 - m2;
+        b[2] = 3.0 - m1 - m2;
+        b[3] = 1.0 - m1 + m2;
+    }
+
+    /// Build a 1st-order lowpass IIR filter (1 a-coeff, 2 b-coeffs).
+    ///
+    /// Simple RC lowpass: H(s) = 1 / (1 + k·s)
+    ///
+    /// The raw cap values place the cutoff at ~150 Hz, but recordings
+    /// show ~4 kHz is correct — a 150/4000 fudge factor is applied
+    /// (matching MAME).
+    fn build_lowpass_filter(
+        a: &mut [f64; 1],
+        b: &mut [f64; 2],
+        sclock: f64,
+        cclock: f64,
+        c1t: f64,
+        c1b: f64,
+    ) {
+        let k = c1b / (cclock * c1t) * (150.0 / 4000.0);
+        let fpeak = 1.0 / (2.0 * std::f64::consts::PI * k);
+        let zc = 2.0 * std::f64::consts::PI * fpeak / (std::f64::consts::PI * fpeak / sclock).tan();
+        let m = zc * k;
+
+        a[0] = 1.0;
+        b[0] = 1.0 + m;
+        b[1] = 1.0 - m;
+    }
+
+    /// Build a 2nd-order bandpass noise shaper filter (3 coefficients each).
+    ///
+    /// Transfer function: H(s) = k0·s / (1 + k1·s + k2·s²)
+    ///
+    /// This shapes the white noise into a band-limited signal before
+    /// it enters the formant filters.
+    #[allow(clippy::too_many_arguments)]
+    fn build_noise_shaper_filter(
+        a: &mut [f64; 3],
+        b: &mut [f64; 3],
+        sclock: f64,
+        cclock: f64,
+        c1: f64,
+        c2t: f64,
+        c2b: f64,
+        c3: f64,
+        c4: f64,
+    ) {
+        let k0 = c2t * c3 * c2b / c4;
+        let k1 = c2t * (cclock * c2b);
+        let k2 = c1 * c2t * c3 / (cclock * c4);
+
+        let fpeak = (1.0 / k2).sqrt() / (2.0 * std::f64::consts::PI);
+        let zc = 2.0 * std::f64::consts::PI * fpeak / (std::f64::consts::PI * fpeak / sclock).tan();
+
+        let m0 = zc * k0;
+        let m1 = zc * k1;
+        let m2 = zc * zc * k2;
+
+        a[0] = m0;
+        a[1] = 0.0;
+        a[2] = -m0;
+        b[0] = 1.0 + m1 + m2;
+        b[1] = 2.0 - 2.0 * m2;
+        b[2] = 1.0 - m1 + m2;
+    }
+
+    /// Build a 1st-order injection filter for F2 noise path (2 coefficients each).
+    ///
+    /// Transfer function: H(s) = (k0 + k2·s) / (k1 - k2·s)
+    ///
+    /// MAME notes this filter is numerically unstable, so it is
+    /// neutralized (zeroed out). Retained for documentation and future
+    /// investigation.
+    #[allow(clippy::too_many_arguments)]
+    fn build_injection_filter(
+        a: &mut [f64; 2],
+        b: &mut [f64; 2],
+        _sclock: f64,
+        _cclock: f64,
+        _c1b: f64,
+        _c2t: f64,
+        _c2b: f64,
+        _c3: f64,
+        _c4: f64,
+    ) {
+        // Neutralized per MAME — numerically unstable filter.
+        a[0] = 0.0;
+        a[1] = 0.0;
+        b[0] = 1.0;
+        b[1] = 0.0;
     }
 
     /// Main timing engine, called at cclock rate (~20 kHz).
@@ -1281,5 +1515,219 @@ mod tests {
             v.cur_f1, 0,
             "formants should update during pause when volume is zero"
         );
+    }
+
+    // -- Phase 3: Filter coefficient tests --
+
+    #[test]
+    fn bits_to_caps_sums_selected() {
+        // Value 0b1010 → selects indices 1 and 3
+        let caps = [100.0, 200.0, 400.0, 800.0];
+        assert_eq!(VotraxSc01::bits_to_caps(0b1010, &caps), 200.0 + 800.0);
+    }
+
+    #[test]
+    fn bits_to_caps_all_zero() {
+        assert_eq!(
+            VotraxSc01::bits_to_caps(0, &[100.0, 200.0, 400.0, 800.0]),
+            0.0
+        );
+    }
+
+    #[test]
+    fn bits_to_caps_all_set() {
+        let caps = [100.0, 200.0, 400.0, 800.0];
+        assert_eq!(VotraxSc01::bits_to_caps(0b1111, &caps), 1500.0);
+    }
+
+    #[test]
+    fn build_standard_filter_produces_valid_coefficients() {
+        let sclock = TEST_CLOCK as f64 / 18.0;
+        let cclock = TEST_CLOCK as f64 / 36.0;
+        let mut a = [0.0f64; 4];
+        let mut b = [0.0f64; 4];
+
+        // F1 filter with filt_f1 = 0 (minimum capacitance)
+        VotraxSc01::build_standard_filter(
+            &mut a, &mut b, sclock, cclock, 11247.0, 11797.0, 949.0, 52067.0, 2280.0, 166272.0,
+        );
+
+        // b[0] should be nonzero (used as divisor in apply_filter)
+        assert!(b[0].abs() > 0.0, "b[0] must be nonzero for filter division");
+        // All coefficients should be finite
+        for i in 0..4 {
+            assert!(a[i].is_finite(), "a[{i}] is not finite: {}", a[i]);
+            assert!(b[i].is_finite(), "b[{i}] is not finite: {}", b[i]);
+        }
+    }
+
+    #[test]
+    fn build_standard_filter_varies_with_capacitance() {
+        let sclock = TEST_CLOCK as f64 / 18.0;
+        let cclock = TEST_CLOCK as f64 / 36.0;
+        let mut a_lo = [0.0f64; 4];
+        let mut b_lo = [0.0f64; 4];
+        let mut a_hi = [0.0f64; 4];
+        let mut b_hi = [0.0f64; 4];
+
+        // F1 with min vs max capacitance
+        let c3_lo = 2280.0;
+        let c3_hi = 2280.0 + 2546.0 + 4973.0 + 9861.0 + 19724.0;
+
+        VotraxSc01::build_standard_filter(
+            &mut a_lo, &mut b_lo, sclock, cclock, 11247.0, 11797.0, 949.0, 52067.0, c3_lo, 166272.0,
+        );
+        VotraxSc01::build_standard_filter(
+            &mut a_hi, &mut b_hi, sclock, cclock, 11247.0, 11797.0, 949.0, 52067.0, c3_hi, 166272.0,
+        );
+
+        // Different capacitance must produce different coefficients
+        assert_ne!(a_lo, a_hi, "F1 coefficients should differ with capacitance");
+        assert_ne!(b_lo, b_hi, "F1 coefficients should differ with capacitance");
+    }
+
+    #[test]
+    fn build_lowpass_filter_valid() {
+        let sclock = TEST_CLOCK as f64 / 18.0;
+        let cclock = TEST_CLOCK as f64 / 36.0;
+        let mut a = [0.0f64; 1];
+        let mut b = [0.0f64; 2];
+
+        VotraxSc01::build_lowpass_filter(&mut a, &mut b, sclock, cclock, 1122.0, 23131.0);
+
+        assert!(b[0].abs() > 0.0, "b[0] must be nonzero");
+        assert!(a[0].is_finite());
+        assert!(b[0].is_finite());
+        assert!(b[1].is_finite());
+    }
+
+    #[test]
+    fn build_noise_shaper_filter_valid() {
+        let sclock = TEST_CLOCK as f64 / 18.0;
+        let cclock = TEST_CLOCK as f64 / 36.0;
+        let mut a = [0.0f64; 3];
+        let mut b = [0.0f64; 3];
+
+        VotraxSc01::build_noise_shaper_filter(
+            &mut a, &mut b, sclock, cclock, 15500.0, 14854.0, 8450.0, 9523.0, 14083.0,
+        );
+
+        assert!(b[0].abs() > 0.0, "b[0] must be nonzero");
+        // Noise shaper is bandpass: a[1] should be 0
+        assert_eq!(a[1], 0.0, "noise shaper a[1] should be 0 (bandpass)");
+        // a[0] and a[2] should be equal magnitude, opposite sign
+        assert!(
+            (a[0] + a[2]).abs() < 1e-10,
+            "a[0] and a[2] should be opposite: {} vs {}",
+            a[0],
+            a[2]
+        );
+        for i in 0..3 {
+            assert!(a[i].is_finite(), "a[{i}] is not finite");
+            assert!(b[i].is_finite(), "b[{i}] is not finite");
+        }
+    }
+
+    #[test]
+    fn build_injection_filter_neutralized() {
+        let sclock = TEST_CLOCK as f64 / 18.0;
+        let cclock = TEST_CLOCK as f64 / 36.0;
+        let mut a = [0.0f64; 2];
+        let mut b = [0.0f64; 2];
+
+        VotraxSc01::build_injection_filter(
+            &mut a, &mut b, sclock, cclock, 29154.0, 829.0, 38180.0, 2352.0, 34270.0,
+        );
+
+        // Neutralized: output is always zero
+        assert_eq!(a[0], 0.0);
+        assert_eq!(a[1], 0.0);
+        assert_eq!(b[0], 1.0);
+        assert_eq!(b[1], 0.0);
+    }
+
+    #[test]
+    fn filters_commit_builds_f1_coefficients() {
+        let mut v = VotraxSc01::new(TEST_CLOCK);
+        v.cur_f1 = 0xA0; // filt_f1 = 0x0A
+
+        v.filters_commit(true);
+
+        // F1 filter coefficients should be nonzero after commit
+        assert!(
+            v.f1_a[0] != 0.0 || v.f1_a[1] != 0.0,
+            "F1 a-coefficients should be populated"
+        );
+        assert!(
+            v.f1_b[0] != 0.0,
+            "F1 b[0] should be nonzero (filter divisor)"
+        );
+    }
+
+    #[test]
+    fn filters_commit_skips_unchanged_formants() {
+        let mut v = VotraxSc01::new(TEST_CLOCK);
+        v.cur_f1 = 0xA0;
+
+        // First commit builds the filter
+        v.filters_commit(true);
+        let saved_a = v.f1_a;
+
+        // Manually corrupt the coefficients
+        v.f1_a = [999.0; 4];
+
+        // Commit again with same filt_f1 — should NOT rebuild
+        v.filters_commit(false);
+        assert_eq!(v.f1_a, [999.0; 4], "should not rebuild unchanged filter");
+
+        // But changing the interpolation register should rebuild
+        v.cur_f1 = 0xB0; // filt_f1 changes from 0x0A to 0x0B
+        v.filters_commit(false);
+        assert_ne!(v.f1_a, [999.0; 4], "should rebuild when filt_f1 changes");
+        // Should also differ from original (different filt_f1 value)
+        assert_ne!(v.f1_a, saved_a);
+    }
+
+    #[test]
+    fn filters_commit_force_builds_fixed_filters() {
+        let mut v = VotraxSc01::new(TEST_CLOCK);
+
+        // Without force, fixed filters stay at zero
+        v.filters_commit(false);
+        assert_eq!(v.f4_a, [0.0; 4], "fixed F4 not built without force");
+
+        // With force, fixed filters are built
+        v.filters_commit(true);
+        assert!(v.f4_b[0] != 0.0, "F4 should be built on force commit");
+        assert!(v.fx_a[0] != 0.0, "FX should be built on force commit");
+        assert!(
+            v.fn_b[0] != 0.0,
+            "noise shaper should be built on force commit"
+        );
+    }
+
+    #[test]
+    fn filters_commit_f2_rebuilds_on_q_change() {
+        let mut v = VotraxSc01::new(TEST_CLOCK);
+        v.cur_f2 = 0x80;
+        v.cur_f2q = 0x30;
+        v.filters_commit(true);
+        let saved = v.f2v_a;
+
+        // Change Q only (not F2)
+        v.cur_f2q = 0x70;
+        v.filters_commit(false);
+        assert_ne!(v.f2v_a, saved, "F2 should rebuild when Q changes");
+    }
+
+    #[test]
+    fn reset_builds_all_filters() {
+        let mut v = VotraxSc01::new(TEST_CLOCK);
+        v.reset();
+
+        // All fixed filters should be built after reset
+        assert!(v.f4_b[0] != 0.0, "F4 should be built after reset");
+        assert!(v.fx_a[0] != 0.0, "FX should be built after reset");
+        assert!(v.fn_b[0] != 0.0, "noise shaper should be built after reset");
     }
 }

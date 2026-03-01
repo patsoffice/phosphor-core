@@ -197,6 +197,28 @@ A 5-bit counter (0-28) controls the glottal closure amplitude envelope:
 
 During pause phonemes, formant interpolation freezes unless both FA and VA reach zero, preventing abrupt parameter jumps when resuming speech.
 
+### Filter Coefficient Calculation
+
+The SC-01 uses switched-capacitor filters — capacitor arrays switched at cclock (20 kHz) simulate variable resistances. Since only capacitor *ratios* matter, absolute capacitance values cancel out, making the design robust across process variation. All capacitor "values" in the implementation are actually die areas in square micrometers.
+
+Each variable formant filter has a set of fixed capacitors plus a bank of binary-weighted capacitors selected by the 4-bit (or 5-bit for F2) filter parameter. The `bits_to_caps()` function sums the selected capacitors:
+
+| Filter | Fixed (µm²) | Switchable caps (µm²) | Parameter bits |
+| ------ | ----------- | --------------------- | -------------- |
+| F1 | 2,280 | 2546, 4973, 9861, 19724 | `filt_f1` (4) |
+| F2 | 2,352 | 833, 1663, 3164, 6327, 12654 | `filt_f2` (5) |
+| F2 Q | 829 | 1390, 2965, 5875, 11297 | `filt_f2q` (4) |
+| F3 | 8,480 | 2226, 4485, 9056, 18111 | `filt_f3` (4) |
+
+Four filter types are implemented:
+
+- **Standard** (F1, F2 voice, F3, F4): 2nd-order bandpass, H(s) = (1 + k₀s) / (1 + k₁s + k₂s²), produces 4 a/b coefficients each
+- **Lowpass** (output FX): 1st-order, H(s) = 1 / (1 + ks), with a 150/4000 Hz fudge factor to match recordings
+- **Noise shaper** (FN): 2nd-order bandpass, H(s) = k₀s / (1 + k₁s + k₂s²), produces 3 a/b coefficients
+- **Injection** (F2 noise): Neutralized (zeroed) due to numerical instability — retained for documentation
+
+The analog transfer functions are converted to digital IIR filters using the bilinear z-transform with frequency pre-warping at the estimated peak frequency: `fr = sqrt(|k₀k₁ - k₂|) / (2πk₂)`. This ensures the filter response is most accurate near its resonance.
+
 ### A/R Handshake
 
 ```mermaid
