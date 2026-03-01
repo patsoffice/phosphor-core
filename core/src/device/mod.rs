@@ -45,6 +45,7 @@ pub mod pia6820;
 pub mod pokey;
 pub mod riot6532;
 pub mod ssio;
+pub mod votrax_sc01;
 pub mod williams_blitter;
 pub mod z80ctc;
 
@@ -63,5 +64,6 @@ pub use pia6820::Pia6820;
 pub use pokey::Pokey;
 pub use riot6532::Riot6532;
 pub use ssio::SsioBoard;
+pub use votrax_sc01::VotraxSc01;
 pub use williams_blitter::WilliamsBlitter;
 pub use z80ctc::Z80Ctc;
