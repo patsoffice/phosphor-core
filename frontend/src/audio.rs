@@ -9,6 +9,10 @@ const FADE_SAMPLES: u32 = 256;
 
 pub(crate) struct AudioPlayer {
     buffer: Arc<Mutex<VecDeque<i16>>>,
+    /// Scratch space for draining samples under the lock.
+    drain: Vec<i16>,
+    /// Last sample value — held on underrun to avoid pops.
+    last_sample: i16,
     fade_in_pos: u32,
     fading_out: Arc<AtomicBool>,
     fade_out_pos: u32,
@@ -17,17 +21,31 @@ pub(crate) struct AudioPlayer {
 impl AudioCallback for AudioPlayer {
     type Channel = i16;
     fn callback(&mut self, out: &mut [i16]) {
-        let mut buf = self.buffer.lock().unwrap();
-        for sample in out.iter_mut() {
-            let raw = buf.pop_front().unwrap_or(0);
+        // Drain available samples under the lock, then release it.
+        let available = {
+            let mut buf = self.buffer.lock().unwrap();
+            let n = out.len().min(buf.len());
+            self.drain.clear();
+            self.drain.extend(buf.drain(..n));
+            n
+        };
+
+        // Process drained samples (lock is released).
+        for (i, sample) in out.iter_mut().enumerate() {
+            let raw = if i < available {
+                let s = self.drain[i];
+                self.last_sample = s;
+                s
+            } else {
+                // Underrun: hold last sample instead of jumping to zero
+                self.last_sample
+            };
 
             if self.fade_in_pos < FADE_SAMPLES {
-                // Ramp up from silence at startup
                 let gain = self.fade_in_pos as f32 / FADE_SAMPLES as f32;
                 *sample = (raw as f32 * gain) as i16;
                 self.fade_in_pos += 1;
             } else if self.fading_out.load(Ordering::Relaxed) {
-                // Ramp down to silence at shutdown
                 if self.fade_out_pos < FADE_SAMPLES {
                     let gain = 1.0 - (self.fade_out_pos as f32 / FADE_SAMPLES as f32);
                     *sample = (raw as f32 * gain) as i16;
@@ -63,18 +81,20 @@ pub fn init(
         return None;
     }
 
-    let ring: AudioRing = Arc::new(Mutex::new(VecDeque::with_capacity(4096)));
+    let ring: AudioRing = Arc::new(Mutex::new(VecDeque::with_capacity(8192)));
     let fade_out: FadeOut = Arc::new(AtomicBool::new(false));
 
     let desired_spec = AudioSpecDesired {
         freq: Some(sample_rate as i32),
         channels: Some(1),
-        samples: Some(512), // ~11.6 ms at 44100 Hz
+        samples: Some(1024), // ~23.2 ms at 44100 Hz
     };
 
     let device = sdl_audio
-        .open_playback(None, &desired_spec, |_spec| AudioPlayer {
+        .open_playback(None, &desired_spec, |spec| AudioPlayer {
             buffer: Arc::clone(&ring),
+            drain: Vec::with_capacity(spec.samples as usize),
+            last_sample: 0,
             fade_in_pos: 0,
             fading_out: Arc::clone(&fade_out),
             fade_out_pos: 0,

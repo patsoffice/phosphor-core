@@ -410,7 +410,7 @@ pub fn run(
             let n = machine.fill_audio(&mut audio_scratch);
             if n > 0 {
                 let mut buf = ring.lock().unwrap();
-                const MAX_RING_SIZE: usize = 4096;
+                const MAX_RING_SIZE: usize = 8192;
                 while buf.len() + n > MAX_RING_SIZE {
                     buf.pop_front();
                 }
