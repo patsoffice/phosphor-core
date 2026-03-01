@@ -152,13 +152,50 @@ Each filter stage uses switched-capacitor design: binary-weighted capacitor arra
 
 ### Timing
 
-Each phoneme plays for 16 "ticks." Each tick lasts `(duration * 4 + 1)` phonetick periods, where each phonetick is 4 sclock cycles (one 5 kHz period). During playback:
+Each phoneme plays for 16 "ticks." Each tick lasts `(duration * 4 + 1)` phonetick periods, where each phonetick is one cclock cycle (one 20 kHz period). During playback:
 
 - At tick = CLD: glottal closure activates (silence for plosives)
-- At tick = VD: voice amplitude interpolation begins
+- At tick = VD: noise amplitude (FA) interpolation begins
+- At tick = CLD: voice amplitude (VA) interpolation begins
 - Every 625 Hz: amplitude parameters (FA, VA) take one interpolation step
 - Every 208 Hz: formant parameters (F1, F2, F2Q, F3, FC) take one interpolation step
 - Interpolation: `reg = reg - (reg >> 3) + (target << 1)` (exponential approach, ~8 steps to converge)
+
+The 625 Hz and 208 Hz rates are derived from a 6-bit update counter (mod 48) running at cclock. The 625 Hz tick fires when `counter & 0x0F == 0` (3 times per cycle), and the 208 Hz tick fires at `counter == 0x28` (once per cycle), phased to fall exactly between two 625 Hz ticks.
+
+**Die bugs**: The original silicon has two swapped interpolation assignments. FC (noise cutoff) is interpolated at 208 Hz with the formants instead of at 625 Hz with the amplitudes, and VA (voice amplitude) is interpolated at 625 Hz instead of at 208 Hz. These bugs are compensated in the ROM data and must be faithfully reproduced for correct output.
+
+### Pitch Counter
+
+The 8-bit pitch counter increments every cclock tick and wraps to zero when it reaches:
+
+```text
+pitch_limit = (0xE0 ^ (inflection << 5) ^ (filt_f1 << 1)) + 2
+```
+
+This creates a variable pitch period controlled by the 2-bit inflection input and the current F1 formant value. Higher inflection or F1 values shorten the period, raising pitch. The `+2` accounts for propagation delay in the comparator logic.
+
+Filter coefficients are committed to the analog path when `(pitch & 0xF9) == 0x08`, which matches 4 consecutive pitch values per period (bits [2:1] free). This synchronizes parameter changes to the glottal cycle.
+
+### Noise Generator
+
+A 15-bit linear feedback shift register (LFSR) advances every cclock tick:
+
+- **Feedback**: NXOR of bits 14 and 13 (equivalence gate)
+- **Input**: `cur_noise AND (noise != 0x7FFF)` — the all-ones check prevents LFSR lockup
+- **Output**: `cur_noise` is the inverted XOR of the two MSBs
+
+The noise output is gated by pitch bit 6 in the analog path, creating a pseudo-random signal shaped by the glottal cycle.
+
+### Closure Counter
+
+A 5-bit counter (0-28) controls the glottal closure amplitude envelope:
+
+- **Reset to 0** when `cur_closure` is false and voice/noise volume is nonzero (open glottis producing sound)
+- **Ramps toward 28** otherwise (closed glottis, fading in)
+- Maximum value is `7 << 2 = 28`; the two LSBs provide sub-step resolution used in the analog path
+
+During pause phonemes, formant interpolation freezes unless both FA and VA reach zero, preventing abrupt parameter jumps when resuming speech.
 
 ### A/R Handshake
 

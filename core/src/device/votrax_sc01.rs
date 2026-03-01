@@ -296,6 +296,137 @@ impl VotraxSc01 {
     }
 
     // -----------------------------------------------------------------------
+    // Timing engine
+    // -----------------------------------------------------------------------
+
+    /// One step of exponential interpolation (matches MAME `interpolate`).
+    ///
+    /// `reg = reg - (reg >> 3) + (target << 1)`
+    ///
+    /// Converges to `target * 16` in approximately 8 steps. The 4-bit ROM
+    /// targets are scaled to the 8-bit interpolation register range; the
+    /// committed filter values (`filt_*`) are derived by right-shifting
+    /// the interpolated result back to 4 or 5 bits.
+    fn interpolate(reg: &mut u8, target: u8) {
+        *reg = *reg - (*reg >> 3) + (target << 1);
+    }
+
+    /// Commit interpolated values to filter parameters.
+    ///
+    /// Always updates FA, FC, VA (amplitude params). Only updates formant
+    /// filter coefficients (F1, F2, F2Q, F3) when they actually change,
+    /// unless `force` is true (e.g., on reset).
+    ///
+    /// Filter coefficient recalculation will be added in Phase 3.
+    fn filters_commit(&mut self, force: bool) {
+        self.filt_fa = self.cur_fa >> 4;
+        self.filt_fc = self.cur_fc >> 4;
+        self.filt_va = self.cur_va >> 4;
+
+        let new_f1 = self.cur_f1 >> 4;
+        if force || self.filt_f1 != new_f1 {
+            self.filt_f1 = new_f1;
+            // Phase 3: build_standard_filter for F1
+        }
+
+        let new_f2 = self.cur_f2 >> 3; // 5 bits — extra precision
+        let new_f2q = self.cur_f2q >> 4;
+        if force || self.filt_f2 != new_f2 || self.filt_f2q != new_f2q {
+            self.filt_f2 = new_f2;
+            self.filt_f2q = new_f2q;
+            // Phase 3: build_standard_filter for F2 voice
+            // Phase 3: build_injection_filter for F2 noise
+        }
+
+        let new_f3 = self.cur_f3 >> 4;
+        if force || self.filt_f3 != new_f3 {
+            self.filt_f3 = new_f3;
+            // Phase 3: build_standard_filter for F3
+        }
+
+        if force {
+            // Phase 3: build fixed filters (F4, FX, FN)
+        }
+    }
+
+    /// Main timing engine, called at cclock rate (~20 kHz).
+    ///
+    /// Manages phonetick/ticks counters, interpolation at 208/625 Hz,
+    /// pitch counter, noise LFSR, and closure state.
+    fn chip_update(&mut self) {
+        // Phone tick counter. Stopped when ticks reach 16.
+        if self.ticks != 0x10 {
+            self.phonetick += 1;
+            // Comparator with duration << 2, one-tick delay in path
+            if self.phonetick == ((self.rom_duration as u16) << 2) | 1 {
+                self.phonetick = 0;
+                self.ticks += 1;
+                if self.ticks == self.rom_cld {
+                    self.cur_closure = self.rom_closure;
+                }
+            }
+        }
+
+        // Update timing counters: divide by 16 (625 Hz) and by 48 (208 Hz),
+        // phased so the 208 Hz tick falls exactly between two 625 Hz ticks.
+        self.update_counter += 1;
+        if self.update_counter == 0x30 {
+            self.update_counter = 0;
+        }
+
+        let tick_625 = (self.update_counter & 0x0F) == 0;
+        let tick_208 = self.update_counter == 0x28;
+
+        // Formant update at 208 Hz.
+        // Die bug: FC is interpolated here instead of VA.
+        // Formants frozen during pause unless both voice and noise volumes are zero.
+        if tick_208 && (!self.rom_pause || (self.filt_fa == 0 && self.filt_va == 0)) {
+            Self::interpolate(&mut self.cur_fc, self.rom_fc);
+            Self::interpolate(&mut self.cur_f1, self.rom_f1);
+            Self::interpolate(&mut self.cur_f2, self.rom_f2);
+            Self::interpolate(&mut self.cur_f2q, self.rom_f2q);
+            Self::interpolate(&mut self.cur_f3, self.rom_f3);
+        }
+
+        // Non-formant (amplitude) update at 625 Hz.
+        // Die bug: VA is interpolated here instead of FC.
+        if tick_625 {
+            if self.ticks >= self.rom_vd {
+                Self::interpolate(&mut self.cur_fa, self.rom_fa);
+            }
+            if self.ticks >= self.rom_cld {
+                Self::interpolate(&mut self.cur_va, self.rom_va);
+            }
+        }
+
+        // Closure counter: ramps 0→28 when closure active, reset otherwise.
+        if !self.cur_closure && (self.filt_fa != 0 || self.filt_va != 0) {
+            self.closure = 0;
+        } else if self.closure != 7 << 2 {
+            self.closure += 1;
+        }
+
+        // Pitch counter: 8-bit, wraps at threshold derived from inflection and F1.
+        self.pitch = self.pitch.wrapping_add(1);
+        let pitch_limit = (0xE0u8 ^ (self.inflection << 5) ^ (self.filt_f1 << 1)).wrapping_add(2);
+        if self.pitch == pitch_limit {
+            self.pitch = 0;
+        }
+
+        // Filters commit when pitch is in index 1 of pitch wave
+        // (matches 4 consecutive values where bits [2:1] vary).
+        if (self.pitch & 0xF9) == 0x08 {
+            self.filters_commit(false);
+        }
+
+        // Noise shift register: 15-bit LFSR with NXOR feedback on bits 13-14.
+        // The `1 || filt_fa` in MAME is always true (likely intended as `0 ||`).
+        let inp = self.cur_noise && (self.noise != 0x7FFF);
+        self.noise = ((self.noise << 1) & 0x7FFE) | u16::from(inp);
+        self.cur_noise = ((self.noise >> 14) ^ (self.noise >> 13)) & 1 == 0;
+    }
+
+    // -----------------------------------------------------------------------
     // ROM parsing
     // -----------------------------------------------------------------------
 
@@ -427,21 +558,8 @@ impl crate::device::Device for VotraxSc01 {
         self.vn_5 = [0.0; 2];
         self.vn_6 = [0.0; 2];
 
-        // Clear filter coefficients
-        self.f1_a = [0.0; 4];
-        self.f1_b = [0.0; 4];
-        self.f2v_a = [0.0; 4];
-        self.f2v_b = [0.0; 4];
-        self.f2n_a = [0.0; 2];
-        self.f2n_b = [0.0; 2];
-        self.f3_a = [0.0; 4];
-        self.f3_b = [0.0; 4];
-        self.f4_a = [0.0; 4];
-        self.f4_b = [0.0; 4];
-        self.fx_a = [0.0; 1];
-        self.fx_b = [0.0; 2];
-        self.fn_a = [0.0; 3];
-        self.fn_b = [0.0; 3];
+        // Rebuild all filter coefficients from zero state
+        self.filters_commit(true);
 
         self.resampler.reset();
     }
@@ -467,7 +585,20 @@ impl crate::device::Device for VotraxSc01 {
             }
         }
 
-        // Phases 2-4 will add: clock division → chip_update → analog_calc
+        // Divide main clock by 18 → sclock (~40 kHz audio sample rate)
+        self.main_divider += 1;
+        if self.main_divider >= 18 {
+            self.main_divider = 0;
+
+            self.sample_count += 1;
+
+            // Every other sclock tick = cclock (~20 kHz): run timing engine
+            if self.sample_count & 1 != 0 {
+                self.chip_update();
+            }
+
+            // Phase 4: analog_calc() and resampler.tick() here
+        }
     }
 }
 
@@ -851,5 +982,304 @@ mod tests {
         assert_eq!(v2.pitch, 0x42);
         assert_eq!(v2.noise, 0x5678);
         assert!((v2.f1_a[0] - 1.234).abs() < f64::EPSILON);
+    }
+
+    // -- Phase 2: Timing engine tests --
+
+    #[test]
+    fn interpolate_converges_to_target() {
+        // Target 15 → steady state = 15 * 16 = 240 = 0xF0
+        let mut reg = 0u8;
+        for _ in 0..40 {
+            VotraxSc01::interpolate(&mut reg, 15);
+        }
+        // Should converge to 240 (within 1 due to truncation)
+        assert!((239..=241).contains(&reg), "expected ~240, got {reg}");
+        // After >> 4, should equal the 4-bit target
+        assert_eq!(reg >> 4, 15);
+    }
+
+    #[test]
+    fn interpolate_converges_downward() {
+        // Start high, target 0 → should decay toward 0
+        let mut reg = 240u8;
+        for _ in 0..80 {
+            VotraxSc01::interpolate(&mut reg, 0);
+        }
+        // Should reach a small value (truncation prevents exact 0)
+        assert!(reg < 8, "expected near 0, got {reg}");
+    }
+
+    #[test]
+    fn interpolate_midrange() {
+        // Target 8 → steady state ~128
+        let mut reg = 0u8;
+        for _ in 0..40 {
+            VotraxSc01::interpolate(&mut reg, 8);
+        }
+        assert!((127..=129).contains(&reg), "expected ~128, got {reg}");
+        assert_eq!(reg >> 4, 8);
+    }
+
+    #[test]
+    fn chip_update_phonetick_wraps_at_duration() {
+        let mut v = VotraxSc01::new(TEST_CLOCK);
+        v.rom_duration = 3; // wrap at (3 << 2) | 1 = 13
+        v.ticks = 0;
+
+        // Run 13 chip_update calls — phonetick should wrap once
+        for _ in 0..13 {
+            v.chip_update();
+        }
+        assert_eq!(v.phonetick, 0);
+        assert_eq!(v.ticks, 1);
+    }
+
+    #[test]
+    fn chip_update_ticks_stop_at_16() {
+        let mut v = VotraxSc01::new(TEST_CLOCK);
+        v.rom_duration = 0; // wrap at (0 << 2) | 1 = 1 (every other tick)
+        v.ticks = 15;
+
+        // One more wrap should bring ticks to 16
+        v.chip_update(); // phonetick = 1 == 1, wraps, ticks = 16
+        assert_eq!(v.ticks, 16);
+
+        // Now ticks should stay at 16 — phonetick counter is frozen
+        let prev_phonetick = v.phonetick;
+        v.chip_update();
+        assert_eq!(v.ticks, 16);
+        // phonetick doesn't advance when ticks == 0x10
+        assert_eq!(v.phonetick, prev_phonetick);
+    }
+
+    #[test]
+    fn chip_update_closure_at_cld() {
+        let mut v = VotraxSc01::new(TEST_CLOCK);
+        v.rom_duration = 0; // wrap every other tick
+        v.rom_cld = 3;
+        v.rom_closure = true;
+        v.cur_closure = false;
+
+        // Run until ticks reaches 3 (= rom_cld)
+        // Each wrap takes 1 chip_update (phonetick goes 0→1, wraps)
+        for _ in 0..3 {
+            v.chip_update(); // ticks: 0→1→2→3
+        }
+        assert_eq!(v.ticks, 3);
+        assert!(v.cur_closure);
+    }
+
+    #[test]
+    fn update_counter_mod_48() {
+        let mut v = VotraxSc01::new(TEST_CLOCK);
+        v.update_counter = 0x2F; // 47
+
+        v.chip_update();
+        assert_eq!(v.update_counter, 0); // wraps at 0x30 (48)
+    }
+
+    #[test]
+    fn tick_625_fires_every_16_updates() {
+        let mut v = VotraxSc01::new(TEST_CLOCK);
+        v.rom_vd = 0; // always interpolate FA
+        v.rom_cld = 0; // always interpolate VA
+        v.rom_fa = 15;
+        v.rom_va = 15;
+        v.ticks = 1; // past both delays
+
+        // Run 48 chip_updates (one full update_counter cycle)
+        let mut tick_625_count = 0;
+        for i in 0..48 {
+            let before_fa = v.cur_fa;
+            v.chip_update();
+            if v.cur_fa != before_fa {
+                tick_625_count += 1;
+            }
+            // 625 Hz fires when update_counter (after increment) & 0x0F == 0
+            // That's at counter values: 0x10, 0x20, 0x30→0 = 0, so ticks at 16, 32, 0
+            let _ = i;
+        }
+        // Should fire 3 times per 48-cycle period (at 0, 16, 32)
+        assert_eq!(tick_625_count, 3, "625 Hz should fire 3× per 48 cycles");
+    }
+
+    #[test]
+    fn tick_208_fires_at_counter_40() {
+        let mut v = VotraxSc01::new(TEST_CLOCK);
+        v.rom_f1 = 10;
+        v.update_counter = 0x27; // next increment → 0x28 → 208 Hz fires
+
+        let before = v.cur_f1;
+        v.chip_update();
+        assert_ne!(v.cur_f1, before, "208 Hz should have interpolated F1");
+    }
+
+    #[test]
+    fn pitch_wraps_at_threshold() {
+        let mut v = VotraxSc01::new(TEST_CLOCK);
+        v.inflection = 0;
+        v.filt_f1 = 0;
+        // Threshold = (0xE0 ^ 0 ^ 0) + 2 = 0xE2 = 226
+        v.pitch = 225; // next increment = 226
+
+        v.chip_update();
+        assert_eq!(v.pitch, 0, "pitch should wrap at 226");
+    }
+
+    #[test]
+    fn pitch_wrap_with_inflection() {
+        let mut v = VotraxSc01::new(TEST_CLOCK);
+        v.inflection = 2; // inflection << 5 = 0x40
+        v.filt_f1 = 5; // filt_f1 << 1 = 0x0A
+        // Threshold = (0xE0 ^ 0x40 ^ 0x0A) + 2 = 0xAA + 2 = 0xAC = 172
+        v.pitch = 171;
+
+        v.chip_update();
+        assert_eq!(v.pitch, 0, "pitch should wrap at 172");
+    }
+
+    #[test]
+    fn noise_lfsr_advances() {
+        let mut v = VotraxSc01::new(TEST_CLOCK);
+        v.noise = 0x0001;
+        v.cur_noise = true;
+
+        // After one update, noise should shift
+        v.chip_update();
+        // inp = true && (0x0001 != 0x7FFF) = true
+        // noise = ((0x0001 << 1) & 0x7FFE) | 1 = 0x0002 | 1 = 0x0003
+        assert_eq!(v.noise, 0x0003);
+    }
+
+    #[test]
+    fn noise_lfsr_lockup_prevention() {
+        let mut v = VotraxSc01::new(TEST_CLOCK);
+        v.noise = 0x7FFF; // all 1s
+        v.cur_noise = true;
+
+        v.chip_update();
+        // inp = true && (0x7FFF != 0x7FFF) = false (lockup prevention)
+        // noise = ((0x7FFF << 1) & 0x7FFE) | 0 = 0x7FFE
+        assert_eq!(v.noise, 0x7FFE);
+    }
+
+    #[test]
+    fn noise_doesnt_lock_up_over_long_run() {
+        let mut v = VotraxSc01::new(TEST_CLOCK);
+        v.noise = 1;
+        v.cur_noise = true;
+
+        // Run many updates and verify noise keeps changing
+        let mut seen_values = std::collections::HashSet::new();
+        for _ in 0..1000 {
+            v.chip_update();
+            seen_values.insert(v.noise);
+        }
+        // Should visit many different states
+        assert!(
+            seen_values.len() > 100,
+            "LFSR should visit many states, got {}",
+            seen_values.len()
+        );
+    }
+
+    #[test]
+    fn closure_counter_ramps_to_28() {
+        let mut v = VotraxSc01::new(TEST_CLOCK);
+        v.cur_closure = true;
+        v.filt_fa = 1; // nonzero so closure doesn't reset
+        v.filt_va = 0;
+        v.closure = 0;
+
+        for _ in 0..30 {
+            v.chip_update();
+        }
+        // Closure counter maxes at 7 << 2 = 28
+        assert_eq!(v.closure, 28);
+    }
+
+    #[test]
+    fn closure_counter_resets_when_not_active() {
+        let mut v = VotraxSc01::new(TEST_CLOCK);
+        v.cur_closure = false; // not closed
+        v.filt_fa = 1; // nonzero
+        v.closure = 20;
+
+        v.chip_update();
+        assert_eq!(
+            v.closure, 0,
+            "closure resets when cur_closure=false and volume nonzero"
+        );
+    }
+
+    #[test]
+    fn filters_commit_derives_filt_from_cur() {
+        let mut v = VotraxSc01::new(TEST_CLOCK);
+        v.cur_fa = 0xF0;
+        v.cur_fc = 0x80;
+        v.cur_va = 0x50;
+        v.cur_f1 = 0xA0;
+        v.cur_f2 = 0xC8; // >> 3 = 25
+        v.cur_f2q = 0x70;
+        v.cur_f3 = 0x30;
+
+        v.filters_commit(true);
+
+        assert_eq!(v.filt_fa, 0x0F); // 0xF0 >> 4
+        assert_eq!(v.filt_fc, 0x08); // 0x80 >> 4
+        assert_eq!(v.filt_va, 0x05); // 0x50 >> 4
+        assert_eq!(v.filt_f1, 0x0A); // 0xA0 >> 4
+        assert_eq!(v.filt_f2, 0x19); // 0xC8 >> 3 = 25
+        assert_eq!(v.filt_f2q, 0x07); // 0x70 >> 4
+        assert_eq!(v.filt_f3, 0x03); // 0x30 >> 4
+    }
+
+    #[test]
+    fn clock_division_fires_chip_update() {
+        let mut v = VotraxSc01::new(TEST_CLOCK);
+        v.rom_f1 = 10; // nonzero target so interpolation has effect
+        v.update_counter = 0x27; // next chip_update → 0x28 → 208 Hz fires
+
+        // Need 18 main ticks for one sclock, and chip_update fires on odd sclock
+        // First sclock tick: sample_count goes from 0 to 1 (odd) → chip_update fires
+        for _ in 0..18 {
+            v.tick();
+        }
+        assert_eq!(v.sample_count, 1);
+        // 208 Hz should have fired and interpolated F1
+        assert_ne!(v.cur_f1, 0);
+    }
+
+    #[test]
+    fn formants_frozen_during_pause() {
+        let mut v = VotraxSc01::new(TEST_CLOCK);
+        v.rom_pause = true;
+        v.rom_f1 = 10;
+        v.filt_fa = 1; // nonzero volume → formants stay frozen
+        v.filt_va = 0;
+        v.update_counter = 0x27; // next → 208 Hz tick
+
+        v.chip_update();
+        assert_eq!(
+            v.cur_f1, 0,
+            "formants should be frozen during pause with nonzero volume"
+        );
+    }
+
+    #[test]
+    fn formants_unfreeze_during_pause_at_zero_volume() {
+        let mut v = VotraxSc01::new(TEST_CLOCK);
+        v.rom_pause = true;
+        v.rom_f1 = 10;
+        v.filt_fa = 0; // zero volume → formants can update
+        v.filt_va = 0;
+        v.update_counter = 0x27; // next → 208 Hz tick
+
+        v.chip_update();
+        assert_ne!(
+            v.cur_f1, 0,
+            "formants should update during pause when volume is zero"
+        );
     }
 }
