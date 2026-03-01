@@ -251,6 +251,22 @@ The real chip uses switched-capacitor filters operating at 20 kHz. This implemen
 
 The phoneme ROM is loaded externally (not embedded) since it contains proprietary data. The glottal waveform and phoneme name table are embedded as constants, as they describe the chip's circuit design rather than ROM contents.
 
+## Board Integration (Gottlieb System 80)
+
+The Votrax SC-01A is wired to the Gottlieb Rev 1 sound board as follows:
+
+| Signal | Connection |
+| ------ | ---------- |
+| **Address** | 0x2000-0x2FFF in sound CPU (M6502) address space |
+| **Data write** | Bits 0-5 → phoneme code, bits 6-7 → inflection |
+| **A/R output** | RIOT 6532 Port B bit 7 (active-high = ready); rising edge → sound CPU NMI |
+| **Clock** | 720 kHz VCO (nominal), independent of M6502 clock |
+| **Audio** | Mixed additively with MC1408 DAC output |
+
+The phoneme data is active-low on the bus (the board inverts it). The M6502 firmware writes a phoneme byte to 0x2000; the A/R rising edge fires an NMI, and the NMI handler writes the next phoneme. A speech clock DAC at 0x3000 adjusts the VCO frequency (currently stubbed at the nominal 720 kHz).
+
+The Votrax phoneme ROM (`sc01a.bin`, 512 bytes) is loaded as an optional ROM. Games run without it but produce no speech output.
+
 ## Resources
 
 - [Votrax SC-01 Data Sheet (1980)](https://archive.org/details/Votrax_SC-01_Data_Sheet/mode/1up) -- Original Federal Screw Works datasheet (Internet Archive scan)

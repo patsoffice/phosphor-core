@@ -10,9 +10,9 @@
 //! - **Screen**: 256×240 visible, 318×256 total, ~61.42 Hz, 5 MHz pixel clock
 //! - **Video**: 32×32 tilemap (8×8, 4bpp packed) + 64 sprites (16×16, 4bpp planar)
 //! - **Palette**: 16 colors × 2 bytes = 32 bytes palette RAM (4-bit RGB)
-//! - **Sound**: MC1408 DAC (Votrax SC-01A speech stubbed)
+//! - **Sound**: MC1408 DAC + Votrax SC-01A speech synthesizer
 //! - **I/O**: MOS 6532 RIOT (128B RAM, 2 ports, timer, edge detect)
-//! - **NMI**: VBLANK → main CPU NMI; RIOT IRQ → sound CPU IRQ
+//! - **NMI**: VBLANK → main CPU NMI; RIOT IRQ → sound CPU IRQ; Votrax A/R → sound CPU NMI
 
 use phosphor_core::audio::AudioResampler;
 use phosphor_core::bus_split;
@@ -23,7 +23,7 @@ use phosphor_core::core::{Bus, BusMaster, ClockDivider, InterruptState, TimingCo
 use phosphor_core::cpu::Cpu;
 use phosphor_core::cpu::i8088::I8088;
 use phosphor_core::cpu::m6502::M6502;
-use phosphor_core::device::{Mc1408Dac, Riot6532};
+use phosphor_core::device::{Device, Mc1408Dac, Riot6532, VotraxSc01};
 use phosphor_core::gfx;
 use phosphor_core::gfx::decode::{GfxLayout, decode_gfx, decode_gfx_element};
 
@@ -87,6 +87,12 @@ const SOUND_CLOCK_DEN: u32 = 1000;
 // Sound CPU clock (for audio resampler)
 const SOUND_CLOCK_HZ: u64 = 894_886;
 
+// Votrax SC-01 master clock: 720 kHz (VCO nominal, adjustable via speech clock DAC)
+const VOTRAX_CLOCK_HZ: u64 = 720_000;
+// Votrax clock ratio: 720,000 / 5,000,000 = 18/125
+const VOTRAX_CLOCK_NUM: u32 = 18;
+const VOTRAX_CLOCK_DEN: u32 = 125;
+
 /// 4-bit resistor-weighted DAC lookup table.
 ///
 /// Gottlieb palette DAC uses resistors {2000, 1000, 470, 240}Ω with a 180Ω
@@ -102,21 +108,30 @@ const RESISTOR_DAC: [u8; 16] = [
 // Gottlieb Sound Board (Rev 1)
 // ---------------------------------------------------------------------------
 
-/// Self-contained sound board with M6502, RIOT, and DAC.
+/// Self-contained sound board with M6502, RIOT, DAC, and Votrax SC-01.
 ///
 /// The main board sends sound commands by writing to the RIOT's Port A
 /// through [`write_sound_command`]. The RIOT PA7 edge triggers an IRQ
 /// to wake the M6502, which reads the command and drives the DAC.
+///
+/// The Votrax SC-01A speech synthesizer is mapped at 0x2000 in the
+/// sound CPU address space. Its A/R (articulate/request) output is
+/// wired to RIOT Port B bit 7. A/R rising edge triggers sound CPU NMI.
 #[derive(Saveable)]
-#[save_version(1)]
+#[save_version(2)]
 pub(crate) struct GottliebSoundBoard {
     cpu: M6502,
     riot: Riot6532,
     dac: Mc1408Dac,
+    votrax: VotraxSc01,
     resampler: AudioResampler<i16>,
     #[save_skip]
     sound_rom: Vec<u8>, // 8KB (mapped at 0x6000-0x7FFF in 15-bit space)
     clock: u64,
+    /// Previous A/R state for edge detection (NMI on rising edge).
+    votrax_ar_prev: bool,
+    /// NMI pending from Votrax A/R rising edge.
+    votrax_nmi: bool,
 }
 
 impl GottliebSoundBoard {
@@ -125,9 +140,12 @@ impl GottliebSoundBoard {
             cpu: M6502::new(),
             riot: Riot6532::new(),
             dac: Mc1408Dac::new(),
+            votrax: VotraxSc01::new(VOTRAX_CLOCK_HZ),
             resampler: AudioResampler::new(SOUND_CLOCK_HZ, OUTPUT_SAMPLE_RATE),
             sound_rom: vec![0xFF; 0x2000],
             clock: 0,
+            votrax_ar_prev: true,
+            votrax_nmi: false,
         }
     }
 
@@ -135,6 +153,11 @@ impl GottliebSoundBoard {
     fn load_rom(&mut self, data: &[u8]) {
         let len = data.len().min(self.sound_rom.len());
         self.sound_rom[..len].copy_from_slice(&data[..len]);
+    }
+
+    /// Load the Votrax SC-01 internal phoneme ROM (512 bytes).
+    fn load_votrax_rom(&mut self, data: &[u8]) {
+        self.votrax.load_rom(data);
     }
 
     /// Send a sound command from the main CPU.
@@ -149,6 +172,18 @@ impl GottliebSoundBoard {
 
     /// Advance the sound board by one sound CPU tick.
     fn tick(&mut self) {
+        // Update RIOT PB7 with Votrax A/R signal before CPU reads it.
+        // PB7 = A/R (1=ready, 0=busy). Other PB bits are directly driven.
+        let ar = self.votrax.ar_output();
+        self.riot
+            .set_pb_input_masked(if ar { 0x80 } else { 0x00 }, 0x80);
+
+        // Detect A/R rising edge → trigger NMI (active-low, inverted on board)
+        if ar && !self.votrax_ar_prev {
+            self.votrax_nmi = true;
+        }
+        self.votrax_ar_prev = ar;
+
         // Execute one M6502 cycle
         bus_split!(self, bus => {
             self.cpu.execute_cycle(bus, BusMaster::Cpu(1));
@@ -164,8 +199,28 @@ impl GottliebSoundBoard {
         self.clock += 1;
     }
 
+    /// Advance the Votrax SC-01 by one Votrax clock tick (720 kHz).
+    fn tick_votrax(&mut self) {
+        self.votrax.tick();
+    }
+
     fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
-        self.resampler.fill_audio(buffer)
+        // Fill buffer with DAC audio
+        let count = self.resampler.fill_audio(buffer);
+
+        // Mix in Votrax speech audio (f32 → i16, additive)
+        let speech = self.votrax.drain_audio();
+        let mix_len = count.max(speech.len()).min(buffer.len());
+        for i in 0..mix_len {
+            let dac_sample = if i < count { buffer[i] as i32 } else { 0 };
+            let speech_sample = if i < speech.len() {
+                (speech[i] * 32000.0) as i32
+            } else {
+                0
+            };
+            buffer[i] = (dac_sample + speech_sample).clamp(-32768, 32767) as i16;
+        }
+        mix_len
     }
 
     fn reset(&mut self) {
@@ -174,8 +229,11 @@ impl GottliebSoundBoard {
         });
         self.riot.reset();
         self.dac.reset();
+        self.votrax.reset();
         self.resampler.reset();
         self.clock = 0;
+        self.votrax_ar_prev = true; // A/R starts high after reset
+        self.votrax_nmi = false;
     }
 }
 
@@ -221,10 +279,14 @@ impl Bus for GottliebSoundBoard {
             // DAC write: 0x1000-0x1FFF
             0x1000..=0x1FFF => self.dac.write(data),
 
-            // Votrax data: 0x2000-0x2FFF (stub)
-            0x2000..=0x2FFF => {}
+            // Votrax SC-01: 0x2000-0x2FFF
+            // Bits 6-7: inflection, bits 0-5: phoneme code (active-low → invert)
+            0x2000..=0x2FFF => {
+                self.votrax.set_inflection(data >> 6);
+                self.votrax.write_phoneme(!data);
+            }
 
-            // Speech clock DAC: 0x3000-0x3FFF (stub)
+            // Speech clock DAC: 0x3000-0x3FFF (stub — adjusts Votrax VCO)
             0x3000..=0x3FFF => {}
 
             _ => {}
@@ -236,8 +298,12 @@ impl Bus for GottliebSoundBoard {
     }
 
     fn check_interrupts(&mut self, _target: BusMaster) -> InterruptState {
+        // NMI from Votrax A/R rising edge (edge-triggered, auto-clears)
+        let nmi = self.votrax_nmi;
+        self.votrax_nmi = false;
         InterruptState {
             irq: self.riot.irq_active(),
+            nmi,
             ..Default::default()
         }
     }
@@ -275,6 +341,11 @@ impl Debuggable for GottliebSoundBoard {
             DebugRegister {
                 name: "RIOT_IRQ",
                 value: u64::from(self.riot.irq_active()),
+                width: 1,
+            },
+            DebugRegister {
+                name: "VOTRAX_AR",
+                value: u64::from(self.votrax.ar_output()),
                 width: 1,
             },
         ]
@@ -331,6 +402,7 @@ pub struct GottliebBoard {
     // Timing
     pub(crate) clock: u64,
     pub(crate) sound_clock: ClockDivider,
+    pub(crate) votrax_clock: ClockDivider,
     pub(crate) watchdog_counter: u16,
 }
 
@@ -354,6 +426,7 @@ impl GottliebBoard {
             dsw: 0,
             clock: 0,
             sound_clock: ClockDivider::new(SOUND_CLOCK_NUM, SOUND_CLOCK_DEN),
+            votrax_clock: ClockDivider::new(VOTRAX_CLOCK_NUM, VOTRAX_CLOCK_DEN),
             watchdog_counter: 0,
         }
     }
@@ -412,6 +485,11 @@ impl GottliebBoard {
     /// Load sound ROM data.
     pub fn load_sound_rom(&mut self, data: &[u8]) {
         self.sound.load_rom(data);
+    }
+
+    /// Load the Votrax SC-01 internal phoneme ROM (512 bytes).
+    pub fn load_votrax_rom(&mut self, data: &[u8]) {
+        self.sound.load_votrax_rom(data);
     }
 
     /// Pre-decode tile and sprite ROMs into GFX caches.
@@ -526,9 +604,14 @@ impl GottliebBoard {
         // Execute main CPU cycle
         self.cpu.execute_cycle(bus, BusMaster::Cpu(0));
 
-        // Tick sound board at fractional rate
+        // Tick sound board at fractional rate (~895 kHz)
         if self.sound_clock.tick() {
             self.sound.tick();
+        }
+
+        // Tick Votrax SC-01 at its own clock rate (720 kHz)
+        if self.votrax_clock.tick() {
+            self.sound.tick_votrax();
         }
 
         self.clock += 1;
@@ -676,6 +759,7 @@ impl GottliebBoard {
         self.sprite_bank = 0;
         self.clock = 0;
         self.sound_clock.reset();
+        self.votrax_clock.reset();
         self.watchdog_counter = 0;
         // NVRAM is NOT cleared (battery-backed)
     }
@@ -707,6 +791,7 @@ impl Saveable for GottliebBoard {
         w.write_u8(self.sprite_bank);
         w.write_u64_le(self.clock);
         self.sound_clock.save_state(w);
+        self.votrax_clock.save_state(w);
         w.write_u16_le(self.watchdog_counter);
     }
 
@@ -723,6 +808,7 @@ impl Saveable for GottliebBoard {
         self.sprite_bank = r.read_u8()?;
         self.clock = r.read_u64_le()?;
         self.sound_clock.load_state(r)?;
+        self.votrax_clock.load_state(r)?;
         self.watchdog_counter = r.read_u16_le()?;
         // Rebuild derived state
         self.rebuild_palette();
@@ -733,5 +819,93 @@ impl Saveable for GottliebBoard {
 impl Default for GottliebBoard {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn votrax_write_sets_phoneme_and_inflection() {
+        let mut snd = GottliebSoundBoard::new();
+
+        // Write phoneme 0x0A (I2) with inflection 2 → data byte: (2 << 6) | 0x0A = 0x8A
+        Bus::write(&mut snd, BusMaster::Cpu(1), 0x2000, 0x8A);
+
+        // A/R should go low immediately after write
+        assert!(!snd.votrax.ar_output());
+    }
+
+    #[test]
+    fn votrax_ar_wires_to_riot_pb7() {
+        let mut snd = GottliebSoundBoard::new();
+
+        // Initially A/R is high (ready)
+        assert!(snd.votrax.ar_output());
+
+        // Tick once so RIOT PB7 is updated
+        snd.tick();
+        let pb = snd.riot.read_io(0x02); // Read Port B data
+        assert_eq!(pb & 0x80, 0x80, "PB7 should be high when A/R is ready");
+
+        // Write a phoneme → A/R goes low
+        Bus::write(&mut snd, BusMaster::Cpu(1), 0x2000, 0x00);
+        snd.tick();
+        let pb = snd.riot.read_io(0x02);
+        assert_eq!(pb & 0x80, 0, "PB7 should be low when A/R is busy");
+    }
+
+    #[test]
+    fn votrax_clock_divider_ratio() {
+        // Verify 18/125 gives ~720 kHz from 5 MHz
+        let mut divider = ClockDivider::new(VOTRAX_CLOCK_NUM, VOTRAX_CLOCK_DEN);
+        let mut ticks = 0u32;
+        for _ in 0..5_000_000 {
+            if divider.tick() {
+                ticks += 1;
+            }
+        }
+        assert_eq!(ticks, 720_000);
+    }
+
+    #[test]
+    fn sound_board_reset_resets_votrax() {
+        let mut snd = GottliebSoundBoard::new();
+
+        // Write a phoneme to put Votrax in busy state
+        Bus::write(&mut snd, BusMaster::Cpu(1), 0x2000, 0x05);
+        assert!(!snd.votrax.ar_output());
+
+        // Reset should restore A/R to ready
+        snd.reset();
+        assert!(snd.votrax.ar_output());
+    }
+
+    #[test]
+    fn votrax_address_mirror() {
+        let mut snd = GottliebSoundBoard::new();
+
+        // Write to 0x2123 should still hit Votrax (0x2000-0x2FFF range)
+        Bus::write(&mut snd, BusMaster::Cpu(1), 0x2123, 0x0A);
+        assert!(!snd.votrax.ar_output());
+    }
+
+    #[test]
+    fn fill_audio_returns_samples() {
+        let mut snd = GottliebSoundBoard::new();
+
+        // Tick many times to accumulate audio samples
+        for _ in 0..2000 {
+            snd.tick();
+        }
+
+        let mut buf = [0i16; 256];
+        let count = snd.fill_audio(&mut buf);
+        assert!(count > 0, "should produce audio samples after ticking");
     }
 }

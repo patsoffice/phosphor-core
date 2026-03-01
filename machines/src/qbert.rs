@@ -109,6 +109,17 @@ static QBERT_SPRITE_ROM: RomRegion = RomRegion {
     ],
 };
 
+/// Votrax SC-01A internal phoneme ROM (optional — speech works only if present).
+static QBERT_VOTRAX_ROM: RomRegion = RomRegion {
+    size: 0x200, // 512 bytes (64 entries × 8 bytes LE-64)
+    entries: &[RomEntry {
+        name: "sc01a.bin",
+        size: 0x200,
+        offset: 0x0000,
+        crc32: &[0xfc416227],
+    }],
+};
+
 // ---------------------------------------------------------------------------
 // Input definitions
 // ---------------------------------------------------------------------------
@@ -194,6 +205,11 @@ impl QbertSystem {
         // Sound ROM (8KB, loaded into sound board)
         let sound_data = QBERT_SOUND_ROM.load(rom_set)?;
         self.board.load_sound_rom(&sound_data);
+
+        // Votrax SC-01A phoneme ROM (optional — speech disabled if missing)
+        if let Ok(votrax_data) = QBERT_VOTRAX_ROM.load(rom_set) {
+            self.board.load_votrax_rom(&votrax_data);
+        }
 
         // GFX ROMs
         let tile_data = QBERT_TILE_ROM.load(rom_set)?;

@@ -199,6 +199,11 @@ impl Riot6532 {
         self.pb_in = data;
     }
 
+    /// Set external input on Port B with mask (only update bits where mask=1).
+    pub fn set_pb_input_masked(&mut self, data: u8, mask: u8) {
+        self.pb_in = (self.pb_in & !mask) | (data & mask);
+    }
+
     /// Read the current Port A output pin state.
     pub fn pa_output(&self) -> u8 {
         (self.pa_out & self.pa_ddr) | (self.pa_in & !self.pa_ddr)
