@@ -35,7 +35,6 @@ use phosphor_macros::Saveable;
 ///
 /// Index 0 = middle value, index 1 = 0V, indices 2-8 = descending ladder
 /// from peak. Indices 9+ map back to the middle value (0.0).
-#[allow(dead_code)]
 const GLOTTAL_WAVE: [f64; 9] = [
     0.0,
     -4.0 / 7.0,
@@ -583,6 +582,116 @@ impl VotraxSc01 {
         b[1] = 0.0;
     }
 
+    // -----------------------------------------------------------------------
+    // Analog signal path
+    // -----------------------------------------------------------------------
+
+    /// Shift a history buffer right by one and insert a new value at the front.
+    fn shift_hist(val: f64, hist: &mut [f64]) {
+        for i in (1..hist.len()).rev() {
+            hist[i] = hist[i - 1];
+        }
+        hist[0] = val;
+    }
+
+    /// Apply an IIR filter. `a` coefficients weight inputs `x`, `b` coefficients
+    /// weight previous outputs `y`. Returns `(Σ x[i]*a[i] - Σ y[i-1]*b[i]) / b[0]`.
+    fn apply_filter(x: &[f64], y: &[f64], a: &[f64], b: &[f64]) -> f64 {
+        let mut total = 0.0;
+        for i in 0..a.len() {
+            total += x[i] * a[i];
+        }
+        for i in 1..b.len() {
+            total -= y[i - 1] * b[i];
+        }
+        total / b[0]
+    }
+
+    /// Compute one audio sample from the 13-stage analog signal path.
+    ///
+    /// Called at sclock rate (~40 kHz). The signal flows through:
+    /// voice path (glottal → VA → F1 → F2v), noise path (LFSR → FA →
+    /// shaper → FC → F2n), then mixed (F3 → noise inject → F4 →
+    /// closure → lowpass → output).
+    fn analog_calc(&mut self) -> f64 {
+        // --- Voice path ---
+
+        // 1. Glottal pulse lookup (9-entry waveform, indexed by pitch >> 3)
+        let v = if self.pitch >= 9 << 3 {
+            0.0
+        } else {
+            GLOTTAL_WAVE[(self.pitch >> 3) as usize]
+        };
+
+        // 2. Voice amplitude scaling (linear, 4-bit)
+        let v = v * self.filt_va as f64 / 15.0;
+        Self::shift_hist(v, &mut self.voice_1);
+
+        // 3. F1 bandpass filter
+        let v = Self::apply_filter(&self.voice_1, &self.voice_2, &self.f1_a, &self.f1_b);
+        Self::shift_hist(v, &mut self.voice_2);
+
+        // 4. F2 voice bandpass filter
+        let v = Self::apply_filter(&self.voice_2, &self.voice_3, &self.f2v_a, &self.f2v_b);
+        Self::shift_hist(v, &mut self.voice_3);
+
+        // --- Noise path ---
+
+        // 5. Noise gate: LFSR output gated by pitch bit 6, scaled by FA
+        let noise_bit = if self.pitch & 0x40 != 0 {
+            self.cur_noise
+        } else {
+            false
+        };
+        let n = 1e4 * if noise_bit { 1.0 } else { -1.0 };
+        let n = n * self.filt_fa as f64 / 15.0;
+        Self::shift_hist(n, &mut self.noise_1);
+
+        // 6. Noise shaper bandpass filter
+        let n = Self::apply_filter(&self.noise_1, &self.noise_2, &self.fn_a, &self.fn_b);
+        Self::shift_hist(n, &mut self.noise_2);
+
+        // 7. Noise cutoff scaling by FC
+        let n2 = n * self.filt_fc as f64 / 15.0;
+        Self::shift_hist(n2, &mut self.noise_3);
+
+        // 8. F2 noise bandpass filter (injection filter, currently neutralized)
+        let n2 = Self::apply_filter(&self.noise_3, &self.noise_4, &self.f2n_a, &self.f2n_b);
+        Self::shift_hist(n2, &mut self.noise_4);
+
+        // --- Mixed path ---
+
+        // 9. Voice + noise mix
+        let vn = v + n2;
+        Self::shift_hist(vn, &mut self.vn_1);
+
+        // 10. F3 bandpass filter
+        let vn = Self::apply_filter(&self.vn_1, &self.vn_2, &self.f3_a, &self.f3_b);
+        Self::shift_hist(vn, &mut self.vn_2);
+
+        // 11. Secondary noise injection (inverse FC weighting)
+        let vn = vn + n * (5.0 + (15 ^ self.filt_fc) as f64) / 20.0;
+        Self::shift_hist(vn, &mut self.vn_3);
+
+        // 12. F4 bandpass filter (fixed frequency ~3.4 kHz)
+        let vn = Self::apply_filter(&self.vn_3, &self.vn_4, &self.f4_a, &self.f4_b);
+        Self::shift_hist(vn, &mut self.vn_4);
+
+        // 13. Glottal closure amplitude envelope (linear, 3-bit)
+        let vn = vn * (7 ^ (self.closure >> 2)) as f64 / 7.0;
+        Self::shift_hist(vn, &mut self.vn_5);
+
+        // 14. Output lowpass filter (fixed ~3.5 kHz)
+        let vn = Self::apply_filter(&self.vn_5, &self.vn_6, &self.fx_a, &self.fx_b);
+        Self::shift_hist(vn, &mut self.vn_6);
+
+        vn * 0.35
+    }
+
+    // -----------------------------------------------------------------------
+    // Timing engine
+    // -----------------------------------------------------------------------
+
     /// Main timing engine, called at cclock rate (~20 kHz).
     ///
     /// Manages phonetick/ticks counters, interpolation at 208/625 Hz,
@@ -831,7 +940,9 @@ impl crate::device::Device for VotraxSc01 {
                 self.chip_update();
             }
 
-            // Phase 4: analog_calc() and resampler.tick() here
+            // Analog signal path runs at sclock (~40 kHz)
+            let sample = self.analog_calc();
+            self.resampler.tick(sample as f32);
         }
     }
 }
@@ -1729,5 +1840,205 @@ mod tests {
         assert!(v.f4_b[0] != 0.0, "F4 should be built after reset");
         assert!(v.fx_a[0] != 0.0, "FX should be built after reset");
         assert!(v.fn_b[0] != 0.0, "noise shaper should be built after reset");
+    }
+
+    // -- Phase 4: Analog signal path tests --
+
+    #[test]
+    fn shift_hist_inserts_at_front() {
+        let mut hist = [0.0, 0.0, 0.0, 0.0];
+        VotraxSc01::shift_hist(1.0, &mut hist);
+        assert_eq!(hist, [1.0, 0.0, 0.0, 0.0]);
+
+        VotraxSc01::shift_hist(2.0, &mut hist);
+        assert_eq!(hist, [2.0, 1.0, 0.0, 0.0]);
+
+        VotraxSc01::shift_hist(3.0, &mut hist);
+        assert_eq!(hist, [3.0, 2.0, 1.0, 0.0]);
+
+        VotraxSc01::shift_hist(4.0, &mut hist);
+        assert_eq!(hist, [4.0, 3.0, 2.0, 1.0]);
+
+        // Fifth push evicts oldest
+        VotraxSc01::shift_hist(5.0, &mut hist);
+        assert_eq!(hist, [5.0, 4.0, 3.0, 2.0]);
+    }
+
+    #[test]
+    fn shift_hist_size_two() {
+        let mut hist = [0.0, 0.0];
+        VotraxSc01::shift_hist(10.0, &mut hist);
+        assert_eq!(hist, [10.0, 0.0]);
+        VotraxSc01::shift_hist(20.0, &mut hist);
+        assert_eq!(hist, [20.0, 10.0]);
+    }
+
+    #[test]
+    fn apply_filter_passthrough() {
+        // Identity-like filter: a=[1], b=[1] → output = input
+        let x = [42.0, 0.0];
+        let y = [0.0, 0.0];
+        let a = [1.0];
+        let b = [1.0];
+        let result = VotraxSc01::apply_filter(&x, &y, &a, &b);
+        assert!((result - 42.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn apply_filter_feedback() {
+        // a=[1,0], b=[1, -0.5] → y[n] = x[n] + 0.5*y[n-1]
+        let x = [1.0, 0.0];
+        let y = [2.0, 0.0]; // previous output was 2.0
+        let a = [1.0, 0.0];
+        let b = [1.0, -0.5];
+        // total = x[0]*1 + x[1]*0 = 1
+        // total -= y[0]*(-0.5) = 1 + 1 = 2
+        // result = 2 / 1 = 2
+        let result = VotraxSc01::apply_filter(&x, &y, &a, &b);
+        assert!((result - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn analog_calc_silent_at_zero_amplitude() {
+        // With filters built but zero amplitude, output should be silent
+        let mut v = VotraxSc01::new(TEST_CLOCK);
+        v.reset(); // builds filters
+        v.filt_va = 0;
+        v.filt_fa = 0;
+
+        // Run several samples to let filter histories stabilize
+        for _ in 0..100 {
+            v.analog_calc();
+        }
+        let sample = v.analog_calc();
+        assert!(
+            sample.abs() < 1e-10,
+            "should be silent with zero amplitude, got {sample}"
+        );
+    }
+
+    #[test]
+    fn analog_calc_produces_output_after_reset() {
+        let mut v = VotraxSc01::new(TEST_CLOCK);
+        v.reset(); // builds all filters
+
+        // Set up voice amplitude and a valid pitch for glottal lookup
+        v.filt_va = 15; // max voice amplitude
+        v.pitch = 8; // index 1 of glottal wave (nonzero value)
+
+        let sample = v.analog_calc();
+        // With voice amplitude and glottal wave active, some output expected
+        // (may be zero on first call due to filter warm-up, but history will be populated)
+        assert!(
+            v.voice_1[0] != 0.0,
+            "voice_1 history should be populated after analog_calc"
+        );
+        let _ = sample;
+    }
+
+    #[test]
+    fn analog_calc_glottal_zero_above_index_8() {
+        let mut v = VotraxSc01::new(TEST_CLOCK);
+        v.reset();
+        v.filt_va = 15;
+        v.pitch = 9 << 3; // index 9 = out of range → glottal = 0
+
+        v.analog_calc();
+        assert_eq!(
+            v.voice_1[0], 0.0,
+            "glottal wave should be 0 for pitch >= 72"
+        );
+    }
+
+    #[test]
+    fn analog_calc_noise_gated_by_pitch_bit6() {
+        let mut v = VotraxSc01::new(TEST_CLOCK);
+        v.reset();
+        v.filt_fa = 15; // max noise amplitude
+        v.cur_noise = true;
+
+        // Pitch bit 6 clear → noise gate outputs false → always -1
+        v.pitch = 0x00;
+        v.analog_calc();
+        let noise_off = v.noise_1[0];
+
+        // Pitch bit 6 set → noise gate passes cur_noise (true) → +1
+        v.pitch = 0x40;
+        v.analog_calc();
+        let noise_on = v.noise_1[0];
+
+        // The signs should differ
+        assert!(
+            noise_off < 0.0,
+            "noise should be negative when gate is closed"
+        );
+        assert!(
+            noise_on > 0.0,
+            "noise should be positive when gate is open and cur_noise=true"
+        );
+    }
+
+    #[test]
+    fn analog_calc_closure_attenuates() {
+        let mut v = VotraxSc01::new(TEST_CLOCK);
+        v.reset();
+        v.filt_va = 15;
+        v.pitch = 8; // valid glottal index
+
+        // Open glottis (closure = 0 → attenuation factor = 7/7 = 1.0)
+        v.closure = 0;
+        // Run several samples to let filter histories build up
+        for _ in 0..100 {
+            v.analog_calc();
+        }
+        let open_sample = v.analog_calc();
+
+        // Closed glottis (closure = 28 → factor = (7^7)/7 = 0/7 = 0)
+        v.closure = 28; // 7 << 2
+        let closed_sample = v.analog_calc();
+
+        assert!(
+            closed_sample.abs() < open_sample.abs() || open_sample.abs() < 1e-15,
+            "closed glottis should attenuate: open={open_sample}, closed={closed_sample}"
+        );
+    }
+
+    #[test]
+    fn tick_produces_audio_samples() {
+        let entry = build_rom_entry(0x05, 10, 12, 7, 3, 8, 6, 9, 0, 0, false, 0x10);
+        let rom = build_test_rom(&entry);
+        let mut v = VotraxSc01::new(TEST_CLOCK);
+        v.load_rom(&rom);
+        v.reset();
+        v.write_phoneme(0x05);
+
+        // Tick enough to commit the phoneme and generate audio
+        // 73 ticks for commit + many more for audio generation
+        for _ in 0..5000 {
+            v.tick();
+        }
+
+        let samples = v.drain_audio();
+        assert!(
+            !samples.is_empty(),
+            "should produce audio samples after ticking"
+        );
+    }
+
+    #[test]
+    fn drain_audio_clears_buffer() {
+        let mut v = VotraxSc01::new(TEST_CLOCK);
+        v.reset();
+
+        // Tick enough for at least one output sample
+        // sclock = 40kHz, output = 44.1kHz, so ~1 output per input
+        for _ in 0..18 {
+            v.tick();
+        }
+
+        let first = v.drain_audio();
+        let second = v.drain_audio();
+        assert!(!first.is_empty(), "first drain should have samples");
+        assert!(second.is_empty(), "second drain should be empty");
     }
 }

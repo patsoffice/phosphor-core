@@ -240,7 +240,14 @@ The host polls A/R to pace phoneme output. Writing a new phoneme while the previ
 
 ## Emulation Approach
 
-The real chip uses switched-capacitor filters operating at 20 kHz. This implementation models them as IIR biquad filters with coefficients derived via the bilinear z-transform with frequency pre-warping (matching the MAME approach). The synthesis runs at sclock (~40 kHz) in `f32` precision and is downsampled to 44.1 kHz via `AudioResampler<f32>`.
+The real chip uses switched-capacitor filters operating at 20 kHz. This implementation models them as IIR biquad filters with coefficients derived via the bilinear z-transform with frequency pre-warping (matching the MAME approach). The `analog_calc()` function runs at sclock (~40 kHz), computing the full 13-stage signal path each sample:
+
+1. Glottal pulse lookup from a 9-entry waveform table, scaled by VA
+2. Voice signal through F1 and F2 bandpass filters (IIR with `apply_filter`/`shift_hist`)
+3. Noise from LFSR, gated by pitch bit 6, scaled by FA, shaped by the noise bandpass, then scaled by FC through the F2 noise filter
+4. Voice and noise mixed into F3, with secondary noise injection weighted by inverse FC
+5. F4 bandpass, closure amplitude envelope, and final output lowpass
+6. Output scaled by 0.35 and resampled from ~40 kHz to 44.1 kHz via `AudioResampler<f32>`
 
 The phoneme ROM is loaded externally (not embedded) since it contains proprietary data. The glottal waveform and phoneme name table are embedded as constants, as they describe the chip's circuit design rather than ROM contents.
 
