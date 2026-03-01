@@ -2,3 +2,4 @@
 .claude/
 cpu-validation/test_data/
 .DS_Store
+phosphor_profile_*.json

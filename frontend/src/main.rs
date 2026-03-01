@@ -5,6 +5,7 @@ mod debug_ui;
 mod emulator;
 mod input;
 mod overlay;
+mod profile;
 mod rom_path;
 mod vector_gl;
 mod video;

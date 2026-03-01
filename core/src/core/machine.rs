@@ -14,11 +14,22 @@ pub struct AnalogInput {
     pub name: &'static str,
 }
 
+use std::time::Duration;
+
 use crate::device::dvg::VectorLine;
 
 use super::debug::BusDebug;
 use super::memory_map::{MemoryMap, WatchpointHit, WatchpointKind};
 use super::save_state::SaveError;
+
+/// A named timing span from machine-level profiling.
+///
+/// Machines that implement `set_profiling(true)` can capture per-device or
+/// per-CPU timing during `run_frame()` and return spans via `frame_profile_spans()`.
+pub struct ProfileSpan {
+    pub name: &'static str,
+    pub duration: Duration,
+}
 
 // ---------------------------------------------------------------------------
 // Timing configuration
@@ -251,4 +262,18 @@ pub trait Machine: Renderable + AudioSource + InputReceiver + MachineDebug {
 
     /// Load battery-backed RAM contents from a previous save.
     fn load_nvram(&mut self, _data: &[u8]) {}
+
+    /// Enable or disable internal sub-span profiling.
+    ///
+    /// Machines that support fine-grained timing should start/stop capturing
+    /// per-device or per-CPU measurements when this is called.
+    fn set_profiling(&mut self, _enabled: bool) {}
+
+    /// Return sub-span timing from the last `run_frame()` call.
+    ///
+    /// Machines that override `set_profiling` can report detailed breakdowns
+    /// (e.g., main CPU, sound CPU, scanline rendering, blitter DMA).
+    fn frame_profile_spans(&self) -> &[ProfileSpan] {
+        &[]
+    }
 }

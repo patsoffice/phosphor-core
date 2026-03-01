@@ -97,6 +97,9 @@ pub fn run(
     let mut fps_smoothed: f64 = machine.frame_rate_hz();
     let mut fps_last_instant = Instant::now();
 
+    // Profiler state (F8 to toggle)
+    let mut profile_state = crate::profile::ProfileState::new();
+
     // Mouse grab for trackball games (F11 to toggle)
     let has_analog = !machine.analog_map().is_empty();
     let analog_axes: Vec<u8> = machine.analog_map().iter().map(|a| a.id).collect();
@@ -120,6 +123,8 @@ pub fn run(
     }
 
     'main: loop {
+        let t0 = Instant::now();
+
         // Poll all pending SDL events, translate to machine input
         for event in event_pump.poll_iter() {
             // Forward every event to egui first
@@ -141,15 +146,20 @@ pub fn run(
                 } => {
                     if has_debug {
                         debug_state.active = !debug_state.active;
+                        let pw = if profile_state.active {
+                            crate::profile::PANEL_WIDTH
+                        } else {
+                            0
+                        };
                         if debug_state.active {
                             if let Some(bus) = machine.debug_bus() {
                                 debug_state.refresh(bus);
                             }
                             let dw = debug_state.debug_panel_width();
-                            video.resize_window(width * scale + dw, height * scale);
+                            video.resize_window(width * scale + dw + pw, height * scale);
                             debug_state.run_mode = RunMode::Paused;
                         } else {
-                            video.resize_window(width * scale, height * scale);
+                            video.resize_window(width * scale + pw, height * scale);
                             debug_state.run_mode = RunMode::Running;
                         }
                     }
@@ -224,6 +234,31 @@ pub fn run(
                     },
                     Err(e) => eprintln!("No save file found: {e}"),
                 },
+
+                // F8: Toggle profiler
+                Event::KeyDown {
+                    scancode: Some(Scancode::F8),
+                    repeat: false,
+                    ..
+                } => {
+                    let dw = if debug_state.active {
+                        debug_state.debug_panel_width()
+                    } else {
+                        0
+                    };
+                    if profile_state.active {
+                        machine.set_profiling(false);
+                        profile_state.stop();
+                        video.resize_window(width * scale + dw, height * scale);
+                    } else {
+                        machine.set_profiling(true);
+                        profile_state.start();
+                        video.resize_window(
+                            width * scale + dw + crate::profile::PANEL_WIDTH,
+                            height * scale,
+                        );
+                    }
+                }
 
                 Event::KeyDown {
                     scancode: Some(Scancode::F9),
@@ -345,8 +380,11 @@ pub fn run(
             }
         }
 
+        let t1 = Instant::now();
+
         // Execute based on debug state
         let frame_executed = debug_ui::execute_frame(machine, &mut debug_state);
+        let t2 = Instant::now();
 
         // Drain audio samples only when a full frame was executed
         if frame_executed && let Some((ref device, ref ring, _)) = audio_state {
@@ -367,6 +405,7 @@ pub fn run(
                 }
             }
         }
+        let t3 = Instant::now();
 
         // Render: always render when paused (to show debug UI), otherwise respect throttle
         let should_render = throttle
@@ -375,10 +414,12 @@ pub fn run(
 
         if should_render {
             // Vector machines: render GL lines directly (no CPU framebuffer).
-            // Falls back to CPU rasterization in debug mode (needs a texture).
+            // Falls back to CPU rasterization in debug or profiler mode
+            // (side panels need a texture for layout).
             if let Some(ref mut renderer) = vector_renderer
                 && let Some(lines) = machine.vector_display_list()
                 && !debug_state.active
+                && !profile_state.active
             {
                 if show_fps {
                     let fps = fps_text.clone();
@@ -413,11 +454,11 @@ pub fn run(
                     video.present_vectors_with_overlay(renderer, lines, |_ctx| {});
                 }
             } else {
-                // Raster machine (or debug mode): CPU framebuffer path.
+                // Raster machine (or debug/profiler mode): CPU framebuffer path.
                 machine.render_frame(&mut framebuffer);
 
-                // FPS overlay onto framebuffer (only when debug panel is not active)
-                if show_fps && !debug_state.active {
+                // FPS overlay onto framebuffer (only when no side panels are active)
+                if show_fps && !debug_state.active && !profile_state.active {
                     let stats = machine.overlay_stats();
                     crate::overlay::draw_overlay(
                         &mut framebuffer,
@@ -429,16 +470,27 @@ pub fn run(
 
                 video.update_game_texture(&framebuffer);
 
-                if debug_state.active {
+                if debug_state.active || profile_state.active {
                     let bus_ref = machine.debug_bus();
+                    let profiling = profile_state.active;
                     video.present_with_debug(|ctx, tex_id, native_size| {
-                        debug_ui::draw_debug_ui(
-                            ctx,
-                            tex_id,
-                            native_size,
-                            &mut debug_state,
-                            bus_ref,
-                        );
+                        // Profiler side panel (outermost right, drawn first)
+                        if profiling {
+                            crate::profile::draw_profile_panel(ctx, &profile_state, frame_duration);
+                        }
+                        if debug_state.active {
+                            // Debug panels + game central panel
+                            debug_ui::draw_debug_ui(
+                                ctx,
+                                tex_id,
+                                native_size,
+                                &mut debug_state,
+                                bus_ref,
+                            );
+                        } else {
+                            // Game central panel with aspect ratio preservation
+                            draw_game_panel(ctx, tex_id, native_size);
+                        }
                     });
                 } else {
                     video.present_game_only();
@@ -446,6 +498,7 @@ pub fn run(
             }
             last_render_time = Instant::now();
         }
+        let t4 = Instant::now();
 
         // FPS: exponential moving average (α = 0.05) for a stable readout
         if show_fps {
@@ -476,6 +529,19 @@ pub fn run(
                 next_frame_time = Instant::now() + frame_duration;
             }
         }
+
+        // Record profiling data for this frame
+        if profile_state.active {
+            let t5 = Instant::now();
+            let sub_spans = machine.frame_profile_spans();
+            profile_state.record_frame(t1 - t0, t2 - t1, t3 - t2, t4 - t3, t5 - t4, sub_spans);
+        }
+    }
+
+    // Flush profiler trace if still recording
+    if profile_state.active {
+        machine.set_profiling(false);
+        profile_state.stop();
     }
 
     // Signal fade-out, wait for the ramp to complete, then stop the callback.
@@ -484,4 +550,31 @@ pub fn run(
         std::thread::sleep(crate::audio::fade_out_duration());
         device.pause();
     }
+}
+
+/// Draw the game texture in a central panel with aspect ratio preservation.
+/// Used when a side panel (profiler or debug) is active alongside the game.
+fn draw_game_panel(ctx: &egui::Context, tex_id: egui::TextureId, native_size: (u32, u32)) {
+    egui::CentralPanel::default()
+        .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
+        .show(ctx, |ui| {
+            let available = ui.available_size();
+            let (nw, nh) = native_size;
+            let aspect = nw as f32 / nh as f32;
+            let (display_w, display_h) = if available.x / available.y > aspect {
+                (available.y * aspect, available.y)
+            } else {
+                (available.x, available.x / aspect)
+            };
+            let offset_x = (available.x - display_w) / 2.0;
+            let offset_y = (available.y - display_h) / 2.0;
+            ui.add_space(offset_y);
+            ui.horizontal(|ui| {
+                ui.add_space(offset_x);
+                ui.image(egui::load::SizedTexture::new(
+                    tex_id,
+                    egui::Vec2::new(display_w, display_h),
+                ));
+            });
+        });
 }
