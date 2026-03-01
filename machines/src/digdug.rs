@@ -1120,40 +1120,31 @@ impl Machine for DigDugSystem {
 // Machine registry
 // ---------------------------------------------------------------------------
 
-fn create_from_config(
-    rom_set: &RomSet,
-    config: &DigDugRomConfig,
-) -> Result<Box<dyn phosphor_core::core::machine::Machine>, RomLoadError> {
-    let mut sys = DigDugSystem::new();
-    sys.load_roms(rom_set, config)?;
-    Ok(Box::new(sys))
-}
+const ALL_CONFIGS: &[&DigDugRomConfig] = &[
+    &DIGDUG_CONFIG,
+    &DIGDUG1_CONFIG,
+    &DIGDUGAT_CONFIG,
+    &DIGDUGAT1_CONFIG,
+];
 
-fn create_digdug(
+fn create_machine(
     rom_set: &RomSet,
 ) -> Result<Box<dyn phosphor_core::core::machine::Machine>, RomLoadError> {
-    create_from_config(rom_set, &DIGDUG_CONFIG)
+    let mut last_err = None;
+    for config in ALL_CONFIGS {
+        let mut sys = DigDugSystem::new();
+        match sys.load_roms(rom_set, config) {
+            Ok(()) => return Ok(Box::new(sys)),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    Err(last_err.unwrap())
 }
 
-fn create_digdug1(
-    rom_set: &RomSet,
-) -> Result<Box<dyn phosphor_core::core::machine::Machine>, RomLoadError> {
-    create_from_config(rom_set, &DIGDUG1_CONFIG)
+inventory::submit! {
+    MachineEntry::new(
+        "digdug",
+        &["digdug", "digdug1", "digdugat", "digdugat1"],
+        create_machine,
+    )
 }
-
-fn create_digdugat(
-    rom_set: &RomSet,
-) -> Result<Box<dyn phosphor_core::core::machine::Machine>, RomLoadError> {
-    create_from_config(rom_set, &DIGDUGAT_CONFIG)
-}
-
-fn create_digdugat1(
-    rom_set: &RomSet,
-) -> Result<Box<dyn phosphor_core::core::machine::Machine>, RomLoadError> {
-    create_from_config(rom_set, &DIGDUGAT1_CONFIG)
-}
-
-inventory::submit! { MachineEntry::new("digdug", "digdug", create_digdug) }
-inventory::submit! { MachineEntry::new("digdug1", "digdug1", create_digdug1) }
-inventory::submit! { MachineEntry::new("digdugat", "digdugat", create_digdugat) }
-inventory::submit! { MachineEntry::new("digdugat1", "digdugat1", create_digdugat1) }

@@ -362,7 +362,7 @@ fn create_machine(rom_set: &RomSet) -> Result<Box<dyn Machine>, RomLoadError> {
 }
 
 inventory::submit! {
-    MachineEntry::new("asteroid", "asteroid", create_machine)
+    MachineEntry::new("asteroid", &["asteroid"], create_machine)
 }
 
 #[cfg(test)]

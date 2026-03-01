@@ -1,6 +1,8 @@
+use clap::Parser;
 use phosphor_machines::registry;
 
 mod audio;
+mod config;
 mod debug_ui;
 mod emulator;
 mod input;
@@ -10,38 +12,80 @@ mod rom_path;
 mod vector_gl;
 mod video;
 
+#[derive(Parser)]
+#[command(name = "phosphor", about = "Cycle-accurate arcade machine emulator")]
+struct Cli {
+    /// Machine to emulate (e.g., joust, pacman, robotron)
+    machine: Option<String>,
+
+    /// Path to ROM file or directory (overrides config.toml rom_path)
+    rom_path: Option<String>,
+
+    /// Window scale factor
+    #[arg(long)]
+    scale: Option<u32>,
+
+    /// Start with debug UI visible
+    #[arg(long)]
+    debug: bool,
+
+    /// Start with frame profiler visible
+    #[arg(long)]
+    profile: bool,
+
+    /// List available machines and exit
+    #[arg(long, short)]
+    list: bool,
+}
+
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    // Usage: phosphor <machine> <rom-path> [--scale N]
+    let cli = Cli::parse();
+    let config = config::load();
 
-    let machine_name = args
-        .get(1)
-        .expect("Usage: phosphor <machine> <rom-path> [--scale N] [--debug] [--profile]");
-    let rom_path = args.get(2).expect("ROM path required");
-    let explicit_scale = parse_scale_arg(&args);
-    let start_in_debug = args.iter().any(|a| a == "--debug");
-    let start_in_profile = args.iter().any(|a| a == "--profile");
+    if cli.list {
+        for entry in registry::all() {
+            println!("{}", entry.name);
+        }
+        return;
+    }
 
-    let entry = registry::find(machine_name).unwrap_or_else(|| {
+    let Some(machine_name) = cli.machine else {
+        Cli::parse_from(["phosphor", "--help"]);
+        unreachable!();
+    };
+
+    let entry = registry::find(&machine_name).unwrap_or_else(|| {
         let names: Vec<_> = registry::all().iter().map(|e| e.name).collect();
         eprintln!("Unknown machine: {machine_name}");
         eprintln!("Available: {}", names.join(", "));
         std::process::exit(1);
     });
 
-    let rom_set = rom_path::load_rom_set(entry.rom_name, rom_path).expect("Failed to load ROMs");
+    let rom_path = cli.rom_path.or(config.rom_path.clone()).unwrap_or_else(|| {
+        eprintln!("ROM path required. Either:");
+        eprintln!("  phosphor {machine_name} /path/to/roms");
+        if let Some(dir) = config::config_dir() {
+            eprintln!("  or set rom_path in {}", dir.join("config.toml").display());
+        }
+        std::process::exit(1);
+    });
+
+    let rom_set = load_first_rom_set(entry.rom_names, &rom_path);
     let mut machine = (entry.create)(&rom_set).expect("Failed to initialize machine");
 
     // Load battery-backed NVRAM from disk (if available)
-    let nvram_path = nvram_path_for(machine_name, rom_path);
+    let nvram_path = nvram_path_for(&config, &machine_name);
     if let Ok(data) = std::fs::read(&nvram_path) {
         machine.load_nvram(&data);
     }
 
     let (native_w, native_h) = machine.display_size();
-    let scale = explicit_scale.unwrap_or_else(|| auto_scale(native_w, native_h));
+    let scale = cli
+        .scale
+        .or(config.scale)
+        .unwrap_or_else(|| auto_scale(native_w, native_h));
 
-    let save_path = save_path_for(machine_name, rom_path);
+    let save_path = save_path_for(&config, &machine_name);
     let key_map = input::default_key_map(machine.input_map());
     let controller_map = input::default_controller_map(machine.input_map());
     machine.reset();
@@ -51,8 +95,8 @@ fn main() {
         &controller_map,
         scale,
         &save_path,
-        start_in_debug,
-        start_in_profile,
+        cli.debug,
+        cli.profile,
     );
 
     // Save battery-backed NVRAM to disk on exit
@@ -63,22 +107,54 @@ fn main() {
     }
 }
 
-fn save_path_for(machine_name: &str, rom_path: &str) -> std::path::PathBuf {
-    let path = std::path::Path::new(rom_path);
-    if path.is_dir() {
-        path.join(format!("{machine_name}.sav"))
-    } else {
-        path.with_extension("sav")
-    }
+fn default_data_dir(subdir: &str) -> std::path::PathBuf {
+    config::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from(".phosphor"))
+        .join(subdir)
 }
 
-fn nvram_path_for(machine_name: &str, rom_path: &str) -> std::path::PathBuf {
-    let path = std::path::Path::new(rom_path);
-    if path.is_dir() {
-        path.join(format!("{machine_name}.nvram"))
-    } else {
-        path.with_extension("nvram")
+fn ensure_dir(dir: &std::path::Path) {
+    std::fs::create_dir_all(dir).ok();
+}
+
+fn save_path_for(config: &config::Config, machine_name: &str) -> std::path::PathBuf {
+    let dir = config
+        .save_path
+        .as_ref()
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| default_data_dir("save"));
+    ensure_dir(&dir);
+    dir.join(format!("{machine_name}.sav"))
+}
+
+fn nvram_path_for(config: &config::Config, machine_name: &str) -> std::path::PathBuf {
+    let dir = config
+        .nvram_path
+        .as_ref()
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| default_data_dir("nvram"));
+    ensure_dir(&dir);
+    dir.join(format!("{machine_name}.nvram"))
+}
+
+/// Try each ROM set name in order, returning the first that loads successfully.
+fn load_first_rom_set(rom_names: &[&str], path: &str) -> phosphor_machines::rom_loader::RomSet {
+    let mut last_err = None;
+    for name in rom_names {
+        match rom_path::load_rom_set(name, path) {
+            Ok(set) => return set,
+            Err(e) => last_err = Some(e),
+        }
     }
+    let err = last_err.unwrap_or_else(|| {
+        phosphor_machines::rom_loader::RomLoadError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "no ROM names configured",
+        ))
+    });
+    eprintln!("Failed to load ROMs: {err}");
+    eprintln!("Tried: {}", rom_names.join(", "));
+    std::process::exit(1);
 }
 
 /// Pick the largest integer scale that keeps the window under 1200 pixels
@@ -86,14 +162,4 @@ fn nvram_path_for(machine_name: &str, rom_path: &str) -> std::path::PathBuf {
 fn auto_scale(native_w: u32, native_h: u32) -> u32 {
     let longest = native_w.max(native_h);
     (1200 / longest).max(1)
-}
-
-fn parse_scale_arg(args: &[String]) -> Option<u32> {
-    args.windows(2).find_map(|w| {
-        if w[0] == "--scale" {
-            w[1].parse().ok()
-        } else {
-            None
-        }
-    })
 }

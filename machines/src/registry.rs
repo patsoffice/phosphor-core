@@ -13,8 +13,8 @@ use crate::rom_loader::{RomLoadError, RomSet};
 pub struct MachineEntry {
     /// CLI name used to select this machine (e.g., "joust").
     pub name: &'static str,
-    /// MAME ROM set name for ZIP lookup (e.g., "joust").
-    pub rom_name: &'static str,
+    /// MAME ROM set names to try for ZIP lookup, in priority order.
+    pub rom_names: &'static [&'static str],
     /// Factory: construct a Machine from a loaded ROM set.
     pub create: fn(&RomSet) -> Result<Box<dyn Machine>, RomLoadError>,
 }
@@ -22,12 +22,12 @@ pub struct MachineEntry {
 impl MachineEntry {
     pub const fn new(
         name: &'static str,
-        rom_name: &'static str,
+        rom_names: &'static [&'static str],
         create: fn(&RomSet) -> Result<Box<dyn Machine>, RomLoadError>,
     ) -> Self {
         Self {
             name,
-            rom_name,
+            rom_names,
             create,
         }
     }

@@ -1029,7 +1029,7 @@ fn create_machine(
 }
 
 inventory::submit! {
-    MachineEntry::new("gridlee", "gridlee", create_machine)
+    MachineEntry::new("gridlee", &["gridlee"], create_machine)
 }
 
 #[cfg(test)]

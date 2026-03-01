@@ -404,7 +404,7 @@ fn create_machine(rom_set: &RomSet) -> Result<Box<dyn Machine>, RomLoadError> {
 }
 
 inventory::submit! {
-    MachineEntry::new("llander", "llander", create_machine)
+    MachineEntry::new("llander", &["llander"], create_machine)
 }
 
 #[cfg(test)]

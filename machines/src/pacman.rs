@@ -237,7 +237,7 @@ fn create_machine(
 }
 
 inventory::submit! {
-    MachineEntry::new("pacman", "pacman", create_machine)
+    MachineEntry::new("pacman", &["pacman"], create_machine)
 }
 
 #[cfg(test)]

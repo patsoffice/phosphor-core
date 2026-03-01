@@ -15,3 +15,7 @@ zip = "2"
 egui_sdl2_gl = { version = "0.33", default-features = false }
 egui = "0.33"
 gl = "0.14"
+clap = { version = "4", features = ["derive"] }
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
+dirs = "6"

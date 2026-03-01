@@ -537,5 +537,5 @@ fn create_machine(
 }
 
 inventory::submit! {
-    MachineEntry::new("dkongjr", "dkongjr", create_machine)
+    MachineEntry::new("dkongjr", &["dkongjr"], create_machine)
 }

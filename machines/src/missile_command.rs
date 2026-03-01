@@ -932,7 +932,7 @@ fn create_machine(
 }
 
 inventory::submit! {
-    MachineEntry::new("missile", "missile", create_machine)
+    MachineEntry::new("missile", &["missile"], create_machine)
 }
 
 #[cfg(test)]
