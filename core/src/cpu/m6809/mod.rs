@@ -52,6 +52,9 @@ pub struct M6809 {
     pub(crate) state: ExecState,
     #[save_skip(default)]
     pub(crate) opcode: u8,
+    /// Transient scratch storage for postbyte, high-byte, or RMW operand
+    #[save_skip(default)]
+    pub(crate) scratch: u8,
     #[save_skip(default)]
     pub(crate) temp_addr: u16,
     /// Interrupt type being processed
@@ -101,6 +104,7 @@ impl M6809 {
             halted: false,
             state: ExecState::Fetch,
             opcode: 0,
+            scratch: 0,
             temp_addr: 0,
             interrupt_type: InterruptType::None,
             indexed_internal: 0,

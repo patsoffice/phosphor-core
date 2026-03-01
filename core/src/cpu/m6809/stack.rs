@@ -484,12 +484,12 @@ impl M6809 {
                 // temp_addr has vector base address, read high byte
                 let hi = bus.read(master, self.temp_addr);
                 self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = hi; // scratch storage for vector high
+                self.scratch = hi; // scratch storage for vector high
                 self.state = ExecState::Interrupt(21);
             }
             21 => {
                 let lo = bus.read(master, self.temp_addr);
-                self.pc = ((self.opcode as u16) << 8) | (lo as u16);
+                self.pc = ((self.scratch as u16) << 8) | (lo as u16);
                 self.state = ExecState::Fetch;
             }
             // Full interrupt response (dispatched by type)

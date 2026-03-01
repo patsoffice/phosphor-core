@@ -361,12 +361,12 @@ impl M6809 {
             2 => {
                 let high = bus.read(master, self.temp_addr) as u16;
                 self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high as u8;
+                self.scratch = high as u8;
                 self.state = ExecState::Execute(opcode, 3);
             }
             3 => {
                 let low = bus.read(master, self.temp_addr) as u16;
-                let operand = ((self.opcode as u16) << 8) | low;
+                let operand = ((self.scratch as u16) << 8) | low;
                 self.state = ExecState::Execute(opcode, 4);
                 // Store operand for next cycle
                 self.temp_addr = operand;
@@ -406,12 +406,12 @@ impl M6809 {
             2 => {
                 let high = bus.read(master, self.temp_addr) as u16;
                 self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high as u8;
+                self.scratch = high as u8;
                 self.state = ExecState::Execute(opcode, 3);
             }
             3 => {
                 let low = bus.read(master, self.temp_addr) as u16;
-                let operand = ((self.opcode as u16) << 8) | low;
+                let operand = ((self.scratch as u16) << 8) | low;
                 self.temp_addr = operand;
                 self.state = ExecState::Execute(opcode, 4);
             }
@@ -448,12 +448,12 @@ impl M6809 {
             2 => {
                 let high = bus.read(master, self.temp_addr) as u16;
                 self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high as u8;
+                self.scratch = high as u8;
                 self.state = ExecState::ExecutePage2(opcode, 3);
             }
             3 => {
                 let low = bus.read(master, self.temp_addr) as u16;
-                let operand = ((self.opcode as u16) << 8) | low;
+                let operand = ((self.scratch as u16) << 8) | low;
                 self.temp_addr = operand;
                 self.state = ExecState::ExecutePage2(opcode, 4);
             }
@@ -492,12 +492,12 @@ impl M6809 {
             2 => {
                 let high = bus.read(master, self.temp_addr) as u16;
                 self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high as u8;
+                self.scratch = high as u8;
                 self.state = ExecState::ExecutePage2(opcode, 3);
             }
             3 => {
                 let low = bus.read(master, self.temp_addr) as u16;
-                let operand = ((self.opcode as u16) << 8) | low;
+                let operand = ((self.scratch as u16) << 8) | low;
                 self.temp_addr = operand;
                 self.state = ExecState::ExecutePage2(opcode, 4);
             }
@@ -536,12 +536,12 @@ impl M6809 {
             2 => {
                 let high = bus.read(master, self.temp_addr) as u16;
                 self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high as u8;
+                self.scratch = high as u8;
                 self.state = ExecState::Execute(opcode, 3);
             }
             3 => {
                 let low = bus.read(master, self.temp_addr) as u16;
-                let operand = ((self.opcode as u16) << 8) | low;
+                let operand = ((self.scratch as u16) << 8) | low;
                 self.temp_addr = operand;
                 self.state = ExecState::Execute(opcode, 4);
             }
@@ -588,12 +588,12 @@ impl M6809 {
             3 => {
                 let high = bus.read(master, self.temp_addr) as u16;
                 self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high as u8;
+                self.scratch = high as u8;
                 self.state = ExecState::Execute(opcode, 4);
             }
             4 => {
                 let low = bus.read(master, self.temp_addr) as u16;
-                let operand = ((self.opcode as u16) << 8) | low;
+                let operand = ((self.scratch as u16) << 8) | low;
                 self.temp_addr = operand;
                 self.state = ExecState::Execute(opcode, 5);
             }
@@ -636,12 +636,12 @@ impl M6809 {
             3 => {
                 let high = bus.read(master, self.temp_addr) as u16;
                 self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high as u8;
+                self.scratch = high as u8;
                 self.state = ExecState::ExecutePage2(opcode, 4);
             }
             4 => {
                 let low = bus.read(master, self.temp_addr) as u16;
-                let operand = ((self.opcode as u16) << 8) | low;
+                let operand = ((self.scratch as u16) << 8) | low;
                 self.temp_addr = operand;
                 self.state = ExecState::ExecutePage2(opcode, 5);
             }
@@ -686,12 +686,12 @@ impl M6809 {
             3 => {
                 let high = bus.read(master, self.temp_addr) as u16;
                 self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high as u8;
+                self.scratch = high as u8;
                 self.state = ExecState::ExecutePage2(opcode, 4);
             }
             4 => {
                 let low = bus.read(master, self.temp_addr) as u16;
-                let operand = ((self.opcode as u16) << 8) | low;
+                let operand = ((self.scratch as u16) << 8) | low;
                 self.temp_addr = operand;
                 self.state = ExecState::ExecutePage2(opcode, 5);
             }
@@ -904,12 +904,12 @@ impl M6809 {
             3 => {
                 let high = bus.read(master, self.temp_addr) as u16;
                 self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high as u8;
+                self.scratch = high as u8;
                 self.state = ExecState::Execute(opcode, 4);
             }
             4 => {
                 let low = bus.read(master, self.temp_addr) as u16;
-                let operand = ((self.opcode as u16) << 8) | low;
+                let operand = ((self.scratch as u16) << 8) | low;
                 self.temp_addr = operand;
                 self.state = ExecState::Execute(opcode, 5);
             }
@@ -954,12 +954,12 @@ impl M6809 {
             3 => {
                 let high = bus.read(master, self.temp_addr) as u16;
                 self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high as u8;
+                self.scratch = high as u8;
                 self.state = ExecState::Execute(opcode, 4);
             }
             4 => {
                 let low = bus.read(master, self.temp_addr) as u16;
-                let operand = ((self.opcode as u16) << 8) | low;
+                let operand = ((self.scratch as u16) << 8) | low;
                 self.temp_addr = operand;
                 self.state = ExecState::Execute(opcode, 5);
             }
@@ -988,12 +988,12 @@ impl M6809 {
                 // Read high byte of 16-bit operand
                 let high = bus.read(master, self.temp_addr);
                 self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high; // scratch for high byte
+                self.scratch = high; // scratch for high byte
                 self.state = ExecState::Execute(opcode, 51);
             }
             51 => {
                 let low = bus.read(master, self.temp_addr) as u16;
-                let operand = ((self.opcode as u16) << 8) | low;
+                let operand = ((self.scratch as u16) << 8) | low;
                 self.perform_subd(operand);
                 self.state = ExecState::Fetch;
             }
@@ -1025,12 +1025,12 @@ impl M6809 {
             50 => {
                 let high = bus.read(master, self.temp_addr);
                 self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high;
+                self.scratch = high;
                 self.state = ExecState::Execute(opcode, 51);
             }
             51 => {
                 let low = bus.read(master, self.temp_addr) as u16;
-                let operand = ((self.opcode as u16) << 8) | low;
+                let operand = ((self.scratch as u16) << 8) | low;
                 self.perform_addd(operand);
                 self.state = ExecState::Fetch;
             }
@@ -1060,12 +1060,12 @@ impl M6809 {
             50 => {
                 let high = bus.read(master, self.temp_addr);
                 self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high;
+                self.scratch = high;
                 self.state = ExecState::Execute(opcode, 51);
             }
             51 => {
                 let low = bus.read(master, self.temp_addr) as u16;
-                let operand = ((self.opcode as u16) << 8) | low;
+                let operand = ((self.scratch as u16) << 8) | low;
                 self.perform_cmp16(self.x, operand);
                 self.state = ExecState::Fetch;
             }
@@ -1097,12 +1097,12 @@ impl M6809 {
             50 => {
                 let high = bus.read(master, self.temp_addr);
                 self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high;
+                self.scratch = high;
                 self.state = ExecState::ExecutePage2(opcode, 51);
             }
             51 => {
                 let low = bus.read(master, self.temp_addr) as u16;
-                let operand = ((self.opcode as u16) << 8) | low;
+                let operand = ((self.scratch as u16) << 8) | low;
                 self.perform_cmp16(self.get_d(), operand);
                 self.state = ExecState::Fetch;
             }
@@ -1132,12 +1132,12 @@ impl M6809 {
             50 => {
                 let high = bus.read(master, self.temp_addr);
                 self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high;
+                self.scratch = high;
                 self.state = ExecState::ExecutePage2(opcode, 51);
             }
             51 => {
                 let low = bus.read(master, self.temp_addr) as u16;
-                let operand = ((self.opcode as u16) << 8) | low;
+                let operand = ((self.scratch as u16) << 8) | low;
                 self.perform_cmp16(self.y, operand);
                 self.state = ExecState::Fetch;
             }
@@ -1214,12 +1214,12 @@ impl M6809 {
             2 => {
                 let high = bus.read(master, self.temp_addr) as u16;
                 self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high as u8;
+                self.scratch = high as u8;
                 self.state = ExecState::ExecutePage3(opcode, 3);
             }
             3 => {
                 let low = bus.read(master, self.temp_addr) as u16;
-                let operand = ((self.opcode as u16) << 8) | low;
+                let operand = ((self.scratch as u16) << 8) | low;
                 self.temp_addr = operand;
                 self.state = ExecState::ExecutePage3(opcode, 4);
             }
@@ -1264,12 +1264,12 @@ impl M6809 {
             3 => {
                 let high = bus.read(master, self.temp_addr) as u16;
                 self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high as u8;
+                self.scratch = high as u8;
                 self.state = ExecState::ExecutePage3(opcode, 4);
             }
             4 => {
                 let low = bus.read(master, self.temp_addr) as u16;
-                let operand = ((self.opcode as u16) << 8) | low;
+                let operand = ((self.scratch as u16) << 8) | low;
                 self.temp_addr = operand;
                 self.state = ExecState::ExecutePage3(opcode, 5);
             }
@@ -1297,12 +1297,12 @@ impl M6809 {
             50 => {
                 let high = bus.read(master, self.temp_addr);
                 self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high;
+                self.scratch = high;
                 self.state = ExecState::ExecutePage3(opcode, 51);
             }
             51 => {
                 let low = bus.read(master, self.temp_addr) as u16;
-                let operand = ((self.opcode as u16) << 8) | low;
+                let operand = ((self.scratch as u16) << 8) | low;
                 self.perform_cmp16(self.u, operand);
                 self.state = ExecState::Fetch;
             }
@@ -1377,12 +1377,12 @@ impl M6809 {
             2 => {
                 let high = bus.read(master, self.temp_addr) as u16;
                 self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high as u8;
+                self.scratch = high as u8;
                 self.state = ExecState::ExecutePage3(opcode, 3);
             }
             3 => {
                 let low = bus.read(master, self.temp_addr) as u16;
-                let operand = ((self.opcode as u16) << 8) | low;
+                let operand = ((self.scratch as u16) << 8) | low;
                 self.temp_addr = operand;
                 self.state = ExecState::ExecutePage3(opcode, 4);
             }
@@ -1427,12 +1427,12 @@ impl M6809 {
             3 => {
                 let high = bus.read(master, self.temp_addr) as u16;
                 self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high as u8;
+                self.scratch = high as u8;
                 self.state = ExecState::ExecutePage3(opcode, 4);
             }
             4 => {
                 let low = bus.read(master, self.temp_addr) as u16;
-                let operand = ((self.opcode as u16) << 8) | low;
+                let operand = ((self.scratch as u16) << 8) | low;
                 self.temp_addr = operand;
                 self.state = ExecState::ExecutePage3(opcode, 5);
             }
@@ -1460,12 +1460,12 @@ impl M6809 {
             50 => {
                 let high = bus.read(master, self.temp_addr);
                 self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high;
+                self.scratch = high;
                 self.state = ExecState::ExecutePage3(opcode, 51);
             }
             51 => {
                 let low = bus.read(master, self.temp_addr) as u16;
-                let operand = ((self.opcode as u16) << 8) | low;
+                let operand = ((self.scratch as u16) << 8) | low;
                 self.perform_cmp16(self.s, operand);
                 self.state = ExecState::Fetch;
             }

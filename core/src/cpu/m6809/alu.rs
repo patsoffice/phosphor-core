@@ -53,13 +53,13 @@ impl M6809 {
     ) {
         match cycle {
             0 => {
-                self.opcode = bus.read(master, self.pc);
+                self.scratch = bus.read(master, self.pc);
                 self.pc = self.pc.wrapping_add(1);
                 self.state = ExecState::Execute(0x1A, 1);
             }
             1 => {
                 // Internal cycle — apply
-                self.cc |= self.opcode;
+                self.cc |= self.scratch;
                 self.state = ExecState::Fetch;
             }
             _ => {}
@@ -77,13 +77,13 @@ impl M6809 {
     ) {
         match cycle {
             0 => {
-                self.opcode = bus.read(master, self.pc);
+                self.scratch = bus.read(master, self.pc);
                 self.pc = self.pc.wrapping_add(1);
                 self.state = ExecState::Execute(0x1C, 1);
             }
             1 => {
                 // Internal cycle — apply
-                self.cc &= self.opcode;
+                self.cc &= self.scratch;
                 self.state = ExecState::Fetch;
             }
             _ => {}
@@ -239,7 +239,7 @@ impl M6809 {
     /// Returns `true` when the address is ready; `false` if more cycles are needed.
     /// Cycle 20 handles mode-specific internal cycles before returning.
     ///
-    /// Uses `self.opcode` as scratch storage for the postbyte.
+    /// Uses `self.scratch` for the postbyte and indirect pointer high byte.
     /// Uses `self.indexed_internal` as a countdown for internal cycles.
     pub(crate) fn indexed_resolve<B: Bus<Address = u16, Data = u8> + ?Sized>(
         &mut self,
@@ -283,7 +283,7 @@ impl M6809 {
             0 => {
                 let postbyte = bus.read(master, self.pc);
                 self.pc = self.pc.wrapping_add(1);
-                self.opcode = postbyte;
+                self.scratch = postbyte;
 
                 if postbyte & 0x80 == 0 {
                     // 5-bit constant offset: 1 internal cycle
@@ -410,7 +410,7 @@ impl M6809 {
                 }
             }
             1 => {
-                let postbyte = self.opcode;
+                let postbyte = self.scratch;
                 let mode = postbyte & 0x0F;
                 let indirect = postbyte & 0x10 != 0;
                 let reg_sel = (postbyte >> 5) & 0x03;
@@ -458,7 +458,7 @@ impl M6809 {
                 }
             }
             2 => {
-                let postbyte = self.opcode;
+                let postbyte = self.scratch;
                 let mode = postbyte & 0x0F;
                 let indirect = postbyte & 0x10 != 0;
                 let reg_sel = (postbyte >> 5) & 0x03;
@@ -502,13 +502,13 @@ impl M6809 {
             10 => {
                 let high = bus.read(master, self.temp_addr);
                 self.temp_addr = self.temp_addr.wrapping_add(1);
-                self.opcode = high;
+                self.scratch = high;
                 self.state = mk_state(opcode, 11);
                 false
             }
             11 => {
                 let low = bus.read(master, self.temp_addr) as u16;
-                let high = (self.opcode as u16) << 8;
+                let high = (self.scratch as u16) << 8;
                 self.temp_addr = high | low;
                 if self.indexed_internal > 0 {
                     self.state = mk_state(opcode, 20);
@@ -585,11 +585,11 @@ impl M6809 {
                 self.state = ExecState::Execute(opcode, 50);
             }
             50 => {
-                self.opcode = bus.read(master, self.temp_addr);
+                self.scratch = bus.read(master, self.temp_addr);
                 self.state = ExecState::Execute(opcode, 51);
             }
             51 => {
-                let result = operation(self, self.opcode);
+                let result = operation(self, self.scratch);
                 bus.write(master, self.temp_addr, result);
                 self.state = ExecState::Fetch;
             }
@@ -630,7 +630,7 @@ impl M6809 {
                 self.state = ExecState::Execute(opcode, 2);
             }
             2 => {
-                self.opcode = bus.read(master, self.temp_addr);
+                self.scratch = bus.read(master, self.temp_addr);
                 self.state = ExecState::Execute(opcode, 3);
             }
             3 => {
@@ -638,7 +638,7 @@ impl M6809 {
                 self.state = ExecState::Execute(opcode, 4);
             }
             4 => {
-                let result = operation(self, self.opcode);
+                let result = operation(self, self.scratch);
                 bus.write(master, self.temp_addr, result);
                 self.state = ExecState::Fetch;
             }
@@ -682,7 +682,7 @@ impl M6809 {
                 self.state = ExecState::Execute(opcode, 3);
             }
             3 => {
-                self.opcode = bus.read(master, self.temp_addr);
+                self.scratch = bus.read(master, self.temp_addr);
                 self.state = ExecState::Execute(opcode, 4);
             }
             4 => {
@@ -690,7 +690,7 @@ impl M6809 {
                 self.state = ExecState::Execute(opcode, 5);
             }
             5 => {
-                let result = operation(self, self.opcode);
+                let result = operation(self, self.scratch);
                 bus.write(master, self.temp_addr, result);
                 self.state = ExecState::Fetch;
             }
