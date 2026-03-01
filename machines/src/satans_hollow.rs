@@ -1,9 +1,6 @@
 use phosphor_core::bus_split;
 use phosphor_core::core::bus::InterruptState;
-use phosphor_core::core::machine::{
-    AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
-};
-use phosphor_core::core::save_state::{self, SaveError};
+use phosphor_core::core::machine::{InputButton, InputReceiver, Machine};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::Cpu;
 use phosphor_macros::Saveable;
@@ -212,6 +209,14 @@ impl SatansHollowSystem {
         }
     }
 
+    fn overlay_stats_impl(&self) -> Option<String> {
+        let total = mcr2::TILE_ROWS * mcr2::TILE_COLS;
+        Some(format!(
+            "tile dirty: {}/{}",
+            self.board.tiles_redrawn, total
+        ))
+    }
+
     pub fn load_rom_set(&mut self, rom_set: &RomSet) -> Result<(), RomLoadError> {
         // Program ROM
         let prog_data = SHOLLOW_PROGRAM_ROM.load(rom_set)?;
@@ -346,33 +351,7 @@ impl Bus for SatansHollowSystem {
 // Machine trait implementations
 // ---------------------------------------------------------------------------
 
-impl Renderable for SatansHollowSystem {
-    fn display_size(&self) -> (u32, u32) {
-        mcr2::TIMING.display_size()
-    }
-
-    fn render_frame(&self, buffer: &mut [u8]) {
-        self.board.render_frame(buffer);
-    }
-
-    fn overlay_stats(&self) -> Option<String> {
-        let total = mcr2::TILE_ROWS * mcr2::TILE_COLS;
-        Some(format!(
-            "tile dirty: {}/{}",
-            self.board.tiles_redrawn, total
-        ))
-    }
-}
-
-impl AudioSource for SatansHollowSystem {
-    fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
-        self.board.fill_audio(buffer)
-    }
-
-    fn audio_sample_rate(&self) -> u32 {
-        44100
-    }
-}
+crate::impl_board_delegation!(SatansHollowSystem, board, mcr2::TIMING, overlay_stats);
 
 impl InputReceiver for SatansHollowSystem {
     fn set_input(&mut self, button: u8, pressed: bool) {
@@ -401,28 +380,9 @@ impl InputReceiver for SatansHollowSystem {
     }
 }
 
-impl MachineDebug for SatansHollowSystem {
-    fn debug_bus(&self) -> Option<&dyn phosphor_core::core::debug::BusDebug> {
-        Some(&self.board)
-    }
-
-    fn debug_bus_mut(&mut self) -> Option<&mut dyn phosphor_core::core::debug::BusDebug> {
-        Some(&mut self.board)
-    }
-
-    fn cycles_per_frame(&self) -> u64 {
-        mcr2::TIMING.cycles_per_frame()
-    }
-
-    fn debug_tick(&mut self) -> u32 {
-        bus_split!(self, bus => {
-            self.board.tick(bus);
-        });
-        self.board.debug_tick_boundaries()
-    }
-}
-
 impl Machine for SatansHollowSystem {
+    crate::machine_save_state!("shollow", mcr2::TIMING);
+
     fn save_nvram(&self) -> Option<&[u8]> {
         Some(self.board.map.region_data(mcr2::Region::Nvram))
     }
@@ -431,10 +391,6 @@ impl Machine for SatansHollowSystem {
         let nvram = self.board.map.region_data_mut(mcr2::Region::Nvram);
         let len = data.len().min(nvram.len());
         nvram[..len].copy_from_slice(&data[..len]);
-    }
-
-    fn frame_rate_hz(&self) -> f64 {
-        mcr2::TIMING.frame_rate_hz()
     }
 
     fn run_frame(&mut self) {
@@ -453,19 +409,6 @@ impl Machine for SatansHollowSystem {
         });
         // Re-initialize IP3 to active-high idle
         self.board.ssio.set_input_port(3, 0x00);
-    }
-
-    fn machine_id(&self) -> &str {
-        "shollow"
-    }
-
-    fn save_state(&self) -> Option<Vec<u8>> {
-        Some(save_state::save_machine(self, self.machine_id()))
-    }
-
-    fn load_state(&mut self, data: &[u8]) -> Result<(), SaveError> {
-        let id = self.machine_id().to_string();
-        save_state::load_machine(self, &id, data)
     }
 }
 

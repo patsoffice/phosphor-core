@@ -1,13 +1,9 @@
 use phosphor_core::bus_split;
 use phosphor_core::core::bus::InterruptState;
-use phosphor_core::core::machine::{
-    AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
-};
+use phosphor_core::core::machine::{InputButton, InputReceiver, Machine};
 use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
-use phosphor_core::core::save_state::{self, SaveError};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::Cpu;
-use phosphor_core::device::dvg::VectorLine;
 use phosphor_macros::Saveable;
 
 use crate::atari_dvg::{self, AtariDvgBoard, Region};
@@ -301,21 +297,7 @@ impl Bus for AsteroidsSystem {
 // Machine implementation
 // ---------------------------------------------------------------------------
 
-impl Renderable for AsteroidsSystem {
-    fn display_size(&self) -> (u32, u32) {
-        atari_dvg::TIMING.display_size()
-    }
-
-    fn render_frame(&self, buffer: &mut [u8]) {
-        self.board.render_frame(buffer);
-    }
-
-    fn vector_display_list(&self) -> Option<&[VectorLine]> {
-        self.board.vector_display_list()
-    }
-}
-
-impl AudioSource for AsteroidsSystem {} // no audio hardware emulated yet
+crate::impl_board_delegation!(AsteroidsSystem, board, atari_dvg::TIMING, no_audio, vectors);
 
 impl InputReceiver for AsteroidsSystem {
     fn set_input(&mut self, button: u8, pressed: bool) {
@@ -341,28 +323,9 @@ impl InputReceiver for AsteroidsSystem {
     }
 }
 
-impl MachineDebug for AsteroidsSystem {
-    fn debug_bus(&self) -> Option<&dyn phosphor_core::core::debug::BusDebug> {
-        Some(&self.board)
-    }
-
-    fn debug_bus_mut(&mut self) -> Option<&mut dyn phosphor_core::core::debug::BusDebug> {
-        Some(&mut self.board)
-    }
-
-    fn cycles_per_frame(&self) -> u64 {
-        atari_dvg::TIMING.cycles_per_frame()
-    }
-
-    fn debug_tick(&mut self) -> u32 {
-        bus_split!(self, bus => {
-            self.board.tick(bus);
-        });
-        self.board.debug_tick_boundaries()
-    }
-}
-
 impl Machine for AsteroidsSystem {
+    crate::machine_save_state!("asteroids", atari_dvg::TIMING);
+
     fn run_frame(&mut self) {
         bus_split!(self, bus => {
             for _ in 0..atari_dvg::TIMING.cycles_per_frame() {
@@ -385,23 +348,6 @@ impl Machine for AsteroidsSystem {
         bus_split!(self, bus => {
             self.board.cpu.reset(bus, BusMaster::Cpu(0));
         });
-    }
-
-    fn frame_rate_hz(&self) -> f64 {
-        atari_dvg::TIMING.frame_rate_hz()
-    }
-
-    fn machine_id(&self) -> &str {
-        "asteroids"
-    }
-
-    fn save_state(&self) -> Option<Vec<u8>> {
-        Some(save_state::save_machine(self, self.machine_id()))
-    }
-
-    fn load_state(&mut self, data: &[u8]) -> Result<(), SaveError> {
-        let id = self.machine_id().to_string();
-        save_state::load_machine(self, &id, data)
     }
 }
 

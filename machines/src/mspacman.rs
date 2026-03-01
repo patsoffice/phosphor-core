@@ -1,7 +1,6 @@
 use phosphor_core::bus_split;
 use phosphor_core::core::bus::InterruptState;
-use phosphor_core::core::machine::{AudioSource, InputReceiver, Machine, MachineDebug, Renderable};
-use phosphor_core::core::save_state::{self, SaveError};
+use phosphor_core::core::machine::{InputReceiver, Machine};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::Cpu;
 use phosphor_macros::Saveable;
@@ -374,25 +373,7 @@ impl Bus for MsPacmanSystem {
 // Trait implementations
 // ---------------------------------------------------------------------------
 
-impl Renderable for MsPacmanSystem {
-    fn display_size(&self) -> (u32, u32) {
-        namco_pac::TIMING.display_size()
-    }
-
-    fn render_frame(&self, buffer: &mut [u8]) {
-        self.board.render_frame(buffer);
-    }
-}
-
-impl AudioSource for MsPacmanSystem {
-    fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
-        self.board.fill_audio(buffer)
-    }
-
-    fn audio_sample_rate(&self) -> u32 {
-        44100
-    }
-}
+crate::impl_board_delegation!(MsPacmanSystem, board, namco_pac::TIMING);
 
 impl InputReceiver for MsPacmanSystem {
     fn set_input(&mut self, button: u8, pressed: bool) {
@@ -404,31 +385,8 @@ impl InputReceiver for MsPacmanSystem {
     }
 }
 
-impl MachineDebug for MsPacmanSystem {
-    fn debug_bus(&self) -> Option<&dyn phosphor_core::core::debug::BusDebug> {
-        Some(&self.board)
-    }
-
-    fn debug_bus_mut(&mut self) -> Option<&mut dyn phosphor_core::core::debug::BusDebug> {
-        Some(&mut self.board)
-    }
-
-    fn cycles_per_frame(&self) -> u64 {
-        namco_pac::TIMING.cycles_per_frame()
-    }
-
-    fn debug_tick(&mut self) -> u32 {
-        bus_split!(self, bus => {
-            self.board.tick(bus);
-        });
-        self.board.debug_tick_boundaries()
-    }
-}
-
 impl Machine for MsPacmanSystem {
-    fn frame_rate_hz(&self) -> f64 {
-        namco_pac::TIMING.frame_rate_hz()
-    }
+    crate::machine_save_state!("mspacman", namco_pac::TIMING);
 
     fn run_frame(&mut self) {
         bus_split!(self, bus => {
@@ -444,19 +402,6 @@ impl Machine for MsPacmanSystem {
         bus_split!(self, bus => {
             self.board.cpu.reset(bus, BusMaster::Cpu(0));
         });
-    }
-
-    fn machine_id(&self) -> &str {
-        "mspacman"
-    }
-
-    fn save_state(&self) -> Option<Vec<u8>> {
-        Some(save_state::save_machine(self, self.machine_id()))
-    }
-
-    fn load_state(&mut self, data: &[u8]) -> Result<(), SaveError> {
-        let id = self.machine_id().to_string();
-        save_state::load_machine(self, &id, data)
     }
 }
 

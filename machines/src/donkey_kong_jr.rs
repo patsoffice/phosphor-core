@@ -1,9 +1,6 @@
 use phosphor_core::bus_split;
 use phosphor_core::core::bus::InterruptState;
-use phosphor_core::core::machine::{
-    AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
-};
-use phosphor_core::core::save_state::{self, SaveError};
+use phosphor_core::core::machine::{InputButton, InputReceiver, Machine};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::Cpu;
 use phosphor_macros::Saveable;
@@ -476,25 +473,7 @@ impl Bus for DkongJrSystem {
 // Machine implementation
 // ---------------------------------------------------------------------------
 
-impl Renderable for DkongJrSystem {
-    fn display_size(&self) -> (u32, u32) {
-        tkg04::TIMING.display_size()
-    }
-
-    fn render_frame(&self, buffer: &mut [u8]) {
-        self.board.render_frame(buffer);
-    }
-}
-
-impl AudioSource for DkongJrSystem {
-    fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
-        self.board.fill_audio(buffer)
-    }
-
-    fn audio_sample_rate(&self) -> u32 {
-        44100
-    }
-}
+crate::impl_board_delegation!(DkongJrSystem, board, tkg04::TIMING);
 
 impl InputReceiver for DkongJrSystem {
     fn set_input(&mut self, button: u8, pressed: bool) {
@@ -524,31 +503,8 @@ impl InputReceiver for DkongJrSystem {
     }
 }
 
-impl MachineDebug for DkongJrSystem {
-    fn debug_bus(&self) -> Option<&dyn phosphor_core::core::debug::BusDebug> {
-        Some(&self.board)
-    }
-
-    fn debug_bus_mut(&mut self) -> Option<&mut dyn phosphor_core::core::debug::BusDebug> {
-        Some(&mut self.board)
-    }
-
-    fn cycles_per_frame(&self) -> u64 {
-        tkg04::TIMING.cycles_per_frame()
-    }
-
-    fn debug_tick(&mut self) -> u32 {
-        bus_split!(self, bus => {
-            self.board.tick(bus);
-        });
-        self.board.debug_tick_boundaries()
-    }
-}
-
 impl Machine for DkongJrSystem {
-    fn frame_rate_hz(&self) -> f64 {
-        tkg04::TIMING.frame_rate_hz()
-    }
+    crate::machine_save_state!("dkongjr", tkg04::TIMING);
 
     fn run_frame(&mut self) {
         bus_split!(self, bus => {
@@ -565,19 +521,6 @@ impl Machine for DkongJrSystem {
             self.board.cpu.reset(bus, BusMaster::Cpu(0));
             self.board.sound_cpu.reset(bus, BusMaster::Cpu(1));
         });
-    }
-
-    fn machine_id(&self) -> &str {
-        "dkongjr"
-    }
-
-    fn save_state(&self) -> Option<Vec<u8>> {
-        Some(save_state::save_machine(self, self.machine_id()))
-    }
-
-    fn load_state(&mut self, data: &[u8]) -> Result<(), SaveError> {
-        let id = self.machine_id().to_string();
-        save_state::load_machine(self, &id, data)
     }
 }
 

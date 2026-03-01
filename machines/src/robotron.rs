@@ -1,9 +1,6 @@
 use phosphor_core::bus_split;
 use phosphor_core::core::bus::InterruptState;
-use phosphor_core::core::machine::{
-    AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
-};
-use phosphor_core::core::save_state::{self, SaveError};
+use phosphor_core::core::machine::{InputButton, InputReceiver, Machine};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::Cpu;
 use phosphor_macros::Saveable;
@@ -218,6 +215,11 @@ impl RobotronSystem {
         }
     }
 
+    fn debug_pre_tick(&mut self) {
+        self.board.widget_pia.set_port_a_input(self.widget_port_a);
+        self.board.widget_pia.set_port_b_input(self.widget_port_b);
+    }
+
     /// Tick one cycle, splitting the borrow so the board can access the bus.
     pub fn tick(&mut self) {
         bus_split!(self, bus => {
@@ -277,25 +279,7 @@ impl Bus for RobotronSystem {
 // Machine trait — delegates to WilliamsBoard with Robotron input wiring
 // ---------------------------------------------------------------------------
 
-impl Renderable for RobotronSystem {
-    fn display_size(&self) -> (u32, u32) {
-        williams::TIMING.display_size()
-    }
-
-    fn render_frame(&self, buffer: &mut [u8]) {
-        self.board.render_frame(buffer);
-    }
-}
-
-impl AudioSource for RobotronSystem {
-    fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
-        self.board.fill_audio(buffer)
-    }
-
-    fn audio_sample_rate(&self) -> u32 {
-        44100
-    }
-}
+crate::impl_board_delegation!(RobotronSystem, board, williams::TIMING, debug_tick_pre);
 
 impl InputReceiver for RobotronSystem {
     fn set_input(&mut self, button: u8, pressed: bool) {
@@ -333,40 +317,15 @@ impl InputReceiver for RobotronSystem {
     }
 }
 
-impl MachineDebug for RobotronSystem {
-    fn debug_bus(&self) -> Option<&dyn phosphor_core::core::debug::BusDebug> {
-        Some(&self.board)
-    }
-
-    fn debug_bus_mut(&mut self) -> Option<&mut dyn phosphor_core::core::debug::BusDebug> {
-        Some(&mut self.board)
-    }
-
-    fn cycles_per_frame(&self) -> u64 {
-        williams::TIMING.cycles_per_frame()
-    }
-
-    fn debug_tick(&mut self) -> u32 {
-        self.board.widget_pia.set_port_a_input(self.widget_port_a);
-        self.board.widget_pia.set_port_b_input(self.widget_port_b);
-        bus_split!(self, bus => {
-            self.board.tick(bus);
-        });
-        self.board.debug_tick_boundaries()
-    }
-}
-
 impl Machine for RobotronSystem {
+    crate::machine_save_state!("robotron", williams::TIMING);
+
     fn save_nvram(&self) -> Option<&[u8]> {
         Some(self.board.save_cmos())
     }
 
     fn load_nvram(&mut self, data: &[u8]) {
         self.board.load_cmos(data);
-    }
-
-    fn frame_rate_hz(&self) -> f64 {
-        williams::TIMING.frame_rate_hz()
     }
 
     fn run_frame(&mut self) {
@@ -390,19 +349,6 @@ impl Machine for RobotronSystem {
             self.board.cpu.reset(bus, BusMaster::Cpu(0));
             self.board.sound_cpu.reset(bus, BusMaster::Cpu(1));
         });
-    }
-
-    fn machine_id(&self) -> &str {
-        "robotron"
-    }
-
-    fn save_state(&self) -> Option<Vec<u8>> {
-        Some(save_state::save_machine(self, self.machine_id()))
-    }
-
-    fn load_state(&mut self, data: &[u8]) -> Result<(), SaveError> {
-        let id = self.machine_id().to_string();
-        save_state::load_machine(self, &id, data)
     }
 }
 
@@ -485,5 +431,4 @@ mod tests {
         assert_eq!(sys2.widget_port_a, 0x3F);
         assert_eq!(sys2.widget_port_b, 0x03);
     }
-
 }

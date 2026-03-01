@@ -5,10 +5,7 @@
 
 use phosphor_core::bus_split;
 use phosphor_core::core::bus::InterruptState;
-use phosphor_core::core::machine::{
-    AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
-};
-use phosphor_core::core::save_state::{self, SaveError};
+use phosphor_core::core::machine::{InputButton, InputReceiver, Machine};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::Cpu;
 use phosphor_macros::Saveable;
@@ -334,25 +331,7 @@ impl Bus for QbertSystem {
 // Machine trait implementations
 // ---------------------------------------------------------------------------
 
-impl Renderable for QbertSystem {
-    fn display_size(&self) -> (u32, u32) {
-        gottlieb::TIMING.display_size()
-    }
-
-    fn render_frame(&self, buffer: &mut [u8]) {
-        self.board.render_frame(buffer);
-    }
-}
-
-impl AudioSource for QbertSystem {
-    fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
-        self.board.fill_audio(buffer)
-    }
-
-    fn audio_sample_rate(&self) -> u32 {
-        44100
-    }
-}
+crate::impl_board_delegation!(QbertSystem, board, gottlieb::TIMING, bus_addr: u32);
 
 impl InputReceiver for QbertSystem {
     fn set_input(&mut self, button: u8, pressed: bool) {
@@ -396,28 +375,9 @@ impl InputReceiver for QbertSystem {
     }
 }
 
-impl MachineDebug for QbertSystem {
-    fn debug_bus(&self) -> Option<&dyn phosphor_core::core::debug::BusDebug> {
-        Some(&self.board)
-    }
-
-    fn debug_bus_mut(&mut self) -> Option<&mut dyn phosphor_core::core::debug::BusDebug> {
-        Some(&mut self.board)
-    }
-
-    fn cycles_per_frame(&self) -> u64 {
-        gottlieb::TIMING.cycles_per_frame()
-    }
-
-    fn debug_tick(&mut self) -> u32 {
-        bus_split!(self, bus : u32 => {
-            self.board.tick(bus);
-        });
-        self.board.debug_tick_boundaries()
-    }
-}
-
 impl Machine for QbertSystem {
+    crate::machine_save_state!("qbert", gottlieb::TIMING);
+
     fn save_nvram(&self) -> Option<&[u8]> {
         Some(self.board.map.region_data(gottlieb::Region::Nvram))
     }
@@ -426,10 +386,6 @@ impl Machine for QbertSystem {
         let nvram = self.board.map.region_data_mut(gottlieb::Region::Nvram);
         let len = data.len().min(nvram.len());
         nvram[..len].copy_from_slice(&data[..len]);
-    }
-
-    fn frame_rate_hz(&self) -> f64 {
-        gottlieb::TIMING.frame_rate_hz()
     }
 
     fn run_frame(&mut self) {
@@ -448,19 +404,6 @@ impl Machine for QbertSystem {
         });
         // Re-initialize IN1 idle state
         self.board.input_ports[0] = 0x40;
-    }
-
-    fn machine_id(&self) -> &str {
-        "qbert"
-    }
-
-    fn save_state(&self) -> Option<Vec<u8>> {
-        Some(save_state::save_machine(self, self.machine_id()))
-    }
-
-    fn load_state(&mut self, data: &[u8]) -> Result<(), SaveError> {
-        let id = self.machine_id().to_string();
-        save_state::load_machine(self, &id, data)
     }
 }
 

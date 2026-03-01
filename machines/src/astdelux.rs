@@ -1,13 +1,9 @@
 use phosphor_core::bus_split;
 use phosphor_core::core::bus::InterruptState;
-use phosphor_core::core::machine::{
-    AudioSource, InputButton, InputReceiver, Machine, MachineDebug, Renderable,
-};
+use phosphor_core::core::machine::{AudioSource, InputButton, InputReceiver, Machine};
 use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
-use phosphor_core::core::save_state::{self, SaveError};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::Cpu;
-use phosphor_core::device::dvg::VectorLine;
 use phosphor_core::device::pokey::Pokey;
 use phosphor_macros::Saveable;
 
@@ -213,6 +209,10 @@ impl AsteroidsDeluxeSystem {
         }
     }
 
+    fn debug_pre_tick(&mut self) {
+        self.pokey.tick();
+    }
+
     pub fn load_rom_set(&mut self, rom_set: &RomSet) -> Result<(), RomLoadError> {
         let prog = PROGRAM_ROM.load(rom_set)?;
         self.board.map.load_region(Region::ProgramRom, &prog);
@@ -361,19 +361,7 @@ impl Bus for AsteroidsDeluxeSystem {
 // Machine implementation
 // ---------------------------------------------------------------------------
 
-impl Renderable for AsteroidsDeluxeSystem {
-    fn display_size(&self) -> (u32, u32) {
-        atari_dvg::TIMING.display_size()
-    }
-
-    fn render_frame(&self, buffer: &mut [u8]) {
-        self.board.render_frame(buffer);
-    }
-
-    fn vector_display_list(&self) -> Option<&[VectorLine]> {
-        self.board.vector_display_list()
-    }
-}
+crate::impl_board_renderable!(AsteroidsDeluxeSystem, board, atari_dvg::TIMING, vectors);
 
 impl AudioSource for AsteroidsDeluxeSystem {
     fn fill_audio(&mut self, buffer: &mut [i16]) -> usize {
@@ -412,29 +400,16 @@ impl InputReceiver for AsteroidsDeluxeSystem {
     }
 }
 
-impl MachineDebug for AsteroidsDeluxeSystem {
-    fn debug_bus(&self) -> Option<&dyn phosphor_core::core::debug::BusDebug> {
-        Some(&self.board)
-    }
-
-    fn debug_bus_mut(&mut self) -> Option<&mut dyn phosphor_core::core::debug::BusDebug> {
-        Some(&mut self.board)
-    }
-
-    fn cycles_per_frame(&self) -> u64 {
-        atari_dvg::TIMING.cycles_per_frame()
-    }
-
-    fn debug_tick(&mut self) -> u32 {
-        self.pokey.tick();
-        bus_split!(self, bus => {
-            self.board.tick(bus);
-        });
-        self.board.debug_tick_boundaries()
-    }
-}
+crate::impl_board_debug!(
+    AsteroidsDeluxeSystem,
+    board,
+    atari_dvg::TIMING,
+    debug_tick_pre
+);
 
 impl Machine for AsteroidsDeluxeSystem {
+    crate::machine_save_state!("astdelux", atari_dvg::TIMING);
+
     fn run_frame(&mut self) {
         bus_split!(self, bus => {
             for _ in 0..atari_dvg::TIMING.cycles_per_frame() {
@@ -466,14 +441,6 @@ impl Machine for AsteroidsDeluxeSystem {
         });
     }
 
-    fn frame_rate_hz(&self) -> f64 {
-        atari_dvg::TIMING.frame_rate_hz()
-    }
-
-    fn machine_id(&self) -> &str {
-        "astdelux"
-    }
-
     fn save_nvram(&self) -> Option<&[u8]> {
         Some(&self.earom)
     }
@@ -481,15 +448,6 @@ impl Machine for AsteroidsDeluxeSystem {
     fn load_nvram(&mut self, data: &[u8]) {
         let len = data.len().min(64);
         self.earom[..len].copy_from_slice(&data[..len]);
-    }
-
-    fn save_state(&self) -> Option<Vec<u8>> {
-        Some(save_state::save_machine(self, self.machine_id()))
-    }
-
-    fn load_state(&mut self, data: &[u8]) -> Result<(), SaveError> {
-        let id = self.machine_id().to_string();
-        save_state::load_machine(self, &id, data)
     }
 }
 

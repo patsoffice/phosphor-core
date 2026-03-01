@@ -369,8 +369,7 @@ impl Tkg04Board {
                 ((c2j >> 2) & 1) as f64,
                 ((c2j >> 3) & 1) as f64,
             ];
-            let r =
-                compute_tkg04_channel(&r_bits, &DARLINGTON_RESISTORS, DARLINGTON_BIAS_R, true);
+            let r = compute_tkg04_channel(&r_bits, &DARLINGTON_RESISTORS, DARLINGTON_BIAS_R, true);
 
             // Green: c-2k bits 2-3 + c-2j bit 0, Darlington amp
             let g_bits = [
@@ -378,8 +377,7 @@ impl Tkg04Board {
                 ((c2k >> 3) & 1) as f64,
                 (c2j & 1) as f64,
             ];
-            let g =
-                compute_tkg04_channel(&g_bits, &DARLINGTON_RESISTORS, DARLINGTON_BIAS_R, true);
+            let g = compute_tkg04_channel(&g_bits, &DARLINGTON_RESISTORS, DARLINGTON_BIAS_R, true);
 
             // Blue: 2 bits from c-2k (bits 0-1), emitter follower
             let b_bits = [(c2k & 1) as f64, ((c2k >> 1) & 1) as f64];

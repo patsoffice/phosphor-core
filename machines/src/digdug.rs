@@ -2,7 +2,6 @@ use phosphor_core::bus_split;
 use phosphor_core::core::bus::InterruptState;
 use phosphor_core::core::debug::{BusDebug, DebugCpu, Debuggable};
 use phosphor_core::core::machine::{AudioSource, InputReceiver, Machine, MachineDebug, Renderable};
-use phosphor_core::core::save_state::{self, SaveError};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::Cpu;
 use phosphor_core::gfx;
@@ -1075,9 +1074,7 @@ impl MachineDebug for DigDugSystem {
 }
 
 impl Machine for DigDugSystem {
-    fn frame_rate_hz(&self) -> f64 {
-        namco_galaga::TIMING.frame_rate_hz()
-    }
+    crate::machine_save_state!("digdug", namco_galaga::TIMING);
 
     fn run_frame(&mut self) {
         bus_split!(self, bus => {
@@ -1107,19 +1104,6 @@ impl Machine for DigDugSystem {
             self.board.sub_cpu.reset(bus, BusMaster::Cpu(1));
             self.board.sound_cpu.reset(bus, BusMaster::Cpu(2));
         });
-    }
-
-    fn machine_id(&self) -> &str {
-        "digdug"
-    }
-
-    fn save_state(&self) -> Option<Vec<u8>> {
-        Some(save_state::save_machine(self, self.machine_id()))
-    }
-
-    fn load_state(&mut self, data: &[u8]) -> Result<(), SaveError> {
-        let id = self.machine_id().to_string();
-        save_state::load_machine(self, &id, data)
     }
 
     fn save_nvram(&self) -> Option<&[u8]> {
