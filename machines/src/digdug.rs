@@ -20,7 +20,7 @@ use crate::rom_loader::{RomEntry, RomLoadError, RomRegion, RomSet};
 
 const DIGDUG_CHAR_LAYOUT: GfxLayout<'static> = GfxLayout {
     plane_offsets: &[0],
-    x_offsets: &[0, 1, 2, 3, 4, 5, 6, 7],
+    x_offsets: &[7, 6, 5, 4, 3, 2, 1, 0],
     y_offsets: &[0, 8, 16, 24, 32, 40, 48, 56],
     char_increment: 64,
 };
@@ -525,6 +525,7 @@ pub struct DigDugSystem {
     // Frame buffer (288 × 224 native, indexed — rotated to RGB in render_frame)
     #[save_skip]
     native_buffer: Vec<u8>,
+
 }
 
 impl DigDugSystem {
@@ -554,6 +555,7 @@ impl DigDugSystem {
             bg_lut: [0; 256],
 
             native_buffer: vec![0u8; 288 * 224],
+
         }
     }
 
@@ -593,9 +595,12 @@ impl DigDugSystem {
         self.board
             .load_sound_prom(&config.sound_prom.load(rom_set)?);
 
-        // Default DIP switches (1 coin/1 credit, 3 lives, normal difficulty)
-        self.board.dswa = 0xFF;
-        self.board.dswb = 0xFF;
+        // Default DIP switches matching MAME defaults for Dig Dug:
+        // DSWA: Coin_B=1C/1C(0x01), Bonus=20K/60K(0x18), Lives=3(0x80)
+        // DSWB: Coin_A=1C/1C(0x00), Freeze=Off(0x20), Demo=On(0x00),
+        //       Continue=No(0x08), Upright(0x04), Difficulty=Easy(0x00)
+        self.board.dswa = 0x99;
+        self.board.dswb = 0x2C;
 
         Ok(())
     }
@@ -658,6 +663,10 @@ impl DigDugSystem {
             (c + (r << 5)) as usize
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Debug: Hang detection
+    // -----------------------------------------------------------------------
 
     // -----------------------------------------------------------------------
     // Full-frame video rendering (no raster effects in Dig Dug)
@@ -775,11 +784,14 @@ impl DigDugSystem {
             let flipy = self.flp_ram[attr_addr] & 0x02 != 0;
             let size = (sprite_byte & 0x80) != 0; // true = 32×32
 
-            // MAME always applies the shift-left-by-2 transformation,
-            // then uses (sprite & ~3) as the base tile code.
-            let transformed =
-                ((sprite_byte as usize & 0xC0) | ((sprite_byte as usize & 0x3F) << 2)) & 0xFF;
-            let base_code = transformed & !3;
+            // Sprite code transformation: only for 32×32 sprites.
+            // For 32×32, shift bits 5-0 left by 2 to get base of 4 consecutive tiles.
+            // For 16×16, use the raw byte as the tile code directly.
+            let sprite = if size {
+                ((sprite_byte as usize & 0xC0) | ((sprite_byte as usize & 0x3F) << 2)) & 0xFF
+            } else {
+                sprite_byte as usize
+            };
 
             let sy = if size {
                 ((raw_sy - 16) & 0xFF) - 32
@@ -787,24 +799,36 @@ impl DigDugSystem {
                 (raw_sy & 0xFF) - 32
             };
 
+            // Tile offset table for 2×2 grid: [row][col]
+            const GFX_OFFS: [[usize; 2]; 2] = [[0, 1], [2, 3]];
+
             let grid = if size { 2 } else { 1 };
 
-            // Tile ordering within multi-part sprites
             for gy in 0..grid {
                 for gx in 0..grid {
                     let tile_code = if size {
-                        // 2×2 grid: tiles arranged as code+0, code+1, code+2, code+3
-                        let tx = if flipx { 1 - gx } else { gx };
-                        let ty = if flipy { 1 - gy } else { gy };
-                        (base_code + ty * 2 + tx) & 0xFF
+                        // XOR with flip flags to reverse tile order
+                        let row = gy ^ if flipy { 1 } else { 0 };
+                        let col = gx ^ if flipx { 1 } else { 0 };
+                        (sprite + GFX_OFFS[row][col]) & 0xFF
                     } else {
-                        base_code
+                        sprite
                     };
 
-                    let tile_sx = sx + (gx as i32) * 16;
+                    // X wraps in 8-bit coordinate space
+                    let tile_sx = (sx + (gx as i32) * 16) & 0xFF;
                     let tile_sy = sy + (gy as i32) * 16;
 
                     self.draw_sprite_tile(tile_code, color, tile_sx, tile_sy, flipx, flipy);
+                    // Wraparound: draw again at x+256 for sprites crossing screen edge
+                    self.draw_sprite_tile(
+                        tile_code,
+                        color,
+                        tile_sx + 0x100,
+                        tile_sy,
+                        flipx,
+                        flipy,
+                    );
                 }
             }
         }
@@ -833,16 +857,8 @@ impl DigDugSystem {
 
             for px in 0..16 {
                 let screen_x = sx + px as i32;
-                // Handle X wraparound
-                let draw_x = if screen_x < 0 {
-                    screen_x + 288
-                } else if screen_x >= 288 {
-                    screen_x - 288
-                } else {
-                    screen_x
-                };
-
-                if !(0..288).contains(&draw_x) {
+                // Clip to visible area (columns 2-33, i.e. pixels 16-271)
+                if !(16..272).contains(&screen_x) {
                     continue;
                 }
 
@@ -856,7 +872,7 @@ impl DigDugSystem {
                     continue; // transparent
                 }
                 let palette_idx = pal_lo | 0x10;
-                self.native_buffer[row_off + draw_x as usize] = palette_idx;
+                self.native_buffer[row_off + screen_x as usize] = palette_idx;
             }
         }
     }
@@ -909,13 +925,14 @@ impl Bus for DigDugSystem {
                 self.board.write_misc_latch(bit, value);
             }
             0x6830 => {
+                // Watchdog reset (data ignored — any write feeds the watchdog).
                 self.board.watchdog_counter = 0;
             }
             0x7000..=0x70FF => {
                 self.board.write_custom_io(data);
             }
             0x7100 => {
-                self.board.namco06.ctrl_write(data);
+                self.board.write_custom_io_ctrl(data);
             }
             0x8000..=0x83FF => {
                 self.video_ram[(addr - 0x8000) as usize] = data;

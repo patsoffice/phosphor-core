@@ -62,11 +62,11 @@ pub const NAMCO_GALAGA_INPUT_MAP: &[InputButton] = &[
     },
     InputButton {
         id: INPUT_P1_BUTTON1,
-        name: "P1 Button",
+        name: "P1 Fire",
     },
     InputButton {
         id: INPUT_P2_BUTTON1,
-        name: "P2 Button",
+        name: "P2 Fire",
     },
     InputButton {
         id: INPUT_START1,
@@ -177,7 +177,7 @@ pub struct NamcoGalagaBoard {
     pub(crate) main_irq_pending: bool,
     pub(crate) main_nmi_pending: bool, // from 06XX timer
     pub(crate) sub_irq_pending: bool,
-    pub(crate) sound_nmi_pending: bool, // from VBLANK, gated by Q2
+    pub(crate) sound_nmi_pending: bool, // from scanline timer (64/192), gated by Q2
 
     // Palette
     pub(crate) palette_prom: [u8; 32],
@@ -187,6 +187,9 @@ pub struct NamcoGalagaBoard {
     pub(crate) clock: u64,
     pub(crate) watchdog_counter: u32,
     pub(crate) flip_screen: bool,
+
+    // Deferred sub CPU reset (set by write_misc_latch, acted on in tick)
+    pending_sub_cpu_reset: bool,
 }
 
 impl NamcoGalagaBoard {
@@ -200,15 +203,24 @@ impl NamcoGalagaBoard {
             sub_rom: Vec::new(),
             sound_rom: Vec::new(),
 
-            wsg: NamcoWsg::new(TIMING.cpu_clock_hz),
+            wsg: {
+                let mut wsg = NamcoWsg::new(TIMING.cpu_clock_hz);
+                // Galaga-family hardware has no sound-enable latch; WSG is
+                // always active (unlike Pac-Man which gates via 0x5003).
+                wsg.set_sound_enabled(true);
+                wsg
+            },
             namco06: Namco06::new(NAMCO06_BASE_DIVISOR),
             namco51: Namco51::new(),
             namco53: Namco53::new(),
 
             in0: 0xFF,
             in1: 0xFF,
-            dswa: 0xFF,
-            dswb: 0xFF,
+            // DIP switch defaults matching MAME/factory settings:
+            // DSWA: 3 lives (0x80), bonus 20K/60K (0x18), coin B 1C/1C (0x01)
+            // DSWB: freeze off (0x20), cabinet upright (0x04)
+            dswa: 0x99,
+            dswb: 0x24,
 
             main_irq_enabled: false,
             sub_irq_enabled: false,
@@ -226,6 +238,8 @@ impl NamcoGalagaBoard {
             clock: 0,
             watchdog_counter: 0,
             flip_screen: false,
+
+            pending_sub_cpu_reset: false,
         }
     }
 
@@ -233,18 +247,47 @@ impl NamcoGalagaBoard {
     // Core tick — called from game wrappers via bus_split!
     // -----------------------------------------------------------------------
 
+    /// Reset a Z80 to power-on state.
+    fn reset_z80(cpu: &mut Z80) {
+        cpu.hardware_reset();
+    }
+
     pub fn tick(&mut self, bus: &mut dyn Bus<Address = u16, Data = u8>) {
         let frame_cycle = self.clock % TIMING.cycles_per_frame();
 
-        // VBLANK interrupt: fire at the start of VBLANK (scanline 224)
+        // Handle deferred sub CPU reset (set by write_misc_latch bit 3).
+        // Mirrors Z80::reset() without needing 'static bus lifetime.
+        if self.pending_sub_cpu_reset {
+            self.pending_sub_cpu_reset = false;
+            Self::reset_z80(&mut self.sub_cpu);
+            Self::reset_z80(&mut self.sound_cpu);
+        }
+
+        // VBLANK interrupt: fire at the start of VBLANK (scanline 224).
+        // Only assert IRQ if the mask (enable latch) is set, matching MAME's
+        // vblank_irq: `if (state && m_main_irq_mask) set_input_line(ASSERT_LINE)`.
+        // This prevents a race where VBLANK fires while the IRQ handler has
+        // temporarily cleared the mask, which would cause spurious re-entry.
         let vblank_cycle = VISIBLE_LINES * TIMING.cycles_per_scanline;
         if frame_cycle == vblank_cycle {
-            self.main_irq_pending = true;
-            self.sub_irq_pending = true;
-            // Sound CPU NMI from VBLANK, gated by misc latch Q2 (inverted)
-            if self.sound_nmi_enabled {
-                self.sound_nmi_pending = true;
+            if self.main_irq_enabled {
+                self.main_irq_pending = true;
             }
+            if self.sub_irq_enabled {
+                self.sub_irq_pending = true;
+            }
+        }
+
+        // Sound CPU NMI: fires at scanlines 64 and 192 (every 128 lines),
+        // matching MAME's cpu3_interrupt_callback. Gated by misc latch Q2.
+        const SOUND_NMI_SCANLINE_A: u64 = 64;
+        const SOUND_NMI_SCANLINE_B: u64 = 192;
+        let scanline_a_cycle = SOUND_NMI_SCANLINE_A * TIMING.cycles_per_scanline;
+        let scanline_b_cycle = SOUND_NMI_SCANLINE_B * TIMING.cycles_per_scanline;
+        if (frame_cycle == scanline_a_cycle || frame_cycle == scanline_b_cycle)
+            && self.sound_nmi_enabled
+        {
+            self.sound_nmi_pending = true;
         }
 
         // 06XX timer tick — NMI goes to main CPU (ungated)
@@ -284,7 +327,13 @@ impl NamcoGalagaBoard {
 
     /// Read the 06XX custom I/O data port. Dispatches to the selected chip
     /// based on the 06XX control register chip-select bits.
+    ///
+    /// Per MAME: reading in write mode returns 0 and does NOT trigger the
+    /// custom chip, preventing spurious read_index advances.
     pub fn read_custom_io(&mut self) -> u8 {
+        if !self.namco06.is_read_mode() {
+            return 0;
+        }
         if self.namco06.chip_select(0) {
             // Chip 0: Namco 51XX (input multiplexer)
             self.namco51.read(self.in0, self.in1)
@@ -297,11 +346,27 @@ impl NamcoGalagaBoard {
     }
 
     /// Write the 06XX custom I/O data port. Dispatches to the selected chip.
+    ///
+    /// Per MAME: writing in read mode is ignored and does NOT trigger the
+    /// custom chip.
     pub fn write_custom_io(&mut self, data: u8) {
+        if self.namco06.is_read_mode() {
+            return;
+        }
         if self.namco06.chip_select(0) {
             self.namco51.write(data);
         }
         // 53XX has no write interface
+    }
+
+    /// Write the 06XX control register.
+    ///
+    /// The custom chip MCUs (51XX, 53XX) maintain continuous read_index state
+    /// across transactions — the game may split reads across multiple
+    /// transactions (e.g., reading 2 of 4 53XX nibbles per transaction).
+    /// Do NOT reset read indices here.
+    pub fn write_custom_io_ctrl(&mut self, data: u8) {
+        self.namco06.ctrl_write(data);
     }
 
     /// Write the LS259 misc latch at 0x6820-0x6827.
@@ -329,9 +394,10 @@ impl NamcoGalagaBoard {
                 let was_reset = self.sub_reset;
                 self.sub_reset = !value;
 
-                // When releasing from reset, actually reset the CPUs
+                // When releasing from reset, defer CPU reset to tick()
+                // where bus access is available.
                 if was_reset && !self.sub_reset {
-                    // CPUs will be reset by the game wrapper (needs bus_split)
+                    self.pending_sub_cpu_reset = true;
                 }
             }
             7 => {
@@ -349,10 +415,15 @@ impl NamcoGalagaBoard {
         use phosphor_core::core::bus::InterruptState;
         match target {
             BusMaster::Cpu(0) => {
+                // IRQ is level-triggered: stays asserted until the game
+                // explicitly clears it by writing 0 to the IRQ enable latch
+                // (0x6820). Matches MAME's ASSERT_LINE / CLEAR_LINE semantics.
+                // Do NOT clear main_irq_pending here — only write_misc_latch
+                // bit 0 clears it (via irq1_clear_w equivalent).
                 let irq = self.main_irq_pending && self.main_irq_enabled;
-                if irq {
-                    self.main_irq_pending = false;
-                }
+
+                // NMI is edge-triggered: consume after one check so the Z80
+                // sees a single rising edge.
                 let nmi = self.main_nmi_pending;
                 if nmi {
                     self.main_nmi_pending = false;
@@ -364,10 +435,8 @@ impl NamcoGalagaBoard {
                 }
             }
             BusMaster::Cpu(1) => {
+                // IRQ is level-triggered (same as CPU 0).
                 let irq = self.sub_irq_pending && self.sub_irq_enabled;
-                if irq {
-                    self.sub_irq_pending = false;
-                }
                 InterruptState {
                     irq,
                     ..Default::default()
@@ -490,6 +559,9 @@ impl NamcoGalagaBoard {
     /// The caller must reset CPUs separately (requires bus_split).
     pub fn reset_board(&mut self) {
         self.wsg.reset();
+        // Galaga-family hardware has no sound-enable latch; WSG is always
+        // active. Re-enable after reset (which clears the flag).
+        self.wsg.set_sound_enabled(true);
         self.namco06.reset();
         self.namco51.reset();
         self.namco53.reset();
@@ -510,6 +582,8 @@ impl NamcoGalagaBoard {
         self.clock = 0;
         self.watchdog_counter = 0;
         self.flip_screen = false;
+
+        self.pending_sub_cpu_reset = false;
     }
 
     // -----------------------------------------------------------------------

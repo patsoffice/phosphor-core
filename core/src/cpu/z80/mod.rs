@@ -174,6 +174,28 @@ impl Z80 {
         }
     }
 
+    /// Hardware reset — restores all CPU state to power-on defaults.
+    /// Equivalent to pulling the /RESET pin low.
+    pub fn hardware_reset(&mut self) {
+        self.pc = 0x0000;
+        self.sp = 0xFFFF;
+        self.a = 0xFF;
+        self.f = 0xFF;
+        self.i = 0;
+        self.r = 0;
+        self.im = 0;
+        self.iff1 = false;
+        self.iff2 = false;
+        self.halted = false;
+        self.ei_delay = false;
+        self.memptr = 0;
+        self.nmi_previous = false;
+        // Reset execution state machine
+        self.state = ExecState::Fetch;
+        self.prefix_pending = false;
+        self.index_mode = IndexMode::HL;
+    }
+
     // Helpers for 16-bit register access
     pub fn get_bc(&self) -> u16 {
         ((self.b as u16) << 8) | self.c as u16
@@ -367,6 +389,16 @@ impl Z80 {
                             return;
                         }
                     }
+                }
+
+                // HALT: re-fetch the HALT opcode for a proper 4T NOP cycle.
+                // PC already points past HALT; decrement so FetchRead re-reads
+                // it and increments PC back. This gives correct 4T timing with
+                // R refresh, matching real Z80 behavior.
+                if self.halted {
+                    self.pc = self.pc.wrapping_sub(1);
+                    self.state = ExecState::FetchRead;
+                    return;
                 }
 
                 // M1 T1: address on bus, reset prefix state

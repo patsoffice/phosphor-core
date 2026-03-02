@@ -12,7 +12,7 @@ use phosphor_macros::Saveable;
 #[save_version(1)]
 pub struct Namco53 {
     /// Nibble sequence counter (0-3).
-    read_index: u8,
+    pub read_index: u8,
 }
 
 impl Namco53 {
@@ -34,9 +34,11 @@ impl Namco53 {
             _ => unreachable!(),
         };
 
-        // The 53xx returns nibble on the low 4 bits, with bit 4 set as a
-        // "data valid" flag (matches MAME's 53xx firmware output pattern).
-        nibble | 0x10
+        // The 53xx MCU firmware (mode 7, used by Dig Dug) encodes the port
+        // index in the upper nibble: O = (port_index << 4) | data_nibble.
+        // The game code uses bit 5 of the output as a "data valid" indicator
+        // (set for ports 2-3, i.e. DSWB reads).
+        (idx << 4) | nibble
     }
 
     pub fn reset(&mut self) {

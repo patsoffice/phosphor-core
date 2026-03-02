@@ -31,9 +31,9 @@ use phosphor_macros::Saveable;
 #[save_version(1)]
 pub struct Namco51 {
     /// Operating mode: false = switch, true = credit.
-    credit_mode: bool,
+    pub credit_mode: bool,
     /// Credit counter (0-99).
-    credits: u8,
+    pub credits: u8,
     /// Coinage: coins needed per credit (slot 0/1).
     coins_per_credit: [u8; 2],
     /// Coinage: credits awarded per N coins (slot 0/1).
@@ -41,7 +41,7 @@ pub struct Namco51 {
     /// Partial coin accumulator (slot 0/1).
     coin_count: [u8; 2],
     /// Read sequence counter (0-2, wraps mod 3).
-    read_index: u8,
+    pub read_index: u8,
     /// Previous IN1 state for coin/start edge detection.
     last_coins: u8,
     /// Previous fire button state for P1/P2 edge detection.
@@ -51,7 +51,7 @@ pub struct Namco51 {
     /// Credit mode sub-state: 1 = waiting for start, 2 = game active.
     credit_state: u8,
     /// Command write state machine.
-    write_state: u8,
+    pub write_state: u8,
     /// Coinage argument counter (0-3 during command 01).
     coinage_arg: u8,
 }
@@ -251,7 +251,8 @@ impl Namco51 {
 
         let toggle = fire_pressed && !was_pressed;
 
-        dir | ((toggle as u8) << 4) | ((fire_pressed as u8) << 5)
+        // Output uses active-low: 0 = pressed/toggled, 1 = released/no-toggle.
+        dir | ((!toggle as u8) << 4) | ((!fire_pressed as u8) << 5)
     }
 
     pub fn reset(&mut self) {

@@ -111,6 +111,23 @@ impl Namco06 {
         pending
     }
 
+    // Debug accessors
+    pub fn timer_running(&self) -> bool {
+        self.timer_running
+    }
+    pub fn timer_counter(&self) -> u32 {
+        self.timer_counter
+    }
+    pub fn timer_period(&self) -> u32 {
+        self.timer_period
+    }
+    pub fn timer_state(&self) -> bool {
+        self.timer_state
+    }
+    pub fn read_stretch(&self) -> bool {
+        self.read_stretch
+    }
+
     pub fn reset(&mut self) {
         self.control = 0;
         self.nmi_pending = false;
