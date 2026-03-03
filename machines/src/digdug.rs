@@ -525,7 +525,6 @@ pub struct DigDugSystem {
     // Frame buffer (288 × 224 native, indexed — rotated to RGB in render_frame)
     #[save_skip]
     native_buffer: Vec<u8>,
-
 }
 
 impl DigDugSystem {
@@ -555,7 +554,6 @@ impl DigDugSystem {
             bg_lut: [0; 256],
 
             native_buffer: vec![0u8; 288 * 224],
-
         }
     }
 
@@ -821,14 +819,7 @@ impl DigDugSystem {
 
                     self.draw_sprite_tile(tile_code, color, tile_sx, tile_sy, flipx, flipy);
                     // Wraparound: draw again at x+256 for sprites crossing screen edge
-                    self.draw_sprite_tile(
-                        tile_code,
-                        color,
-                        tile_sx + 0x100,
-                        tile_sy,
-                        flipx,
-                        flipy,
-                    );
+                    self.draw_sprite_tile(tile_code, color, tile_sx + 0x100, tile_sy, flipx, flipy);
                 }
             }
         }

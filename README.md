@@ -113,6 +113,7 @@ Complete system implementations that wire core components together:
 - **RobotronSystem** — Williams twin-stick arcade (M6809 + blitter + PIAs)
 - **SatansHollowSystem** — Satan's Hollow on shared MCR II board (Z80 + SSIO + CTC + tile dirty tracking)
 - **QbertSystem** — Q*Bert on shared Gottlieb System 80 board (I8088 + M6502 sound + RIOT + DAC)
+- **GalagaSystem** — Galaga on shared Namco Galaga board (3×Z80 + WSG + 05XX starfield generator)
 - **GridleeSystem** — Videa arcade (M6809 + bitmap video + trackball — freely distributable ROMs)
 - Simple6502System, Simple6800System, Simple6809System, SimpleZ80System (test harnesses)
 

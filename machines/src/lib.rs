@@ -312,6 +312,7 @@ pub mod ccastles;
 pub mod digdug;
 pub mod donkey_kong;
 pub mod donkey_kong_jr;
+pub mod galaga;
 pub mod gottlieb;
 pub mod gridlee;
 pub mod joust;
