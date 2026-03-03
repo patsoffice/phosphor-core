@@ -9,6 +9,7 @@ mod input;
 mod overlay;
 mod profile;
 mod rom_path;
+mod screenshot;
 mod vector_gl;
 mod video;
 
@@ -86,6 +87,7 @@ fn main() {
         .unwrap_or_else(|| auto_scale(native_w, native_h));
 
     let save_path = save_path_for(&config, &machine_name);
+    let screenshot_dir = screenshot_dir();
     let key_map = input::default_key_map(machine.input_map());
     let controller_map = input::default_controller_map(machine.input_map());
     machine.reset();
@@ -95,6 +97,8 @@ fn main() {
         &controller_map,
         scale,
         &save_path,
+        &screenshot_dir,
+        &machine_name,
         cli.debug,
         cli.profile,
     );
@@ -135,6 +139,12 @@ fn nvram_path_for(config: &config::Config, machine_name: &str) -> std::path::Pat
         .unwrap_or_else(|| default_data_dir("nvram"));
     ensure_dir(&dir);
     dir.join(format!("{machine_name}.nvram"))
+}
+
+fn screenshot_dir() -> std::path::PathBuf {
+    let dir = default_data_dir("screenshots");
+    ensure_dir(&dir);
+    dir
 }
 
 /// Try each ROM set name in order, returning the first that loads successfully.

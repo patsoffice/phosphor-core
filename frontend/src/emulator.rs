@@ -9,12 +9,15 @@ use crate::debug_ui::{self, DebugState, RunMode};
 use crate::input::{self, ControllerMap, KeyMap};
 use crate::video::Video;
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     machine: &mut dyn Machine,
     key_map: &KeyMap,
     controller_map: &ControllerMap,
     scale: u32,
     save_path: &Path,
+    screenshot_dir: &Path,
+    machine_name: &str,
     start_in_debug: bool,
     start_in_profile: bool,
 ) {
@@ -308,6 +311,25 @@ pub fn run(
                 } => {
                     mouse_grabbed = !mouse_grabbed;
                     sdl_context.mouse().set_relative_mouse_mode(mouse_grabbed);
+                }
+
+                // Screenshot (F12)
+                Event::KeyDown {
+                    scancode: Some(Scancode::F12),
+                    repeat: false,
+                    ..
+                } => {
+                    machine.render_frame(&mut framebuffer);
+                    match crate::screenshot::save_screenshot(
+                        &framebuffer,
+                        width,
+                        height,
+                        screenshot_dir,
+                        machine_name,
+                    ) {
+                        Ok(path) => eprintln!("Screenshot saved: {}", path.display()),
+                        Err(e) => eprintln!("Screenshot failed: {e}"),
+                    }
                 }
 
                 // Keyboard input — only pass to game if egui doesn't want it
