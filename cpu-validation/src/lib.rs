@@ -410,6 +410,42 @@ impl Default for TracingBus20 {
     }
 }
 
+// --- MB88XX JSON test vector types ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Mb88xxTestCase {
+    pub name: String,
+    pub initial: Mb88xxCpuState,
+    #[serde(rename = "final")]
+    pub final_state: Mb88xxCpuState,
+    pub cycles: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Mb88xxCpuState {
+    pub pc: u8,
+    pub pa: u8,
+    pub a: u8,
+    pub x: u8,
+    pub y: u8,
+    pub si: u8,
+    pub st: u8,
+    pub zf: u8,
+    pub cf: u8,
+    pub vf: u8,
+    pub sf: u8,
+    pub nf: u8,
+    pub pio: u8,
+    pub th: u8,
+    pub tl: u8,
+    pub tp: u8,
+    pub sb: u8,
+    pub stack: [u16; 4],
+    pub rom: Vec<(u16, u8)>,
+    pub ram: Vec<(u8, u8)>,
+    pub io: Vec<(u8, u8)>,
+}
+
 impl Bus for TracingBus20 {
     type Address = u32;
     type Data = u8;

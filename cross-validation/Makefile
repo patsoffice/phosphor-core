@@ -2,9 +2,11 @@ CXX ?= c++
 CXXFLAGS = -std=c++17 -O2 -Wall -Wextra -I.
 BINDIR = bin
 
-# Suppress warnings from mame4all code
+# Suppress warnings from reference emulator code
 MAME4ALL_WARN = -Wno-unused-parameter -Wno-unused-but-set-variable \
                 -Wno-unused-variable -Wno-unused-function -Wno-deprecated-declarations
+MAME0148_WARN = -Wno-unused-parameter -Wno-unused-variable -Wno-unused-function \
+                -Wno-deprecated-declarations -Wno-missing-field-initializers
 
 # mame4all submodule paths
 MAME4ALL = mame4all/examples/mame4all/src
@@ -15,7 +17,8 @@ MC6809_SRC = mc6809/src/mc6809.cpp \
              mc6809/src/mc6809_instructions.cpp
 
 all: $(BINDIR)/validate_m6809 $(BINDIR)/validate_m6809_mame \
-     $(BINDIR)/validate_m6800 $(BINDIR)/validate_i8035
+     $(BINDIR)/validate_m6800 $(BINDIR)/validate_i8035 \
+     $(BINDIR)/validate_mb88xx
 
 $(BINDIR):
 	mkdir -p $(BINDIR)
@@ -44,6 +47,15 @@ $(BINDIR)/validate_i8035: validate_i8035.cpp $(MAME4ALL)/cpu/i8039/i8039.cpp \
                           include/nlohmann/json.hpp | $(BINDIR)
 	$(CXX) $(CXXFLAGS) $(MAME4ALL_WARN) -Ii8039 -o $@ \
 		validate_i8035.cpp $(MAME4ALL)/cpu/i8039/i8039.cpp
+
+# MAME 0.148 mb88xx paths
+MAME0148_MB88XX = mame0148/src/emu/cpu/mb88xx
+
+$(BINDIR)/validate_mb88xx: validate_mb88xx.cpp $(MAME0148_MB88XX)/mb88xx.c \
+                            $(MAME0148_MB88XX)/mb88xx.h \
+                            mb88xx/emu.h mb88xx/debugger.h \
+                            include/nlohmann/json.hpp | $(BINDIR)
+	$(CXX) $(CXXFLAGS) $(MAME0148_WARN) -Imb88xx -o $@ validate_mb88xx.cpp
 
 clean:
 	rm -rf $(BINDIR)
