@@ -1,5 +1,5 @@
 // Cross-validation harness for phosphor-core M6800 CPU
-// Links mame4all M6800 as an independent reference emulator
+// Links MAME 0.148 m6800.c as an independent reference emulator
 // and validates against phosphor-generated JSON test vectors.
 
 #include <cstdint>
@@ -7,16 +7,63 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <map>
 #include <string>
 #include <vector>
 
-#include "mame4all/examples/mame4all/src/cpu/m6800/m6800.h"
+// Our shim emu.h (found via -Im6800_0148 include path)
+#include "m6800_0148/emu.h"
 #include "include/nlohmann/json.hpp"
 
 using json = nlohmann::json;
 
-// Flat 64KB memory used by the mame4all M6800 shim
-uint8_t m6800_flat_memory[0x10000];
+// Flat 64KB memory used by the shim's address_space
+uint8_t m6800_program[0x10000];
+
+// Memory routing for mame0148_shim.h address_space
+static UINT8 m6800_read(int /*space_id*/, offs_t addr) {
+    return m6800_program[addr & 0xFFFF];
+}
+static void m6800_write(int /*space_id*/, offs_t addr, UINT8 val) {
+    m6800_program[addr & 0xFFFF] = val;
+}
+shim_read_fn  shim_mem_read  = m6800_read;
+shim_write_fn shim_mem_write = m6800_write;
+
+// Active device pointer for address_space::device()
+static legacy_cpu_device g_device;
+legacy_cpu_device *shim_active_device = &g_device;
+
+// attotime static constants
+const attotime attotime::never = attotime{};
+const attotime attotime::zero  = attotime{};
+
+// Include m6800.c directly so its static functions are accessible.
+#include "mame0148/src/emu/cpu/m6800/m6800.c"
+
+// --- Harness state ---
+static m6800_state g_state;
+
+static int irq_callback_stub(device_t *, int) { return 0; }
+
+static void init_mame_cpu() {
+    memset(&g_state, 0, sizeof(g_state));
+    g_device.set_token(&g_state);
+    cpu_init_m6800(&g_device, irq_callback_stub);
+}
+
+static void reset_mame_cpu() {
+    cpu_reset_m6800(&g_device);
+}
+
+// Execute one instruction. Returns cycles consumed.
+static int execute_one() {
+    g_state.icount = 1;
+    cpu_execute_m6800(&g_device);
+    return 1 - g_state.icount;
+}
+
+// --- Main ---
 
 struct Failure {
     std::string test_name;
@@ -29,17 +76,13 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // Initialize CPU once
-    m6800_reset(nullptr);
+    init_mame_cpu();
 
-    int total_tests = 0;
-    int total_passed = 0;
-    int total_failed = 0;
+    int total_tests = 0, total_passed = 0, total_failed = 0;
     std::vector<Failure> failures;
 
-    for (int file_idx = 1; file_idx < argc; file_idx++) {
-        const char *path = argv[file_idx];
-        printf("Loading %s...\n", path);
+    for (int fi = 1; fi < argc; fi++) {
+        const char *path = argv[fi];
 
         std::ifstream f(path);
         if (!f.is_open()) {
@@ -48,10 +91,7 @@ int main(int argc, char *argv[]) {
         }
 
         json tests = json::parse(f);
-        printf("  %zu test cases\n", tests.size());
-
-        int file_passed = 0;
-        int file_failed = 0;
+        int file_passed = 0, file_failed = 0;
 
         for (auto &tc : tests) {
             total_tests++;
@@ -59,113 +99,110 @@ int main(int argc, char *argv[]) {
             bool passed = true;
             std::string first_error;
 
-            // Reset CPU fully and clear memory to avoid stale state
-            memset(m6800_flat_memory, 0, sizeof(m6800_flat_memory));
-
-            // Load initial state
-            auto &init = tc["initial"];
-
-            // Load RAM first (includes instruction bytes)
-            for (auto &ram_entry : init["ram"]) {
-                uint16_t addr = ram_entry[0].get<uint16_t>();
-                uint8_t val = ram_entry[1].get<uint8_t>();
-                m6800_flat_memory[addr] = val;
-            }
-
-            // Reset CPU: clears wai_state, irq_state, extra_cycles, sets
-            // insn/cycles tables. PC will be loaded from 0xFFFE (which is
-            // whatever is in memory), but we override it below.
-            m6800_reset(nullptr);
-
-            // Set registers via mame4all API (overrides reset vector PC)
-            m6800_set_reg(M6800_PC, init["pc"].get<uint16_t>());
-            m6800_set_reg(M6800_S, init["sp"].get<uint16_t>());
-            m6800_set_reg(M6800_A, init["a"].get<uint8_t>());
-            m6800_set_reg(M6800_B, init["b"].get<uint8_t>());
-            m6800_set_reg(M6800_X, init["x"].get<uint16_t>());
-            m6800_set_reg(M6800_CC, init["cc"].get<uint8_t>());
-
-            // Execute exactly one instruction: budget of 1 cycle ensures the
-            // do-while loop exits after one instruction (min 2 cycles),
-            // returning actual cycles consumed as (1 - m6800_ICount).
-            int cycles_consumed = m6800_execute(1);
-
-            // Check final state
-            auto &fin = tc["final"];
-
-            auto check_reg = [&](const char *reg_name, unsigned got, unsigned expected) {
+            auto check = [&](const char *rname, unsigned got, unsigned expected) {
                 if (got != expected && passed) {
                     passed = false;
                     char buf[256];
-                    snprintf(buf, sizeof(buf),
-                             "%s expected=%u got=%u", reg_name, expected, got);
+                    snprintf(buf, sizeof(buf), "%s expected=%u got=%u",
+                             rname, expected, got);
                     first_error = buf;
                 }
             };
 
-            check_reg("pc", m6800_get_reg(M6800_PC), fin["pc"].get<uint16_t>());
-            check_reg("a", m6800_get_reg(M6800_A), fin["a"].get<uint8_t>());
-            check_reg("b", m6800_get_reg(M6800_B), fin["b"].get<uint8_t>());
-            check_reg("x", m6800_get_reg(M6800_X), fin["x"].get<uint16_t>());
-            check_reg("sp", m6800_get_reg(M6800_S), fin["sp"].get<uint16_t>());
+            // --- Clear memory ---
+            memset(m6800_program, 0, sizeof(m6800_program));
 
-            // Compare CC with mask 0x3F (bits 6-7 are undefined on real 6800)
-            unsigned cc_got = m6800_get_reg(M6800_CC) & 0x3F;
+            // --- Reset CPU ---
+            reset_mame_cpu();
+
+            // --- Load initial state ---
+            auto &init = tc["initial"];
+
+            // Load RAM (includes instruction bytes)
+            for (auto &entry : init["ram"]) {
+                uint16_t addr = entry[0].get<uint16_t>();
+                uint8_t val = entry[1].get<uint8_t>();
+                m6800_program[addr] = val;
+            }
+
+            // CPU registers (direct struct access via PAIR union)
+            g_state.pc.w.l = init["pc"].get<uint16_t>();
+            g_state.pc.w.h = 0;
+            g_state.s.w.l  = init["sp"].get<uint16_t>();
+            g_state.s.w.h  = 0;
+            g_state.d.b.h  = init["a"].get<uint8_t>();   // A = high byte of D
+            g_state.d.b.l  = init["b"].get<uint8_t>();   // B = low byte of D
+            g_state.x.w.l  = init["x"].get<uint16_t>();
+            g_state.x.w.h  = 0;
+            g_state.cc     = init["cc"].get<uint8_t>();
+
+            // Clear interrupt/WAI state for clean single-step
+            g_state.wai_state = 0;
+            g_state.nmi_state = 0;
+            g_state.nmi_pending = 0;
+            g_state.irq_state[0] = CLEAR_LINE;
+            g_state.irq_state[1] = CLEAR_LINE;
+            g_state.irq_state[2] = CLEAR_LINE;
+
+            // --- Execute one instruction ---
+            int cycles = execute_one();
+
+            // --- Compare final state ---
+            auto &fin = tc["final"];
+
+            check("pc", g_state.pc.w.l, fin["pc"].get<uint16_t>());
+            check("a",  g_state.d.b.h,  fin["a"].get<uint8_t>());
+            check("b",  g_state.d.b.l,  fin["b"].get<uint8_t>());
+            check("x",  g_state.x.w.l,  fin["x"].get<uint16_t>());
+            check("sp", g_state.s.w.l,  fin["sp"].get<uint16_t>());
+
+            // CC bits 6-7 are undefined on real M6800
+            unsigned cc_got = g_state.cc & 0x3F;
             unsigned cc_exp = fin["cc"].get<uint8_t>() & 0x3F;
-            check_reg("cc", cc_got, cc_exp);
+            check("cc", cc_got, cc_exp);
 
-            // Check memory
-            for (auto &ram_entry : fin["ram"]) {
-                uint16_t addr = ram_entry[0].get<uint16_t>();
-                uint8_t expected = ram_entry[1].get<uint8_t>();
-                uint8_t got = m6800_flat_memory[addr];
-                if (got != expected && passed) {
-                    passed = false;
-                    char buf[256];
-                    snprintf(buf, sizeof(buf),
-                             "RAM[0x%04X] expected=%u got=%u", addr, expected, got);
-                    first_error = buf;
-                }
+            // Memory
+            for (auto &entry : fin["ram"]) {
+                uint16_t addr = entry[0].get<uint16_t>();
+                uint8_t expected = entry[1].get<uint8_t>();
+                uint8_t got = m6800_program[addr];
+                char rn[32];
+                snprintf(rn, sizeof(rn), "RAM[0x%04X]", addr);
+                check(rn, got, expected);
             }
 
-            // Check cycle count
+            // Cycle count
             size_t expected_cycles = tc["cycles"].size();
-            if ((size_t)cycles_consumed != expected_cycles && passed) {
-                passed = false;
-                char buf[256];
-                snprintf(buf, sizeof(buf),
-                         "cycles expected=%zu got=%d", expected_cycles, cycles_consumed);
-                first_error = buf;
-            }
+            check("cycles", (unsigned)cycles, (unsigned)expected_cycles);
 
-            if (passed) {
-                file_passed++;
-                total_passed++;
-            } else {
-                file_failed++;
-                total_failed++;
+            if (passed) { file_passed++; total_passed++; }
+            else {
+                file_failed++; total_failed++;
                 failures.push_back({name, first_error});
             }
         }
 
-        printf("  Results: %d passed, %d failed\n", file_passed, file_failed);
-        if (file_failed > 0 && !failures.empty()) {
-            printf("  First error: %s\n", failures.back().detail.c_str());
-        }
+        printf("%s: %d passed, %d failed (of %zu)\n",
+               path, file_passed, file_failed, tests.size());
     }
 
-    // Summary
     printf("\n=== Summary ===\n");
     printf("Total: %d tests, %d passed, %d failed\n",
            total_tests, total_passed, total_failed);
 
     if (!failures.empty()) {
-        printf("\nAll %zu failures:\n", failures.size());
-        for (size_t i = 0; i < failures.size(); i++) {
-            printf("  FAIL %s: %s\n",
-                   failures[i].test_name.c_str(),
-                   failures[i].detail.c_str());
+        std::map<std::string, int> tallies;
+        std::map<std::string, std::string> first_errors;
+        for (auto &f : failures) {
+            std::string op = f.test_name.substr(0, 2);
+            tallies[op]++;
+            if (first_errors.find(op) == first_errors.end())
+                first_errors[op] = f.detail;
         }
+        printf("\nFailures by opcode (%zu unique):\n", tallies.size());
+        for (auto &[op, count] : tallies)
+            printf("  0x%s: %d failures  [%s]\n",
+                   op.c_str(), count, first_errors[op].c_str());
     }
 
     return total_failed > 0 ? 1 : 0;

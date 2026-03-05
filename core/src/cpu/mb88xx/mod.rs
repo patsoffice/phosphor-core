@@ -375,8 +375,13 @@ impl Mb88xx {
     pub fn set_irq(&mut self, state: bool) {
         let new_state = state as u8;
         // Rising edge: trigger if IRQ was low and is now high, and external IRQ is enabled
-        if self.irq_pin == 0 && new_state != 0 && (self.pio & INT_CAUSE_EXTERNAL) != 0 {
-            self.pending_irq |= INT_CAUSE_EXTERNAL;
+        if self.irq_pin == 0 && new_state != 0 {
+            if (self.pio & INT_CAUSE_EXTERNAL) != 0 {
+                self.pending_irq |= INT_CAUSE_EXTERNAL;
+                eprintln!("[MCU51] IRQ rising edge! PIO={:02X} PA:PC={:02X}:{:02X}", self.pio, self.pa, self.pc);
+            } else {
+                eprintln!("[MCU51] IRQ rising edge BLOCKED (PIO={:02X})", self.pio);
+            }
         }
         self.irq_pin = new_state;
     }
@@ -414,9 +419,18 @@ impl Mb88xx {
     fn write_pla(&mut self, index: u8) {
         // 8-bit PLA mode (default): write nibble to high or low half
         // based on bit 4 of the index (carry flag in OUTO instruction).
+        // Matches MAME: `(index & 0x0f) << shift` — mask data nibble first
+        // to avoid u8 overflow when CF=1 and shift=4.
         let shift = if index & 0x10 != 0 { 4 } else { 0 };
         let mask = 0x0F << shift;
-        self.o_latch = (self.o_latch & !mask) | ((index << shift) & mask);
+        let old = self.o_latch;
+        self.o_latch = (self.o_latch & !mask) | ((index & 0x0F) << shift);
+        if self.o_latch != old {
+            eprintln!(
+                "[MCU51] write_pla: o {:02X}->{:02X} idx={:02X} K={:X} PA:PC={:02X}:{:02X} in_irq={}",
+                old, self.o_latch, index, self.k_input, self.pa, self.pc, self.in_irq
+            );
+        }
     }
 
     // --- Core execution ---

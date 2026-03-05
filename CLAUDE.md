@@ -61,6 +61,7 @@ cd cross-validation && make
 ./bin/validate_m6809 ../cpu-validation/test_data/m6809/*.json
 ./bin/validate_m6800 ../cpu-validation/test_data/m6800/*.json
 ./bin/validate_i8035 ../cpu-validation/test_data/i8035/*.json
+./bin/validate_mb88xx ../cpu-validation/test_data/mb88xx/*.json
 ```
 
 - If cross-validation differs from datasheet for timings, use the datasheet values

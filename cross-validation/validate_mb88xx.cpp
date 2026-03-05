@@ -22,6 +22,24 @@ uint8_t mb88_program[2048];
 uint8_t mb88_data[128];
 uint8_t mb88_io[8];
 
+// Memory routing for mame0148_shim.h address_space
+static UINT8 mb88_read(int space_id, offs_t addr) {
+    switch (space_id) {
+        case AS_DATA: return mb88_data[addr & 0x7F];
+        case AS_IO:   return mb88_io[addr & 0x07];
+        default:      return mb88_program[addr & 0x7FF];
+    }
+}
+static void mb88_write(int space_id, offs_t addr, UINT8 val) {
+    switch (space_id) {
+        case AS_DATA: mb88_data[addr & 0x7F] = val; break;
+        case AS_IO:   mb88_io[addr & 0x07] = val; break;
+        default:      mb88_program[addr & 0x7FF] = val; break;
+    }
+}
+shim_read_fn  shim_mem_read  = mb88_read;
+shim_write_fn shim_mem_write = mb88_write;
+
 // attotime static constants
 const attotime attotime::never = attotime{};
 const attotime attotime::zero  = attotime{};
@@ -33,6 +51,7 @@ const attotime attotime::zero  = attotime{};
 // --- Harness state ---
 
 static legacy_cpu_device g_device;
+legacy_cpu_device *shim_active_device = &g_device;
 static mb88_state g_state;
 
 static int irq_callback_stub(device_t *, int) { return 0; }
