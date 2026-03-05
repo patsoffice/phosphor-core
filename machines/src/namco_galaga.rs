@@ -1,10 +1,11 @@
 use phosphor_core::core::machine::{InputButton, TimingConfig};
 use phosphor_core::core::save_state::{SaveError, Saveable, StateReader, StateWriter};
-use phosphor_core::core::{Bus, BusMaster};
+use phosphor_core::core::{Bus, BusMaster, ClockDivider};
 use phosphor_core::cpu::z80::Z80;
 use phosphor_core::device::namco_wsg::NamcoWsg;
 use phosphor_core::device::namco06::Namco06;
 use phosphor_core::device::namco51::Namco51;
+use phosphor_core::device::namco51_lle::Namco51Lle;
 use phosphor_core::device::namco53::Namco53;
 use phosphor_core::gfx::decode::GfxLayout;
 
@@ -136,6 +137,53 @@ pub(crate) const GALAGA_SPRITE_LAYOUT: GfxLayout<'static> = GfxLayout {
 };
 
 // ---------------------------------------------------------------------------
+// Namco 51XX wrapper — HLE (behavioral) or LLE (MB8843 firmware)
+// ---------------------------------------------------------------------------
+
+/// Namco 51XX emulation mode: either high-level emulation (HLE, behavioral
+/// model) or low-level emulation (LLE, running actual MB8843 firmware ROM).
+pub(crate) enum Namco51Wrapper {
+    /// Behavioral emulation of the 51XX firmware (no ROM required).
+    Hle(Namco51),
+    /// Cycle-accurate MB8843 MCU running the 51XX firmware ROM.
+    Lle(Namco51Lle),
+}
+
+impl Namco51Wrapper {
+    fn read(&mut self, in0: u8, in1: u8) -> u8 {
+        match self {
+            Self::Hle(n) => n.read(in0, in1),
+            Self::Lle(n) => n.read(),
+        }
+    }
+
+    fn write(&mut self, data: u8) {
+        match self {
+            Self::Hle(n) => n.write(data),
+            Self::Lle(n) => n.write(data),
+        }
+    }
+
+    fn reset(&mut self) {
+        match self {
+            Self::Hle(n) => n.reset(),
+            Self::Lle(n) => n.reset(),
+        }
+    }
+}
+
+use phosphor_core::core::debug::{DebugRegister, Debuggable};
+
+impl Debuggable for Namco51Wrapper {
+    fn debug_registers(&self) -> Vec<DebugRegister> {
+        match self {
+            Self::Hle(n) => n.debug_registers(),
+            Self::Lle(n) => n.debug_registers(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // NamcoGalagaBoard — shared hardware for the Galaga platform
 // ---------------------------------------------------------------------------
 
@@ -158,8 +206,12 @@ pub struct NamcoGalagaBoard {
     // Devices
     pub(crate) wsg: NamcoWsg,
     pub(crate) namco06: Namco06,
-    pub(crate) namco51: Namco51,
+    pub(crate) namco51: Namco51Wrapper,
     pub(crate) namco53: Namco53,
+
+    // Clock divider for 51XX MCU (LLE mode only)
+    // MB88xx runs at 256 kHz = Z80 clock / 12 (3.072 MHz / 12)
+    pub(crate) namco51_divider: ClockDivider,
 
     // Input ports (active-low: 0xFF = all released)
     pub(crate) in0: u8,
@@ -211,8 +263,10 @@ impl NamcoGalagaBoard {
                 wsg
             },
             namco06: Namco06::new(NAMCO06_BASE_DIVISOR),
-            namco51: Namco51::new(),
+            namco51: Namco51Wrapper::Hle(Namco51::new()),
             namco53: Namco53::new(),
+
+            namco51_divider: ClockDivider::new(1, 2),
 
             in0: 0xFF,
             in1: 0xFF,
@@ -276,6 +330,17 @@ impl NamcoGalagaBoard {
             if self.sub_irq_enabled {
                 self.sub_irq_pending = true;
             }
+            // Drive VBLANK to 51XX TC pin (active on falling edge).
+            // Matches MAME: vblank(state) → set_input_line(TC_LINE, !state)
+            if let Namco51Wrapper::Lle(ref mut lle) = self.namco51 {
+                lle.mcu.set_tc(false); // Assert (active low)
+            }
+        }
+        // Clear TC at end of VBLANK (start of visible area = frame_cycle 0)
+        if frame_cycle == 0
+            && let Namco51Wrapper::Lle(ref mut lle) = self.namco51
+        {
+            lle.mcu.set_tc(true); // Deassert
         }
 
         // Sound CPU NMI: fires at scanlines 64 and 192 (every 128 lines),
@@ -290,20 +355,44 @@ impl NamcoGalagaBoard {
             self.sound_nmi_pending = true;
         }
 
-        // 06XX timer tick — NMI goes to main CPU (ungated)
+        // 06XX timer tick — NMI output is a level signal to the main CPU.
+        //
+        // Always propagate the NMI level regardless of Z80 HALT state.
+        // MAME's set_nmi() checks for scheduler suspension (SUSPEND_REASON_HALT |
+        // SUSPEND_REASON_RESET | SUSPEND_REASON_DISABLE), which are board-level
+        // disable flags — NOT the Z80 HALT instruction. A HALTed Z80 must still
+        // receive NMI (NMI wakes it from HALT). The main CPU is never board-
+        // suspended in Dig Dug / Galaga.
         self.namco06.tick();
-        if self.namco06.take_nmi() {
-            self.main_nmi_pending = true;
-        }
+        self.main_nmi_pending = self.namco06.nmi_output();
 
         // WSG tick (runs at CPU clock rate)
         self.wsg.tick();
 
-        // Execute all 3 CPUs (sub+sound gated by sub_reset)
+        // Execute all 3 CPUs BEFORE MCU so Z80 writes reach o_latch
+        // before the MCU reads K (K is a hardware wire, not latched).
         self.main_cpu.execute_cycle(bus, BusMaster::Cpu(0));
         if !self.sub_reset {
             self.sub_cpu.execute_cycle(bus, BusMaster::Cpu(1));
             self.sound_cpu.execute_cycle(bus, BusMaster::Cpu(2));
+        }
+
+        // Drive chip_select IRQ to LLE 51XX and tick MCU.
+        // Executed AFTER Z80 so K reflects latest data writes.
+        // Matches MAME's nmi_generate which pulses chip_select for selected
+        // chips on each timer toggle: `m_chipsel[N](0, BIT(ctrl, N) && timer_state)`.
+        if let Namco51Wrapper::Lle(ref mut lle) = self.namco51 {
+            let cs = self.namco06.chip_select_active(0);
+            lle.mcu.set_irq(cs);
+            // K port: in dynamic_k mode, INK computes K at execution time as
+            // (rw_input << 3) | (o_latch & 0x07), matching MAME's K_r() callback.
+            // We only need to keep rw_input current; o_latch updates instantly
+            // when the Z80 writes via write_custom_io → namco51.write().
+            lle.mcu.rw_input = if self.namco06.is_read_mode() { 1 } else { 0 };
+            if self.namco51_divider.tick() {
+                lle.update_inputs(self.in0, self.in1);
+                lle.tick();
+            }
         }
 
         self.clock += 1;
@@ -334,14 +423,17 @@ impl NamcoGalagaBoard {
         if !self.namco06.is_read_mode() {
             return 0;
         }
-        if self.namco06.chip_select(0) {
-            // Chip 0: Namco 51XX (input multiplexer)
-            self.namco51.read(self.in0, self.in1)
+        let chip = if self.namco06.chip_select(0) {
+            0
         } else if self.namco06.chip_select(1) {
-            // Chip 1: Namco 53XX (DIP switch reader)
-            self.namco53.read(self.dswa, self.dswb)
+            1
         } else {
             0xFF
+        };
+        match chip {
+            0 => self.namco51.read(self.in0, self.in1),
+            1 => self.namco53.read(self.dswa, self.dswb),
+            _ => 0xFF,
         }
     }
 
@@ -362,11 +454,10 @@ impl NamcoGalagaBoard {
     /// Write the 06XX control register.
     ///
     /// The custom chip MCUs (51XX, 53XX) maintain continuous read_index state
-    /// across transactions — the game may split reads across multiple
-    /// transactions (e.g., reading 2 of 4 53XX nibbles per transaction).
+    /// across transactions. The 53XX cycles through 2 reads (DSWA, DSWB).
     /// Do NOT reset read indices here.
     pub fn write_custom_io_ctrl(&mut self, data: u8) {
-        self.namco06.ctrl_write(data);
+        self.namco06.ctrl_write(data, self.clock);
     }
 
     /// Write the LS259 misc latch at 0x6820-0x6827.
@@ -399,6 +490,14 @@ impl NamcoGalagaBoard {
                 if was_reset && !self.sub_reset {
                     self.pending_sub_cpu_reset = true;
                 }
+
+                // Reset custom I/O chips when entering reset (Q3=0),
+                // matching MAME's Dig Dug machine config which wires Q3
+                // to reset both 51XX and 53XX.
+                if !value {
+                    self.namco51.reset();
+                    self.namco53.reset();
+                }
             }
             7 => {
                 self.flip_screen = value;
@@ -422,12 +521,11 @@ impl NamcoGalagaBoard {
                 // bit 0 clears it (via irq1_clear_w equivalent).
                 let irq = self.main_irq_pending && self.main_irq_enabled;
 
-                // NMI is edge-triggered: consume after one check so the Z80
-                // sees a single rising edge.
+                // NMI is a level signal driven by the 06XX timer. The Z80's
+                // internal rising-edge detector converts this level into
+                // discrete NMI events. Do NOT consume here — the level
+                // persists until the 06XX timer's CLEAR phase drives it low.
                 let nmi = self.main_nmi_pending;
-                if nmi {
-                    self.main_nmi_pending = false;
-                }
                 InterruptState {
                     irq,
                     nmi,
@@ -517,6 +615,19 @@ impl NamcoGalagaBoard {
         self.wsg.load_waveform_rom(data);
     }
 
+    /// Load the Namco 51XX MCU firmware ROM, switching from HLE to LLE mode.
+    /// If not called, the board uses the behavioral HLE model (no ROM required).
+    pub fn load_51xx_rom(&mut self, data: &[u8]) {
+        let mut lle = Namco51Lle::new();
+        lle.load_rom(data);
+        // Enable dynamic K port: INK reads K = (rw_input << 3) | (o_latch & 0x07)
+        // at execution time, matching MAME's K_r() callback. This ensures the MCU
+        // sees the latest Z80 writes to o_latch even when the write happens only
+        // a few Z80 cycles before the MCU's INK instruction.
+        lle.mcu.dynamic_k = true;
+        self.namco51 = Namco51Wrapper::Lle(lle);
+    }
+
     // -----------------------------------------------------------------------
     // Input handling
     // -----------------------------------------------------------------------
@@ -565,6 +676,7 @@ impl NamcoGalagaBoard {
         self.namco06.reset();
         self.namco51.reset();
         self.namco53.reset();
+        self.namco51_divider.reset();
 
         self.in0 = 0xFF;
         self.in1 = 0xFF;
@@ -615,7 +727,20 @@ impl Saveable for NamcoGalagaBoard {
         // Devices
         self.wsg.save_state(w);
         self.namco06.save_state(w);
-        self.namco51.save_state(w);
+
+        // 51XX: mode discriminant (0=HLE, 1=LLE) + mode-specific state
+        match &self.namco51 {
+            Namco51Wrapper::Hle(n) => {
+                w.write_u8(0);
+                n.save_state(w);
+            }
+            Namco51Wrapper::Lle(n) => {
+                w.write_u8(1);
+                n.save_state(w);
+                self.namco51_divider.save_state(w);
+            }
+        }
+
         self.namco53.save_state(w);
 
         // I/O state
@@ -649,7 +774,38 @@ impl Saveable for NamcoGalagaBoard {
         // Devices
         self.wsg.load_state(r)?;
         self.namco06.load_state(r)?;
-        self.namco51.load_state(r)?;
+
+        // 51XX: read mode discriminant and load matching state
+        let namco51_mode = r.read_u8()?;
+        match namco51_mode {
+            0 => {
+                // HLE mode
+                let mut n = Namco51::new();
+                n.load_state(r)?;
+                self.namco51 = Namco51Wrapper::Hle(n);
+            }
+            1 => {
+                // LLE mode — requires that the ROM was already loaded
+                match &mut self.namco51 {
+                    Namco51Wrapper::Lle(n) => {
+                        n.load_state(r)?;
+                        self.namco51_divider.load_state(r)?;
+                    }
+                    _ => {
+                        return Err(SaveError::InvalidFormat(
+                            "51XX LLE save state but no ROM loaded".to_string(),
+                        ));
+                    }
+                }
+            }
+            _ => {
+                return Err(SaveError::InvalidFormat(format!(
+                    "unknown 51XX mode: {}",
+                    namco51_mode
+                )));
+            }
+        }
+
         self.namco53.load_state(r)?;
 
         // I/O state

@@ -6,12 +6,16 @@ use phosphor_macros::Saveable;
 /// settings and returns them as a sequence of nibbles. We emulate the
 /// external behavior directly.
 ///
-/// Returns 4 nibbles per read cycle:
-///   [DSWA low, DSWA high, DSWB low, DSWB high]
+/// Returns 2 bytes per read cycle:
+///   [DSWA, DSWB]
+///
+/// The real MB8843 firmware reads R0-R3 (DIP switch nibbles) and packs
+/// pairs into full bytes via the O port. Each Z80 read returns one
+/// complete DIP switch byte, cycling between DSWA and DSWB.
 #[derive(Saveable)]
 #[save_version(1)]
 pub struct Namco53 {
-    /// Nibble sequence counter (0-3).
+    /// Byte sequence counter (0-1).
     pub read_index: u8,
 }
 
@@ -24,21 +28,16 @@ impl Namco53 {
     /// `dswa` and `dswb` are the current DIP switch byte values.
     pub fn read(&mut self, dswa: u8, dswb: u8) -> u8 {
         let idx = self.read_index;
-        self.read_index = (self.read_index + 1) % 4;
+        self.read_index = (self.read_index + 1) % 2;
 
-        let nibble = match idx {
-            0 => dswa & 0x0F,
-            1 => (dswa >> 4) & 0x0F,
-            2 => dswb & 0x0F,
-            3 => (dswb >> 4) & 0x0F,
+        // The real MB8843 firmware packs two R-port nibbles per IRQ:
+        //   IRQ 0: R0 (low) | R1 (high) << 4 = DSWA
+        //   IRQ 1: R2 (low) | R3 (high) << 4 = DSWB
+        match idx {
+            0 => dswa,
+            1 => dswb,
             _ => unreachable!(),
-        };
-
-        // The 53xx MCU firmware (mode 7, used by Dig Dug) encodes the port
-        // index in the upper nibble: O = (port_index << 4) | data_nibble.
-        // The game code uses bit 5 of the output as a "data valid" indicator
-        // (set for ports 2-3, i.e. DSWB reads).
-        (idx << 4) | nibble
+        }
     }
 
     pub fn reset(&mut self) {

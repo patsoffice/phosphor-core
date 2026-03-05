@@ -187,6 +187,17 @@ static DIGDUG_SOUND_PROM: RomRegion = RomRegion {
     }],
 };
 
+/// Namco 51XX MCU firmware ROM (MB8843, 1KB).
+static DIGDUG_51XX_ROM: RomRegion = RomRegion {
+    size: 0x0400,
+    entries: &[RomEntry {
+        name: "51xx.bin",
+        size: 0x0400,
+        offset: 0x0000,
+        crc32: &[0xc2f57ef8],
+    }],
+};
+
 // ---------------------------------------------------------------------------
 // ROM definitions — Dig Dug (Namco rev 1, "digdug1")
 // ---------------------------------------------------------------------------
@@ -593,12 +604,17 @@ impl DigDugSystem {
         self.board
             .load_sound_prom(&config.sound_prom.load(rom_set)?);
 
+        // 51XX MCU firmware ROM (optional — falls back to HLE if unavailable)
+        if let Ok(rom_51xx) = DIGDUG_51XX_ROM.load(rom_set) {
+            self.board.load_51xx_rom(&rom_51xx);
+        }
+
         // Default DIP switches matching MAME defaults for Dig Dug:
         // DSWA: Coin_B=1C/1C(0x01), Bonus=20K/60K(0x18), Lives=3(0x80)
         // DSWB: Coin_A=1C/1C(0x00), Freeze=Off(0x20), Demo=On(0x00),
-        //       Continue=No(0x08), Upright(0x04), Difficulty=Easy(0x00)
+        //       Continue=Yes(0x00), Upright(0x04), Difficulty=Easy(0x00)
         self.board.dswa = 0x99;
-        self.board.dswb = 0x2C;
+        self.board.dswb = 0x24;
 
         Ok(())
     }
@@ -661,10 +677,6 @@ impl DigDugSystem {
             (c + (r << 5)) as usize
         }
     }
-
-    // -----------------------------------------------------------------------
-    // Debug: Hang detection
-    // -----------------------------------------------------------------------
 
     // -----------------------------------------------------------------------
     // Full-frame video rendering (no raster effects in Dig Dug)
@@ -907,9 +919,7 @@ impl Bus for DigDugSystem {
     fn write(&mut self, _master: BusMaster, addr: u16, data: u8) {
         match addr {
             0x0000..=0x3FFF => {} // ROM
-            0x6800..=0x681F => {
-                self.board.wsg.write(addr - 0x6800, data);
-            }
+            0x6800..=0x681F => self.board.wsg.write(addr - 0x6800, data),
             0x6820..=0x6827 => {
                 let bit = (addr & 7) as u8;
                 let value = (data & 1) != 0;
@@ -919,38 +929,20 @@ impl Bus for DigDugSystem {
                 // Watchdog reset (data ignored — any write feeds the watchdog).
                 self.board.watchdog_counter = 0;
             }
-            0x7000..=0x70FF => {
-                self.board.write_custom_io(data);
-            }
-            0x7100 => {
-                self.board.write_custom_io_ctrl(data);
-            }
-            0x8000..=0x83FF => {
-                self.video_ram[(addr - 0x8000) as usize] = data;
-            }
-            0x8400..=0x87FF => {
-                self.work_ram[(addr - 0x8400) as usize] = data;
-            }
-            0x8800..=0x8BFF => {
-                self.obj_ram[(addr - 0x8800) as usize] = data;
-            }
-            0x9000..=0x93FF => {
-                self.pos_ram[(addr - 0x9000) as usize] = data;
-            }
-            0x9800..=0x9BFF => {
-                self.flp_ram[(addr - 0x9800) as usize] = data;
-            }
+            0x7000..=0x70FF => self.board.write_custom_io(data),
+            0x7100 => self.board.write_custom_io_ctrl(data),
+            0x8000..=0x83FF => self.video_ram[(addr - 0x8000) as usize] = data,
+            0x8400..=0x87FF => self.work_ram[(addr - 0x8400) as usize] = data,
+            0x8800..=0x8BFF => self.obj_ram[(addr - 0x8800) as usize] = data,
+            0x9000..=0x93FF => self.pos_ram[(addr - 0x9000) as usize] = data,
+            0x9800..=0x9BFF => self.flp_ram[(addr - 0x9800) as usize] = data,
             0xA000..=0xA007 => {
                 let bit = (addr & 7) as u8;
                 let value = (data & 1) != 0;
                 self.write_video_latch(bit, value);
             }
-            0xB800..=0xB83F => {
-                self.earom[(addr - 0xB800) as usize] = data;
-            }
-            0xB840 => {
-                self.earom_control = data;
-            }
+            0xB800..=0xB83F => self.earom[(addr - 0xB800) as usize] = data,
+            0xB840 => self.earom_control = data,
             _ => {}
         }
     }

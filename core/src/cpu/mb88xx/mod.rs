@@ -152,8 +152,14 @@ pub struct Mb88xx {
     pub sb_count: u16,
 
     // --- O port ---
-    /// O port output latch (8 bits, PLA-mapped or direct).
+    /// O port internal output register (8 bits, PLA-mapped or direct).
+    /// Updated by write_pla (OUTO instruction). Equivalent to MAME's m_o_output.
     pub o_latch: u8,
+    /// Shared external O port register. Updated asynchronously from o_latch
+    /// after each execute_cycle, matching MAME's m_portO which is updated
+    /// via O_w_sync between scheduler timeslices. Z80 reads/writes go through
+    /// this register. K port reads also use this in dynamic_k mode.
+    pub port_o: u8,
 
     // --- Interrupt state ---
     /// Pending interrupt causes (bit flags).
@@ -192,6 +198,15 @@ pub struct Mb88xx {
     /// Serial output bit (written by firmware).
     pub so_output: u8,
 
+    /// R/W input for dynamic K port mode (set externally by 06XX).
+    /// When `dynamic_k` is true, INK computes K = (rw_input << 3) | (o_latch & 0x07)
+    /// instead of reading the pre-set k_input, matching MAME's K_r() callback
+    /// which reads m_portO (= o_latch) at the moment the MCU accesses K.
+    pub rw_input: u8,
+    /// When true, INK reads K dynamically from rw_input and o_latch.
+    /// This matches the 51XX hardware wiring where K3=R/W and K2-K0=portO.
+    pub dynamic_k: bool,
+
     // --- Execution state ---
     /// Whether we are in cycle 2 of a 2-cycle instruction.
     second_cycle: bool,
@@ -223,6 +238,7 @@ impl Mb88xx {
             sb: 0,
             sb_count: 0,
             o_latch: 0,
+            port_o: 0,
             pending_irq: 0,
             in_irq: false,
             rom: vec![0; variant.rom_size()],
@@ -237,6 +253,8 @@ impl Mb88xx {
             p_output: 0,
             si_input: 0,
             so_output: 0,
+            rw_input: 0,
+            dynamic_k: false,
             second_cycle: false,
             pending_opcode: 0,
         }
@@ -293,6 +311,8 @@ impl Mb88xx {
         self.tp = 0;
         self.sb = 0;
         self.sb_count = 0;
+        self.o_latch = 0;
+        self.port_o = 0;
         self.pending_irq = 0;
         self.in_irq = false;
         self.second_cycle = false;
@@ -346,9 +366,18 @@ impl Mb88xx {
 
     // --- I/O port access (for use by wrapper devices) ---
 
-    /// Read the O port output latch.
+    /// Read the shared external O port register (port_o).
+    /// This is what external devices (Z80 via 06XX) see, matching MAME's m_portO.
     pub fn read_o(&self) -> u8 {
-        self.o_latch
+        self.port_o
+    }
+
+    /// Synchronize port_o from the internal o_latch.
+    /// Call after execute_cycle() to propagate MCU OUTO writes to the shared
+    /// register, matching MAME's O_w_sync which defers o_output → m_portO
+    /// updates to between scheduler timeslices.
+    pub fn sync_port_o(&mut self) {
+        self.port_o = self.o_latch;
     }
 
     /// Read the P port output latch.
@@ -375,13 +404,8 @@ impl Mb88xx {
     pub fn set_irq(&mut self, state: bool) {
         let new_state = state as u8;
         // Rising edge: trigger if IRQ was low and is now high, and external IRQ is enabled
-        if self.irq_pin == 0 && new_state != 0 {
-            if (self.pio & INT_CAUSE_EXTERNAL) != 0 {
-                self.pending_irq |= INT_CAUSE_EXTERNAL;
-                eprintln!("[MCU51] IRQ rising edge! PIO={:02X} PA:PC={:02X}:{:02X}", self.pio, self.pa, self.pc);
-            } else {
-                eprintln!("[MCU51] IRQ rising edge BLOCKED (PIO={:02X})", self.pio);
-            }
+        if self.irq_pin == 0 && new_state != 0 && (self.pio & INT_CAUSE_EXTERNAL) != 0 {
+            self.pending_irq |= INT_CAUSE_EXTERNAL;
         }
         self.irq_pin = new_state;
     }
@@ -423,14 +447,7 @@ impl Mb88xx {
         // to avoid u8 overflow when CF=1 and shift=4.
         let shift = if index & 0x10 != 0 { 4 } else { 0 };
         let mask = 0x0F << shift;
-        let old = self.o_latch;
-        self.o_latch = (self.o_latch & !mask) | ((index & 0x0F) << shift);
-        if self.o_latch != old {
-            eprintln!(
-                "[MCU51] write_pla: o {:02X}->{:02X} idx={:02X} K={:X} PA:PC={:02X}:{:02X} in_irq={}",
-                old, self.o_latch, index, self.k_input, self.pa, self.pc, self.in_irq
-            );
-        }
+        self.port_o = (self.port_o & !mask) | ((index & 0x0F) << shift);
     }
 
     // --- Core execution ---
@@ -472,8 +489,15 @@ impl Mb88xx {
             }
         }
 
-        // Process pending interrupts
-        if !self.in_irq && (self.pending_irq & self.pio) != 0 {
+        // Process pending interrupts only at instruction boundaries.
+        // 2-cycle instructions split across two execute_cycle() calls set
+        // second_cycle=true after the first half. Processing an IRQ here
+        // would overwrite PA:PC with the vector address, but the pending
+        // second cycle would then read its immediate operand from the
+        // wrong location (the vector instead of the original code).
+        // MAME executes both cycles atomically, so interrupts only fire
+        // after complete instructions.
+        if !self.second_cycle && (self.pending_irq & self.pio) != 0 && !self.in_irq {
             self.in_irq = true;
             let int_pc = self.get_pc();
 
@@ -529,7 +553,7 @@ impl Mb88xx {
                     self.stack[self.si as usize] = self.get_pc();
                     self.si = (self.si + 1) & 3;
                     self.pc = arg & 0x3F;
-                    self.pa = (((opcode & 7) as u8) << 2 | (arg >> 6)) & self.pa_mask;
+                    self.pa = ((opcode & 7) << 2 | (arg >> 6)) & self.pa_mask;
                 }
                 self.st = 1;
             }
@@ -539,7 +563,7 @@ impl Mb88xx {
                 self.inc_pc();
                 if self.st != 0 {
                     self.pc = arg & 0x3F;
-                    self.pa = (((opcode & 7) as u8) << 2 | (arg >> 6)) & self.pa_mask;
+                    self.pa = ((opcode & 7) << 2 | (arg >> 6)) & self.pa_mask;
                 }
                 self.st = 1;
             }
@@ -692,7 +716,17 @@ impl Mb88xx {
 
             // 0x12: INK — read K port to A
             0x12 => {
-                self.a = self.k_input & 0x0F;
+                // In dynamic_k mode, compute K at execution time from the
+                // current port_o and rw_input, matching MAME's K_r() callback
+                // which reads m_portO at the moment the MCU accesses K.
+                // port_o is the shared external register (updated between
+                // execute_cycle calls), not the internal o_latch.
+                let k = if self.dynamic_k {
+                    (self.rw_input << 3) | (self.port_o & 0x07)
+                } else {
+                    self.k_input
+                };
+                self.a = k & 0x0F;
                 self.zf = if self.a == 0 { 1 } else { 0 };
                 self.st = 1;
             }
@@ -762,9 +796,7 @@ impl Mb88xx {
 
             // 0x1B: XX — exchange A with X
             0x1B => {
-                let tmp = self.x;
-                self.x = self.a;
-                self.a = tmp;
+                std::mem::swap(&mut self.x, &mut self.a);
                 self.zf = if self.a == 0 { 1 } else { 0 };
                 self.st = 1;
             }
@@ -1182,7 +1214,7 @@ impl Debuggable for Mb88xx {
 // Save state
 // ---------------------------------------------------------------------------
 
-const SAVE_VERSION: u8 = 1;
+const SAVE_VERSION: u8 = 2;
 
 impl Saveable for Mb88xx {
     fn save_state(&self, w: &mut StateWriter) {
@@ -1210,6 +1242,7 @@ impl Saveable for Mb88xx {
         w.write_u8(self.sb);
         w.write_u16_le(self.sb_count);
         w.write_u8(self.o_latch);
+        w.write_u8(self.port_o);
         w.write_u8(self.pending_irq);
         w.write_bool(self.in_irq);
         w.write_bytes(&self.ram);
@@ -1252,6 +1285,7 @@ impl Saveable for Mb88xx {
         self.sb = r.read_u8()?;
         self.sb_count = r.read_u16_le()?;
         self.o_latch = r.read_u8()?;
+        self.port_o = r.read_u8()?;
         self.pending_irq = r.read_u8()?;
         self.in_irq = r.read_bool()?;
         let ram_data = r.read_bytes()?;

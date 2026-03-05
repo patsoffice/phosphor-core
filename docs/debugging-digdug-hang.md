@@ -1,237 +1,244 @@
-# Debugging: Dig Dug Hang Before Attract Mode
+# Debugging: Dig Dug Emulation Issues
 
-This documents the investigation of a Dig Dug emulation hang that occurred after
-initial bring-up, where the game would freeze before reaching the attract mode
-demo. The debugging process illustrates techniques for diagnosing behavioral
-emulation bugs in a multi-CPU arcade system.
+This documents two investigations of Dig Dug emulation bugs: (1) a hang before
+attract mode, and (2) half-speed player movement. Both were caused by incorrect
+53XX HLE output format. The debugging process illustrates techniques for
+diagnosing behavioral emulation bugs in a multi-CPU arcade system.
 
 ## System Overview
 
 Dig Dug runs on Namco's Galaga-generation hardware:
 
-- **3× Z80 CPUs** @ 3.072 MHz (main, sub, sound) sharing a memory bus
-- **Namco 06XX**: Bus arbiter that generates periodic NMI to the main CPU
-- **Namco 51XX**: Input multiplexer / credit manager
-- **Namco 53XX**: DIP switch reader (MB8843 MCU, emulated behaviorally)
+- **3x Z80 CPUs** @ 3.072 MHz (main, sub, sound) sharing a memory bus
+- **Namco 06XX**: Bus arbiter that generates periodic NMI to the main CPU and
+  multiplexes access to custom I/O chips via chip_select signals
+- **Namco 51XX**: Input multiplexer / credit manager (MB8843 MCU, LLE)
+- **Namco 53XX**: DIP switch reader (MB8843 MCU, HLE behavioral model)
 - **NMI DMA engine**: The main CPU's NMI handler at `0x0066` uses `EXX` to swap
   to alternate registers (BC'/DE'/HL') and performs one-byte `LDI` transfers per
-  NMI, processing a command table when each DMA block completes.
+  NMI, processing a command table when each DMA block completes
 
-## Symptom
+### 06XX I/O Protocol
 
-After boot, the game would execute normally for a few seconds (EAROM access,
-hardware init), then freeze permanently. The main CPU was stuck in a tight
-`DJNZ` loop at `PC = 0x1BCC`, copying data but never progressing past it.
+The game communicates with custom chips through a two-phase protocol:
 
-## Step 1: Frame-Boundary Hang Detection
+1. Write a control byte to 06XX (`0x7100`): selects chip, read/write mode, and
+   timer divider
+2. The 06XX timer fires NMIs at intervals determined by the divider
+3. Each NMI triggers one byte of DMA transfer to/from the selected chip
+4. Write `0x10` to stop the timer and complete the transaction
 
-Added a simple PC-sampling hang detector to `DigDugSystem` that checks the main
-CPU's program counter at each frame boundary:
+Dig Dug uses two patterns: `0x71` (chip 0 = 51XX, 1 byte) and `0xD2` (chip 1 =
+53XX, 2 bytes).
 
-```rust
-// Fields added to DigDugSystem
-hang_detect_pc: u16,
-hang_detect_count: u32,
-hang_detected: bool,
+---
 
-fn check_hang(&mut self) {
-    let pc = self.board.main_cpu.pc;
+## Issue 1: Hang Before Attract Mode
 
-    // Check if PC is stuck in a small range (tight polling loop)
-    if pc.wrapping_sub(self.hang_detect_pc) <= 8 {
-        self.hang_detect_count += 1;
-    } else {
-        self.hang_detect_pc = pc;
-        self.hang_detect_count = 0;
-        self.hang_detected = false;
-    }
+### Symptom
 
-    // After ~2 seconds (120 frames at 60 Hz), report the hang
-    if self.hang_detect_count >= 120 && !self.hang_detected {
-        self.hang_detected = true;
-        // ... dump diagnostics ...
-    }
-}
-```
+After boot, the game executed normally for a few seconds (EAROM access, hardware
+init), then froze permanently. The main CPU was stuck in a tight `DJNZ` loop at
+`PC = 0x1BCC`.
 
-The 8-byte PC window accounts for the fact that a tight loop (like `DJNZ`)
-bounces between a few addresses. The 120-frame threshold filters out legitimate
-waits (like EAROM access delays which resolve after ~60 frames).
+### Hang Investigation
 
-**Result**: Confirmed the hang at `PC = 0x1BCC` with `B = 0x08` (DJNZ counter).
-The sub CPU was at its normal IRQ service address — not stuck.
+#### Step 1: Frame-Boundary Hang Detection
 
-## Step 2: NMI Delivery Investigation
+Added a PC-sampling hang detector that checks the main CPU's program counter
+each frame. An 8-byte window accounts for tight loops (like `DJNZ`). A
+120-frame threshold (approximately 2 seconds) filters out legitimate waits like EAROM
+delays.
 
-The DJNZ loop at `0x1BCC` is part of the NMI DMA engine — it copies data using
-alternate registers while the main program waits. The DMA should advance each
-time the 06XX timer fires an NMI. If NMIs weren't arriving, the DMA would never
-complete and the main loop would spin forever.
+**Result**: Confirmed the hang at `PC = 0x1BCC` with `B = 0x08`.
 
-Added Z80 execution state and 06XX timer internals to the diagnostics:
+#### Step 2: NMI Delivery Check
 
-```rust
-eprintln!("  Main state: {:?} nmi_prev={} ei_delay={}",
-    cpu.state, cpu.nmi_previous, cpu.ei_delay);
-eprintln!("  06XX NMI pend: {} timer_run={} cnt={} per={} st={} stretch={}",
-    self.board.main_nmi_pending,
-    self.board.namco06.timer_running,
-    self.board.namco06.timer_counter,
-    self.board.namco06.timer_period,
-    self.board.namco06.timer_state,
-    self.board.namco06.read_stretch);
-```
+The DJNZ loop is part of the NMI DMA engine — it copies data while the main
+program waits. If NMIs weren't arriving, the DMA would never complete.
 
-**Result**: The timer was running (`timer_run=true`, `per=2048`) but
-`read_stretch=true`. This flag suppresses the first NMI pulse after a read-mode
-control write. It initially looked like a smoking gun — NMIs were being blocked.
+Added 06XX timer internals to diagnostics. The timer was running correctly with
+`read_stretch` properly clearing between cycles. A frame+1 comparison confirmed
+the CPU was truly stuck (identical register state one frame later).
 
-## Step 3: Frame+1 Comparison
+#### Step 3: Control Write Tracing
 
-To confirm the CPU was truly stuck (not just caught at an unlucky moment), added
-a one-frame-later check:
+Traced every write to the 06XX control register. The DMA **was** completing
+every ~10,350 cycles — the CPU was not stuck in DMA, it was running the main
+game loop which itself was spinning waiting for game logic to advance.
 
-```rust
-if self.hang_detect_count == 121 {
-    eprintln!("=== FRAME+1 CHECK ===");
-    eprintln!("  Main PC: 0x{:04X}  B={:02X}  BC'={:02X}{:02X}",
-        pc, cpu.b, cpu.b_prime, cpu.c_prime);
-}
-```
+This disproved the NMI hypothesis. The ctrl_write pattern showed the game only
+issued 53XX reads (no 51XX reads), meaning it was stuck polling DIP switch data.
 
-**Result**: `B=08` and `BC'=0002` were identical one frame later — confirming
-zero progress.
+#### Step 4: Tracing Game Logic
 
-## Step 4: 06XX Control Write Tracing
+The sub CPU's IRQ handler checks bit 5 of shared RAM address `$87CF`:
 
-Rather than assuming `read_stretch` was the root cause, we traced every write to
-the 06XX control register during the hang to see the actual timer lifecycle:
-
-```rust
-// In Bus::write() for address 0x7100 (06XX control)
-0x7100 => {
-    if self.hang_detect_count >= 100 {
-        eprintln!("  [06XX CTRL WRITE] data=0x{:02X} clk={} stretch_was={}",
-            data, self.board.clock, self.board.namco06.read_stretch);
-    }
-    self.board.namco06.ctrl_write(data);
-}
-```
-
-**Result**: This revealed a crucial insight. The ctrl_write trace showed a
-repeating pattern of:
-
-```
-data=0x10  (stop timer)
-data=0xD2  (select chip 2 = 53XX, read mode, divider=6)
-```
-
-Every write showed `stretch_was=false` — the stretch flag was being properly
-cleared between timer cycles. The DMA **was** completing every ~10,350 cycles.
-The CPU was not stuck at all — it was running the main game loop, which itself
-was spinning waiting for game logic to advance.
-
-This disproved the NMI hypothesis. The real problem was upstream: the game logic
-was stuck in a polling loop.
-
-## Step 5: Tracing the Game Logic
-
-With NMI delivery confirmed working, the focus shifted to *what* the game was
-waiting for. The ctrl_write pattern revealed that after the first temporary hang
-resolved (EAROM init), the game only issued 53XX reads — no more 51XX reads.
-This meant the game was stuck in a phase that polls DIP switch data.
-
-Examining the sub CPU's IRQ handler, we found it checks bit 5 of shared RAM
-address `$87CF`:
-
-```
-; Sub CPU IRQ handler (simplified)
+```asm
 LD   A, ($87CF)
 BIT  5, A
-RET  Z          ; ← exits early if bit 5 is clear!
-; ... game logic continues ...
+RET  Z          ; exits early if bit 5 is clear
 ```
 
-If bit 5 of `$87CF` is 0, the sub CPU IRQ handler does nothing, and game logic
-never advances.
+Address `$87CF` holds the last byte returned by the 53XX during DMA. Our 53XX
+HLE was returning `nibble | 0x10` (bit 5 always 0), so the sub CPU IRQ handler
+always returned early and game logic never advanced.
 
-## Step 6: Finding the Root Cause
+### Fix
 
-Address `$87CF` holds the last nibble returned by the 53XX chip during DMA.
-The 53XX returns 4 nibbles per read cycle:
+Changed the 53XX HLE to encode the port index in the upper nibble:
+`(port_index << 4) | nibble`. For ports 2-3 (DSWB), this sets bit 5. Also set
+proper DIP switch defaults matching MAME (`dswa: 0x99, dswb: 0x24`).
 
-| Index | Data              |
-|-------|-------------------|
-|   0   | DSWA low nibble   |
-|   1   | DSWA high nibble  |
-|   2   | DSWB low nibble   |
-|   3   | DSWB high nibble  |
+---
 
-Our 53XX model was returning `nibble | 0x10` — a fixed bit-4 flag with bit 5
-always 0:
+## Issue 2: Half-Speed Player Movement
+
+### Symptom
+
+After the initial hang was fixed, the game ran but player movement was half
+speed. MAME shows dx=2 every 4 frames; our emulator showed dx=2 every 8 frames.
+
+### Half-Speed Investigation
+
+#### Step 1: Per-Frame Diagnostic Logging
+
+Added per-frame logging of:
+- 06XX ctrl register state
+- Game counter at `$8423` (16-bit, controls game speed)
+- I/O bytes read from custom chips
+- Vblank delivery counts
+- Player sprite position
+
+**Finding**: The game counter at `$8423` incremented only every 2 frames instead
+of every frame. Since the game waits for `counter + 4` to advance, half-speed
+counter = half-speed movement.
+
+#### Step 2: Vblank Handler Disassembly
+
+Disassembled the vblank handler at `0x0280` (reached via RST 38H → JP 0x0280).
+Found two paths:
+
+1. **Fast path** (`$879A != 0`): Jump directly to counter increment at `0x02C0`
+2. **Slow path** (`$879A == 0`): Perform LDIR copies (~5366 cycles), then check
+   bit 5 of `$87CF`. If bit 5 is clear, **exit without incrementing counter**.
+
+#### Step 3: Variable Tracking
+
+Added watches on game variables:
+- `$879A` (game mode): Always 0 during gameplay — the slow path always runs
+- `$87CF` (53XX output): Alternates between `0x19` (bit 5 clear) and `0x32`
+  (bit 5 set) on consecutive frames
+
+This created a pattern where the counter only incremented on frames where
+`$87CF` had bit 5 set, causing the every-other-frame behavior.
+
+#### Step 4: Tracing the 53XX Output Pattern
+
+The 53XX HLE cycled through 4 nibbles per read cycle:
+
+| Index | Output | Bit 5 |
+|-------|--------|-------|
+| 0     | 0x09   | clear |
+| 1     | 0x19   | clear |
+| 2     | 0x24   | set   |
+| 3     | 0x32   | set   |
+
+Each `0xD2` transaction reads 2 bytes. The first transaction (indices 0,1)
+stores `0x19` at `$87CF` — bit 5 clear. The second transaction (indices 2,3)
+stores `0x32` — bit 5 set.
+
+When the first D2 completed before vblank, the handler saw bit 5 clear and
+skipped the counter increment. Only on alternating frames (when the second D2's
+result was the latest) did the counter advance.
+
+#### Step 5: Analyzing the Real 53XX Firmware
+
+Fetched MAME's 53XX source. The 53XX is actually LLE in MAME — it runs real
+MB8843 firmware (`53xx.bin`). The firmware packs two R-port nibbles per IRQ
+using the carry flag to select the O port half:
+
+- IRQ 0: `OUTO` with CF=0 (R0 → low nibble), `OUTO` with CF=1 (R1 → high
+  nibble) → outputs full DSWA byte
+- IRQ 1: Same with R2/R3 → outputs full DSWB byte
+
+This confirmed by MAME's old (pre-LLE) HLE code:
+
+```c
+case 0: return READ_PORT(0) | (READ_PORT(1) << 4);  // DSWA
+case 1: return READ_PORT(2) | (READ_PORT(3) << 4);  // DSWB
+```
+
+The firmware returns **full DIP switch bytes** cycling through **2 reads** (not
+4 nibbles with port index encoding).
+
+### Root Cause
+
+Our 53XX HLE was wrong in two ways:
+
+1. **4-nibble cycle instead of 2-byte cycle**: The real firmware packs two
+   nibbles per IRQ, so each read returns a full DIP switch byte
+2. **Spurious port index encoding**: `(idx << 4) | nibble` doesn't match the
+   firmware output. The real chip outputs raw DIP switch bytes.
+
+With the 4-nibble model, the port index in the upper nibble created an
+artificial alternation of bit 5 between DSWA reads (bit 5 clear) and DSWB reads
+(bit 5 set). The game's vblank handler uses bit 5 to detect whether all DIP
+switch reads are complete (DSWB has bit 5 set in the actual DIP switch data).
+
+### Fix
+
+Changed the 53XX HLE from:
 
 ```rust
-// WRONG — bit 5 always clear
-nibble | 0x10
+// Wrong: 4-nibble cycle with port index encoding
+self.read_index = (self.read_index + 1) % 4;
+(idx << 4) | nibble
 ```
 
-The real MB8843 MCU firmware (mode 7, used by Dig Dug) encodes the **port
-index** in the upper nibble:
+To:
 
 ```rust
-// CORRECT — port index encodes bit 5 for ports 2-3
-(port_index << 4) | nibble
+// Correct: 2-byte cycle returning raw DIP switch bytes
+self.read_index = (self.read_index + 1) % 2;
+match idx { 0 => dswa, 1 => dswb, _ => unreachable!() }
 ```
 
-For ports 0-1 (DSWA), the upper nibble is `0x00` or `0x10`. For ports 2-3
-(DSWB), it's `0x20` or `0x30` — which sets bit 5. The game uses bit 5 as a
-"data valid" indicator that signals the DSWB portion has been read.
+With `dswb = 0x24` (bit 5 = 1), the vblank handler now always sees bit 5 set
+after a D2 transaction, and the counter increments every frame.
 
-## The Fix
+Also fixed the 51XX MCU clock divider: `ClockDivider::new(1, 2)` = CPU/2 =
+1.536 MHz, matching MAME's `MASTER_CLOCK/6/2`. The previous `1:6` divisor gave
+0.512 MHz (3x too slow), though this alone didn't cause the half-speed issue.
 
-Two changes in [namco53.rs](core/src/device/namco53.rs):
+---
 
-```rust
-pub fn read(&mut self, dswa: u8, dswb: u8) -> u8 {
-    let idx = self.read_index;
-    self.read_index = (self.read_index + 1) % 4;
+## Debugging Techniques
 
-    let nibble = match idx {
-        0 => dswa & 0x0F,
-        1 => (dswa >> 4) & 0x0F,
-        2 => dswb & 0x0F,
-        3 => (dswb >> 4) & 0x0F,
-        _ => unreachable!(),
-    };
+1. **PC-sampling hang detection**: Check program counter at frame boundaries
+   with an 8-byte window and multi-frame threshold. Cheap and decisive for
+   distinguishing real hangs from legitimate waits.
 
-    // Port index in upper nibble — game checks bit 5 as "data valid"
-    (idx << 4) | nibble
-}
-```
+2. **Frame+1 comparison**: Comparing register state across two consecutive
+   frames immediately distinguishes "truly stuck" from "caught at an unlucky
+   moment."
 
-And in [namco_galaga.rs](machines/src/namco_galaga.rs), set proper DIP switch
-defaults matching MAME/factory settings (`dswa: 0x99, dswb: 0x24`) instead of
-the previous `0xFF/0xFF` which encoded invalid option combinations.
+3. **Control register tracing**: Logging 06XX ctrl writes reveals the I/O
+   transaction pattern and proves timer/NMI delivery correctness without
+   modifying the timer code.
 
-## Takeaways
+4. **Variable watches**: Monitoring game RAM addresses at frame boundaries shows
+   the game's internal state machine transitions. Adding writes watches (logging
+   the writer's PC) traces causality.
 
-1. **Instrument iteratively.** Start with coarse detection (PC sampling), then
-   add layers of detail as hypotheses form. Each round narrows the search space.
+5. **ROM disassembly at runtime**: Dumping ROM bytes from the emulator and
+   feeding them to a disassembler reveals the game's actual logic without
+   needing external ROM files.
 
-2. **Trace the data, not just the mechanism.** The NMI timer was working
-   correctly the whole time. The bug was in the *data* being transferred by the
-   DMA, not the DMA mechanism itself. Tracing control register writes proved the
-   timer was cycling properly, which redirected the investigation.
+6. **Trace the consumer, not just the producer**: Both bugs were found by
+   reading the game code that *consumes* the 53XX output, then tracing
+   backwards to the output format mismatch.
 
-3. **Frame+1 comparison is cheap and decisive.** Comparing two consecutive
-   frames of state immediately distinguishes "truly stuck" from "caught at an
-   unlucky moment."
-
-4. **Behavioral emulation of MCUs needs precise output encoding.** The 53XX
-   is a full microcontroller running firmware. Getting the high-level behavior
-   right (returning DIP switch nibbles) isn't enough — the bit-level encoding
-   of the output must match what the game code expects.
-
-5. **Check the consumer, not just the producer.** The breakthrough came from
-   reading the sub CPU's IRQ handler to understand what it expected from the
-   shared RAM, then tracing backwards to the 53XX output format.
+7. **Check reference implementations carefully**: MAME's 53XX was LLE (running
+   actual firmware), while our HLE assumed a different output format. The old
+   MAME HLE code (pre-0.131) documented the correct format in just two lines.
