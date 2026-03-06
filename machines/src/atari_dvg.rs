@@ -215,7 +215,7 @@ const INTENSITY_LUT: [u8; 16] = [
 /// Uses Bresenham line drawing with additive blending (saturating add) so
 /// crossing lines appear brighter. Coordinates are in DVG space (0–1023),
 /// with Y=0 at bottom; the framebuffer uses Y=0 at top.
-fn rasterize_vectors(display_list: &[VectorLine], buffer: &mut [u8]) {
+pub(crate) fn rasterize_vectors(display_list: &[VectorLine], buffer: &mut [u8]) {
     buffer.fill(0);
 
     for line in display_list {
