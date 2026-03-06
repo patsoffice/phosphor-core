@@ -4,6 +4,7 @@ use phosphor_core::core::debug::{BusDebug, DebugCpu, Debuggable};
 use phosphor_core::core::machine::{AudioSource, InputReceiver, Machine, MachineDebug, Renderable};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::Cpu;
+use phosphor_core::device::Er2055;
 use phosphor_core::gfx;
 use phosphor_core::gfx::GfxCache;
 use phosphor_core::gfx::decode::{GfxLayout, decode_gfx};
@@ -508,8 +509,7 @@ pub struct DigDugSystem {
     pos_ram: [u8; 0x400],   // 0x9000-0x93FF (sprite positions)
     flp_ram: [u8; 0x400],   // 0x9800-0x9BFF (sprite flip/size)
     #[save_skip]
-    earom: [u8; 64], // 0xB800-0xB83F (stubbed as volatile RAM)
-    earom_control: u8,
+    earom: Er2055, // 0xB800-0xB83F (ER2055 64×4-bit EAROM for high scores)
 
     // Video latch state (written via 0xA000-0xA007)
     bg_select: u8,       // bits 0-1: background page (0-3)
@@ -548,8 +548,7 @@ impl DigDugSystem {
             obj_ram: [0; 0x400],
             pos_ram: [0; 0x400],
             flp_ram: [0; 0x400],
-            earom: [0; 64],
-            earom_control: 0,
+            earom: Er2055::new(),
 
             bg_select: 0,
             tx_color_mode: false,
@@ -911,7 +910,7 @@ impl Bus for DigDugSystem {
             0x9000..=0x93FF => self.pos_ram[(addr - 0x9000) as usize],
             0x9800..=0x9BFF => self.flp_ram[(addr - 0x9800) as usize],
             0xA000..=0xA007 => 0, // video latch (write-only)
-            0xB800..=0xB83F => self.earom[(addr - 0xB800) as usize],
+            0xB800..=0xB83F => self.earom.read(addr - 0xB800),
             _ => 0xFF,
         }
     }
@@ -941,8 +940,16 @@ impl Bus for DigDugSystem {
                 let value = (data & 1) != 0;
                 self.write_video_latch(bit, value);
             }
-            0xB800..=0xB83F => self.earom[(addr - 0xB800) as usize] = data,
-            0xB840 => self.earom_control = data,
+            // ER2055 EAROM: latch address and data for subsequent control commit
+            0xB800..=0xB83F => self.earom.latch(addr - 0xB800, data),
+            // ER2055 control: commit write on rising clock edge
+            0xB840 => {
+                let clock = data & 0x01 != 0;
+                let c1 = data & 0x02 == 0; // bit 1 inverted
+                let c2 = data & 0x04 != 0;  // bit 2
+                let cs1 = data & 0x08 != 0;
+                self.earom.write_control(clock, cs1, c1, c2);
+            }
             _ => {}
         }
     }
@@ -1034,7 +1041,7 @@ impl BusDebug for DigDugSystem {
             0x8800..=0x8BFF => Some(self.obj_ram[(addr - 0x8800) as usize]),
             0x9000..=0x93FF => Some(self.pos_ram[(addr - 0x9000) as usize]),
             0x9800..=0x9BFF => Some(self.flp_ram[(addr - 0x9800) as usize]),
-            0xB800..=0xB83F => Some(self.earom[(addr - 0xB800) as usize]),
+            0xB800..=0xB83F => Some(self.earom.read(addr - 0xB800)),
             _ => None,
         }
     }
@@ -1046,7 +1053,7 @@ impl BusDebug for DigDugSystem {
             0x8800..=0x8BFF => self.obj_ram[(addr - 0x8800) as usize] = data,
             0x9000..=0x93FF => self.pos_ram[(addr - 0x9000) as usize] = data,
             0x9800..=0x9BFF => self.flp_ram[(addr - 0x9800) as usize] = data,
-            0xB800..=0xB83F => self.earom[(addr - 0xB800) as usize] = data,
+            0xB800..=0xB83F => self.earom.latch(addr - 0xB800, data),
             _ => {}
         }
     }
@@ -1096,7 +1103,7 @@ impl Machine for DigDugSystem {
         self.tx_color_mode = false;
         self.bg_disable = false;
         self.bg_color_bank = 0;
-        self.earom_control = 0;
+        self.earom.reset();
         self.native_buffer.fill(0);
 
         bus_split!(self, bus => {
@@ -1107,12 +1114,11 @@ impl Machine for DigDugSystem {
     }
 
     fn save_nvram(&self) -> Option<&[u8]> {
-        Some(&self.earom)
+        Some(self.earom.snapshot())
     }
 
     fn load_nvram(&mut self, data: &[u8]) {
-        let len = data.len().min(64);
-        self.earom[..len].copy_from_slice(&data[..len]);
+        self.earom.load_from(data);
     }
 }
 

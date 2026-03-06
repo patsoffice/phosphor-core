@@ -227,24 +227,16 @@ assert_eq!(bus.memory[0x10], 0x42);
 
 ### Peripherals
 
-- Votrax SC-01 speech synthesizer
 - Atari AVG vector generator (Tempest, Star Wars)
 - Math box (Tempest, Star Wars)
 - TMS5220 speech synthesizer (Star Wars)
-- Starfield generator (Galaga)
 
 ### Games
 
-- Dig Dug — in progress (Namco: 3×Z80 + WSG)
 - Radar Scope (Nintendo TKG-04)
-- Galaga (Namco: 3×Z80 + WSG + starfield)
 - Food Fight (Atari: 68000 + 3×POKEY)
 - Tempest (Atari: M6502 + AVG + math box)
 - Star Wars (Atari: 2×M6809 + AVG + math box)
-
-### Tools
-
-- Performance profiler
 
 ## License
 

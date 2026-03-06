@@ -4,6 +4,7 @@ use phosphor_core::core::machine::{AudioSource, InputButton, InputReceiver, Mach
 use phosphor_core::core::memory_map::{AccessKind, MemoryMap};
 use phosphor_core::core::{Bus, BusMaster};
 use phosphor_core::cpu::Cpu;
+use phosphor_core::device::Er2055;
 use phosphor_core::device::pokey::Pokey;
 use phosphor_macros::Saveable;
 
@@ -154,10 +155,7 @@ pub struct AsteroidsDeluxeSystem {
     dip_switches: u8,
 
     // EAROM (ER2055): 64-byte non-volatile RAM for high scores
-    earom: [u8; 64],
-    earom_write_addr: u8,
-    earom_write_data: u8,
-    earom_last_clock: bool,
+    earom: Er2055,
 
     // Audio buffer from POKEY
     #[save_skip(default)]
@@ -201,10 +199,7 @@ impl AsteroidsDeluxeSystem {
             in0: 0x00,
             in1: 0x00,
             dip_switches: 0x00,
-            earom: [0; 64],
-            earom_write_addr: 0,
-            earom_write_data: 0,
-            earom_last_clock: false,
+            earom: Er2055::new(),
             audio_buffer: Vec::with_capacity(1024),
         }
     }
@@ -287,7 +282,7 @@ impl Bus for AsteroidsDeluxeSystem {
                 0x2C00..=0x2C0F => self.pokey.read(addr & 0x0F),
 
                 // EAROM data read: 0x2C40–0x2C7F
-                0x2C40..=0x2C7F => self.earom[(addr & 0x3F) as usize],
+                0x2C40..=0x2C7F => self.earom.read(addr & 0x3F),
 
                 _ => 0,
             },
@@ -315,27 +310,19 @@ impl Bus for AsteroidsDeluxeSystem {
 
                 // EAROM data/address write: 0x3200–0x323F
                 // Offset selects 6-bit address, data byte is the value to write.
-                0x3200..=0x323F => {
-                    self.earom_write_addr = (addr & 0x3F) as u8;
-                    self.earom_write_data = data;
-                }
+                0x3200..=0x323F => self.earom.latch(addr & 0x3F, data),
 
                 0x3400 => self.board.watchdog_frame_count = 0,
                 0x3600 => { /* explosion sound stub */ }
 
                 // EAROM control: 0x3A00
-                // Bit 0: CK (clock), Bit 1: C2, Bit 2: !C1, Bit 3: CS1
+                // Bit 0: CK (clock), Bit 1: !C1, Bit 2: C2, Bit 3: CS1
                 0x3A00 => {
                     let clock = data & 0x01 != 0;
-                    let c2 = data & 0x02 != 0;
-                    let c1 = data & 0x04 == 0; // inverted
+                    let c1 = data & 0x02 == 0; // bit 1 inverted
+                    let c2 = data & 0x04 != 0;  // bit 2
                     let cs1 = data & 0x08 != 0;
-
-                    // Write on rising clock edge with CS1, C1, and C2 active
-                    if clock && !self.earom_last_clock && cs1 && c1 && c2 {
-                        self.earom[self.earom_write_addr as usize] = self.earom_write_data;
-                    }
-                    self.earom_last_clock = clock;
+                    self.earom.write_control(clock, cs1, c1, c2);
                 }
 
                 0x3C00..=0x3C07 => { /* audio latch stub */ }
@@ -442,12 +429,11 @@ impl Machine for AsteroidsDeluxeSystem {
     }
 
     fn save_nvram(&self) -> Option<&[u8]> {
-        Some(&self.earom)
+        Some(self.earom.snapshot())
     }
 
     fn load_nvram(&mut self, data: &[u8]) {
-        let len = data.len().min(64);
-        self.earom[..len].copy_from_slice(&data[..len]);
+        self.earom.load_from(data);
     }
 }
 
@@ -485,8 +471,12 @@ mod tests {
         sys.board.nmi_counter = 3000;
         sys.board.nmi_pending = true;
         sys.board.watchdog_frame_count = 5;
-        sys.earom[0] = 0x42;
-        sys.earom[63] = 0xEF;
+        sys.earom.load_from(&{
+            let mut d = [0u8; 64];
+            d[0] = 0x42;
+            d[63] = 0xEF;
+            d
+        });
 
         // Save
         let data = sys.save_state().expect("save_state should return Some");
@@ -517,8 +507,8 @@ mod tests {
         assert_eq!(sys2.board.watchdog_frame_count, 5);
 
         // Verify EAROM
-        assert_eq!(sys2.earom[0], 0x42);
-        assert_eq!(sys2.earom[63], 0xEF);
+        assert_eq!(sys2.earom.read(0), 0x42);
+        assert_eq!(sys2.earom.read(63), 0xEF);
     }
 
     #[test]
@@ -545,9 +535,10 @@ mod tests {
         // Write address 0x05 with data 0xAB
         sys.write(BusMaster::Cpu(0), 0x3205, 0xAB);
 
-        // Commit with control: CS1=1, C1=1 (!C2=0), C2=1, clock rising edge
-        sys.earom_last_clock = false;
-        sys.write(BusMaster::Cpu(0), 0x3A00, 0x0B); // CS1(8) | C2(2) | CK(1) = 0x0B
+        // Clock high with control: CS1=1 (bit3), C1=1 (bit1=0), C2=1 (bit2), CK=1 (bit0)
+        sys.write(BusMaster::Cpu(0), 0x3A00, 0x0D); // CS1(8) | C2(4) | CK(1) = 0x0D
+        // Falling clock edge commits the write
+        sys.write(BusMaster::Cpu(0), 0x3A00, 0x0C); // CS1(8) | C2(4) | CK=0 = 0x0C
 
         // Read back
         let val = sys.read(BusMaster::Cpu(0), 0x2C45);
