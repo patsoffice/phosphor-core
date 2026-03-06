@@ -1,4 +1,4 @@
-//! OpenGL line renderer for vector display machines (DVG).
+//! OpenGL line renderer for vector display machines (DVG/AVG).
 //!
 //! Renders `VectorLine` segments directly as GL_LINES with additive blending,
 //! bypassing the CPU framebuffer entirely. Lines are drawn at the window's
@@ -34,32 +34,34 @@ const INTENSITY_LUT: [f32; 16] = [
 const VERTEX_SHADER_SRC: &str = r#"
 #version 150
 in vec2 position;
-in float brightness;
-out float v_brightness;
+in vec3 v_color;
+out vec3 f_color;
 void main() {
-    // DVG coordinates: 0–1023, Y=0 at bottom.
-    // NDC: -1..1, Y=-1 at bottom (matches DVG convention).
+    // Vector coordinates: 0-1023, Y=0 at bottom.
+    // NDC: -1..1, Y=-1 at bottom (matches vector convention).
     vec2 ndc = (position / 512.0) - 1.0;
     gl_Position = vec4(ndc, 0.0, 1.0);
-    v_brightness = brightness;
+    f_color = v_color;
 }
 "#;
 
 const FRAGMENT_SHADER_SRC: &str = r#"
 #version 150
-in float v_brightness;
+in vec3 f_color;
 out vec4 color;
 void main() {
-    color = vec4(vec3(v_brightness), 1.0);
+    color = vec4(f_color, 1.0);
 }
 "#;
 
-/// Per-vertex data: x, y (DVG coords), brightness (0.0–1.0).
+/// Per-vertex data: x, y (vector coords), r, g, b (0.0-1.0).
 #[repr(C)]
 struct Vertex {
     x: f32,
     y: f32,
-    brightness: f32,
+    r: f32,
+    g: f32,
+    b: f32,
 }
 
 pub struct VectorRenderer {
@@ -91,17 +93,24 @@ impl VectorRenderer {
                 continue;
             }
             let brightness = INTENSITY_LUT[(line.intensity & 0xF) as usize];
-            // Flip Y: DVG Y=0 is bottom, OpenGL NDC Y=-1 is also bottom,
-            // so we do NOT flip — DVG coords map naturally to NDC.
+            let r = brightness * (line.r as f32 / 255.0);
+            let g = brightness * (line.g as f32 / 255.0);
+            let b = brightness * (line.b as f32 / 255.0);
+            // Vector Y=0 is bottom, OpenGL NDC Y=-1 is also bottom,
+            // so we do NOT flip — vector coords map naturally to NDC.
             self.vertex_buf.push(Vertex {
                 x: line.x0 as f32,
                 y: line.y0 as f32,
-                brightness,
+                r,
+                g,
+                b,
             });
             self.vertex_buf.push(Vertex {
                 x: line.x1 as f32,
                 y: line.y1 as f32,
-                brightness,
+                r,
+                g,
+                b,
             });
         }
 
@@ -230,13 +239,13 @@ unsafe fn create_vertex_objects(
             );
         }
 
-        // brightness (float): offset 8
-        let bright_attr = gl::GetAttribLocation(program, c"brightness".as_ptr());
-        if bright_attr >= 0 {
-            gl::EnableVertexAttribArray(bright_attr as u32);
+        // color (vec3): offset 8
+        let color_attr = gl::GetAttribLocation(program, c"v_color".as_ptr());
+        if color_attr >= 0 {
+            gl::EnableVertexAttribArray(color_attr as u32);
             gl::VertexAttribPointer(
-                bright_attr as u32,
-                1,
+                color_attr as u32,
+                3,
                 gl::FLOAT,
                 gl::FALSE,
                 stride,

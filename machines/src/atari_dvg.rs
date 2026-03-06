@@ -223,6 +223,9 @@ fn rasterize_vectors(display_list: &[VectorLine], buffer: &mut [u8]) {
             continue;
         }
         let brightness = INTENSITY_LUT[(line.intensity & 0xF) as usize];
+        let br = ((brightness as u16 * line.r as u16) / 255) as u8;
+        let bg = ((brightness as u16 * line.g as u16) / 255) as u8;
+        let bb = ((brightness as u16 * line.b as u16) / 255) as u8;
 
         let x0 = line.x0.clamp(0, 1023);
         let y0 = line.y0.clamp(0, 1023);
@@ -233,12 +236,12 @@ fn rasterize_vectors(display_list: &[VectorLine], buffer: &mut [u8]) {
         let sy0 = 1023 - y0;
         let sy1 = 1023 - y1;
 
-        draw_line(buffer, x0, sy0, x1, sy1, brightness);
+        draw_line(buffer, x0, sy0, x1, sy1, [br, bg, bb]);
     }
 }
 
 /// Bresenham line drawing with additive blending.
-fn draw_line(buffer: &mut [u8], x0: i32, y0: i32, x1: i32, y1: i32, brightness: u8) {
+fn draw_line(buffer: &mut [u8], x0: i32, y0: i32, x1: i32, y1: i32, rgb: [u8; 3]) {
     let mut x = x0;
     let mut y = y0;
     let dx = (x1 - x0).abs();
@@ -251,9 +254,9 @@ fn draw_line(buffer: &mut [u8], x0: i32, y0: i32, x1: i32, y1: i32, brightness: 
         // Plot pixel with additive blending.
         if (0..1024).contains(&x) && (0..1024).contains(&y) {
             let offset = ((y as usize) * TIMING.display_width as usize + x as usize) * 3;
-            buffer[offset] = buffer[offset].saturating_add(brightness);
-            buffer[offset + 1] = buffer[offset + 1].saturating_add(brightness);
-            buffer[offset + 2] = buffer[offset + 2].saturating_add(brightness);
+            buffer[offset] = buffer[offset].saturating_add(rgb[0]);
+            buffer[offset + 1] = buffer[offset + 1].saturating_add(rgb[1]);
+            buffer[offset + 2] = buffer[offset + 2].saturating_add(rgb[2]);
         }
 
         if x == x1 && y == y1 {

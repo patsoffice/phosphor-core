@@ -22,11 +22,14 @@
 //! - MAME `src/devices/video/avgdvg.cpp`
 //! - Jed Margolin, "The Secret Life of Vector Generators"
 
-/// A line segment produced by DVG execution.
+/// A line segment produced by vector generator execution (DVG or AVG).
 ///
-/// Coordinates are in the DVG's native 10-bit space (0–1023), with (0, 0) at
+/// Coordinates are in the generator's native space (0–1023), with (0, 0) at
 /// the bottom-left of the display. Intensity 0 means a blank (invisible) move;
 /// intensities 1–15 are visible brightness levels.
+///
+/// RGB color defaults to white (255, 255, 255) for monochrome generators (DVG).
+/// Color generators (AVG Tempest) set per-line RGB from their color RAM.
 #[derive(Clone, Debug)]
 pub struct VectorLine {
     pub x0: i32,
@@ -34,6 +37,9 @@ pub struct VectorLine {
     pub x1: i32,
     pub y1: i32,
     pub intensity: u8,
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
 }
 
 use crate::prelude::Saveable;
@@ -443,6 +449,9 @@ impl Dvg {
                 x1: x,
                 y1: y,
                 intensity,
+                r: 255,
+                g: 255,
+                b: 255,
             });
         } else {
             // First point — no previous segment, just record position.
@@ -452,6 +461,9 @@ impl Dvg {
                 x1: x,
                 y1: y,
                 intensity: 0,
+                r: 255,
+                g: 255,
+                b: 255,
             });
         }
     }
@@ -660,6 +672,9 @@ mod tests {
             x1: 100,
             y1: 100,
             intensity: 15,
+            r: 255,
+            g: 255,
+            b: 255,
         });
         dvg.reset();
         assert_eq!(dvg.pc, 0);
@@ -680,6 +695,9 @@ mod tests {
             x1: 1,
             y1: 1,
             intensity: 10,
+            r: 255,
+            g: 255,
+            b: 255,
         });
         assert!(dvg.is_halted());
         dvg.go();
