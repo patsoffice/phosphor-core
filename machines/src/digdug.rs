@@ -945,8 +945,8 @@ impl Bus for DigDugSystem {
             // ER2055 control: commit write on rising clock edge
             0xB840 => {
                 let clock = data & 0x01 != 0;
-                let c1 = data & 0x02 == 0; // bit 1 inverted
-                let c2 = data & 0x04 != 0;  // bit 2
+                let c1 = data & 0x02 != 0; // bit 1 direct (Namco wiring)
+                let c2 = data & 0x04 != 0; // bit 2
                 let cs1 = data & 0x08 != 0;
                 self.earom.write_control(clock, cs1, c1, c2);
             }

@@ -320,7 +320,7 @@ impl Bus for AsteroidsDeluxeSystem {
                 0x3A00 => {
                     let clock = data & 0x01 != 0;
                     let c1 = data & 0x02 == 0; // bit 1 inverted
-                    let c2 = data & 0x04 != 0;  // bit 2
+                    let c2 = data & 0x04 != 0; // bit 2
                     let cs1 = data & 0x08 != 0;
                     self.earom.write_control(clock, cs1, c1, c2);
                 }
@@ -532,15 +532,24 @@ mod tests {
     fn earom_write_read() {
         let mut sys = AsteroidsDeluxeSystem::new();
 
-        // Write address 0x05 with data 0xAB
+        // Latch address 0x05 with data 0xAB
         sys.write(BusMaster::Cpu(0), 0x3205, 0xAB);
 
-        // Clock high with control: CS1=1 (bit3), C1=1 (bit1=0), C2=1 (bit2), CK=1 (bit0)
-        sys.write(BusMaster::Cpu(0), 0x3A00, 0x0D); // CS1(8) | C2(4) | CK(1) = 0x0D
-        // Falling clock edge commits the write
-        sys.write(BusMaster::Cpu(0), 0x3A00, 0x0C); // CS1(8) | C2(4) | CK=0 = 0x0C
+        // Astdelux $3A00 bits: 0=CK, 1=!C1, 2=C2, 3=CS1
 
-        // Read back
+        // Erase address 5: C1=0(bit1=1), C2=1(bit2=1), CS1=1(bit3=1)
+        sys.write(BusMaster::Cpu(0), 0x3A00, 0x0F); // clock high
+        sys.write(BusMaster::Cpu(0), 0x3A00, 0x0E); // clock low
+
+        // Write 0xAB: C1=0(bit1=1), C2=0(bit2=0), CS1=1(bit3=1)
+        sys.write(BusMaster::Cpu(0), 0x3A00, 0x0B); // clock high
+        sys.write(BusMaster::Cpu(0), 0x3A00, 0x0A); // clock low
+
+        // Read: C1=1(bit1=0), CS1=1(bit3=1), falling edge loads data register
+        sys.write(BusMaster::Cpu(0), 0x3A00, 0x09); // clock high
+        sys.write(BusMaster::Cpu(0), 0x3A00, 0x08); // falling edge → read
+
+        // Read data register
         let val = sys.read(BusMaster::Cpu(0), 0x2C45);
         assert_eq!(val, 0xAB);
     }
