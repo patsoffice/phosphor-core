@@ -330,6 +330,7 @@ pub mod robotron;
 pub mod rom_loader;
 pub mod satans_hollow;
 pub mod simple_system;
+pub mod tempest;
 pub mod tkg04;
 pub mod williams;
 
@@ -353,3 +354,4 @@ pub use simple_system::{
     Simple6502System, Simple6800System, Simple6809System, SimpleI8035System, SimpleI8088System,
     SimpleSystem, SimpleSystem32, SimpleZ80System,
 };
+pub use tempest::TempestSystem;

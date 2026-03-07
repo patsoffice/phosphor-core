@@ -36,10 +36,17 @@ const VERTEX_SHADER_SRC: &str = r#"
 in vec2 position;
 in vec3 v_color;
 out vec3 f_color;
+uniform vec2 display_half_size;
+uniform int rotation;
 void main() {
-    // Vector coordinates: 0-1023, Y=0 at bottom.
+    // Vector coordinates: 0..display_size, Y=0 at bottom.
     // NDC: -1..1, Y=-1 at bottom (matches vector convention).
-    vec2 ndc = (position / 512.0) - 1.0;
+    vec2 ndc = (position / display_half_size) - 1.0;
+    // Screen-level rotation for portrait vector monitors (270°).
+    // Net transform: negate X to match AVG beam-to-screen mapping.
+    if (rotation == 270) {
+        ndc = vec2(ndc.x, -ndc.y);
+    }
     gl_Position = vec4(ndc, 0.0, 1.0);
     f_color = v_color;
 }
@@ -68,36 +75,65 @@ pub struct VectorRenderer {
     program: gl::types::GLuint,
     vao: gl::types::GLuint,
     vbo: gl::types::GLuint,
+    uniform_half_size: gl::types::GLint,
+    uniform_rotation: gl::types::GLint,
     vertex_buf: Vec<Vertex>,
+    point_start: usize, // index where point vertices begin in vertex_buf
 }
 
 impl VectorRenderer {
     pub fn new() -> Self {
         let program = unsafe { create_shader_program() };
         let (vao, vbo) = unsafe { create_vertex_objects(program) };
+        let uniform_half_size = unsafe {
+            let name = std::ffi::CString::new("display_half_size").unwrap();
+            gl::GetUniformLocation(program, name.as_ptr())
+        };
+        let uniform_rotation = unsafe {
+            let name = std::ffi::CString::new("rotation").unwrap();
+            gl::GetUniformLocation(program, name.as_ptr())
+        };
 
         Self {
             program,
             vao,
             vbo,
+            uniform_half_size,
+            uniform_rotation,
             vertex_buf: Vec::with_capacity(2048),
+            point_start: 0,
         }
     }
 
     /// Render vector lines directly to the current framebuffer.
-    pub fn render(&mut self, lines: &[VectorLine], viewport_w: u32, viewport_h: u32) {
+    ///
+    /// `display_w`/`display_h` are the vector coordinate space dimensions
+    /// (e.g. 1024×1024 for DVG, 580×570 for Tempest AVG).
+    /// `rotation` is the screen-level rotation in degrees (0 or 270).
+    pub fn render(
+        &mut self,
+        lines: &[VectorLine],
+        viewport_w: u32,
+        viewport_h: u32,
+        display_w: u32,
+        display_h: u32,
+        rotation: i32,
+    ) {
         // Build vertex data from display list.
+        // Lines go first, then point vertices (for zero-length vectors / dots).
         self.vertex_buf.clear();
+        self.point_start = 0;
         for line in lines {
             if line.intensity == 0 {
                 continue;
+            }
+            if line.x0 == line.x1 && line.y0 == line.y1 {
+                continue; // collect points in second pass
             }
             let brightness = INTENSITY_LUT[(line.intensity & 0xF) as usize];
             let r = brightness * (line.r as f32 / 255.0);
             let g = brightness * (line.g as f32 / 255.0);
             let b = brightness * (line.b as f32 / 255.0);
-            // Vector Y=0 is bottom, OpenGL NDC Y=-1 is also bottom,
-            // so we do NOT flip — vector coords map naturally to NDC.
             self.vertex_buf.push(Vertex {
                 x: line.x0 as f32,
                 y: line.y0 as f32,
@@ -113,6 +149,26 @@ impl VectorRenderer {
                 b,
             });
         }
+        self.point_start = self.vertex_buf.len();
+        for line in lines {
+            if line.intensity == 0 {
+                continue;
+            }
+            if line.x0 != line.x1 || line.y0 != line.y1 {
+                continue;
+            }
+            let brightness = INTENSITY_LUT[(line.intensity & 0xF) as usize];
+            let r = brightness * (line.r as f32 / 255.0);
+            let g = brightness * (line.g as f32 / 255.0);
+            let b = brightness * (line.b as f32 / 255.0);
+            self.vertex_buf.push(Vertex {
+                x: line.x0 as f32,
+                y: line.y0 as f32,
+                r,
+                g,
+                b,
+            });
+        }
 
         if self.vertex_buf.is_empty() {
             return;
@@ -121,6 +177,12 @@ impl VectorRenderer {
         unsafe {
             gl::Viewport(0, 0, viewport_w as i32, viewport_h as i32);
             gl::UseProgram(self.program);
+            gl::Uniform2f(
+                self.uniform_half_size,
+                display_w as f32 / 2.0,
+                display_h as f32 / 2.0,
+            );
+            gl::Uniform1i(self.uniform_rotation, rotation);
             gl::BindVertexArray(self.vao);
 
             // Upload vertex data.
@@ -138,7 +200,17 @@ impl VectorRenderer {
             gl::BlendFunc(gl::ONE, gl::ONE);
             gl::Enable(gl::LINE_SMOOTH);
 
-            gl::DrawArrays(gl::LINES, 0, self.vertex_buf.len() as i32);
+            // Draw lines.
+            if self.point_start > 0 {
+                gl::DrawArrays(gl::LINES, 0, self.point_start as i32);
+            }
+
+            // Draw zero-length vectors as points (bullets, dots).
+            let point_count = self.vertex_buf.len() - self.point_start;
+            if point_count > 0 {
+                gl::PointSize(2.0);
+                gl::DrawArrays(gl::POINTS, self.point_start as i32, point_count as i32);
+            }
 
             // Restore state for egui.
             gl::Disable(gl::LINE_SMOOTH);

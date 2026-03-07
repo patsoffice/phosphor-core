@@ -34,6 +34,10 @@ struct Cli {
     #[arg(long)]
     profile: bool,
 
+    /// Disable automatic mouse grab for analog input
+    #[arg(long)]
+    no_mouse_grab: bool,
+
     /// List available machines and exit
     #[arg(long, short)]
     list: bool,
@@ -101,6 +105,7 @@ fn main() {
         &machine_name,
         cli.debug,
         cli.profile,
+        cli.no_mouse_grab,
     );
 
     // Save battery-backed NVRAM to disk on exit

@@ -148,7 +148,13 @@ impl AtariDvgBoard {
 
     /// Render the vector display list into an RGB24 framebuffer.
     pub fn render_frame(&self, buffer: &mut [u8]) {
-        rasterize_vectors(&self.display_list, buffer);
+        rasterize_vectors(
+            &self.display_list,
+            buffer,
+            TIMING.display_width,
+            TIMING.display_height,
+            true,
+        );
     }
 
     /// Check if the CPU is at an instruction boundary (for debug stepping).
@@ -193,7 +199,13 @@ impl Renderable for AtariDvgBoard {
     }
 
     fn render_frame(&self, buffer: &mut [u8]) {
-        rasterize_vectors(&self.display_list, buffer);
+        rasterize_vectors(
+            &self.display_list,
+            buffer,
+            TIMING.display_width,
+            TIMING.display_height,
+            true,
+        );
     }
 
     fn vector_display_list(&self) -> Option<&[VectorLine]> {
@@ -212,11 +224,26 @@ const INTENSITY_LUT: [u8; 16] = [
 
 /// Rasterize a display list of vector line segments into an RGB24 framebuffer.
 ///
-/// Uses Bresenham line drawing with additive blending (saturating add) so
-/// crossing lines appear brighter. Coordinates are in DVG space (0–1023),
-/// with Y=0 at bottom; the framebuffer uses Y=0 at top.
-pub(crate) fn rasterize_vectors(display_list: &[VectorLine], buffer: &mut [u8]) {
+/// Uses Cohen-Sutherland line clipping followed by Bresenham line drawing
+/// with additive blending (saturating add) so crossing lines appear brighter.
+/// Coordinates may extend beyond the display bounds; clipping trims to the
+/// visible area. Vector Y=0 is at bottom; the framebuffer uses Y=0 at top.
+///
+/// `width` and `height` define the display dimensions (e.g. 1024×1024 for DVG,
+/// 580×570 for Tempest AVG).
+pub(crate) fn rasterize_vectors(
+    display_list: &[VectorLine],
+    buffer: &mut [u8],
+    width: u32,
+    height: u32,
+    flip_y: bool,
+) {
     buffer.fill(0);
+
+    let w = width as i32;
+    let h = height as i32;
+    let x_max = w - 1;
+    let y_max = h - 1;
 
     for line in display_list {
         if line.intensity == 0 {
@@ -227,21 +254,96 @@ pub(crate) fn rasterize_vectors(display_list: &[VectorLine], buffer: &mut [u8]) 
         let bg = ((brightness as u16 * line.g as u16) / 255) as u8;
         let bb = ((brightness as u16 * line.b as u16) / 255) as u8;
 
-        let x0 = line.x0.clamp(0, 1023);
-        let y0 = line.y0.clamp(0, 1023);
-        let x1 = line.x1.clamp(0, 1023);
-        let y1 = line.y1.clamp(0, 1023);
+        let (sy0, sy1) = if flip_y {
+            // Normal: vector Y=0 is bottom, screen Y=0 is top.
+            (y_max - line.y0, y_max - line.y1)
+        } else {
+            // ROT270: Y already maps to screen-Y directly.
+            (line.y0, line.y1)
+        };
 
-        // Flip Y: DVG Y=0 is bottom, screen Y=0 is top.
-        let sy0 = 1023 - y0;
-        let sy1 = 1023 - y1;
+        // Clip line to display bounds (Cohen-Sutherland).
+        if let Some((cx0, cy0, cx1, cy1)) = clip_line(line.x0, sy0, line.x1, sy1, x_max, y_max) {
+            draw_line(buffer, cx0, cy0, cx1, cy1, w, [br, bg, bb]);
+        }
+    }
+}
 
-        draw_line(buffer, x0, sy0, x1, sy1, [br, bg, bb]);
+/// Cohen-Sutherland line clipping.
+/// Returns None if the line is entirely outside 0..x_max × 0..y_max.
+fn clip_line(
+    mut x0: i32,
+    mut y0: i32,
+    mut x1: i32,
+    mut y1: i32,
+    x_max: i32,
+    y_max: i32,
+) -> Option<(i32, i32, i32, i32)> {
+    const INSIDE: u8 = 0;
+    const LEFT: u8 = 1;
+    const RIGHT: u8 = 2;
+    const BOTTOM: u8 = 4;
+    const TOP: u8 = 8;
+
+    let outcode = |x: i32, y: i32| -> u8 {
+        let mut code = INSIDE;
+        if x < 0 {
+            code |= LEFT;
+        } else if x > x_max {
+            code |= RIGHT;
+        }
+        if y < 0 {
+            code |= TOP;
+        } else if y > y_max {
+            code |= BOTTOM;
+        }
+        code
+    };
+
+    let mut oc0 = outcode(x0, y0);
+    let mut oc1 = outcode(x1, y1);
+
+    loop {
+        if (oc0 | oc1) == INSIDE {
+            return Some((x0, y0, x1, y1));
+        }
+        if (oc0 & oc1) != 0 {
+            return None;
+        }
+
+        let oc_out = if oc0 != INSIDE { oc0 } else { oc1 };
+        let dx = x1 as i64 - x0 as i64;
+        let dy = y1 as i64 - y0 as i64;
+
+        let (nx, ny) = if oc_out & BOTTOM != 0 {
+            let nx = x0 as i64 + dx * (y_max as i64 - y0 as i64) / dy;
+            (nx as i32, y_max)
+        } else if oc_out & TOP != 0 {
+            let nx = x0 as i64 + dx * (0i64 - y0 as i64) / dy;
+            (nx as i32, 0)
+        } else if oc_out & RIGHT != 0 {
+            let ny = y0 as i64 + dy * (x_max as i64 - x0 as i64) / dx;
+            (x_max, ny as i32)
+        } else {
+            let ny = y0 as i64 + dy * (0i64 - x0 as i64) / dx;
+            (0, ny as i32)
+        };
+
+        if oc_out == oc0 {
+            x0 = nx;
+            y0 = ny;
+            oc0 = outcode(x0, y0);
+        } else {
+            x1 = nx;
+            y1 = ny;
+            oc1 = outcode(x1, y1);
+        }
     }
 }
 
 /// Bresenham line drawing with additive blending.
-fn draw_line(buffer: &mut [u8], x0: i32, y0: i32, x1: i32, y1: i32, rgb: [u8; 3]) {
+/// All coordinates must be within display bounds (pre-clipped).
+fn draw_line(buffer: &mut [u8], x0: i32, y0: i32, x1: i32, y1: i32, width: i32, rgb: [u8; 3]) {
     let mut x = x0;
     let mut y = y0;
     let dx = (x1 - x0).abs();
@@ -251,13 +353,10 @@ fn draw_line(buffer: &mut [u8], x0: i32, y0: i32, x1: i32, y1: i32, rgb: [u8; 3]
     let mut err = dx + dy;
 
     loop {
-        // Plot pixel with additive blending.
-        if (0..1024).contains(&x) && (0..1024).contains(&y) {
-            let offset = ((y as usize) * TIMING.display_width as usize + x as usize) * 3;
-            buffer[offset] = buffer[offset].saturating_add(rgb[0]);
-            buffer[offset + 1] = buffer[offset + 1].saturating_add(rgb[1]);
-            buffer[offset + 2] = buffer[offset + 2].saturating_add(rgb[2]);
-        }
+        let offset = ((y * width + x) as usize) * 3;
+        buffer[offset] = buffer[offset].saturating_add(rgb[0]);
+        buffer[offset + 1] = buffer[offset + 1].saturating_add(rgb[1]);
+        buffer[offset + 2] = buffer[offset + 2].saturating_add(rgb[2]);
 
         if x == x1 && y == y1 {
             break;

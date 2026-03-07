@@ -30,17 +30,19 @@ pub(crate) enum Region {
 
 // Master clock: 12.096 MHz
 // CPU clock: 12.096 / 8 = 1.512 MHz
-// IRQ: 3 KHz / 12 ≈ 250 Hz → every ~6048 CPU cycles
+// 3 KHz clock: 12.096 MHz / 4096 = 2953.125 Hz
+// IRQ: 3 KHz / 12 = 246.09375 Hz → every 6144 CPU cycles
 // Frame: ~60 Hz → ~25200 CPU cycles
 pub const TIMING: TimingConfig = TimingConfig {
     cpu_clock_hz: 1_512_000,     // 12.096 MHz / 8
     cycles_per_scanline: 25_200, // no scanline hardware; whole frame
     total_scanlines: 1,
-    display_width: 1024, // vector display
-    display_height: 1024,
+    display_width: 580,
+    display_height: 570,
 };
 
-pub const IRQ_PERIOD_CYCLES: u64 = TIMING.cpu_clock_hz / 250;
+/// IRQ period: master_clock / 4096 / 12 = 246.09375 Hz → 6144 CPU cycles.
+pub const IRQ_PERIOD_CYCLES: u64 = 6144;
 
 // ---------------------------------------------------------------------------
 // Atari AVG board
@@ -72,16 +74,19 @@ pub struct AtariAvgBoard {
     // Watchdog (resets if not written within 8 frames)
     pub(crate) watchdog_frame_count: u8,
 
-    // Vector display
+    // Vector display (unrotated AVG coordinates)
     pub(crate) display_list: Vec<VectorLine>,
 }
 
 impl AtariAvgBoard {
-    /// Create a new board with a pre-configured memory map.
-    pub fn new(map: MemoryMap) -> Self {
+    /// Create a new board with a pre-configured memory map and visible area dimensions.
+    ///
+    /// `visible_width`/`visible_height` define the AVG beam center (half of each).
+    /// For Tempest: 580×570.
+    pub fn new(map: MemoryMap, visible_width: i32, visible_height: i32) -> Self {
         Self {
             cpu: M6502::new(),
-            avg: Avg::new(),
+            avg: Avg::new(visible_width, visible_height),
             map,
             clock: 0,
             irq_counter: 0,
@@ -124,9 +129,8 @@ impl AtariAvgBoard {
         color_ram[..len].copy_from_slice(&color_ram_data[..len]);
 
         self.avg.go();
-        if self.avg.execute(&vmem, &color_ram) {
-            self.display_list = self.avg.take_display_list();
-        }
+        self.avg.execute(&vmem, &color_ram);
+        self.display_list = self.avg.take_display_list();
     }
 
     /// Reset board state. CPU reset must be done separately by the wrapper.
@@ -138,9 +142,14 @@ impl AtariAvgBoard {
         self.display_list.clear();
     }
 
-    /// Render the vector display list into an RGB24 framebuffer.
     pub fn render_frame(&self, buffer: &mut [u8]) {
-        rasterize_vectors(&self.display_list, buffer);
+        rasterize_vectors(
+            &self.display_list,
+            buffer,
+            TIMING.display_width,
+            TIMING.display_height,
+            false,
+        );
     }
 
     /// Check if the CPU is at an instruction boundary (for debug stepping).
@@ -187,7 +196,7 @@ impl Renderable for AtariAvgBoard {
     }
 
     fn render_frame(&self, buffer: &mut [u8]) {
-        rasterize_vectors(&self.display_list, buffer);
+        self.render_frame(buffer);
     }
 
     fn vector_display_list(&self) -> Option<&[VectorLine]> {

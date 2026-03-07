@@ -20,6 +20,7 @@ pub fn run(
     machine_name: &str,
     start_in_debug: bool,
     start_in_profile: bool,
+    no_mouse_grab: bool,
 ) {
     // Enable controller backends before SDL init — needed for Xbox on macOS
     sdl2::hint::set("SDL_JOYSTICK_HIDAPI", "1");
@@ -75,7 +76,22 @@ pub fn run(
     }
 
     let (width, height) = machine.display_size();
-    let mut video = Video::new(&sdl_video, "Phosphor Emulator", width, height, scale);
+    // Swap window dimensions for rotated displays (e.g., Tempest portrait).
+    let (win_w, win_h) =
+        if machine.screen_rotation() != phosphor_core::core::machine::ScreenRotation::None {
+            (height, width)
+        } else {
+            (width, height)
+        };
+    let mut video = Video::new(
+        &sdl_video,
+        "Phosphor Emulator",
+        width,
+        height,
+        win_w,
+        win_h,
+        scale,
+    );
     let mut event_pump = sdl_context.event_pump().expect("Failed to get event pump");
 
     // Detect vector display machines and create GL renderer.
@@ -108,7 +124,7 @@ pub fn run(
     let has_analog = !machine.analog_map().is_empty();
     let analog_axes: Vec<u8> = machine.analog_map().iter().map(|a| a.id).collect();
     let mut mouse_grabbed = false;
-    if has_analog {
+    if has_analog && !no_mouse_grab {
         sdl_context.mouse().set_relative_mouse_mode(true);
         mouse_grabbed = true;
     }
@@ -390,9 +406,13 @@ pub fn run(
 
                 // Mouse motion → analog axes (trackball games)
                 Event::MouseMotion { xrel, yrel, .. } => {
-                    if !video.wants_pointer() && mouse_grabbed && analog_axes.len() >= 2 {
-                        machine.set_analog(analog_axes[0], xrel);
-                        machine.set_analog(analog_axes[1], yrel);
+                    if !video.wants_pointer() && mouse_grabbed {
+                        if let Some(&ax) = analog_axes.first() {
+                            machine.set_analog(ax, xrel);
+                        }
+                        if let Some(&ay) = analog_axes.get(1) {
+                            machine.set_analog(ay, yrel);
+                        }
                     }
                 }
 
@@ -462,10 +482,15 @@ pub fn run(
                 && !debug_state.active
                 && !profile_state.active
             {
+                let ds = machine.display_size();
+                let rot = match machine.screen_rotation() {
+                    phosphor_core::core::machine::ScreenRotation::Rot270 => 270,
+                    _ => 0,
+                };
                 if show_fps {
                     let fps = fps_text.clone();
                     let stats = machine.overlay_stats();
-                    video.present_vectors_with_overlay(renderer, lines, |ctx| {
+                    video.present_vectors_with_overlay(renderer, lines, ds, rot, |ctx| {
                         egui::Window::new("fps_overlay")
                             .title_bar(false)
                             .resizable(false)
@@ -492,7 +517,7 @@ pub fn run(
                 } else {
                     // Still run egui pass to consume input events (prevents stale
                     // state buildup), but render no UI widgets.
-                    video.present_vectors_with_overlay(renderer, lines, |_ctx| {});
+                    video.present_vectors_with_overlay(renderer, lines, ds, rot, |_ctx| {});
                 }
             } else {
                 // Raster machine (or debug/profiler mode): CPU framebuffer path.

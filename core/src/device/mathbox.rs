@@ -56,7 +56,6 @@ impl Mathbox {
     #[allow(clippy::identity_op)]
     pub fn go_w(&mut self, offset: u8, data: u8) {
         let d = data as i16;
-
         match offset & 0x1F {
             0x00 => {
                 self.reg[0] = (self.reg[0] & !0xFF) | (d & 0xFF);

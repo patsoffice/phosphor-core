@@ -14,8 +14,23 @@
 //! handlers 0–3 (latching DVY, opcode, DVX, intensity) then dispatches to
 //! handlers 4–7 (strobe0–strobe3) based on the 3-bit opcode.
 //!
-//! This implementation decodes instructions directly at the 4-byte level for
-//! clarity, while matching MAME's handler behavior exactly.
+//! This implementation decodes instructions directly at the word level for
+//! clarity, while matching the hardware's handler behavior exactly.
+//!
+//! # Byte addressing
+//!
+//! The AVG byte-addresses vector memory with an XOR-1 swap, reading the high
+//! byte of each 16-bit word first (at even PC), then the low byte (at odd PC).
+//! The AVG addresses bytes as `(pc ^ 1)`, swapping bytes within each word.
+//!
+//! # Instruction sizes
+//!
+//! - Op 0 (VCTR): 4-byte instruction (two 16-bit words)
+//! - Ops 1–7: 2-byte instructions (one 16-bit word)
+//!
+//! The PROM state machine determines handler sequencing per opcode.
+//! SVEC (op 2) packs DVX and int_latch into the low byte of its
+//! single word (handler 3 reads it), with 4-bit DVX/DVY precision.
 //!
 //! # Tempest-specific behavior
 //!
@@ -26,7 +41,7 @@
 //!
 //! # Reference
 //!
-//! - MAME `src/devices/video/avgdvg.cpp` (avg_device, avg_tempest_device)
+//! - Atari avgdvg hardware (avg_device, avg_tempest_device)
 //! - Jed Margolin, "The Secret Life of Vector Generators"
 
 use super::dvg::VectorLine;
@@ -84,26 +99,30 @@ pub struct Avg {
     display_list: Vec<VectorLine>,
 }
 
-/// Fixed-point center: 512 pixels << 16.
-const FP_CENTER: i32 = 512 << 16;
-
 impl Avg {
-    pub fn new() -> Self {
+    /// Create a new AVG with beam center derived from visible area dimensions.
+    ///
+    /// Beam center: `xcenter = (visible_width / 2) << 16`,
+    ///              `ycenter = (visible_height / 2) << 16`.
+    /// For Tempest (visible area 0..580 x 0..570): xcenter=290<<16, ycenter=285<<16.
+    pub fn new(visible_width: i32, visible_height: i32) -> Self {
+        let xcenter = (visible_width / 2) << 16;
+        let ycenter = (visible_height / 2) << 16;
         Self {
             pc: 0,
             stack: [0; 4],
             sp: 0,
-            xpos: FP_CENTER,
-            ypos: FP_CENTER,
-            prev_x: FP_CENTER,
-            prev_y: FP_CENTER,
+            xpos: xcenter,
+            ypos: ycenter,
+            prev_x: xcenter,
+            prev_y: ycenter,
             has_prev: false,
             scale: 0,
             bin_scale: 0,
             color: 0,
             intensity: 0,
-            xcenter: FP_CENTER,
-            ycenter: FP_CENTER,
+            xcenter,
+            ycenter,
             xdac_xor: 0x200,
             ydac_xor: 0x200,
             flip_x: false,
@@ -123,6 +142,11 @@ impl Avg {
     /// Returns true if the AVG has halted.
     pub fn is_halted(&self) -> bool {
         self.halted
+    }
+
+    /// Debug: return (scale, bin_scale, color, intensity).
+    pub fn debug_state(&self) -> (u8, u8, u8, u8) {
+        (self.scale, self.bin_scale, self.color, self.intensity)
     }
 
     /// Set axis flipping (controlled by hardware register).
@@ -160,9 +184,92 @@ impl Avg {
         const MAX_INSTRUCTIONS: u32 = 50_000;
 
         while !self.halted && instructions < MAX_INSTRUCTIONS {
-            if self.execute_one(vmem, color_ram) {
-                return true;
+            // --- Decode ---
+            // The AVG PROM state machine reads bytes in handler order 1,0
+            // (high byte first via XOR-1), then 3,2 for 4-byte instructions.
+            // Only VCTR (op=0) is 4-byte; all others are 2-byte.
+            let hi0 = Self::read_byte(vmem, self.pc);
+            let lo0 = Self::read_byte(vmem, self.pc.wrapping_add(1));
+            let dvy12 = (hi0 >> 4) & 1;
+            let op = hi0 >> 5;
+
+            let (dvy, dvx, int_latch) = if op == 0 {
+                // VCTR: 4-byte instruction (two 16-bit words)
+                // Word 0 (handlers 1,0): DVY
+                // Word 1 (handlers 3,2): int_latch + DVX
+                let dvy = (u16::from(dvy12) << 12) | (u16::from(hi0 & 0xF) << 8) | u16::from(lo0);
+                let hi1 = Self::read_byte(vmem, self.pc.wrapping_add(2));
+                let lo1 = Self::read_byte(vmem, self.pc.wrapping_add(3));
+                self.pc = self.pc.wrapping_add(4);
+                let il = hi1 >> 4;
+                let dx = (u16::from(il & 1) << 12) | (u16::from(hi1 & 0xF) << 8) | u16::from(lo1);
+                (dvy, dx, il)
+            } else if op == 2 {
+                // SVEC: 2-byte instruction (one 16-bit word)
+                // High byte (handler 1): opcode + dvy12 + dvy[11:8]
+                // Low byte (handler 3): int_latch[3:0] + dvx[11:8]
+                // DVY and DVX lower 8 bits are zero (4-bit precision).
+                let dvy = (u16::from(dvy12) << 12) | (u16::from(hi0 & 0xF) << 8);
+                let il = lo0 >> 4;
+                let dx = (u16::from(il & 1) << 12) | (u16::from(lo0 & 0xF) << 8);
+                self.pc = self.pc.wrapping_add(2);
+                (dvy, dx, il)
+            } else {
+                // All other ops: 2-byte instruction
+                // DVY from high byte only (handler 1); lo0 used by handler 0
+                // for dvy lower bits in STAT/HALT/CNTR/JSR/RTS/JMP.
+                let dvy = (u16::from(dvy12) << 12) | (u16::from(hi0 & 0xF) << 8) | u16::from(lo0);
+                self.pc = self.pc.wrapping_add(2);
+                (dvy, 0u16, 0u8)
+            };
+
+            // --- Execute ---
+            match op {
+                0 | 2 => {
+                    let is_short = op == 2;
+                    let (norm_dvx, norm_dvy, timer) = self.normalize(dvx, dvy, is_short);
+                    let timer = self.apply_bin_scale(timer, is_short);
+                    self.draw_vector(norm_dvx, norm_dvy, timer, is_short, int_latch, color_ram);
+                }
+                1 => self.halted = true,
+                3 => {
+                    if dvy12 != 0 {
+                        self.scale = (dvy & 0xFF) as u8;
+                        self.bin_scale = ((dvy >> 8) & 7) as u8;
+                    } else if dvy & 0x800 != 0 {
+                        self.color = (dvy & 0xF) as u8;
+                    } else {
+                        self.intensity = ((dvy >> 4) & 0xF) as u8;
+                    }
+                }
+                4 => {
+                    self.xpos = self.xcenter;
+                    self.ypos = self.ycenter;
+                    self.add_point(self.xpos, self.ypos, 0, [0, 0, 0]);
+                }
+                5 => {
+                    self.stack[(self.sp & 3) as usize] = self.pc;
+                    self.sp = self.sp.wrapping_add(1) & 0xF;
+                    self.pc = dvy << 1;
+                    if dvy == 0 {
+                        self.halted = true;
+                        return true;
+                    }
+                }
+                6 => {
+                    self.sp = self.sp.wrapping_sub(1) & 0xF;
+                    self.pc = self.stack[(self.sp & 3) as usize];
+                }
+                7 => {
+                    self.pc = dvy << 1;
+                    if dvy == 0 {
+                        self.halted = true;
+                        return true;
+                    }
+                }
+                _ => {}
             }
+
             instructions += 1;
         }
         false
@@ -178,247 +285,138 @@ impl Avg {
     // Instruction decode and execute
     // -----------------------------------------------------------------------
 
-    /// Read one byte from vector memory. AVG XORs address bit 0 (avg_data).
+    /// Read one byte from vector memory with AVG XOR-1 byte swap.
+    ///
+    /// The AVG addresses bytes with `addr ^ 1`, which swaps the two bytes
+    /// within each 16-bit word. This means reading at even PC gives the
+    /// high byte, and odd PC gives the low byte.
     fn read_byte(vmem: &[u8], addr: u16) -> u8 {
         let idx = (addr as usize) ^ 1;
-        if idx < vmem.len() {
-            vmem[idx]
-        } else {
-            0
-        }
+        if idx < vmem.len() { vmem[idx] } else { 0 }
     }
 
-    /// Decode and execute one AVG instruction (4 bytes).
-    /// Returns true if a frame boundary was detected (jump to address 0).
-    fn execute_one(&mut self, vmem: &[u8], color_ram: &[u8; 16]) -> bool {
-        // --- Handlers 0–3: latch instruction bytes ---
-        let byte0 = Self::read_byte(vmem, self.pc);
-        let byte1 = Self::read_byte(vmem, self.pc.wrapping_add(1));
-        let byte2 = Self::read_byte(vmem, self.pc.wrapping_add(2));
-        let byte3 = Self::read_byte(vmem, self.pc.wrapping_add(3));
-        self.pc = self.pc.wrapping_add(4);
-
-        let dvy12 = (byte1 >> 4) & 1;
-        let op = byte1 >> 5;
-        let int_latch = byte3 >> 4;
-
-        let mut dvy: u16 =
-            (u16::from(dvy12) << 12) | (u16::from(byte1 & 0xF) << 8) | u16::from(byte0);
-        let mut dvx: u16 = (u16::from(int_latch & 1) << 12)
-            | (u16::from(byte3 & 0xF) << 8)
-            | u16::from(byte2);
-
-        let op0 = op & 1;
-        let op1 = (op >> 1) & 1;
-        let op2 = (op >> 2) & 1;
-
-        // --- Handler 4 (strobe0): push or normalize ---
+    /// Normalize DVX/DVY (strobe0) — shift both axes together until EITHER
+    /// is normalized (sign bit differs from MSB).
+    fn normalize(&self, mut dvx: u16, mut dvy: u16, is_short: bool) -> (u16, u16, u16) {
         let mut timer: u16 = 0;
-        if op0 != 0 {
-            self.stack[(self.sp & 3) as usize] = self.pc;
+        let op1_bit: u16 = if is_short { 0x80 } else { 0 };
+
+        // Continue while BOTH axes need normalization (AND condition).
+        // Stop when EITHER axis is normalized or after 16 iterations.
+        let mut i = 0;
+        while (((dvy ^ (dvy << 1)) & 0x1000) == 0)
+            && (((dvx ^ (dvx << 1)) & 0x1000) == 0)
+            && (i < 16)
+        {
+            dvy = (dvy & 0x1000) | ((dvy << 1) & 0x1FFF);
+            dvx = (dvx & 0x1000) | ((dvx << 1) & 0x1FFF);
+            timer >>= 1;
+            timer |= 0x4000 | op1_bit;
+            i += 1;
+        }
+
+        // SVEC: mask timer to 8 bits
+        if is_short {
+            timer &= 0xFF;
+        }
+
+        (dvx, dvy, timer)
+    }
+
+    /// Apply binary scale to the timer (strobe1).
+    fn apply_bin_scale(&self, mut timer: u16, is_short: bool) -> u16 {
+        let op1_bit: u16 = if is_short { 0x80 } else { 0 };
+
+        for _ in 0..self.bin_scale {
+            timer >>= 1;
+            timer |= 0x4000 | op1_bit;
+        }
+
+        // SVEC: mask timer to 8 bits again after bin_scale
+        if is_short {
+            timer &= 0xFF;
+        }
+
+        timer
+    }
+
+    /// Draw a vector from the current beam position using normalized DVX/DVY.
+    /// Matches MAME's `avg_common_strobe3` + `tempest_strobe3`.
+    fn draw_vector(
+        &mut self,
+        dvx: u16,
+        dvy: u16,
+        timer: u16,
+        is_short: bool,
+        int_latch: u8,
+        color_ram: &[u8; 16],
+    ) {
+        // SVEC uses 8-bit timer, VCTR uses 16-bit timer
+        let cycles: i32 = if is_short {
+            0x100_i32 - i32::from(timer & 0xFF)
         } else {
-            // Normalization: shift DVX/DVY until the sign bit differs from MSB
-            let mut i = 0;
-            while ((dvy ^ (dvy << 1)) & 0x1000) == 0
-                && ((dvx ^ (dvx << 1)) & 0x1000) == 0
-                && i < 16
-            {
-                dvy = (dvy & 0x1000) | ((dvy << 1) & 0x1FFF);
-                dvx = (dvx & 0x1000) | ((dvx << 1) & 0x1FFF);
-                timer >>= 1;
-                timer |= 0x4000 | (u16::from(op1) << 7);
-                i += 1;
-            }
-            if op1 != 0 {
-                timer &= 0xFF;
-            }
-        }
+            0x8000_i32 - i32::from(timer)
+        };
 
-        // --- Handler 5 (strobe1): binary scale or stack adjust ---
-        if op2 != 0 {
-            if op1 != 0 {
-                self.sp = self.sp.wrapping_sub(1) & 0xF;
-            } else {
-                self.sp = self.sp.wrapping_add(1) & 0xF;
-            }
+        // Scale factor: complement of 8-bit scale
+        let scale_factor: i32 = i32::from(self.scale) ^ 0xFF;
+
+        // DAC conversion: upper 10 bits of 13-bit value, XOR for sign, center at 0
+        let dx = ((i32::from(dvx >> 3) ^ i32::from(self.xdac_xor)) - 0x200)
+            .wrapping_mul(cycles)
+            .wrapping_mul(scale_factor)
+            >> 4;
+        let dy = ((i32::from(dvy >> 3) ^ i32::from(self.ydac_xor)) - 0x200)
+            .wrapping_mul(cycles)
+            .wrapping_mul(scale_factor)
+            >> 4;
+        self.xpos = self.xpos.wrapping_add(dx);
+        self.ypos = self.ypos.wrapping_sub(dy);
+
+        // Tempest color RAM lookup
+        let data = color_ram[(self.color & 0xF) as usize];
+        let bit3 = (!data >> 3) & 1;
+        let bit2 = (!data >> 2) & 1;
+        let bit1 = (!data >> 1) & 1;
+        let bit0 = !data & 1;
+        let r = bit1
+            .wrapping_mul(0xF3)
+            .wrapping_add(bit0.wrapping_mul(0x0C));
+        let g = bit3.wrapping_mul(0xF3);
+        let b = bit2.wrapping_mul(0xF3);
+
+        // Effective intensity: when int_latch bits 3:1 == 001 (DATEA signal), use stored intensity
+        // from STAT register; otherwise use int_latch bits 3:1 as direct intensity.
+        let eff_intensity = if (int_latch >> 1) == 1 {
+            self.intensity
         } else {
-            for _ in 0..self.bin_scale {
-                timer >>= 1;
-                timer |= 0x4000 | (u16::from(op1) << 7);
-            }
-            if op1 != 0 {
-                timer &= 0xFF;
-            }
+            int_latch & 0xE
+        };
+
+        // Apply flipping
+        let mut x = self.xpos;
+        let mut y = self.ypos;
+        if self.flip_x {
+            x += (self.xcenter - x) << 1;
+        }
+        if self.flip_y {
+            y += (self.ycenter - y) << 1;
         }
 
-        // --- Handler 6 (strobe2, Tempest variant) ---
-        let mut frame_done = false;
-        if op2 != 0 {
-            if op0 != 0 {
-                // Jump: PC = dvy << 1 (dvy holds original value since op0=1 skipped normalization)
-                let target = dvy << 1;
-                self.pc = target;
-                if dvy == 0 {
-                    frame_done = true;
-                }
-            } else {
-                // Return from subroutine
-                self.pc = self.stack[(self.sp & 3) as usize];
-            }
-        } else if dvy12 != 0 {
-            // Set scale
-            self.scale = (dvy & 0xFF) as u8;
-            self.bin_scale = ((dvy >> 8) & 7) as u8;
-        } else {
-            // Tempest: bit 11 selects color vs intensity
-            if dvy & 0x800 != 0 {
-                self.color = (dvy & 0xF) as u8;
-            } else {
-                self.intensity = ((dvy >> 4) & 0xF) as u8;
-            }
-        }
-
-        // --- Handler 7 (strobe3, Tempest variant) ---
-        // In MAME: m_halt = OP0()
-        // But we only set halt for actual halt instructions, not JSR.
-        // MAME sets m_halt = OP0() unconditionally in strobe3, meaning any
-        // instruction with op bit 0 set will halt. For Tempest:
-        //   op=1 (VCTR short) → halt — but this doesn't make sense...
-        //
-        // Actually looking more carefully: the MAME state machine only calls
-        // strobe3 (handler_7) for specific state transitions. Not all instructions
-        // reach handler_7. The state machine PROM controls which handlers fire.
-        //
-        // For AVG instructions:
-        //   op=0: VCTR (long)  → strobes 0,1,2,3 all fire → draws vector
-        //   op=1: HALT         → strobe3 sets halt=1
-        //   op=2: SVEC (short) → strobes 0,1,2,3 → draws short vector
-        //   op=3: STAT/COLOR   → only strobes 0,1,2 (no strobe3)
-        //   op=4: CNTR/RTS     → strobes 0,1,2,3 → centers beam (if CNTR) or returns (RTS)
-        //   op=5: JSR          → strobes 0,1,2 → pushes and jumps (halt NOT set)
-        //   op=6: JMP          → strobe2 only → jumps
-        //   op=7: SCALE        → strobe2 only → sets scale
-        //
-        // Wait, that's not right either. The PROM state machine determines which
-        // handlers fire, and I can't easily know that without the PROM data.
-        // But MAME's common_strobe3 is called from handler_7 which IS called
-        // for all instructions that reach state 7 in the PROM sequence.
-        //
-        // Looking at MAME more carefully: the state machine always sequences
-        // through handlers 0→1→2→3→4→5→6→7 for every instruction. The handlers
-        // use the opcode bits to decide what to do (most are no-ops for irrelevant ops).
-        //
-        // So handler_7 (strobe3) IS called for every instruction, and it sets
-        // m_halt = OP0(). For op=1, OP0()=1, so halt is set (that's the HALT opcode).
-        // For op=3 (STAT), OP0()=1, so halt would also be set? That doesn't make sense.
-        //
-        // Let me re-read MAME. The state machine:
-        //   run_state_machine() loops, reads PROM, only calls handlers when ST3() is true.
-        //   The PROM output determines the state_latch, and state_latch&7 selects the handler.
-        //   So NOT all handlers fire for every instruction — the PROM sequence varies by opcode.
-        //
-        // Since I don't have the PROM data, I need to rely on what MAME's handlers actually
-        // do and reverse-engineer the correct sequence. Looking at handler_7 (avg_common_strobe3):
-        //   m_halt = OP0()
-        //   if !OP0 && !OP2: draw vector
-        //   if OP2: center beam
-        //
-        // For HALT (op=1): OP0=1, so halt is set. No draw. Correct.
-        // For STAT (op=3): OP0=1, so halt would be set. But Tempest doesn't halt on STAT!
-        //
-        // The answer is that the PROM doesn't route op=3 instructions to strobe3.
-        // The PROM controls which handlers fire. For STAT-type instructions, only
-        // strobes 0,1,2 fire (handler_6 sets color/intensity), and strobe3 never fires.
-        //
-        // So the correct mapping of which opcodes reach strobe3:
-        //   op=0 (VCTR):  yes → draws vector (OP0=0, OP2=0)
-        //   op=1 (HALT):  yes → sets halt (OP0=1)
-        //   op=2 (SVEC):  yes → draws short vector (OP0=0, OP2=0)
-        //   op=3 (STAT):  NO  → only strobe2 fires
-        //   op=4 (CNTR):  yes → centers beam (OP0=0, OP2=1)
-        //   op=5 (JSR):   NO  → only strobes 0,1,2 fire
-        //   op=6 (JMP):   NO  → only strobe2 fires
-        //   op=7 (SCALE): NO  → only strobe2 fires
-        //
-        // This gives us the correct behavior. Let me implement it this way.
-
-        let do_strobe3 = matches!(op, 0 | 1 | 2 | 4);
-
-        if do_strobe3 {
-            self.halted = op0 != 0;
-
-            if op0 == 0 && op2 == 0 {
-                // Vector draw (op=0 VCTR or op=2 SVEC)
-                let cycles: i32 = if op1 != 0 {
-                    0x100_i32 - i32::from(timer & 0xFF)
-                } else {
-                    0x8000_i32 - i32::from(timer)
-                };
-                // timer = 0 in MAME (not needed here, timer is local)
-
-                self.xpos += (((i32::from(dvx >> 3) ^ i32::from(self.xdac_xor)) - 0x200)
-                    * cycles
-                    * (i32::from(self.scale) ^ 0xFF))
-                    >> 4;
-                self.ypos -= (((i32::from(dvy >> 3) ^ i32::from(self.ydac_xor)) - 0x200)
-                    * cycles
-                    * (i32::from(self.scale) ^ 0xFF))
-                    >> 4;
-
-                // Tempest color RAM lookup
-                let data = color_ram[(self.color & 0xF) as usize];
-                let bit3 = (!data >> 3) & 1;
-                let bit2 = (!data >> 2) & 1;
-                let bit1 = (!data >> 1) & 1;
-                let bit0 = !data & 1;
-                let r = bit1.wrapping_mul(0xF3).wrapping_add(bit0.wrapping_mul(0x0C));
-                let g = bit3.wrapping_mul(0xF3);
-                let b = bit2.wrapping_mul(0xF3);
-
-                // Effective intensity
-                let eff_intensity = if (int_latch >> 1) == 1 {
-                    self.intensity
-                } else {
-                    int_latch & 0xE
-                };
-
-                // Apply flipping
-                let mut x = self.xpos;
-                let mut y = self.ypos;
-                if self.flip_x {
-                    x += (self.xcenter - x) << 1;
-                }
-                if self.flip_y {
-                    y += (self.ycenter - y) << 1;
-                }
-
-                // Tempest rotation: swap X/Y axes (ROT270)
-                let out_x = y - self.ycenter + self.xcenter;
-                let out_y = x - self.xcenter + self.ycenter;
-
-                self.add_point(out_x, out_y, eff_intensity, [r, g, b]);
-            }
-
-            if op2 != 0 && op0 == 0 {
-                // CNTR (op=4): center the beam
-                self.xpos = self.xcenter;
-                self.ypos = self.ycenter;
-                self.add_point(self.xpos, self.ypos, 0, [0, 0, 0]);
-            }
-        }
-
-        frame_done
+        self.add_point(x, y, eff_intensity, [r, g, b]);
     }
 
     /// Add a point to the display list, creating a line from the previous point.
+    ///
+    /// Coordinates are stored unclamped — the rasterizer handles clipping.
     fn add_point(&mut self, x: i32, y: i32, intensity: u8, rgb: [u8; 3]) {
-        // Convert from fixed-point to 0–1023 display coordinates.
-        let px = (x >> 16).clamp(0, 1023);
-        let py = (y >> 16).clamp(0, 1023);
+        // Convert from fixed-point to pixel coordinates (no clamping).
+        let px = x >> 16;
+        let py = y >> 16;
 
         if self.has_prev {
-            let prev_px = (self.prev_x >> 16).clamp(0, 1023);
-            let prev_py = (self.prev_y >> 16).clamp(0, 1023);
+            let prev_px = self.prev_x >> 16;
+            let prev_py = self.prev_y >> 16;
 
             if intensity == 0 && prev_px == px && prev_py == py {
                 self.prev_x = x;
@@ -515,7 +513,10 @@ impl Saveable for Avg {
         w.write_bool(self.halted);
     }
 
-    fn load_state(&mut self, r: &mut crate::core::save_state::StateReader) -> Result<(), SaveError> {
+    fn load_state(
+        &mut self,
+        r: &mut crate::core::save_state::StateReader,
+    ) -> Result<(), SaveError> {
         self.pc = r.read_u16_le()?;
         for s in &mut self.stack {
             *s = r.read_u16_le()?;
@@ -547,7 +548,7 @@ impl super::Device for Avg {
 
 impl Default for Avg {
     fn default() -> Self {
-        Self::new()
+        Self::new(1024, 1024)
     }
 }
 
@@ -559,14 +560,23 @@ impl Default for Avg {
 mod tests {
     use super::*;
 
-    /// Build vector memory from raw bytes with XOR-1 addressing.
-    /// AVG reads bytes with addr ^ 1, so we need to pre-swap.
+    /// Build vector memory from 16-bit words stored as little-endian byte pairs.
+    ///
+    /// Each pair of bytes represents one 16-bit word: `[low_byte, high_byte]`.
+    /// The bytes are stored directly at their physical addresses (matching how
+    /// the 6502 CPU writes to vector RAM). The AVG's `read_byte` handles the
+    /// XOR-1 byte swap to read high byte first, then low byte.
     fn build_vmem(bytes: &[u8]) -> Vec<u8> {
         let mut vmem = vec![0u8; 8192]; // 8KB
         for (i, &b) in bytes.iter().enumerate() {
-            vmem[i ^ 1] = b;
+            vmem[i] = b;
         }
         vmem
+    }
+
+    /// Helper: encode a 16-bit AVG word as [low_byte, high_byte] for build_vmem.
+    fn word(val: u16) -> [u8; 2] {
+        [(val & 0xFF) as u8, (val >> 8) as u8]
     }
 
     fn default_color_ram() -> [u8; 16] {
@@ -576,13 +586,13 @@ mod tests {
 
     #[test]
     fn new_starts_halted() {
-        let avg = Avg::new();
+        let avg = Avg::new(1024, 1024);
         assert!(avg.is_halted());
     }
 
     #[test]
     fn go_clears_halt() {
-        let mut avg = Avg::new();
+        let mut avg = Avg::new(1024, 1024);
         avg.go();
         assert!(!avg.is_halted());
         assert_eq!(avg.pc, 0);
@@ -590,11 +600,12 @@ mod tests {
 
     #[test]
     fn halt_instruction() {
-        // op=1 (HALT): byte1 = 0b001_0_0000 = 0x20
-        // All other bytes 0.
-        let vmem = build_vmem(&[0x00, 0x20, 0x00, 0x00]);
+        // HALT: op=1 → high byte = 0b001_0_0000 = 0x20
+        // 2-byte instruction: only word 0 needed.
+        let w0 = word(0x2000); // HALT
+        let vmem = build_vmem(&[w0[0], w0[1]]);
         let color_ram = default_color_ram();
-        let mut avg = Avg::new();
+        let mut avg = Avg::new(1024, 1024);
         avg.go();
         avg.execute(&vmem, &color_ram);
         assert!(avg.is_halted());
@@ -602,7 +613,7 @@ mod tests {
 
     #[test]
     fn reset_clears_state() {
-        let mut avg = Avg::new();
+        let mut avg = Avg::new(1024, 1024);
         avg.go();
         avg.color = 5;
         avg.intensity = 12;
@@ -616,41 +627,87 @@ mod tests {
     }
 
     #[test]
-    fn frame_boundary_on_jump_to_zero() {
+    fn frame_boundary_on_jsr_to_zero() {
         // JSR to address 0 = frame boundary.
-        // op=5 (JSR): byte1 = 0b101_0_0000 = 0xA0, dvy=0 (target 0)
-        // But wait — for JSR (op=5), strobe3 doesn't fire (do_strobe3 is false).
-        // And strobe2 with op2=1, op0=1 does the jump and checks dvy==0.
-        // op=5: op2=1, op1=0, op0=1
-        let vmem = build_vmem(&[
-            0x00, 0xA0, 0x00, 0x00, // JSR to address 0 (dvy=0)
-        ]);
+        // JSR: op=5 → high byte = 0b101_0_0000 = 0xA0, dvy=0 → target=0
+        // This is a 2-byte instruction.
+        let w0 = word(0xA000); // JSR, dvy=0
+        let vmem = build_vmem(&[w0[0], w0[1]]);
         let color_ram = default_color_ram();
-        let mut avg = Avg::new();
+        let mut avg = Avg::new(1024, 1024);
         avg.go();
         let frame = avg.execute(&vmem, &color_ram);
-        assert!(frame, "expected frame boundary on jump to address 0");
+        assert!(frame, "expected frame boundary on JSR to address 0");
+    }
+
+    #[test]
+    fn frame_boundary_on_jmp_to_zero() {
+        // JMP to address 0 = frame boundary.
+        // JMP: op=7 → high byte = 0b111_0_0000 = 0xE0, dvy=0 → target=0
+        let w0 = word(0xE000); // JMP, dvy=0
+        let vmem = build_vmem(&[w0[0], w0[1]]);
+        let color_ram = default_color_ram();
+        let mut avg = Avg::new(1024, 1024);
+        avg.go();
+        let frame = avg.execute(&vmem, &color_ram);
+        assert!(frame, "expected frame boundary on JMP to address 0");
+    }
+
+    #[test]
+    fn two_byte_instruction_advances_pc_by_2() {
+        // CNTR (op=4) is a 2-byte instruction. After it, PC should be 2.
+        // Then a HALT at byte offset 2 should be reached.
+        // CNTR: op=4 → high byte = 0b100_0_0000 = 0x80
+        // HALT: op=1 → 0x2000 (also 2-byte)
+        let w0 = word(0x8000); // CNTR (2 bytes)
+        let w1 = word(0x2000); // HALT (2 bytes)
+        let vmem = build_vmem(&[w0[0], w0[1], w1[0], w1[1]]);
+        let color_ram = default_color_ram();
+        let mut avg = Avg::new(1024, 1024);
+        avg.go();
+        avg.execute(&vmem, &color_ram);
+        assert!(
+            avg.is_halted(),
+            "CNTR should advance PC by 2, reaching HALT at offset 2"
+        );
+    }
+
+    #[test]
+    fn stat_advances_pc_by_2() {
+        // STAT (op=3) is a 2-byte instruction. After it, PC should be 2.
+        // STAT with dvy12=0, bit11=0: sets intensity.
+        // STAT: op=3 → high byte = 0b011_0_0000 = 0x60, dvy12=0
+        // Set intensity to 0xA: DVY bits [7:4] = 0xA → low byte = 0xA0
+        let w0 = word(0x6000 | 0x00A0); // STAT: set intensity to 0xA
+        let w1 = word(0x2000); // HALT at offset 2
+        let vmem = build_vmem(&[w0[0], w0[1], w1[0], w1[1]]);
+        let color_ram = default_color_ram();
+        let mut avg = Avg::new(1024, 1024);
+        avg.go();
+        avg.execute(&vmem, &color_ram);
+        assert!(avg.is_halted());
+        assert_eq!(avg.intensity, 0xA);
     }
 
     #[test]
     fn color_ram_decode() {
-        // Verify color RAM decode matches MAME's Tempest formula.
-        // color_ram[0] = 0b0000_0101 = 0x05
-        // ~0x05 = 0xFA = 0b1111_1010
-        // bit3=1, bit2=1, bit1=0, bit0=1 (wait, that's inverted)
-        // Actually: bit0 = !data & 1 = !0x05 & 1 = 0xFA & 1 = 0
-        // bit1 = (!data >> 1) & 1 = (0xFA >> 1) & 1 = 0x7D & 1 = 1
-        // bit2 = (!data >> 2) & 1 = (0xFA >> 2) & 1 = 0x3E & 1 = 0
-        // bit3 = (!data >> 3) & 1 = (0xFA >> 3) & 1 = 0x1F & 1 = 1
-        // r = bit1 * 0xF3 + bit0 * 0x0C = 0xF3 + 0 = 0xF3
-        // g = bit3 * 0xF3 = 0xF3
-        // b = bit2 * 0xF3 = 0
+        // Verify color RAM decode matches Tempest hardware.
+        // color_ram[0] = 0x05, ~0x05 = 0xFA
+        // bit0 = 0xFA & 1 = 0
+        // bit1 = (0xFA >> 1) & 1 = 1
+        // bit2 = (0xFA >> 2) & 1 = 0
+        // bit3 = (0xFA >> 3) & 1 = 1
+        // r = 1 * 0xF3 + 0 * 0x0C = 0xF3
+        // g = 1 * 0xF3 = 0xF3
+        // b = 0 * 0xF3 = 0
         let data: u8 = 0x05;
         let bit3 = (!data >> 3) & 1;
         let bit2 = (!data >> 2) & 1;
         let bit1 = (!data >> 1) & 1;
         let bit0 = !data & 1;
-        let r = bit1.wrapping_mul(0xF3).wrapping_add(bit0.wrapping_mul(0x0C));
+        let r = bit1
+            .wrapping_mul(0xF3)
+            .wrapping_add(bit0.wrapping_mul(0x0C));
         let g = bit3.wrapping_mul(0xF3);
         let b = bit2.wrapping_mul(0xF3);
         assert_eq!(r, 0xF3);
@@ -659,31 +716,58 @@ mod tests {
     }
 
     #[test]
-    fn max_instruction_limit() {
-        // Jump to self in a loop — should terminate via safety limit.
-        // JMP (op=6): byte1 = 0b110_0_0000 = 0xC0
-        // But JMP goes through strobe2 which does: pc = dvy << 1
-        // dvy = 0 → jump to 0 → frame boundary! That's not a loop.
+    fn vctr_then_halt_produces_display_list() {
+        // VCTR (op=0) draws a vector, then HALT stops. Display list should
+        // contain the drawn vector even though execute returns false.
         //
-        // To make a real loop, jump to a non-zero address.
-        // Jump to address 4 (dvy = 2, since target = dvy << 1 = 4):
-        // byte0 = 0x02, byte1 = 0xC0, byte2 = 0x00, byte3 = 0x00
-        // But this would first execute whatever is at address 0..3.
-        //
-        // Actually, let's put the JMP at address 0 targeting address 0...
-        // but dvy=0 triggers frame boundary. So jump to address 4:
-        // Put 8 bytes: first 4 = NOP (STAT that sets nothing), then JMP back to 0.
-        // Wait, JMP to 0 triggers frame boundary. JMP to 4:
-        // dvy=2 so target=4. byte0=0x02, byte1=0xC0.
-        // At addr 4, another JMP to 4: byte0=0x02, byte1=0xC0.
+        // VCTR word 0: op=0, dvy12=0, DVY = 0x200 → 0x0200
+        //   high byte = 0b000_0_0010 = 0x02, low byte = 0x00
+        //   word = 0x0200
+        // VCTR word 1: int_latch=0x8 (intensity=8), DVX = 0x200
+        //   high byte = 0b1000_0010 = 0x82, low byte = 0x00
+        //   word = 0x8200
+        // HALT: 0x2000 (2-byte instruction)
         let vmem = build_vmem(&[
-            0x00, 0xC0, 0x00, 0x00, // JMP to dvy=0 → addr 0, but that's frame boundary
+            0x00, 0x02, 0x00, 0x82, // VCTR: DVY=0x200, DVX=0x200, intensity=8
+            0x00, 0x20, // HALT
         ]);
         let color_ram = default_color_ram();
-        let mut avg = Avg::new();
+        let mut avg = Avg::new(1024, 1024);
         avg.go();
-        // This will hit frame boundary immediately, not the safety limit.
-        // That's fine — it still terminates.
-        let _ = avg.execute(&vmem, &color_ram);
+        let frame = avg.execute(&vmem, &color_ram);
+        assert!(!frame, "HALT should not signal frame boundary");
+        assert!(avg.is_halted(), "AVG should be halted after HALT");
+
+        let display_list = avg.take_display_list();
+        assert!(
+            !display_list.is_empty(),
+            "display list should contain vectors drawn before HALT"
+        );
+    }
+
+    #[test]
+    fn stat_sets_scale() {
+        // STAT with dvy12=1: sets scale and bin_scale.
+        // STAT is a 2-byte instruction.
+        // op=3, dvy12=1 → high byte bits: 011_1_YYYY
+        // scale = DVY & 0xFF = low byte
+        // bin_scale = (DVY >> 8) & 7 = high byte bits 2:0
+        //
+        // Set scale=0x80, bin_scale=3:
+        //   DVY = (3 << 8) | 0x80 = 0x0380
+        //   dvy12=1 → bit 4 of high byte set
+        //   high byte = 0b011_1_0011 = 0x73
+        //   low byte = 0x80
+        //   word = 0x7380
+        let w0 = word(0x7380); // STAT: dvy12=1, scale=0x80, bin_scale=3
+        let w1 = word(0x2000); // HALT at offset 2
+        let vmem = build_vmem(&[w0[0], w0[1], w1[0], w1[1]]);
+        let color_ram = default_color_ram();
+        let mut avg = Avg::new(1024, 1024);
+        avg.go();
+        avg.execute(&vmem, &color_ram);
+        assert!(avg.is_halted());
+        assert_eq!(avg.scale, 0x80);
+        assert_eq!(avg.bin_scale, 3);
     }
 }

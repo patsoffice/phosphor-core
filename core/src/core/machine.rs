@@ -63,6 +63,17 @@ impl TimingConfig {
     }
 }
 
+/// Screen rotation applied at the display level (after vector generation).
+///
+/// Matches MAME's screen orientation flags. The rotation is applied by the
+/// rendering layer, not by the game hardware.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScreenRotation {
+    #[default]
+    None,
+    Rot270,
+}
+
 // ---------------------------------------------------------------------------
 // Sub-traits
 // ---------------------------------------------------------------------------
@@ -93,6 +104,14 @@ pub trait Renderable {
     /// a vector display machine. Raster machines return `None` (the default).
     fn vector_display_list(&self) -> Option<&[VectorLine]> {
         None
+    }
+
+    /// Screen rotation applied at the display level.
+    ///
+    /// Vector machines like Tempest use ROT270 to rotate the AVG output
+    /// for portrait display. Default is no rotation.
+    fn screen_rotation(&self) -> ScreenRotation {
+        ScreenRotation::None
     }
 }
 

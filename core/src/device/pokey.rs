@@ -175,6 +175,8 @@ impl Pokey {
     /// Create a POKEY with a custom master clock rate.
     /// Missile Command uses 1.25 MHz vs the standard 1.79 MHz NTSC clock.
     pub fn with_clock(master_clock_hz: u32, output_sample_rate: u32) -> Self {
+        // No pre-step: SKCTL starts at 0 (reset mode), so poly counters
+        // are frozen until the game writes SKCTL with bits 1:0 set.
         Self {
             resampler: crate::audio::AudioResampler::new(
                 master_clock_hz as u64,
@@ -187,8 +189,8 @@ impl Pokey {
             div_out: [false; 4],
             channel_out: [false; 4],
             hp_ff: [false; 2],
-            poly4: 0x0F,
-            poly5: 0x1F,
+            poly4: 0x00,
+            poly5: 0x00,
             poly9: 0x1FF,
             poly17: 0x1FFFF,
             base_div28: 28,
@@ -233,11 +235,12 @@ impl Pokey {
             0x08 => self.pot_done, // ALLPOT
             0x09 => self.kbcode,   // KBCODE
             0x0A => {
-                // RANDOM: High bits of poly counter
+                // RANDOM: read from polynomial counter state
+                // MAME: poly9 → low 8 bits; poly17 → bits 15:8
                 if self.audctl & AUDCTL_POLY9 != 0 {
-                    (self.poly9 >> 1) as u8
+                    (self.poly9 & 0xFF) as u8
                 } else {
-                    (self.poly17 >> 9) as u8
+                    ((self.poly17 >> 8) & 0xFF) as u8
                 }
             }
             0x0D => self.serin,  // SERIN
@@ -298,6 +301,13 @@ impl Pokey {
                 self.pot_scan_count = 0;
                 self.pot_counter = [0; 8];
                 self.pot_done = 0xFF;
+                // Pots with input value 0 are immediately done (no capacitor
+                // connected). Matches MAME's pokey_potgo() behavior.
+                for i in 0..8 {
+                    if self.pot_input[i] == 0 {
+                        self.pot_done &= !(1 << i);
+                    }
+                }
             }
             0x0D => self.serout = data, // SEROUT
             0x0E => {
@@ -306,7 +316,25 @@ impl Pokey {
                 // Writing clears disabled interrupts (sets IRQST bit to 1)
                 self.irqst |= !data;
             }
-            0x0F => self.skctl = data, // SKCTL
+            0x0F => {
+                // SKCTL: when entering reset mode (bits 1:0 clear),
+                // reset poly counter state to seeds (MAME lines 1138-1152)
+                if (data & 0x03) == 0 {
+                    self.poly4 = 0x00;
+                    self.poly5 = 0x00;
+                    self.poly9 = 0x1FF;
+                    self.poly17 = 0x1FFFF;
+                }
+                // MAME pre-increments (++m_p17) in step_one_clock before use,
+                // and poly tables store values starting one step from seed.
+                // So after SKCTL exit-reset + 1 tick, MAME reads poly[1] (2 steps).
+                // Phosphor's tick() steps once then reads = 1 step. Pre-step here
+                // adds the missing offset so both read the same value after N ticks.
+                if (self.skctl & 0x03) == 0 && (data & 0x03) != 0 {
+                    self.step_polys();
+                }
+                self.skctl = data;
+            }
             _ => {}
         }
     }
@@ -318,8 +346,11 @@ impl Pokey {
     /// distortion gating, volume mixing, resampling, and pot scanning.
     /// Call this once per CPU clock cycle.
     pub fn tick(&mut self) {
-        // 1. Advance polynomial counters
-        self.step_polys();
+        // 1. Advance polynomial counters (only when SKCTL is out of reset)
+        // MAME: step_one_clock() gates on `m_SKCTL & SK_RESET`
+        if self.skctl & 0x03 != 0 {
+            self.step_polys();
+        }
 
         // 2. Advance base clocks
         let mut tick_64k = false;
@@ -518,7 +549,7 @@ impl Pokey {
             for i in 0..8 {
                 if (self.pot_done & (1 << i)) != 0 {
                     self.pot_counter[i] = self.pot_counter[i].wrapping_add(1);
-                    if self.pot_counter[i] >= self.pot_input[i] {
+                    if self.pot_counter[i] > self.pot_input[i] || self.pot_counter[i] == 228 {
                         self.pot_done &= !(1 << i);
                     }
                 }
@@ -531,34 +562,34 @@ impl Pokey {
 
     /// Advance all four polynomial counters (LFSRs) by one step.
     ///
-    /// - 4-bit:  taps at bits 3,2; period 15
-    /// - 5-bit:  taps at bits 4,2; period 31
-    /// - 9-bit:  taps at bits 8,3; period 511
-    /// - 17-bit: taps at bits 16,4; period 131071
+    /// Matches MAME's `pokey_device::step_one_clock()` and poly table generation.
+    ///
+    /// - 4-bit:  XNOR(bit2, bit3), left-shift, period 15
+    /// - 5-bit:  XNOR(bit2, bit4), left-shift, period 31
+    /// - 9-bit:  XOR(bit0, bit5), right-shift, period 511
+    /// - 17-bit: split feedback, right-shift, period 131071
     fn step_polys(&mut self) {
-        // 4-bit: feedback = bit3 XOR bit2, shift left
-        let bit3 = (self.poly4 >> 3) & 1;
-        let bit2 = (self.poly4 >> 2) & 1;
-        let new_bit = bit3 ^ bit2;
-        self.poly4 = ((self.poly4 << 1) | new_bit) & 0x0F;
+        // 4-bit: feedback = NOT(bit2 XOR bit3), shift left (MAME poly_init_4_5)
+        let fb4 = !((self.poly4 >> 2) ^ (self.poly4 >> 3)) & 1;
+        self.poly4 = ((self.poly4 << 1) | fb4) & 0x0F;
 
-        // 5-bit: feedback = bit4 XOR bit2
-        let bit4 = (self.poly5 >> 4) & 1;
-        let bit2 = (self.poly5 >> 2) & 1;
-        let new_bit = bit4 ^ bit2;
-        self.poly5 = ((self.poly5 << 1) | new_bit) & 0x1F;
+        // 5-bit: feedback = NOT(bit2 XOR bit4), shift left (MAME poly_init_4_5)
+        let fb5 = !((self.poly5 >> 2) ^ (self.poly5 >> 4)) & 1;
+        self.poly5 = ((self.poly5 << 1) | fb5) & 0x1F;
 
-        // 9-bit: feedback = bit8 XOR bit3
-        let bit8 = (self.poly9 >> 8) & 1;
-        let bit3 = (self.poly9 >> 3) & 1;
-        let new_bit = bit8 ^ bit3;
-        self.poly9 = ((self.poly9 << 1) | new_bit) & 0x1FF;
+        // 9-bit: feedback = bit0 XOR bit5, right-shift into bit8
+        // (MAME poly_init_9_17 size=9)
+        let fb9 = (self.poly9 & 1) ^ ((self.poly9 >> 5) & 1);
+        self.poly9 = (self.poly9 >> 1) | (fb9 << 8);
 
-        // 17-bit: feedback = bit16 XOR bit4
-        let bit16 = (self.poly17 >> 16) & 1;
-        let bit4 = (self.poly17 >> 4) & 1;
-        let new_bit = bit16 ^ bit4;
-        self.poly17 = ((self.poly17 << 1) | new_bit) & 0x1FFFF;
+        // 17-bit: split feedback structure (MAME poly_init_9_17 size=17)
+        // - bit7 comes from bit8 XOR bit13
+        // - bit16 comes from bit0
+        let in8 = ((self.poly17 >> 8) ^ (self.poly17 >> 13)) & 1;
+        let in0 = self.poly17 & 1;
+        self.poly17 >>= 1;
+        self.poly17 = (self.poly17 & 0x1_FF7F) | (in8 << 7);
+        self.poly17 |= in0 << 16;
     }
 
     /// Return the current output bit for the given distortion mode.
@@ -649,10 +680,11 @@ impl Pokey {
         self.div_out = [false; 4];
         self.channel_out = [false; 4];
         self.hp_ff = [false; 2];
-        self.poly4 = 0x0F;
-        self.poly5 = 0x1F;
+        self.poly4 = 0x00;
+        self.poly5 = 0x00;
         self.poly9 = 0x1FF;
         self.poly17 = 0x1FFFF;
+        // No pre-step: SKCTL resets to 0 (reset mode), polys frozen
         self.base_div28 = 28;
         self.base_div114 = 114;
         self.pot_input = [0; 8];

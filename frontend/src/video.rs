@@ -19,11 +19,18 @@ pub struct Video {
 }
 
 impl Video {
+    /// Create a new Video with separate texture and window dimensions.
+    ///
+    /// `native_width`/`native_height` define the framebuffer texture size.
+    /// `window_width`/`window_height` define the initial window size (may differ
+    /// for rotated displays, e.g. portrait vector games).
     pub fn new(
         sdl_video: &sdl2::VideoSubsystem,
         title: &str,
         native_width: u32,
         native_height: u32,
+        window_width: u32,
+        window_height: u32,
         scale: u32,
     ) -> Self {
         let gl_attr = sdl_video.gl_attr();
@@ -34,7 +41,7 @@ impl Video {
         gl_attr.set_framebuffer_srgb_compatible(true);
 
         let window = sdl_video
-            .window(title, native_width * scale, native_height * scale)
+            .window(title, window_width * scale, window_height * scale)
             .opengl()
             .position_centered()
             .build()
@@ -167,10 +174,14 @@ impl Video {
     }
 
     /// Render vector lines via OpenGL, then run an egui pass for overlays.
+    /// `display_size` is the vector coordinate space dimensions.
+    /// `rotation` is screen-level rotation in degrees (0 or 270).
     pub fn present_vectors_with_overlay(
         &mut self,
         renderer: &mut crate::vector_gl::VectorRenderer,
         lines: &[phosphor_core::device::dvg::VectorLine],
+        display_size: (u32, u32),
+        rotation: i32,
         overlay_fn: impl FnOnce(&egui::Context),
     ) {
         unsafe {
@@ -178,7 +189,7 @@ impl Video {
             gl::Clear(gl::COLOR_BUFFER_BIT);
         }
         let (w, h) = self.window.size();
-        renderer.render(lines, w, h);
+        renderer.render(lines, w, h, display_size.0, display_size.1, rotation);
 
         // Run a minimal egui pass for overlay text on top of the vectors.
         self.egui_state.input.time = Some(self.start_time.elapsed().as_secs_f64());
