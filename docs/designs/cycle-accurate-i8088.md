@@ -81,6 +81,14 @@ What is good and should survive: the decode/execute/addressing split
 operand resolution rather than around one giant match, and `execute.rs` carries
 279 opcodes and 325 unit tests. This is a re-timing job, not a rewrite.
 
+> **Qualified, 2026-09-04, by
+> [Decision 5](#decision-5-the-eu-becomes-an-explicit-per-cycle-state-machine).**
+> "Not a rewrite" was optimistic. `execute.rs` does get restructured: the 279
+> opcodes become pure compute functions and the bus traffic moves out of them
+> into a shared operand pipeline. What survives, and it is the part that
+> mattered, is the *decomposition*: the opcode semantics, the flag handling and
+> the 325 tests all carry over, because none of them is about timing.
+
 ## Architecture facts (reference points)
 
 - **Bus cycle**: four T-states, T1 through T4, plus wait states Tw inserted
@@ -149,7 +157,9 @@ aggregation, and aggregation is where a per-cycle claim usually goes wrong.
 
 `gottlieb.rs` already calls `execute_cycle` once per 5 MHz CPU cycle, and a
 T-state *is* one CPU clock, so this needs no board change and no clock-tree
-change. The existing call site keeps its meaning.
+change. The existing call site keeps its meaning. What has to change to make
+that true is inside the CPU, and that is
+[Decision 5](#decision-5-the-eu-becomes-an-explicit-per-cycle-state-machine).
 
 `Bus<Address = u32, Data = u8>` stays as it is. An 8-bit external bus means every
 transaction is already a byte, so nothing about the trait needs to move. This is
@@ -222,6 +232,86 @@ should not be extracted speculatively:
   flush conditions. The 68000's prefetch is a two-word pipeline with different
   rules. A shared abstraction over both would be a shape with two users and no
   third, which this repo has been bitten by before.
+
+## Decision 5: the EU becomes an explicit per-cycle state machine
+
+This is the decision the milestones actually fork on, and the first draft of this
+document did not ask it: **how does a 4,785-line straight-line interpreter
+suspend in the middle of an instruction?**
+
+`execute.rs` reaches the bus from roughly 231 call sites (20 `fetch_byte`, 18
+`fetch_word`, 27 `fetch_modrm`, 27 `resolve_modrm`, 12 `read_byte`, 19
+`read_word`, 5 `write_byte`, 7 `write_word`, 16 `push16`, 16 `pop16`, and 64
+through the four `read_operand`/`write_operand` helpers). Under an outside-in
+tick, where the board calls the CPU once per T-state and the CPU returns
+afterwards, every one of those is a point the interpreter has to be able to stop
+at and resume from. Rust has no stable coroutines, so "stop and resume" means an
+explicit state machine.
+
+Three shapes were on the table.
+
+1. **Explicit per-cycle state machines.** Outside-in ticks, with each instruction
+   a state machine over a cycle counter. **Chosen.**
+2. **Queue only, EU atomic.** Model the BIU and the queue per T-state, leave the
+   EU running whole instructions in one go, and charge the datasheet execution
+   time afterwards. Cheap, and it buys the prefetch timing that Decision 2 calls
+   the main prize. Rejected: every operand read and write would land on a single
+   T-state, so steps 3 and 4 of the validation ladder could never pass, and the
+   gate would be permanently capped at half its width. A ceiling designed in from
+   the start is a check that cannot fail dressed as a milestone.
+3. **Inside-out clocking.** Leave the interpreter straight-line and let the bus
+   helpers advance time themselves, so that a memory read *is* four T-states and
+   running those four ticks the board. This is how the reference cycle-accurate
+   8088 emulators are built and it is much less code. Rejected on what it costs
+   elsewhere: `Bus` would need a per-T-state hook, `gottlieb.rs` would stop being
+   a per-cycle loop and hand the scanline boundary test to the board, the
+   debugger's single-step granularity would coarsen from a cycle to an
+   instruction, and mid-instruction save states would become impossible because
+   the CPU would have no representable state between the start and end of an
+   instruction.
+
+Option 1 is the pattern the M6809 and Z80 cores in this workspace already use, so
+it is the one a reader of those cores will recognize, and it is the only one of
+the three that costs nothing outside `core/src/cpu/i8088/`. Decision 1's
+"`gottlieb.rs` needs no board change" and "`Bus` stays as it is" both survive
+intact, and so does saving state at an arbitrary cycle.
+
+What it costs is the honest part: `execute.rs` gets restructured, which
+[What the core does today](#what-the-core-does-today) optimistically called "a
+re-timing job, not a rewrite". The mitigation is that the restructuring is
+mostly mechanical rather than per-opcode, because the shape of an 8088
+instruction is regular:
+
+```text
+fetch opcode  ->  fetch ModR/M  ->  fetch displacement  ->  EA delay
+              ->  read operand  ->  compute (pure)  ->  write operand
+```
+
+Only the middle step is opcode-specific, and it is pure: it takes resolved
+operand values and returns results and flags, touching no bus. So the plan is a
+**generic operand pipeline** in `mod.rs` driving the stages above one T-state at
+a time, with `execute.rs` reduced to the pure compute step. The 279 opcodes stop
+being 279 straight-line routines that each reach the bus and become 279 pure
+functions the pipeline calls, which is a far smaller surface than 231 hand-cut
+suspension points.
+
+The instructions that do not fit the pipeline get hand-written state machines,
+exactly as the M6809's `MUL`, `DAA` and `alu/word.rs` already do here: the string
+operations and their `REP` loops, `MUL`/`DIV`/`IMUL`/`IDIV`, `CALL`/`RET`/`RETF`,
+`INT`/`IRET`, and `XCHG` with memory. That set is where the risk concentrates and
+where the state gate earns its keep.
+
+**Migration order**, since the 2,577,000-vector state gate has to be green at
+every commit rather than at the end:
+
+1. Build the pipeline and run *no* opcode through it. The old path stays.
+2. Move the fetch and decode front end onto it, so every instruction pays real
+   T-states for its opcode, ModR/M and displacement bytes while its execution
+   stays atomic. This alone moves every cycle count and is a single, reviewable
+   change.
+3. Move the ALU and `MOV` families, which are the bulk of the 279 and all fit the
+   pipeline unchanged.
+4. Hand-convert the awkward set above, one family per commit.
 
 ## Sequencing against the M68000
 
