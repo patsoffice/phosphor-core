@@ -42,10 +42,23 @@ enum ExecState {
 ```
 
 `execute_cycle` in the `Fetch` state consumes prefixes, fetches the opcode and
-runs the whole instruction to completion, then parks in `Execute(n)` and burns
-`n` cycles doing nothing. Every bus access an instruction makes therefore happens
-on one cycle, in the order the interpreter happens to make them, and the
-remaining cycles are silent.
+runs the whole instruction to completion. Every bus access an instruction makes
+therefore happens on one cycle, in the order the interpreter happens to make
+them.
+
+> **Correction, 2026-09-04, from reading the code while taking the baseline.**
+> The paragraph above originally continued "then parks in `Execute(n)` and burns
+> `n` cycles doing nothing", and the third bullet below originally read "the
+> cycle total is approximately right and comes from a table". Both are wrong,
+> and the truth is worse. `ExecState::Execute(_)` is **never constructed**: the
+> only `self.state =` sites in the module are the `Halted` transition in
+> `execute.rs`, the two wake-ups and the decrement inside the `Execute` arm
+> itself, and `reset`. The state machine is `Fetch` and `Halted`, nothing else,
+> which is why the enum carries `#[allow(dead_code)]`. There is no cycle table
+> anywhere in `core/src/cpu/i8088/`. **Every instruction retires in exactly one
+> `execute_cycle` call**, so the core has no instruction timing at all rather
+> than approximate timing. See [Performance](#performance) for what that does to
+> the baseline.
 
 Consequences worth naming, because they are what the conversion buys back:
 
@@ -55,8 +68,13 @@ Consequences worth naming, because they are what the conversion buys back:
 - **Bus ordering within an instruction is an artifact of the interpreter**, not
   of the part. Nothing that watches the bus can be trusted at sub-instruction
   resolution.
-- **The cycle *total* is approximately right** and comes from a table, which is
-  enough for real-time pacing and for the state-only half of validation.
+- **The cycle *total* is not approximately right; it is one, always.** Because
+  `gottlieb.rs` calls `execute_cycle` once per 5 MHz CPU cycle, Q\*bert's
+  emulated 8088 retires one instruction per 200 ns of board time where the part
+  takes anywhere from 2 to over 200 T-states. The CPU is running roughly an
+  order of magnitude fast against the video and sound hardware it shares a
+  board with. That is a correctness bug in its own right, not just a fidelity
+  gap, and fixing it is what will move the golden frame in M5.
 
 What is good and should survive: the decode/execute/addressing split
 (`decode.rs`, `addressing.rs`, `execute.rs`) is already organized around
@@ -227,15 +245,40 @@ risk. Here the risk is the oracle, and the easier core is the one that has one.
 
 ## Performance
 
-Unknown until measured, and it must be measured, because converting an atomic
-core to per-cycle costs throughput by construction.
+Converting an atomic core to per-cycle costs throughput by construction, so the
+baseline was taken before any conversion work started. `phosphor-bench` gained
+`qbert` in its default machine list, which previously held no I8088 board.
 
-`phosphor-bench` exists and its baseline is recorded on
-`phosphor-emulator-headless-benchmarks-m6u2`. Its default machine list is
-pacman, galaga, tempest, marble and joust, and **contains no I8088 board**, so a
-Q\*bert baseline has to be taken before any conversion work starts. Take it with
-`--warmup` raised past the power-on self-test, since the tool's own help warns
-that the default 120-frame warmup measures self-test code rather than gameplay.
+**Baseline, 2026-09-04**, release build, 600 measured frames, 5 reps, fastest
+rep reported:
+
+| warmup | emul ms/f | render | audio | total ms/f | fps | realtime | spread |
+|---|---|---|---|---|---|---|---|
+| 1800 (attract mode) | 2.858 | 0.035 | 0.003 | 2.896 | 345.3 | **5.62x** | 0.5% |
+| 120 (self-test) | 2.868 | 0.035 | 0.010 | 2.913 | 343.3 | 5.59x | 1.1% |
+
+```text
+cargo run --release -p phosphor-bench -- --machine qbert --frames 600 --warmup 1800 --reps 5
+```
+
+The two warmups agree to within 1%, which says Q\*bert's per-frame cost does not
+depend much on whether the board is running self-test or attract code. The
+1800-frame figure is the one to quote: it is the same point the golden frame is
+pinned at, so the two measurements describe the same machine state.
+
+The rest of the default list on the same host and run, for context: pacman
+26.37x, galaga 19.83x, joust 9.10x, marble 6.44x, tempest 4.79x. Q\*bert sits
+second-slowest, and unlike tempest its cost is emulation rather than render.
+
+**Read this number with the correction in [What the core does
+today](#what-the-core-does-today).** It is not a like-for-like "before". Today's
+core retires one instruction per `execute_cycle` call and the board makes five
+million of those calls per emulated second, so it is executing roughly an order
+of magnitude *more* instructions per emulated frame than the part does. A
+per-cycle core executes the right number, spread over more, cheaper ticks. Those
+two effects push in opposite directions and there is no way to predict the net
+from here. If throughput improves, that is not a free lunch: it is the measure
+of how much work the current core was doing that the hardware never did.
 
 The number to beat is not "no regression". A per-cycle 8088 that runs Q\*bert
 comfortably above real time is a success even if it is several times slower than

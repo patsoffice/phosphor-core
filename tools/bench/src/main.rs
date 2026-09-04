@@ -26,9 +26,14 @@ use phosphor_harness::{Harness, roms_dir};
 
 /// Boards chosen to span the shapes that cost different amounts:
 /// a single-CPU raster board, a three-CPU board sharing one bus, a vector
-/// board with a coprocessor, a 68000 board, and a two-CPU board with a
-/// blitter and two address spaces.
-const DEFAULT_MACHINES: &[&str] = &["pacman", "galaga", "tempest", "marble", "joust"];
+/// board with a coprocessor, a 68000 board, a two-CPU board with a blitter and
+/// two address spaces, and an I8088 board.
+///
+/// Q\*bert is here for the last of those. It is the only shipped I8088 board,
+/// and the per-cycle conversion of that core
+/// (`docs/designs/cycle-accurate-i8088.md`) will cost throughput by
+/// construction, so the list has to be able to see it.
+const DEFAULT_MACHINES: &[&str] = &["pacman", "galaga", "tempest", "marble", "joust", "qbert"];
 
 /// Audio drain buffer, matching the frontend's own scratch size.
 const AUDIO_SCRATCH: usize = 2048;
