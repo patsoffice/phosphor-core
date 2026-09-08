@@ -59,8 +59,6 @@ fn should_skip(filename: &str) -> bool {
         "26" | "2E" | "36" | "3E" | "F0" | "F1" | "F2" | "F3"
         // HLT (0xF4) — blocks forever in test harness (no interrupts)
         | "F4"
-        // SALC / undocumented (0xD6)
-        | "D6"
         // D0.6/D1.6/D2.6/D3.6 — undocumented SETMO/SETMOC
         | "D0.6" | "D1.6" | "D2.6" | "D3.6"
         // 0x0F — POP CS (undocumented, rarely used)

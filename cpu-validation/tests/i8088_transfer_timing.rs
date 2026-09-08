@@ -67,6 +67,27 @@ fn is_prefix(b: u8) -> bool {
     matches!(b, 0x26 | 0x2E | 0x36 | 0x3E | 0xF0 | 0xF2 | 0xF3)
 }
 
+/// Whether the opcode's second byte is a ModR/M byte, so a survey knows whether
+/// it has an addressing mode to group by at all. The stack instructions and the
+/// I/O forms do not.
+fn format_has_modrm(opcode: u8) -> bool {
+    !matches!(
+        opcode,
+        0x04 | 0x05 | 0x0C | 0x0D | 0x14 | 0x15 | 0x1C | 0x1D
+            | 0x24 | 0x25 | 0x2C | 0x2D | 0x34 | 0x35 | 0x3C | 0x3D
+            | 0x06 | 0x07 | 0x0E | 0x0F | 0x16 | 0x17 | 0x1E | 0x1F
+            | 0x27 | 0x2F | 0x37 | 0x3F
+            | 0x40..=0x5F
+            | 0x90..=0x9F
+            | 0xA0..=0xAF
+            | 0xB0..=0xBF
+            | 0xC2 | 0xC3 | 0xCA | 0xCB | 0xCC..=0xCF
+            | 0xD4..=0xD7
+            | 0xE0..=0xEF
+            | 0xF4 | 0xF5 | 0xF8..=0xFD
+    )
+}
+
 /// Replay one case through this core and return the span it takes, measured
 /// exactly as the gate measures it: from the cycle the queue status lines
 /// report a First Byte to the cycle they report the next instruction's.
@@ -399,10 +420,12 @@ fn dump_side_by_side(stem: &str, want_mem: bool, queued: usize) {
         if tc.bytes.first().is_some_and(|&b| is_prefix(b)) {
             continue;
         }
-        let Some(&modrm) = tc.bytes.get(1) else {
-            continue;
-        };
-        if (modrm >> 6 != 3) != want_mem {
+        // An opcode with no ModR/M byte has no addressing mode to filter on,
+        // and the stack instructions are exactly that shape.
+        if let Some(&modrm) = tc.bytes.get(1)
+            && format_has_modrm(tc.bytes[0])
+            && (modrm >> 6 != 3) != want_mem
+        {
             continue;
         }
 
@@ -506,21 +529,30 @@ fn side_by_side() {
     dump_side_by_side("F7.3", true, 4);
     // And a read-only memory form, which runs a clock short.
     dump_side_by_side("F7.4", true, 4);
+    // The four-byte *register* form the loader's clock does not reach. It
+    // drains a full queue exactly, so the refill behind it may be what fixes
+    // the span rather than the microcode.
+    dump_side_by_side("81.0", false, 4);
+    // The discriminator. Also four bytes and also a register form, but
+    // documented five clocks against `81`'s four. If the span is the refill's
+    // it matches `81.0`; if it is the microcode's it is a clock longer.
+    dump_side_by_side("F7.0", false, 4);
+    dump_side_by_side("C7.0", false, 4);
+    // And the pair that refuses the same clock. `9A` and `EA` are five bytes,
+    // so from a full queue they drain it and then wait for their last byte
+    // themselves. Delaying the refill by one made both `+1` on every case while
+    // it made the four-byte forms exact, and at the first pop the BIU cannot
+    // tell them apart. Whatever separates them is in these two traces.
+    dump_side_by_side("9A", false, 4);
+    dump_side_by_side("EA", false, 4);
+    // The stack pair, from a full queue, where `fetch_gap_diff` says this core
+    // runs a code fetch inside a `POP`'s span that the part does not run at
+    // all, and starts a `PUSH`'s first write a T-state early. Both uniform on
+    // every case of every file in their families.
+    dump_side_by_side("58", false, 4);
+    dump_side_by_side("50", false, 4);
 }
 
-/// The same instrument pointed at the **empty-queue** half, which is the
-/// largest unexplained population in the epic: 44.92% on cycle count against
-/// the prefetched half's 84.55%, about 828,000 vectors.
-///
-/// It has never been looked at cycle by cycle. The one attempt compared our
-/// span index against the recording's raw trace index, which are different
-/// origins for a case that starts with an empty queue, and produced a confident
-/// and meaningless answer. This does not have that problem: both columns start
-/// on the cycle the opening First Byte is read, because that is where the
-/// recorded trace begins and where this replay starts measuring.
-///
-/// A one-byte opcode first, so nothing but the queue can be responsible, then
-/// forms with an immediate and a memory operand.
 /// Replay a case and count the code fetches this core starts before its first
 /// data bus cycle, over the gate's span.
 fn replay_fetches_before_data(tc: &I8088TestCase) -> Option<usize> {
@@ -601,6 +633,619 @@ fn recorded_fetches_before_data(tc: &I8088TestCase) -> Option<usize> {
         }
     }
     None
+}
+
+/// How long after a code fetch completes does the EU take the byte, when the
+/// queue was empty and the EU was waiting for it?
+///
+/// The recording talking to itself: no replay, so this cannot be answered
+/// wrongly by this core being wrong. **The queue-status lines are reported one
+/// T-state late and the bus columns beside them are not**, which the suite
+/// documents and which the gate has since confirmed from the other end, so
+/// every read row here is corrected by one. Reading both off the same row is
+/// comparing two origins, and doing that put the floor at two and cost an
+/// experiment.
+///
+/// The split is the hypothesis. `9A` and `EA` are five bytes: from a full queue
+/// they drain it and then wait, and the byte they wait for continues the
+/// instruction, arriving as a **Subsequent**. `ADD BP, imm16` and `TEST AX,
+/// imm16` are four bytes: they drain the queue exactly and the byte behind them
+/// is the next instruction's opcode, a **First**. Both take seven clocks on the
+/// part against this core's six, though their rows differ by one. If the
+/// boundary costs a clock that continuing does not, it is the difference
+/// between those two columns, and nothing else here can express it.
+#[test]
+#[ignore = "survey, not a check: when the EU takes a byte it was waiting for"]
+fn queue_delivery_latency() {
+    use phosphor_cpu_validation::{BusStatus, TState};
+
+    // (the case's initial queue, what the byte was read as) -> latency histogram
+    let mut hist: BTreeMap<(&'static str, &'static str), BTreeMap<usize, usize>> = BTreeMap::new();
+    for stem in every_opcode_file() {
+        let Some(tests) = load(&stem) else { continue };
+        for tc in &tests {
+            if tc.cycles.is_empty() {
+                continue;
+            }
+            let queue = match tc.initial.queue.len() {
+                0 => "empty",
+                4 => "full ",
+                _ => "part ",
+            };
+            // The EU's reads, at the T-state they actually happened on rather
+            // than the one they were reported on.
+            let reads: Vec<(usize, QueueOp)> = tc
+                .cycles
+                .iter()
+                .enumerate()
+                .filter_map(|(i, c)| match c.queue_op().map(|(op, _)| op) {
+                    Some(op @ (QueueOp::First | QueueOp::Subsequent)) => Some((i.max(1) - 1, op)),
+                    _ => None,
+                })
+                .collect();
+
+            // A fetch whose T1 is outside the window cannot be located, so only
+            // those that begin inside it are counted. T4 is three rows on: the
+            // suite's cases incur no wait states.
+            let mut depth = tc.initial.queue.len() as i32;
+            let mut waited: Vec<usize> = Vec::new();
+            for i in 0..tc.cycles.len() {
+                if reads.iter().any(|&(r, _)| r == i) {
+                    depth -= 1;
+                }
+                if tc.cycles[i].queue_op().map(|(op, _)| op) == Some(QueueOp::Emptied) {
+                    depth = 0;
+                }
+                let began = i.checked_sub(3).map(|t1| &tc.cycles[t1]);
+                if began.is_some_and(|c| c.status() == BusStatus::CODE && c.t_state() == TState::T1)
+                {
+                    // Empty entering this T-state, so the EU is waiting on this
+                    // byte rather than reading its way through a queue.
+                    if depth <= 0 {
+                        waited.push(i);
+                    }
+                    depth += 1;
+                }
+            }
+            for t4 in waited {
+                if let Some(&(row, op)) = reads.iter().find(|&&(r, _)| r > t4) {
+                    let kind = match op {
+                        QueueOp::First => "First     ",
+                        _ => "Subsequent",
+                    };
+                    *hist
+                        .entry((queue, kind))
+                        .or_default()
+                        .entry(row - t4)
+                        .or_default() += 1;
+                }
+            }
+        }
+    }
+
+    eprintln!("\nT-states from a code fetch's T4 to the EU taking that byte,");
+    eprintln!("over fetches the EU was waiting on, whole corpus, reads corrected");
+    eprintln!("for the one-T-state queue-status reporting delay\n");
+    eprintln!("  initial  read as       | 1        2        3        4+       cases");
+    for ((queue, kind), h) in &hist {
+        let total: usize = h.values().sum();
+        let at = |d: usize| -> String {
+            let n: usize = h
+                .iter()
+                .filter(|&(&k, _)| if d == 4 { k >= 4 } else { k == d })
+                .map(|(_, n)| *n)
+                .sum();
+            format!("{:.1}%", 100.0 * n as f64 / total as f64)
+        };
+        eprintln!(
+            "  {queue}    {kind}   | {:<8} {:<8} {:<8} {:<8} {total}",
+            at(1),
+            at(2),
+            at(3),
+            at(4),
+        );
+    }
+}
+
+/// Replay a case and report the T-states between successive bus cycles, tagged
+/// by kind, over the gate's span.
+fn replay_bus_gaps(tc: &I8088TestCase) -> Option<Vec<(char, usize)>> {
+    let mut cpu = I8088::new();
+    let mut bus = TracingBus20::new();
+    bus.memory.fill(0x90);
+    let r = &tc.initial.regs;
+    cpu.ax = r.ax;
+    cpu.bx = r.bx;
+    cpu.cx = r.cx;
+    cpu.dx = r.dx;
+    cpu.cs = r.cs;
+    cpu.ss = r.ss;
+    cpu.ds = r.ds;
+    cpu.es = r.es;
+    cpu.sp = r.sp;
+    cpu.bp = r.bp;
+    cpu.si = r.si;
+    cpu.di = r.di;
+    cpu.ip = r.ip;
+    cpu.flags = r.flags;
+    for &(addr, val) in &tc.initial.ram {
+        bus.memory[(addr & 0xF_FFFF) as usize] = val;
+    }
+    cpu.load_prefetch_queue(&tc.initial.queue);
+
+    let mut starts: Vec<(char, usize)> = Vec::new();
+    let mut measuring = false;
+    let mut retired = false;
+    for i in 0..4000usize {
+        let was_retired = retired;
+        retired |= cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+        let next = matches!(cpu.queue_status, Some((QueueStatus::First, _))) && was_retired;
+        if !measuring {
+            if cpu.queue_status.is_none() {
+                continue;
+            }
+            measuring = true;
+        } else if next {
+            let first = starts.first().map(|&(_, t)| t).unwrap_or(0);
+            return Some(
+                starts
+                    .iter()
+                    .scan(first, |prev, &(k, t)| {
+                        let gap = t - *prev;
+                        *prev = t;
+                        Some((k, gap))
+                    })
+                    .collect(),
+            );
+        }
+        if cpu.bus.address.is_some() {
+            let kind = match cpu.bus.status {
+                phosphor_core::cpu::i8088::BusStatus::Code => 'F',
+                phosphor_core::cpu::i8088::BusStatus::MemRead => 'R',
+                phosphor_core::cpu::i8088::BusStatus::MemWrite => 'W',
+                _ => 'O',
+            };
+            starts.push((kind, i));
+        }
+    }
+    None
+}
+
+/// Where do this core's bus cycles start, against the part's, measured as the
+/// T-states between one and the next?
+///
+/// **Gaps between bus events only**, so the queue-status reporting delay cannot
+/// enter: both columns are read off the same kind of signal. The bus-cycle gate
+/// compares the *sequence* of transactions and so says nothing about when they
+/// happen; this says exactly that, and it is what the prefetch decision point
+/// has to be settled against.
+///
+/// `F` is a code fetch, `R` and `W` the operand's, `O` an I/O cycle. A chained
+/// fetch shows as a gap of 4; anything longer is the BIU having waited.
+#[test]
+#[ignore = "survey, not a check: when our bus cycles start against the part's"]
+fn fetch_gap_diff() {
+    let mut rows: Vec<(String, String, String, usize, usize)> = Vec::new();
+    for stem in every_opcode_file() {
+        let Some(tests) = load(&stem) else { continue };
+        let mut pairs: BTreeMap<(String, String), usize> = BTreeMap::new();
+        let mut cases = 0usize;
+        for tc in &tests {
+            if tc.cycles.is_empty() || tc.initial.queue.len() != 4 {
+                continue;
+            }
+            if tc.bytes.first().is_some_and(|&b| is_prefix(b)) {
+                continue;
+            }
+            let theirs: Vec<(char, usize)> = {
+                let starts: Vec<(char, usize)> = tc
+                    .cycles
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, c)| {
+                        c.address().map(|_| {
+                            let k = match c.status() {
+                                phosphor_cpu_validation::BusStatus::CODE => 'F',
+                                phosphor_cpu_validation::BusStatus::MEMR => 'R',
+                                phosphor_cpu_validation::BusStatus::MEMW => 'W',
+                                _ => 'O',
+                            };
+                            (k, i)
+                        })
+                    })
+                    .collect();
+                let first = starts.first().map(|&(_, t)| t).unwrap_or(0);
+                let mut prev = first;
+                starts
+                    .iter()
+                    .map(|&(k, t)| {
+                        let gap = t - prev;
+                        prev = t;
+                        (k, gap)
+                    })
+                    .collect()
+            };
+            let Some(ours) = replay_bus_gaps(tc) else {
+                continue;
+            };
+            cases += 1;
+            if ours == theirs {
+                continue;
+            }
+            let render = |g: &[(char, usize)]| {
+                g.iter()
+                    .map(|(k, n)| format!("{k}{n}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
+            *pairs
+                .entry((render(&ours), render(&theirs)))
+                .or_default() += 1;
+        }
+        let wrong: usize = pairs.values().sum();
+        if wrong == 0 {
+            continue;
+        }
+        let ((ours, theirs), n) = pairs
+            .into_iter()
+            .max_by_key(|&(_, n)| n)
+            .expect("non-empty");
+        let _ = cases;
+        rows.push((stem, ours, theirs, n, wrong));
+    }
+
+    rows.sort_by_key(|r| std::cmp::Reverse(r.4));
+    let total: usize = rows.iter().map(|r| r.4).sum();
+    eprintln!("\nwhen our bus cycles start, against the part's, as gaps between them");
+    eprintln!("  {} files differ somewhere, {total} cases in all", rows.len());
+    eprintln!("\n  file     ours                      theirs");
+    for (stem, ours, theirs, n, wrong) in rows.iter().take(30) {
+        eprintln!("  {stem:7}  {ours:<24}  {theirs:<24}  {n} of {wrong}");
+    }
+}
+
+/// How long after the ModR/M byte does the part read the displacement, per
+/// opcode?
+///
+/// [`loader_read_gap_diff`] says this gap is four T-states across 148 files,
+/// and then that `8F` wants six and `8C` wants seven. So it is a table and not
+/// a constant, and this is the table: the gap measured directly, for every
+/// opcode that has one, with the share of cases agreeing so a row that is
+/// really two groups cannot pass as uniform.
+///
+/// Restricted to memory forms carrying a displacement, a full queue and no
+/// prefix, so the byte is already in hand and the gap is decode rather than a
+/// wait on a fetch.
+#[test]
+#[ignore = "survey, not a check: the ModR/M to displacement gap, per opcode"]
+fn modrm_to_displacement_gap() {
+    // Keyed by addressing mode and pooled over every opcode that has one: the
+    // per-opcode cut showed 4, 6 and 7 in thirds on almost every file, which is
+    // the signature of a split this key does not carry.
+    let mut by_mode: BTreeMap<(u8, u8), BTreeMap<usize, usize>> = BTreeMap::new();
+    for stem in every_opcode_file() {
+        let Some(tests) = load(&stem) else { continue };
+        let mut gaps: BTreeMap<usize, usize> = BTreeMap::new();
+        for tc in &tests {
+            if tc.cycles.is_empty() || tc.initial.queue.len() != 4 {
+                continue;
+            }
+            if tc.bytes.first().is_some_and(|&b| is_prefix(b)) {
+                continue;
+            }
+            let Some(&modrm) = tc.bytes.get(1) else {
+                continue;
+            };
+            if !format_has_modrm(tc.bytes[0]) {
+                continue;
+            }
+            // A displacement is what the gap runs to. Without one the next read
+            // is an immediate or the next instruction, which is a different
+            // question.
+            let disp = match (modrm >> 6, modrm & 7) {
+                (0, 6) | (2, _) => 2,
+                (1, _) => 1,
+                _ => 0,
+            };
+            if disp == 0 {
+                continue;
+            }
+            let reads: Vec<usize> = tc
+                .cycles
+                .iter()
+                .enumerate()
+                .filter_map(|(i, c)| match c.queue_op().map(|(op, _)| op) {
+                    Some(QueueOp::First | QueueOp::Subsequent) => Some(i),
+                    _ => None,
+                })
+                .collect();
+            if reads.len() < 3 {
+                continue;
+            }
+            let gap = reads[2] - reads[1];
+            *gaps.entry(gap).or_default() += 1;
+            *by_mode
+                .entry((modrm >> 6, modrm & 7))
+                .or_default()
+                .entry(gap)
+                .or_default() += 1;
+        }
+        let _ = gaps;
+    }
+
+    eprintln!("\nT-states from the ModR/M byte to the displacement, by addressing");
+    eprintln!("mode, pooled over every opcode, full queue and no prefix\n");
+    eprintln!("  mode      gap   cases          spread");
+    for ((m, rm), gaps) in &by_mode {
+        let cases: usize = gaps.values().sum();
+        let (&modal, &n) = gaps.iter().max_by_key(|&(_, n)| *n).expect("non-empty");
+        let mut spread: Vec<(usize, usize)> = gaps.iter().map(|(g, n)| (*g, *n)).collect();
+        spread.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
+        spread.truncate(3);
+        let s: Vec<String> = spread.iter().map(|(g, n)| format!("{g}:{n}")).collect();
+        eprintln!(
+            "  mod={m} rm={rm}  {modal:<4}  {n} of {cases:<6}  {}{}",
+            s.join(" "),
+            if n == cases { "   uniform" } else { "" }
+        );
+    }
+}
+
+/// Replay a case and report the same gaps [`loader_read_pattern`] takes from
+/// the recording: the T-states between successive reads of this instruction's
+/// bytes.
+///
+/// **Gaps, and not positions, is the whole point.** The recorded queue-status
+/// lines are reported one T-state late and the bus columns beside them are not,
+/// so any measurement mixing a read row with a bus row has to guess at that
+/// offset, and two of this epic's dead ends are exactly that guess made
+/// differently. A constant delay cancels in a difference between two reads, so
+/// this comparison has no offset to get wrong.
+fn replay_read_gaps(tc: &I8088TestCase) -> Option<Vec<usize>> {
+    let mut cpu = I8088::new();
+    let mut bus = TracingBus20::new();
+    bus.memory.fill(0x90);
+    let r = &tc.initial.regs;
+    cpu.ax = r.ax;
+    cpu.bx = r.bx;
+    cpu.cx = r.cx;
+    cpu.dx = r.dx;
+    cpu.cs = r.cs;
+    cpu.ss = r.ss;
+    cpu.ds = r.ds;
+    cpu.es = r.es;
+    cpu.sp = r.sp;
+    cpu.bp = r.bp;
+    cpu.si = r.si;
+    cpu.di = r.di;
+    cpu.ip = r.ip;
+    cpu.flags = r.flags;
+    for &(addr, val) in &tc.initial.ram {
+        bus.memory[(addr & 0xF_FFFF) as usize] = val;
+    }
+    cpu.load_prefetch_queue(&tc.initial.queue);
+
+    let mut reads: Vec<usize> = Vec::new();
+    let mut ticks = 0usize;
+    let mut measuring = false;
+    for i in 0..4000 {
+        ticks += 1;
+        cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+        let read = matches!(
+            cpu.queue_status,
+            Some((QueueStatus::First | QueueStatus::Subsequent, _))
+        );
+        if !measuring {
+            if !read {
+                continue;
+            }
+            measuring = true;
+        }
+        if read {
+            reads.push(i);
+            if reads.len() > tc.bytes.len() {
+                break;
+            }
+        }
+    }
+    if ticks >= 4000 || reads.len() < tc.bytes.len() {
+        return None;
+    }
+    Some(
+        reads[..tc.bytes.len()]
+            .windows(2)
+            .map(|w| w[1] - w[0])
+            .collect(),
+    )
+}
+
+/// Where does this core read an instruction's bytes at a different rhythm from
+/// the part, and at which byte?
+///
+/// The decisive question left on the four-byte forms is *which* clock is
+/// missing: the one where the fetcher sets out, or the one where the loader
+/// takes the byte home. Positions cannot answer it without assuming the
+/// reporting offset, and assuming it wrongly is what produced two confident
+/// dead ends. Gaps can, because the offset cancels.
+///
+/// A difference in an early gap is decode: this core is reading a byte it
+/// already holds at the wrong rhythm. A difference in the *last* gap, the one
+/// that follows a queue the instruction drained, is the refill: the byte came
+/// home at a different time or was taken up at a different time. The two are
+/// different repairs and this says which is needed, per opcode, over the whole
+/// corpus.
+#[test]
+#[ignore = "survey, not a check: our read rhythm against the part's, per opcode"]
+fn loader_read_gap_diff() {
+    let mut rows: Vec<(String, String, String, usize, usize)> = Vec::new();
+    for stem in every_opcode_file() {
+        let Some(tests) = load(&stem) else { continue };
+        let mut pairs: BTreeMap<(String, String), usize> = BTreeMap::new();
+        for tc in &tests {
+            if tc.cycles.is_empty() || tc.initial.queue.len() != 4 || tc.bytes.len() < 2 {
+                continue;
+            }
+            if tc.bytes.first().is_some_and(|&b| is_prefix(b)) {
+                continue;
+            }
+            let theirs: Vec<usize> = {
+                let reads: Vec<usize> = tc
+                    .cycles
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, c)| match c.queue_op().map(|(op, _)| op) {
+                        Some(QueueOp::First | QueueOp::Subsequent) => Some(i),
+                        _ => None,
+                    })
+                    .collect();
+                if reads.len() < tc.bytes.len() {
+                    continue;
+                }
+                reads[..tc.bytes.len()]
+                    .windows(2)
+                    .map(|w| w[1] - w[0])
+                    .collect()
+            };
+            let Some(ours) = replay_read_gaps(tc) else {
+                continue;
+            };
+            if ours == theirs {
+                continue;
+            }
+            let render = |g: &[usize]| {
+                g.iter()
+                    .map(|n| n.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
+            *pairs
+                .entry((render(&ours), render(&theirs)))
+                .or_default() += 1;
+        }
+        let wrong: usize = pairs.values().sum();
+        if wrong == 0 {
+            continue;
+        }
+        let ((ours, theirs), n) = pairs
+            .into_iter()
+            .max_by_key(|&(_, n)| n)
+            .expect("non-empty");
+        rows.push((stem, ours, theirs, n, wrong));
+    }
+
+    rows.sort_by_key(|r| std::cmp::Reverse(r.4));
+    let total: usize = rows.iter().map(|r| r.4).sum();
+    eprintln!("\nour read rhythm against the part's, full queue and no prefix");
+    eprintln!("  {} files differ somewhere, {total} cases in all", rows.len());
+    eprintln!("\n  file     ours            theirs          commonest of the file's wrong");
+    for (stem, ours, theirs, n, wrong) in &rows {
+        eprintln!("  {stem:7}  {ours:<15} {theirs:<15} {n} of {wrong}");
+    }
+}
+
+/// How fast does the part's loader pull an instruction's bytes out of the
+/// queue, byte by byte?
+///
+/// This core's loader takes one byte per T-state whenever the queue has one.
+/// The part's does not. `EA` reads its opcode and then **stalls a whole T-state
+/// before taking the next byte**; `F7` stalls after its ModR/M byte instead;
+/// `81` does not stall at all. Three traces, three different patterns, and this
+/// core runs all three flat out.
+///
+/// That is not a detail of three opcodes. The stall decides when the queue
+/// drains, which decides when the refill behind it lands, which decides where
+/// the span ends. It is why a four-byte register form is a clock short while
+/// the five-byte far transfers beside it are exact, and why every constant
+/// tried against that gap either moved nothing or broke the other one.
+///
+/// Reported as the gaps between successive reads of one instruction, so `1 1 1`
+/// is flat out and `1 2 1` is a stall in the middle. Restricted to the full
+/// queue and no prefix, where every byte is in hand before the instruction
+/// starts and nothing in the pattern can be waiting on a fetch.
+#[test]
+#[ignore = "survey, not a check: where the part's loader stalls, per opcode"]
+fn loader_read_pattern() {
+    let mut rows: Vec<(String, String, usize, usize)> = Vec::new();
+    for stem in every_opcode_file() {
+        let Some(tests) = load(&stem) else { continue };
+        // Split register forms from memory ones. A memory form defers its
+        // immediate and waits on fetches, so its gaps are not all decode and its
+        // patterns scatter; pooling the two hides the register pattern under
+        // whichever memory one happens to be commonest.
+        let mut patterns: BTreeMap<(bool, String), usize> = BTreeMap::new();
+        for tc in &tests {
+            if tc.cycles.is_empty() || tc.initial.queue.len() != 4 {
+                continue;
+            }
+            if tc.bytes.first().is_some_and(|&b| is_prefix(b)) {
+                continue;
+            }
+            let register_form = match tc.bytes.get(1) {
+                Some(&modrm) if format_has_modrm(tc.bytes[0]) => modrm >> 6 == 3,
+                _ => false,
+            };
+            let reads: Vec<usize> = tc
+                .cycles
+                .iter()
+                .enumerate()
+                .filter_map(|(i, c)| match c.queue_op().map(|(op, _)| op) {
+                    Some(QueueOp::First | QueueOp::Subsequent) => Some(i),
+                    _ => None,
+                })
+                .collect();
+            // Only the bytes of this instruction: a read past its length
+            // belongs to whatever the part started next.
+            if reads.len() < tc.bytes.len() {
+                continue;
+            }
+            let gaps: Vec<String> = reads[..tc.bytes.len()]
+                .windows(2)
+                .map(|w| (w[1] - w[0]).to_string())
+                .collect();
+            *patterns.entry((register_form, gaps.join(" "))).or_default() += 1;
+        }
+        for reg in [false, true] {
+            let group: Vec<(&String, usize)> = patterns
+                .iter()
+                .filter(|((r, _), _)| *r == reg)
+                .map(|((_, p), n)| (p, *n))
+                .collect();
+            let cases: usize = group.iter().map(|&(_, n)| n).sum();
+            if cases == 0 {
+                continue;
+            }
+            let (pattern, n) = group
+                .iter()
+                .max_by_key(|&&(_, n)| n)
+                .map(|&(p, n)| (p.clone(), n))
+                .expect("non-empty");
+            let label = if reg {
+                format!("{stem} reg")
+            } else {
+                stem.clone()
+            };
+            rows.push((label, pattern, n, cases));
+        }
+    }
+
+    eprintln!("\ngaps between successive reads of one instruction's bytes,");
+    eprintln!("full queue and no prefix, modal pattern per opcode file\n");
+    let flat = |p: &str| p.split_whitespace().all(|g| g == "1");
+    let stalled: Vec<&(String, String, usize, usize)> =
+        rows.iter().filter(|(_, p, _, _)| !flat(p)).collect();
+    eprintln!(
+        "  {} of {} files stall somewhere; {} run flat out",
+        stalled.len(),
+        rows.len(),
+        rows.len() - stalled.len()
+    );
+    eprintln!("\n  file    pattern              share");
+    for (stem, pattern, n, cases) in stalled {
+        eprintln!(
+            "  {stem:6}  {pattern:<20} {n} of {cases} ({:.1}%)",
+            100.0 * *n as f64 / *cases as f64
+        );
+    }
 }
 
 /// Does the BIU-yields hypothesis hold over the population, or only over the
@@ -738,12 +1383,40 @@ fn empty_queue_fetch_gap_by_shape() {
     }
 }
 
+/// The same instrument pointed at the **empty-queue** half, the largest
+/// unexplained population in the epic: 44.92% on cycle count against the
+/// prefetched half's 84.55%, about 828,000 vectors.
+///
+/// The one earlier attempt compared our span index against the recording's raw
+/// trace index, which are different origins for a case that starts with an
+/// empty queue, and produced a confident and meaningless answer. This does not
+/// have that problem: both columns start on the cycle the opening First Byte is
+/// read, because that is where the recorded trace begins and where this replay
+/// starts measuring.
+///
+/// A memory form first, then the stack pair, so the queue and the operand path
+/// are varied against each other.
 #[test]
 #[ignore = "survey, not a check: where an empty-queue case diverges"]
 fn side_by_side_from_an_empty_queue() {
-    dump_side_by_side("90", false, 0);
-    dump_side_by_side("40", false, 0);
     dump_side_by_side("8B", true, 0);
+    // Every push is +1 and every pop is -1 from an empty queue, uniformly over
+    // all 5000 cases of sixteen opcode files, where the full-queue population
+    // wants the opposite for the pushes. A row cannot be both, so the stack
+    // path has an empty-queue error of its own.
+    dump_side_by_side("50", false, 0);
+    dump_side_by_side("58", false, 0);
+    // And the four-byte register form that is `-1` on every full-queue case and
+    // *exact* on every empty-queue one. The same instruction and the same
+    // boundary, so whatever the part does differently is visible here beside
+    // the full-queue trace in [`side_by_side`].
+    dump_side_by_side("81.0", false, 0);
+    // The port pair, which is the largest uniform block left in this
+    // population: every `IN` is -1 and every `OUT` is +1, on all 5000 cases of
+    // each of eight files. Symmetric, so it is where the port cycle sits rather
+    // than what it costs.
+    dump_side_by_side("E4", false, 0);
+    dump_side_by_side("E6", false, 0);
 }
 
 #[test]
@@ -853,6 +1526,10 @@ fn residuals_by_mode(stem: &str) {
 #[test]
 #[ignore = "survey, not a check: which addressing modes carry the residual"]
 fn memory_residual_by_mode() {
+    // The two worst rows in the sweep, wrong on every case: the far transfers
+    // through a memory pointer, which read a four-byte pointer and then flush.
+    residuals_by_mode("FF.5");
+    residuals_by_mode("FF.3");
     // A load, a store, a read-modify-write, and one with an immediate, so that
     // the operand's direction and the instruction's length are both varied.
     residuals_by_mode("8B");
@@ -1288,6 +1965,292 @@ struct RowResidual {
     wrong: usize,
     /// The signed differences, commonest first.
     modes: Vec<(i64, usize)>,
+}
+
+/// Which population a case belongs to, for the whole-corpus gap map.
+///
+/// The gate reports two populations, "empty queue" and "prefetched", and the
+/// row meter reports one, "full queue and no prefix". Between them they leave
+/// two whole populations nobody has ever measured: the partially-filled queues,
+/// and every prefixed case in the suite. This names all of them.
+fn population_of(tc: &I8088TestCase) -> (&'static str, &'static str) {
+    let queue = match tc.initial.queue.len() {
+        0 => "empty",
+        4 => "full ",
+        _ => "part ",
+    };
+    let prefix = match tc.bytes.first() {
+        Some(0x26 | 0x2E | 0x36 | 0x3E) => "segment",
+        Some(0xF2 | 0xF3) => "rep    ",
+        Some(0xF0) => "lock   ",
+        _ => "none   ",
+    };
+    (queue, prefix)
+}
+
+/// The whole corpus, bucketed by population, so that no part of it can be
+/// unmeasured by accident.
+///
+/// Every percentage this epic has quoted describes a slice: the row meter sees
+/// full-queue unprefixed cases, the gate splits empty against prefetched and
+/// folds prefixes into both. A cause that lives only in the prefixed cases, or
+/// only in the partially-filled queues, is invisible to all of it. This is the
+/// map that says where the remaining error actually is.
+#[test]
+#[ignore = "survey, not a check: the whole corpus, bucketed by population"]
+fn gap_map() {
+    // (queue, prefix, touches memory) -> residual histogram
+    type Key = (&'static str, &'static str, bool);
+    let mut buckets: BTreeMap<Key, BTreeMap<i64, usize>> = BTreeMap::new();
+    for stem in every_opcode_file() {
+        let Some(tests) = load(&stem) else { continue };
+        for tc in &tests {
+            if tc.cycles.is_empty() {
+                continue;
+            }
+            let Some(ours) = replay(tc) else { continue };
+            let (queue, prefix) = population_of(tc);
+            let touches = recorded_operand_start(tc).is_some();
+            *buckets
+                .entry((queue, prefix, touches))
+                .or_default()
+                .entry(ours as i64 - tc.cycles.len() as i64)
+                .or_default() += 1;
+        }
+    }
+
+    let grand: usize = buckets.values().flat_map(|h| h.values()).sum();
+    let grand_exact: usize = buckets
+        .values()
+        .map(|h| h.get(&0).copied().unwrap_or(0))
+        .sum();
+    eprintln!("\nwhole corpus, by population");
+    eprintln!(
+        "  {grand_exact} of {grand} exact ({:.2}%)\n",
+        100.0 * grand_exact as f64 / grand as f64
+    );
+    eprintln!("  queue prefix   memory     cases    exact   share of all error");
+    /// One printed line: the population, its case and exact counts, and the
+    /// residuals it carries, commonest first.
+    type Row = (Key, usize, usize, Vec<(i64, usize)>);
+    let mut rows: Vec<Row> = Vec::new();
+    for (key, hist) in &buckets {
+        let cases: usize = hist.values().sum();
+        let exact = hist.get(&0).copied().unwrap_or(0);
+        let mut modes: Vec<(i64, usize)> = hist.iter().map(|(a, b)| (*a, *b)).collect();
+        modes.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
+        rows.push((*key, cases, exact, modes));
+    }
+    rows.sort_by_key(|(_, cases, exact, _)| std::cmp::Reverse(cases - exact));
+    let all_error = grand - grand_exact;
+    for ((queue, prefix, touches), cases, exact, modes) in &rows {
+        let wrong = cases - exact;
+        let top: Vec<String> = modes
+            .iter()
+            .take(4)
+            .map(|(d, n)| format!("{d:+}:{n}"))
+            .collect();
+        eprintln!(
+            "  {queue} {prefix} {}  {cases:7}  {:6.2}%  {:5.1}%   {}",
+            if *touches { "yes" } else { "no " },
+            100.0 * *exact as f64 / *cases as f64,
+            100.0 * wrong as f64 / all_error as f64,
+            top.join(" ")
+        );
+    }
+}
+
+/// The segment-override population, which no row meter has ever looked at.
+///
+/// `row_residuals` filters every prefixed case out, and the gate folds them
+/// into its two queue populations, so an override-only cause is invisible to
+/// both. The whole-corpus map says they carry **48.8% of all remaining error**,
+/// and the full-queue half of that is the tractable part: the same instructions
+/// without an override are at 95% and 98%.
+///
+/// Ranked by cases wrong, over full-queue cases carrying exactly one override.
+/// Rank every opcode's residual within one population.
+///
+/// The populations are the gap map's: an opcode can be exact in one and wrong
+/// in another, and a ranking that mixes them hides which.
+fn rank_rows(label: &str, keep: fn(&I8088TestCase) -> bool) {
+    let mut rows: Vec<RowResidual> = Vec::new();
+    for stem in every_opcode_file() {
+        let Some(tests) = load(&stem) else { continue };
+        let mut hist: BTreeMap<i64, usize> = BTreeMap::new();
+        for tc in &tests {
+            if tc.cycles.is_empty() || !keep(tc) {
+                continue;
+            }
+            let Some(ours) = replay(tc) else { continue };
+            *hist
+                .entry(ours as i64 - tc.cycles.len() as i64)
+                .or_default() += 1;
+        }
+        let cases: usize = hist.values().sum();
+        if cases == 0 {
+            continue;
+        }
+        let exact = hist.get(&0).copied().unwrap_or(0);
+        let mut modes: Vec<(i64, usize)> = hist.into_iter().collect();
+        modes.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
+        rows.push(RowResidual {
+            stem,
+            cases,
+            wrong: cases - exact,
+            modes,
+        });
+    }
+    let cases: usize = rows.iter().map(|r| r.cases).sum();
+    let wrong: usize = rows.iter().map(|r| r.wrong).sum();
+    eprintln!(
+        "\n{label}: {} of {cases} exact ({:.2}%)",
+        cases - wrong,
+        100.0 * (cases - wrong) as f64 / cases as f64
+    );
+    rows.sort_by_key(|r| std::cmp::Reverse(r.wrong));
+    for RowResidual {
+        stem,
+        cases: total,
+        wrong,
+        modes,
+    } in rows.iter().take(24)
+    {
+        if *wrong == 0 {
+            break;
+        }
+        let top: Vec<String> = modes
+            .iter()
+            .take(4)
+            .map(|(d, n)| format!("{d:+}:{n}"))
+            .collect();
+        eprintln!(
+            "  {stem:6} {wrong:5} of {total:5} wrong   {}",
+            top.join(" ")
+        );
+    }
+}
+
+/// The empty-queue populations, ranked per opcode.
+///
+/// The gap map puts 12.4% of all remaining error in cases that start with an
+/// empty queue, carry no prefix and touch no memory at all, 87,924 of them at
+/// exactly +2. Nothing about operand access or arbitration can reach those, so
+/// whatever it is belongs to the loader.
+#[test]
+#[ignore = "survey, not a check: the empty-queue rows, per opcode"]
+fn empty_queue_rows() {
+    rank_rows("empty queue, no prefix, no memory", |tc| {
+        tc.initial.queue.is_empty()
+            && !tc.bytes.first().is_some_and(|&b| is_prefix(b))
+            && recorded_operand_start(tc).is_none()
+    });
+    rank_rows("empty queue, no prefix, touches memory", |tc| {
+        tc.initial.queue.is_empty()
+            && !tc.bytes.first().is_some_and(|&b| is_prefix(b))
+            && recorded_operand_start(tc).is_some()
+    });
+}
+
+/// The two populations no ranking has ever covered: an empty queue with a
+/// segment override, which the gap map puts at 26.3% of all remaining error and
+/// 6.34% exact, and the repeated string operations.
+#[test]
+#[ignore = "survey, not a check: the last unranked populations"]
+fn remaining_population_rows() {
+    rank_rows("empty queue, segment override", |tc| {
+        tc.initial.queue.is_empty()
+            && matches!(tc.bytes.first(), Some(0x26 | 0x2E | 0x36 | 0x3E))
+            && !tc.bytes.get(1).is_some_and(|&b| is_prefix(b))
+    });
+    rank_rows("full queue, segment override, no memory", |tc| {
+        tc.initial.queue.len() == 4
+            && matches!(tc.bytes.first(), Some(0x26 | 0x2E | 0x36 | 0x3E))
+            && !tc.bytes.get(1).is_some_and(|&b| is_prefix(b))
+            && recorded_operand_start(tc).is_none()
+    });
+    rank_rows("repeated string operations", |tc| {
+        matches!(tc.bytes.first(), Some(0xF2 | 0xF3))
+    });
+}
+
+#[test]
+#[ignore = "survey, not a check: what a segment override costs, per row"]
+fn segment_override_rows() {
+    let mut rows: Vec<RowResidual> = Vec::new();
+    for stem in every_opcode_file() {
+        let Some(tests) = load(&stem) else { continue };
+        let mut hist: BTreeMap<i64, usize> = BTreeMap::new();
+        for tc in &tests {
+            if tc.cycles.is_empty() || tc.initial.queue.len() != 4 {
+                continue;
+            }
+            // Exactly one override and nothing else in front of the opcode.
+            if !matches!(tc.bytes.first(), Some(0x26 | 0x2E | 0x36 | 0x3E))
+                || tc.bytes.get(1).is_some_and(|&b| is_prefix(b))
+            {
+                continue;
+            }
+            let Some(ours) = replay(tc) else { continue };
+            *hist
+                .entry(ours as i64 - tc.cycles.len() as i64)
+                .or_default() += 1;
+        }
+        let cases: usize = hist.values().sum();
+        if cases == 0 {
+            continue;
+        }
+        let exact = hist.get(&0).copied().unwrap_or(0);
+        let mut modes: Vec<(i64, usize)> = hist.into_iter().collect();
+        modes.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
+        rows.push(RowResidual {
+            stem,
+            cases,
+            wrong: cases - exact,
+            modes,
+        });
+    }
+
+    let cases: usize = rows.iter().map(|r| r.cases).sum();
+    let wrong: usize = rows.iter().map(|r| r.wrong).sum();
+    let clean = rows.iter().filter(|r| r.wrong == 0).count();
+    eprintln!("\nsegment override, full queue, one prefix, every file");
+    eprintln!("  {} files, {clean} of them +0 on every case", rows.len());
+    eprintln!(
+        "  {} of {cases} cases exact ({:.2}%)\n",
+        cases - wrong,
+        100.0 * (cases - wrong) as f64 / cases as f64
+    );
+    rows.sort_by_key(|r| std::cmp::Reverse(r.wrong));
+    for RowResidual {
+        stem,
+        cases: total,
+        wrong,
+        modes,
+    } in &rows
+    {
+        if *wrong == 0 {
+            break;
+        }
+        let top: Vec<String> = modes
+            .iter()
+            .take(4)
+            .map(|(d, n)| format!("{d:+}:{n}"))
+            .collect();
+        eprintln!(
+            "  {stem:6} {wrong:5} of {total:5} wrong   {}",
+            top.join(" ")
+        );
+    }
+    // The clean ones matter as much: whether the eight-bit-immediate forms are
+    // exact is what says the sixteen-bit ones are wrong for their immediate
+    // rather than for having no ModR/M byte.
+    let clean: Vec<&str> = rows
+        .iter()
+        .filter(|r| r.wrong == 0)
+        .map(|r| r.stem.as_str())
+        .collect();
+    eprintln!("\n  exact on every case: {}", clean.join(" "));
 }
 
 #[test]
@@ -2062,6 +3025,10 @@ fn data_dependent_rows() {
             (tc.initial.regs.ax & 0x0F) > 9 || tc.initial.regs.flags & 0x10 != 0
         });
     }
+    // SALC, which Intel never documented: it sets AL to 0xFF when carry is set
+    // and to zero when it is not, and the recording gives it two costs one
+    // clock apart. If that is the same branch, this splits it.
+    split_by("D6", "carry set", |tc| tc.initial.regs.flags & 1 != 0);
 }
 
 #[test]

@@ -886,13 +886,23 @@ fn i8088_cycle_counts_against_the_hardware_trace() {
 
     // What this test asserts, and deliberately does not.
     //
-    // It does NOT assert that the CYCLE COUNTS match. They overwhelmingly do
-    // not, by construction: execution is still atomic, so the core charges
-    // nothing for the cycles the EU spends computing an effective address or
-    // for the bus cycles an operand access takes. The number above is a floor
-    // that M3 raises. Asserting a pass would mean either a failing suite for
-    // weeks or a threshold tuned to whatever today's figure happens to be, and
-    // a threshold fitted to the current result is a check that cannot fail.
+    // It does NOT assert that the CYCLE COUNTS match. They do not yet, and
+    // asserting a pass would mean a failing suite for months.
+    //
+    // It DOES hold them to a RATCHET, which is a different thing from the
+    // fitted threshold this comment used to argue against. That argument was
+    // right about a threshold set at today's figure to claim the work is done,
+    // and wrong about one set there to stop the figure falling: the first
+    // cannot fail, the second cannot fail *today*, which is the point. Six
+    // milestones passed with the count barely moving and nothing could say so.
+    //
+    // [`RATCHET`] is two-sided for the same reason. A floor alone rots: it
+    // drifts below the truth as the core improves and quietly stops protecting
+    // anything, which is how the old figure survived so long. Overshooting it
+    // by more than [`RATCHET_SLACK`] fails too, and says what to write instead,
+    // so a gain has to be banked in the same change that earns it. The slack is
+    // wide enough that an experiment moving hundredths does not trip it and
+    // narrow enough that a real win cannot be left unrecorded.
     //
     // It DOES assert that the QUEUE OPERATIONS match, exactly, on every vector.
     // That is not a fitted threshold: it is equality against a hardware
@@ -919,7 +929,86 @@ fn i8088_cycle_counts_against_the_hardware_trace() {
          the prefetch queue, in what order. See the examples above.",
         queue_total - queue_matched,
     );
+
+    let mut broken: Vec<String> = Vec::new();
+    for &(name, floor, matched, total) in &[
+        ("cycle count", RATCHET.count, matched, compared),
+        ("cycle count, empty queue", RATCHET.count_empty, matched_empty, total_empty),
+        (
+            "cycle count, prefetched",
+            RATCHET.count_prefetched,
+            matched_prefetched,
+            total_prefetched,
+        ),
+        ("bus-cycle order", RATCHET.bus, fetch_matched, fetch_total),
+        (
+            "bus-cycle order, empty queue",
+            RATCHET.bus_empty,
+            fetch_matched_empty,
+            fetch_total_empty,
+        ),
+        (
+            "bus-cycle order, prefetched",
+            RATCHET.bus_prefetched,
+            fetch_matched_prefetched,
+            fetch_total_prefetched,
+        ),
+    ] {
+        let now = pct(matched, total);
+        if now < floor {
+            broken.push(format!(
+                "  {name} FELL to {now:.2}%, below the recorded {floor:.2}%"
+            ));
+        } else if now > floor + RATCHET_SLACK {
+            broken.push(format!(
+                "  {name} ROSE to {now:.2}%, more than {RATCHET_SLACK:.2} above the \
+                 recorded {floor:.2}%: raise it to {:.2}",
+                (now * 100.0).floor() / 100.0
+            ));
+        }
+    }
+    assert!(
+        broken.is_empty(),
+        "the per-cycle ratchet moved:\n{}\n\nSee RATCHET in this file.",
+        broken.join("\n")
+    );
 }
+
+/// The percentages this gate is held to, as last recorded.
+///
+/// Each is the measured figure rounded *down* to two places, so that the
+/// comparison cannot fail on the last bit of a float. Raise them in the same
+/// change that earns the gain: the gate fails either way round, and says which.
+struct Ratchet {
+    count: f64,
+    count_empty: f64,
+    count_prefetched: f64,
+    bus: f64,
+    bus_empty: f64,
+    bus_prefetched: f64,
+}
+
+/// Recorded 2026-09-05, over 3,007,000 vectors in 323 files, when the loader
+/// learned where the part stops for a T-state. See `timing::loader_stall` in
+/// the core.
+const RATCHET: Ratchet = Ratchet {
+    count: 73.76,
+    count_empty: 54.83,
+    count_prefetched: 92.68,
+    bus: 38.78,
+    // **This one is a floor under a number that is not yet meaningful.** The
+    // loader still takes an instruction's first byte a T-state after the part
+    // does, so every empty-queue case is one bus cycle out at the front and
+    // this half cannot pass whatever else is right. It is here so that fixing
+    // the loader is visible as a jump rather than as a number nobody was
+    // watching.
+    bus_empty: 0.03,
+    bus_prefetched: 77.54,
+};
+
+/// How far above [`RATCHET`] a figure may sit before the gate insists it be
+/// written down. One point is about 30,000 vectors on the whole corpus.
+const RATCHET_SLACK: f64 = 1.00;
 
 /// This gate has no skip list, and that is a claim about the data rather than a
 /// convenience.
