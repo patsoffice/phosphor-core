@@ -993,29 +993,30 @@ struct Ratchet {
     bus_prefetched: f64,
 }
 
-/// Recorded 2026-09-06, over 3,007,000 vectors in 323 files, when `INT n`
-/// stopped being priced from a row and started being walked as microcode. See
-/// `microcode::INTERRUPT` in the core.
+/// Recorded 2026-09-06, over 3,007,000 vectors in 323 files, when `SUSP`
+/// learned to wait for a fetch already on the bus. See `microcode::Step::Susp`
+/// in the core.
 ///
-/// **Both prefetched figures moved and neither empty-queue figure moved at
-/// all**, which is what says this was one file and not a general gain: `CD` has
-/// exactly 5,000 cases in the prefetched half, and it went from wrong on every
-/// one of them, on count and on bus order alike, to exact on every one. Its
-/// empty-queue half is untouched, which every change on this branch has been:
-/// the loader still takes an instruction's first byte a T-state after the part
-/// does, so no empty-queue case can match its opening bus cycle.
+/// **Every figure that can move moved together**, which is the signature of a
+/// mechanism and not of a row: `SUSP` is a step of every transfer's microcode,
+/// so charging it what it costs reaches the whole family at once. The change
+/// before it was one file, and moved one half only because of it.
+///
+/// Every figure here is the raw count rounded *down*, which is not always the
+/// figure the run prints: a value that displays as 88.97% and is 88.9669% fails
+/// this gate for falling below itself when the printed form is banked.
 const RATCHET: Ratchet = Ratchet {
-    count: 75.67,
-    count_empty: 58.04,
-    count_prefetched: 93.30,
-    bus: 45.47,
+    count: 75.79,
+    count_empty: 58.13,
+    count_prefetched: 93.45,
+    bus: 45.59,
     // **Not one case in 1,503,500, and that is a statement about the loader.**
     // It still takes an instruction's first byte a T-state after the part does,
     // so every empty-queue case is one bus cycle out at the front and this half
     // cannot pass whatever else is right. The floor is here so that fixing the
     // loader shows up as a jump rather than as a number nobody was watching.
     bus_empty: 0.0,
-    bus_prefetched: 90.94,
+    bus_prefetched: 91.19,
 };
 
 /// How far above [`RATCHET`] a figure may sit before the gate insists it be

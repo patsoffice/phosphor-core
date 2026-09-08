@@ -912,7 +912,7 @@ impl I8088 {
                 self.eu = if remaining > 1 {
                     Eu::AddressCalc(remaining - 1)
                 } else {
-                    self.begin_operand_phase()
+                    self.begin_operand_phase(bus, master)
                 };
                 // An instruction that neither reads its operand nor has any
                 // modeled execution time runs here. Dropping this made the
@@ -1104,7 +1104,7 @@ impl I8088 {
                 // pipeline picks up where it left off rather than starting the
                 // instruction again.
                 self.immediate_resuming = false;
-                self.eu = self.begin_pre_execute_phase();
+                self.eu = self.begin_pre_execute_phase(bus, master);
                 self.execute_if_ready(bus, master);
             } else {
                 self.run_loaded_instruction(bus, master);
@@ -1847,7 +1847,7 @@ impl I8088 {
                     // A short address under a long displacement can leave
                     // nothing to spend, and an `AddressCalc(0)` would burn a
                     // T-state doing nothing.
-                    self.begin_operand_phase()
+                    self.begin_operand_phase(bus, master)
                 };
                 self.execute_if_ready(bus, master);
                 return;
@@ -1867,7 +1867,7 @@ impl I8088 {
             // the two errors cancelled in the total until the bus grew an
             // address cycle and the read stopped moving.
             self.eu = match timing::DIRECT_ADDRESS_PHASE {
-                0 => self.begin_operand_phase(),
+                0 => self.begin_operand_phase(bus, master),
                 n => Eu::AddressCalc(n),
             };
             self.execute_if_ready(bus, master);
@@ -1875,13 +1875,7 @@ impl I8088 {
         }
 
         let _ = operand_access;
-        // An instruction whose microcode has been transcribed is walked from
-        // here, and never asks a timing row what it costs.
-        if self.begin_microcode_routine() {
-            self.eu = self.advance_microcode(bus, master);
-            return;
-        }
-        self.eu = self.begin_pre_execute_phase();
+        self.eu = self.begin_pre_execute_phase(bus, master);
         self.execute_if_ready(bus, master);
     }
 
@@ -1915,7 +1909,11 @@ impl I8088 {
 
     /// Leave the address-calculation phase for whatever the instruction does
     /// with the operand next: a read, or straight to its microcode.
-    fn begin_operand_phase(&mut self) -> Eu {
+    fn begin_operand_phase<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+    ) -> Eu {
         let acc = access::operand_access(self.opcode(), self.instr[self.opcode_at as usize + 1]);
         if acc.reads {
             Eu::Reading {
@@ -1924,7 +1922,7 @@ impl I8088 {
                 t: 1,
             }
         } else {
-            self.after_operand_access()
+            self.after_operand_access(bus, master)
         }
     }
 
@@ -1949,7 +1947,11 @@ impl I8088 {
 
     /// What follows an operand access: the deferred immediate if there is one,
     /// and otherwise the stack or the microcode.
-    fn after_operand_access(&mut self) -> Eu {
+    fn after_operand_access<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+    ) -> Eu {
         if self.immediate_deferred {
             self.immediate_deferred = false;
             self.immediate_resuming = true;
@@ -1960,7 +1962,7 @@ impl I8088 {
             self.loader_stall = timing::deferred_immediate_stall(self.opcode(), modrm);
             return Eu::Loading;
         }
-        self.begin_pre_execute_phase()
+        self.begin_pre_execute_phase(bus, master)
     }
 
     /// Everything an instruction reads between its operand and its microcode:
@@ -1972,7 +1974,19 @@ impl I8088 {
     /// indirect far `CALL` reads its pointer operand before pushing anything;
     /// and `INT 3` reads the four bytes of its vector before it writes the
     /// first of its three words. No instruction does both.
-    fn begin_pre_execute_phase(&mut self) -> Eu {
+    fn begin_pre_execute_phase<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+    ) -> Eu {
+        // An instruction whose microcode has been transcribed is walked from
+        // here, and never asks a timing row what it costs. This is after any
+        // operand read, which is where the indirect calls and jumps put their
+        // microcode: `FF /2` reads its pointer and only then suspends the
+        // prefetcher, spends its clocks and flushes.
+        if self.begin_microcode_routine() {
+            return self.advance_microcode(bus, master);
+        }
         let stack = access::stack_access(self.opcode(), self.instr[self.opcode_at as usize + 1]);
         self.stack_staged = true;
         self.stack_pos = 0;
@@ -2009,7 +2023,8 @@ impl I8088 {
         if self.servicing.is_some() {
             return false;
         }
-        let Some(steps) = microcode::routine(self.opcode()) else {
+        let modrm = self.instr[self.opcode_at as usize + 1];
+        let Some(steps) = microcode::routine(self.opcode(), modrm) else {
             return false;
         };
         self.mc = Some(microcode::Cursor::new(steps));
@@ -2406,10 +2421,44 @@ impl I8088 {
 
             match step {
                 microcode::Step::Spend(n) => return Eu::McSpend(n),
-                // Free in itself: it costs clocks only through a code fetch
-                // already in flight, which `FetchState::Suspended` handles.
+                // **`SUSP` is not free while the bus is busy.** It stops the
+                // prefetcher, and a fetch already in flight is not abandoned:
+                // the execution unit waits for it, and stops when that fetch
+                // reaches its LAST T-state rather than after it, so the step
+                // behind this one runs on the same clock as the fetch's T4.
+                //
+                // `JMP BP` is the measurement, and it is the whole of that
+                // file's shortfall. A code fetch is in flight when its
+                // microcode reaches `SUSP`: the part drives that fetch's T1
+                // through T4 and only then spends 0x0d8 and throws the queue
+                // away, while this core, treating `SUSP` as free, flushed on
+                // the fetch's T3 and abandoned it. Three clocks, on every
+                // register-form case of the file.
                 microcode::Step::Susp => {
                     self.fetch = FetchState::Suspended;
+                    // A fetch is in flight from the moment its **address
+                    // cycle** starts, not from its T1. `TaCycle` is those
+                    // clocks and they are not in [`Biu`], so a `SUSP` that
+                    // asks only about `Biu` sees an idle bus and abandons a
+                    // cycle that is already committed.
+                    //
+                    // That it is committed is not an assumption: the memory
+                    // forms suspend on the clock before their last code fetch
+                    // and the fetch drives T1 anyway, here and in the
+                    // recording alike. `SUSP` stops the prefetcher from
+                    // starting another one; it does not unwind the one whose
+                    // address is already being computed.
+                    let in_flight = self.ta != TaCycle::Td
+                        || match self.biu {
+                            Biu::Fetching { t, .. } => t < BUS_CYCLE_CLOCKS,
+                            Biu::Starting { .. } => true,
+                            Biu::Idle => false,
+                        };
+                    if in_flight {
+                        cursor.rewind_to_wait();
+                        self.mc = Some(cursor);
+                        return Eu::McSpend(1);
+                    }
                 }
                 // Costs one clock, and that clock is `pending_flush`'s own
                 // cycle rather than a spend: it fires on the next T-state,
@@ -3151,7 +3200,7 @@ impl I8088 {
                     // The operand is in hand. Next comes the immediate, if this
                     // instruction has one the loader was told to leave, and
                     // then the stack and the microcode.
-                    self.eu = self.after_operand_access();
+                    self.eu = self.after_operand_access(bus, master);
                     self.execute_if_ready(bus, master);
                 }
             }

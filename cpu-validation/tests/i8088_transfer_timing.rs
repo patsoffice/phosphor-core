@@ -524,6 +524,10 @@ fn dump_side_by_side(stem: &str, want_mem: bool, queued: usize) {
 #[test]
 #[ignore = "survey, not a check: one case, ours beside the recording"]
 fn side_by_side() {
+    // The indirect near call, whose memory forms run a clock long and whose
+    // register forms run a clock short, uniformly and in opposite directions.
+    dump_side_by_side("FF.2", true, 4);
+    dump_side_by_side("FF.2", false, 4);
     // The read-modify-write form that runs a clock long and still fits one
     // fewer prefetch than the part, which additive time cannot explain.
     dump_side_by_side("F7.3", true, 4);

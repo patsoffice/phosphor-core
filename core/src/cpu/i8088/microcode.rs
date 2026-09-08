@@ -122,16 +122,87 @@ pub(crate) const INTERRUPT: &[Step] = &[
     Step::Push,
 ];
 
-/// The routine `opcode` runs, or `None` for an instruction still priced from a
-/// timing row.
+/// `CALL r/m16`, the near indirect call, once its pointer has been read.
+///
+/// The register form spends a clock the memory form does not, at 0x074, which
+/// is the one difference between them. Everything after that is `CALL rel16`'s
+/// routine: suspend, four clocks, throw the queue away, three more, push the
+/// return offset behind the reload.
+pub(crate) const CALL_INDIRECT: &[Step] = &[
+    // The pointer is in hand, so the transfer can be computed and the return
+    // offset staged.
+    Step::Run,
+    Step::Susp,
+    // 0x074, 0x075, CORR, 0x076.
+    Step::Spend(4),
+    Step::Flush,
+    // 0x077, 0x078, 0x079.
+    Step::Spend(3),
+    Step::Push,
+];
+
+/// The same, from a register operand, which spends one clock more.
+pub(crate) const CALL_INDIRECT_REG: &[Step] = &[
+    Step::Run,
+    // 0x074, spent only when the operand was a register.
+    Step::Spend(1),
+    Step::Susp,
+    Step::Spend(4),
+    Step::Flush,
+    Step::Spend(3),
+    Step::Push,
+];
+
+/// `JMP r/m16`, the near indirect jump. No pushes and one clock of microcode:
+/// suspend, spend it, flush.
+pub(crate) const JMP_INDIRECT: &[Step] = &[
+    Step::Run,
+    Step::Susp,
+    // 0x0d8.
+    Step::Spend(1),
+    Step::Flush,
+];
+
+/// The same, from a register operand.
+pub(crate) const JMP_INDIRECT_REG: &[Step] = &[
+    Step::Run,
+    Step::Spend(1),
+    Step::Susp,
+    Step::Spend(1),
+    Step::Flush,
+];
+
+/// The routine `opcode` runs with this `modrm`, or `None` for an instruction
+/// still priced from a timing row.
 ///
 /// Transcribing an opcode means adding a row here and deleting whatever in
 /// `timing.rs` used to price it. The two must never both be live for the same
 /// opcode: the row would be charged on top of the steps.
-pub(crate) fn routine(opcode: u8) -> Option<&'static [Step]> {
+///
+/// The group opcodes are asked for their reg field because the group is not
+/// one instruction: `FF` carries `INC` and `PUSH`, which go nowhere, beside
+/// the indirect calls and jumps, which are transfers.
+///
+/// **`FF /3` and `FF /5` are not here**, and the reason is structural rather
+/// than a gap in the reading. Both have microcode *in front of* their operand
+/// read: `FF /3` spends a clock at 0x068 before reading its far pointer, and
+/// `FF /5` suspends the prefetcher at 0x0dc before reading its. The pipeline
+/// reads the operand before a routine can start, so expressing either needs a
+/// step that drives the operand read itself.
+pub(crate) fn routine(opcode: u8, modrm: u8) -> Option<&'static [Step]> {
+    let register_form = modrm >> 6 == 3;
     match opcode {
         // INT n.
         0xCD => Some(INTERRUPT),
+        // The indirect calls and jumps live in the `FF` group, beside `INC`,
+        // `DEC` and `PUSH`, which do not transfer and keep their rows.
+        0xFF => match (modrm >> 3) & 7 {
+            2 if register_form => Some(CALL_INDIRECT_REG),
+            2 => Some(CALL_INDIRECT),
+            4 if register_form => Some(JMP_INDIRECT_REG),
+            4 => Some(JMP_INDIRECT),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -182,6 +253,16 @@ impl Cursor {
     /// Put the step just taken back, so the sequencer can spend the address
     /// cycle in front of it and then run it.
     pub(crate) fn rewind(&mut self) {
+        self.at -= 1;
+    }
+
+    /// Put a [`Step::Susp`] back so it is asked again on the next clock.
+    ///
+    /// `SUSP` stops the prefetcher at once and then waits for a fetch already
+    /// on the bus, so it is re-run rather than resumed: the prefetcher stays
+    /// stopped and the question each clock is only whether that fetch has
+    /// reached its last T-state yet.
+    pub(crate) fn rewind_to_wait(&mut self) {
         self.at -= 1;
     }
 }
