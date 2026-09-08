@@ -201,6 +201,19 @@ impl I8088 {
 
     /// Push a 16-bit value onto the stack (SS:SP).
     #[inline]
+    /// Push a 16-bit value onto the stack (SS:SP).
+    ///
+    /// Staged rather than written, when the pipeline predicted this push: the
+    /// word goes into `stack_words` and the write-back phase sends it out over
+    /// MEMW bus cycles once the instruction has finished. SP still moves here,
+    /// so an instruction that pushes several words leaves it where it should
+    /// be and the pipeline knows every address.
+    ///
+    /// Falls back to writing directly when the push was *not* predicted, which
+    /// is the conditional set: `INTO` when the overflow flag is set, and the
+    /// divide error inside `DIV`, `IDIV` and `AAM`. Those cost no bus cycles
+    /// yet, which undercounts them, and they are declared unmodeled for timing
+    /// rather than pretended about.
     pub(crate) fn push16<B: Bus<Address = u32, Data = u8> + ?Sized>(
         &mut self,
         bus: &mut B,
@@ -209,18 +222,34 @@ impl I8088 {
     ) {
         self.stack_ops.1 += 1;
         self.sp = self.sp.wrapping_sub(2);
-        self.write_word(bus, master, self.ss, self.sp, value);
+        if (self.stack_pos as usize) < self.stack_words.len() && self.stack_staged {
+            self.stack_words[self.stack_pos as usize] = value;
+            self.stack_pos += 1;
+        } else {
+            self.write_word(bus, master, self.ss, self.sp, value);
+        }
     }
 
     /// Pop a 16-bit value from the stack (SS:SP).
     #[inline]
+    /// Pop a 16-bit value from the stack (SS:SP).
+    ///
+    /// Taken from `stack_words` when the pipeline predicted this pop and read
+    /// it over MEMR bus cycles beforehand. See [`Self::push16`] for the
+    /// unpredicted case.
     pub(crate) fn pop16<B: Bus<Address = u32, Data = u8> + ?Sized>(
         &mut self,
         bus: &mut B,
         master: BusMaster,
     ) -> u16 {
         self.stack_ops.0 += 1;
-        let val = self.read_word(bus, master, self.ss, self.sp);
+        let val = if (self.stack_pos as usize) < self.stack_words.len() && self.stack_staged {
+            let v = self.stack_words[self.stack_pos as usize];
+            self.stack_pos += 1;
+            v
+        } else {
+            self.read_word(bus, master, self.ss, self.sp)
+        };
         self.sp = self.sp.wrapping_add(2);
         val
     }

@@ -64,12 +64,9 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
         // ahead of it so that the block's `opcode & 7` dispatch cannot charge
         // PUSH ES the accumulator-immediate time.
         //
-        // Charged nothing, and declared unmodeled by `is_modeled`, because
-        // their stack access does not go through the operand pipeline: push16
-        // and pop16 still reach the bus directly, so this core runs none of the
-        // bus cycles the subtraction below assumes. Modeling them means moving
-        // the stack onto the pipeline first, which is its own change.
-        0x06 | 0x0E | 0x16 | 0x1E | 0x07 | 0x0F | 0x17 | 0x1F => 0,
+        // PUSH seg is 10 clocks with one transfer, POP seg 8 with one.
+        0x06 | 0x0E | 0x16 | 0x1E => 10 - 4,
+        0x07 | 0x0F | 0x17 | 0x1F => 8 - 4,
 
         // -------------------------------------------------------------------
         // The ALU block, 0x00-0x3F. Seven operations share one set of numbers;
@@ -168,8 +165,9 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
         // calculation, which is charged separately, and it is the only
         // memory-addressing instruction that runs no bus cycle at all.
         0x8D => 2,
-        // POP r/m16 reads the stack, which is not on the operand pipeline.
-        0x8F => 0,
+        // POP r/m16: 17 clocks and two transfers, the stack read and the
+        // operand write.
+        0x8F => 17 - 8,
 
         // XCHG AX, reg16.
         0x90..=0x97 => 3,
@@ -258,18 +256,29 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
                     3
                 }
             }
-            // PUSH r/m16 pushes the stack, which does not go through the
-            // operand pipeline yet. Unmodeled, as the other pushes are.
-            6 => 0,
+            // PUSH r/m16: 16 clocks and two transfers, the operand read and
+            // the stack write.
+            6 => {
+                if is_mem {
+                    16 - 8
+                } else {
+                    11 - 4
+                }
+            }
             // The indirect calls and jumps are control transfers, not yet
             // modeled.
             _ => 0,
         },
 
-        // PUSH and POP with the register in the opcode, unmodeled for the same
-        // reason as their segment-register forms above. NOP needs no arm of its
-        // own: it is an XCHG of AX with itself and the table gives both 3.
-        0x50..=0x5F => 0,
+        // PUSH and POP with the register in the opcode: 11 and 8 clocks, one
+        // transfer each. NOP needs no arm of its own: it is an XCHG of AX with
+        // itself and the table gives both 3.
+        0x50..=0x57 => 11 - 4,
+        0x58..=0x5F => 8 - 4,
+
+        // PUSHF and POPF, which the table gives at 10 and 8 with one transfer.
+        0x9C => 10 - 4,
+        0x9D => 8 - 4,
 
         // Everything else: not yet modeled, and charged nothing. See the module
         // documentation.
@@ -302,26 +311,22 @@ pub(crate) fn shift_count_cycles(count: u8) -> u16 {
 pub(crate) fn is_modeled(opcode: u8, modrm: u8) -> bool {
     let reg = (modrm >> 3) & 7;
     match opcode {
-        // The ALU block. Its last two columns are the BCD adjusts, which are
-        // not extracted, and the segment pushes and pops, whose stack access
-        // does not go through the operand pipeline.
+        // The ALU block. Its last column holds the BCD adjusts, which are not
+        // extracted; the segment pushes and pops beside them are.
         0x27 | 0x2F | 0x37 | 0x3F => false,
-        0x06 | 0x0E | 0x16 | 0x1E | 0x07 | 0x0F | 0x17 | 0x1F => false,
         0x00..=0x3F => true,
-        // INC and DEC with the register in the opcode.
-        0x40..=0x4F => true,
-        // PUSH and POP, for the same reason as their segment forms.
-        0x50..=0x5F => false,
+        // INC, DEC, PUSH and POP with the register in the opcode.
+        0x40..=0x5F => true,
         // The conditional jumps and their aliases: control transfers.
         0x60..=0x7F => false,
-        // The immediate group, TEST, XCHG, MOV and LEA. POP r/m16 at 0x8F pops
-        // the stack, which is not on the operand pipeline.
-        0x8F => false,
-        0x80..=0x8E => true,
+        // The immediate group, TEST, XCHG, MOV, LEA and POP r/m16.
+        0x80..=0x8F => true,
         // XCHG with the accumulator, including NOP.
         0x90..=0x97 => true,
-        // CBW, CWD, CALL far, WAIT, the flag and stack-flag instructions.
-        0x98..=0x9F => false,
+        // CBW, CWD, CALL far, WAIT, SAHF and LAHF.
+        0x98..=0x9B | 0x9E | 0x9F => false,
+        // PUSHF and POPF.
+        0x9C | 0x9D => true,
         // MOV to and from a direct address.
         0xA0..=0xA3 => true,
         // MOVS and CMPS.
@@ -350,9 +355,9 @@ pub(crate) fn is_modeled(opcode: u8, modrm: u8) -> bool {
         // The flag instructions.
         0xF8..=0xFD => false,
         0xFE => true,
-        // INC and DEC within the group. PUSH goes to the stack and the indirect
-        // calls and jumps are control transfers, neither of them modeled.
-        0xFF => matches!(reg, 0 | 1),
+        // INC, DEC and PUSH within the group. The indirect calls and jumps are
+        // control transfers, which are not extracted.
+        0xFF => matches!(reg, 0 | 1 | 6),
     }
 }
 
@@ -442,23 +447,23 @@ mod tests {
     }
 
     /// The segment pushes and pops live inside the ALU block's opcode range and
-    /// share none of its timing, so dispatching them through the block's
-    /// `opcode & 7` would give PUSH ES the accumulator-immediate cost. They are
-    /// unmodeled for now, and the point of this test is that they say so rather
-    /// than silently taking a neighbour's number.
+    /// share none of its timing. Dispatching them through the block's
+    /// `opcode & 7` would give PUSH ES the accumulator-immediate cost of 4
+    /// rather than its own 6.
     #[test]
-    fn the_stack_instructions_are_unmodeled_rather_than_borrowing_alu_timing() {
-        for op in [0x06u8, 0x0E, 0x16, 0x1E, 0x07, 0x0F, 0x17, 0x1F] {
-            assert_eq!(eu_cycles(op, 0), 0, "{op:#04X}");
-            assert!(!is_modeled(op, 0), "{op:#04X}");
+    fn segment_pushes_and_pops_are_not_alu_operations() {
+        for op in [0x06u8, 0x0E, 0x16, 0x1E] {
+            assert_eq!(eu_cycles(op, 0), 6, "{op:#04X} PUSH seg");
         }
-        for op in 0x50..=0x5Fu8 {
-            assert_eq!(eu_cycles(op, 0), 0, "{op:#04X}");
-            assert!(!is_modeled(op, 0), "{op:#04X}");
+        for op in [0x07u8, 0x0F, 0x17, 0x1F] {
+            assert_eq!(eu_cycles(op, 0), 4, "{op:#04X} POP seg");
         }
-        // Their neighbours in the same range are modeled.
-        assert!(is_modeled(0x00, 0), "ADD");
-        assert!(is_modeled(0x40, 0), "INC AX");
+        // The register forms cost one clock more to push and the same to pop.
+        assert_eq!(eu_cycles(0x50, 0), 7, "PUSH AX");
+        assert_eq!(eu_cycles(0x58, 0), 4, "POP AX");
+        // PUSHF and POPF match the segment forms.
+        assert_eq!(eu_cycles(0x9C, 0), 6, "PUSHF");
+        assert_eq!(eu_cycles(0x9D, 0), 4, "POPF");
     }
 
     /// The BCD adjusts share the ALU block's range and are not extracted, so

@@ -186,6 +186,21 @@ pub(crate) enum Eu {
         /// T-state within the current bus cycle.
         t: u8,
     },
+    /// Reading words off the stack before the instruction runs, `word` of
+    /// `total`, `byte` of that word's two, on T-state `t`.
+    PoppingStack {
+        word: u8,
+        total: u8,
+        byte: u8,
+        t: u8,
+    },
+    /// Writing words onto the stack after it has run.
+    PushingStack {
+        word: u8,
+        total: u8,
+        byte: u8,
+        t: u8,
+    },
     /// Running the instruction's microcode, with the clocks still to go.
     ///
     /// The bus is free throughout, so the BIU prefetches through it. That is
@@ -316,6 +331,26 @@ pub struct I8088 {
     /// phase knows there is something to do.
     #[save_skip(default)]
     pub(crate) operand_written: bool,
+    /// Stack words in flight: read into here before the instruction runs, or
+    /// staged into it by `push16` for the pipeline to write after.
+    ///
+    /// Three is the deepest any instruction goes, and it is an interrupt
+    /// pushing flags, segment and offset.
+    #[save_skip(default = [0; 3])]
+    pub(crate) stack_words: [u16; 3],
+    /// Where in `stack_words` the executor's next pop or push lands.
+    #[save_skip(default)]
+    pub(crate) stack_pos: u8,
+    /// Whether the pipeline is handling this instruction's stack traffic.
+    ///
+    /// False for the conditional cases a fixed count cannot predict, where
+    /// `push16` and `pop16` fall back to reaching the bus directly.
+    #[save_skip(default)]
+    pub(crate) stack_staged: bool,
+    /// The stack pointer as it stood before the pushes were staged, which is
+    /// where the pipeline starts writing them.
+    #[save_skip(default)]
+    pub(crate) stack_base: u16,
     /// What the executor actually did to its ModR/M operand while running the
     /// current instruction, as (reads, writes).
     ///
@@ -427,6 +462,10 @@ impl I8088 {
             operand_at: None,
             operand_bytes: [0; 4],
             operand_written: false,
+            stack_words: [0; 3],
+            stack_pos: 0,
+            stack_staged: false,
+            stack_base: 0,
             operand_ops: (0, 0),
             stack_ops: (0, 0),
             retired: false,
@@ -575,6 +614,8 @@ impl I8088 {
             // one without, and why the instruction after it may then stall.
             Eu::Reading { .. } => self.tick_operand_read(bus, master),
             Eu::Writing { .. } => self.tick_operand_write(bus, master),
+            Eu::PoppingStack { .. } => self.tick_stack(bus, master, true),
+            Eu::PushingStack { .. } => self.tick_stack(bus, master, false),
         }
     }
 
@@ -827,6 +868,8 @@ impl I8088 {
         self.eu = Eu::Loading;
         self.operand_at = None;
         self.operand_written = false;
+        self.stack_staged = false;
+        self.stack_pos = 0;
         self.queue_status = Some((QueueStatus::Emptied, 0));
     }
 
@@ -920,6 +963,10 @@ impl I8088 {
         self.operand_at = None;
         self.operand_bytes = [0; 4];
         self.operand_written = false;
+        self.stack_words = [0; 3];
+        self.stack_pos = 0;
+        self.stack_staged = false;
+        self.stack_base = self.sp;
 
         // Resolve the operand before running anything, by walking the loaded
         // bytes exactly as the executor is about to and then rewinding.
@@ -961,7 +1008,7 @@ impl I8088 {
         }
 
         let _ = operand_access;
-        self.eu = self.begin_execute_phase();
+        self.eu = self.begin_stack_pop_phase();
         if self.eu == Eu::Loading {
             self.run_execute_step(bus, master);
         }
@@ -978,7 +1025,29 @@ impl I8088 {
                 t: 1,
             }
         } else {
-            self.begin_execute_phase()
+            self.begin_stack_pop_phase()
+        }
+    }
+
+    /// Enter the stack-pop phase if this instruction takes words off the stack,
+    /// otherwise go on to the microcode.
+    ///
+    /// Pops come after any operand read and before execution, which is the
+    /// order the instructions need: `POP [mem]` takes its word off the stack
+    /// and then writes the operand, and an indirect far `CALL` reads its
+    /// pointer operand before pushing anything.
+    fn begin_stack_pop_phase(&mut self) -> Eu {
+        let stack = access::stack_access(self.opcode(), self.instr[self.opcode_at as usize + 1]);
+        self.stack_staged = true;
+        self.stack_pos = 0;
+        match stack.pops {
+            0 => self.begin_execute_phase(),
+            total => Eu::PoppingStack {
+                word: 0,
+                total,
+                byte: 0,
+                t: 1,
+            },
         }
     }
 
@@ -1100,9 +1169,30 @@ impl I8088 {
             self.instr_pos,
         );
 
-        // A write goes out over the bus after the instruction has decided what
-        // to write, which is another phase rather than another cycle of this
-        // one.
+        // Words the instruction pushed go out first, then any operand
+        // write-back. That order matters for `PUSH [mem]`, which reads its
+        // operand and pushes it, and it is the order the recorded traces show.
+        if self.stack_staged && self.stack_pos > 0 && self.stack_ops.1 > 0 {
+            let total = self.stack_pos;
+            self.stack_pos = 0;
+            self.eu = Eu::PushingStack {
+                word: 0,
+                total,
+                byte: 0,
+                t: 1,
+            };
+            return;
+        }
+
+        self.finish_or_write_operand();
+    }
+
+    /// Send the operand write-back out if the instruction produced one, and
+    /// otherwise retire.
+    ///
+    /// A write goes over the bus after the instruction has decided what to
+    /// write, which is another phase rather than another cycle of this one.
+    fn finish_or_write_operand(&mut self) {
         if self.operand_written && self.operand_at.is_some() {
             let width =
                 access::operand_access(self.opcode(), self.instr[self.opcode_at as usize + 1])
@@ -1124,6 +1214,16 @@ impl I8088 {
         self.eu = Eu::Loading;
         self.instr_len = 0;
         self.instr_pos = 0;
+        // Stop staging stack traffic the moment the instruction is over.
+        //
+        // An interrupt taken at the next boundary pushes three words through
+        // `push16`, and if this flag were still set they would be staged into a
+        // buffer no phase is going to write out: the words would simply vanish,
+        // and the return address with them. Q*bert takes a VBLANK NMI every
+        // frame, so it found this immediately, in the golden frame and in the
+        // boot check rather than in any CPU vector.
+        self.stack_staged = false;
+        self.stack_pos = 0;
 
         if self.transferred {
             // The queue holds bytes from the path not taken, and throwing them
@@ -1174,11 +1274,138 @@ impl I8088 {
                         t: 1,
                     };
                 } else {
-                    // The operand is in hand; the microcode runs next.
+                    // The operand is in hand; the stack comes next, then the
+                    // microcode.
+                    self.eu = self.begin_stack_pop_phase();
+                    if self.eu == Eu::Loading {
+                        self.run_execute_step(bus, master);
+                    }
+                }
+            }
+        }
+    }
+
+    /// One T-state of the stack phases, which are the operand phases over a
+    /// different address: MEMR cycles up from SP for a pop, MEMW cycles down
+    /// from where the pushes left it.
+    ///
+    /// `popping` picks the direction. The two are one function because they
+    /// differ only in which way the data moves and which status line goes out,
+    /// and keeping them apart meant two copies of the same four-T-state walk.
+    fn tick_stack<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+        popping: bool,
+    ) {
+        let (word, total, byte, t) = match self.eu {
+            Eu::PoppingStack {
+                word,
+                total,
+                byte,
+                t,
+            }
+            | Eu::PushingStack {
+                word,
+                total,
+                byte,
+                t,
+            } => (word, total, byte, t),
+            _ => return,
+        };
+
+        // Pops read upward from SP, oldest first. Pushes write from the base SP
+        // downward, and the executor staged them in the order it pushed them,
+        // so word 0 is the deepest.
+        let offset = if popping {
+            self.sp.wrapping_add(u16::from(word) * 2)
+        } else {
+            self.stack_base.wrapping_sub(u16::from(word + 1) * 2)
+        };
+        let addr = Self::physical_addr(self.ss, offset.wrapping_add(byte.into()));
+        let status = if popping {
+            BusStatus::MemRead
+        } else {
+            BusStatus::MemWrite
+        };
+
+        let rebuild = |byte: u8, t: u8| {
+            if popping {
+                Eu::PoppingStack {
+                    word,
+                    total,
+                    byte,
+                    t,
+                }
+            } else {
+                Eu::PushingStack {
+                    word,
+                    total,
+                    byte,
+                    t,
+                }
+            }
+        };
+
+        match t {
+            1 => {
+                self.begin_bus_cycle(status, addr, SegReg::SS);
+                self.eu = rebuild(byte, 2);
+            }
+            2 => {
+                self.drive_bus_cycle(status, TState::T2, SegReg::SS);
+                self.eu = rebuild(byte, 3);
+            }
+            3 => {
+                self.drive_bus_cycle(status, TState::T3, SegReg::SS);
+                let slot = word as usize;
+                if popping {
+                    let value = bus.read(master, addr);
+                    self.bus.data = Some(value);
+                    let shift = 8 * u32::from(byte);
+                    self.stack_words[slot] =
+                        (self.stack_words[slot] & !(0xFF << shift)) | (u16::from(value) << shift);
+                } else {
+                    let value = (self.stack_words[slot] >> (8 * u32::from(byte))) as u8;
+                    self.bus.data = Some(value);
+                    bus.write(master, addr, value);
+                }
+                self.eu = rebuild(byte, 4);
+            }
+            _ => {
+                self.drive_bus_cycle(status, TState::T4, SegReg::SS);
+                if byte == 0 {
+                    // The high byte of the same word.
+                    self.eu = rebuild(1, 1);
+                } else if word + 1 < total {
+                    self.eu = if popping {
+                        Eu::PoppingStack {
+                            word: word + 1,
+                            total,
+                            byte: 0,
+                            t: 1,
+                        }
+                    } else {
+                        Eu::PushingStack {
+                            word: word + 1,
+                            total,
+                            byte: 0,
+                            t: 1,
+                        }
+                    };
+                } else if popping {
+                    // Everything the instruction will pop is in hand.
+                    self.stack_pos = 0;
                     self.eu = self.begin_execute_phase();
                     if self.eu == Eu::Loading {
                         self.run_execute_step(bus, master);
                     }
+                } else {
+                    // Nothing in this instruction set both pushes and writes a
+                    // memory operand, but the write-back is checked rather than
+                    // assumed away: losing one silently would be a wrong answer
+                    // rather than a wrong cycle count.
+                    self.finish_or_write_operand();
                 }
             }
         }
