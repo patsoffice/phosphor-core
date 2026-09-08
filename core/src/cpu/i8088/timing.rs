@@ -574,13 +574,21 @@ pub(crate) fn will_transfer(opcode: u8, modrm: u8, taken: bool) -> bool {
     }
 }
 
-/// T-states the loader stops for after reading a prefix byte.
-///
-/// The manual gives a segment override, `LOCK` and `REP` two clocks apiece. One
-/// is the loader pulling the byte out of the queue; this is the other, and the
-/// recording shows it falling immediately after that read rather than anywhere
-/// in the instruction's own microcode. See [`super::I8088::tick_eu`].
-pub(crate) const PREFIX_PAUSE: u8 = 1;
+// `PREFIX_PAUSE` stood here, one T-state the loader stopped for after reading a
+// prefix byte. The manual gives a segment override, `LOCK` and `REP` two clocks
+// apiece, and the reasoning was that one is the loader pulling the byte out of
+// the queue and this was the other.
+//
+// **The second clock is real and this was charging it twice.** It is the T-state
+// [`super::I8088::tick_eu`] spends taking the prefix out of the preload: a
+// non-prefix byte falls straight through and reads the next one on that same
+// T-state, and a prefix cannot, because the stage is still `Opcode` and the
+// fall-through only admits a ModR/M. That return is the prefix's second clock,
+// and it was already being spent before this was added on top.
+//
+// The whole prefixed half of the corpus was one clock out at the prefix for it,
+// which no survey could see: the probe took the unprefixed population until
+// `--prefixed` existed.
 
 /// Where in an instruction the loader stops for a T-state, and for how long.
 ///

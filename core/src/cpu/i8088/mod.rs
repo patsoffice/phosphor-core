@@ -1241,7 +1241,22 @@ impl I8088 {
             byte,
         ));
 
-        self.accept_loader_byte(byte, stage_before, bus, master);
+        let complete = self.accept_loader_byte(byte, stage_before, bus, master);
+        // **The ModR/M byte comes with the dispatch and anything else waits for
+        // its own microcode line**, which is the rule the preload path states
+        // and spends by returning without reading again. Nothing spends it here,
+        // so an opcode read out of the queue with an immediate behind it charges
+        // it directly.
+        //
+        // Only a prefix puts an opcode on this path at all, which is why this
+        // was invisible while the surveys took the unprefixed population: an
+        // unprefixed opcode always arrives in the preload. `mov al, D4h` under
+        // an override reads its opcode and its immediate on consecutive
+        // T-states here and two apart on the part, and `01C: Q -> tmpbL` is the
+        // line standing between them.
+        if !complete && stage_before == Stage::Opcode && matches!(self.stage, Stage::Immediate(_)) {
+            self.loader_stall += 1;
+        }
     }
 
     /// Take one instruction byte into the loader, wherever it came from, and
@@ -1265,7 +1280,6 @@ impl I8088 {
         self.instr[self.instr_len as usize] = byte;
         self.instr_len += 1;
 
-        let was_prefix = stage_before == Stage::Opcode && decode::decode_prefix(byte).is_some();
         let complete = self.advance_stage();
         if !complete {
             // The pause belongs to the byte just read, so it is charged only
@@ -1282,24 +1296,27 @@ impl I8088 {
                 _ => 0,
             };
         }
-        // **A prefix costs a T-state of its own, after the byte is read.** The
-        // recording puts it beyond argument: `3E 8B 3D` from a full queue reads
-        // the override on the opening T-state, nothing on the next, and the
-        // opcode on the one after, on every case of the file. This core read the
-        // opcode immediately and paid the same clock at the far end, as
-        // microcode, which is where the manual's second clock per prefix had
-        // been going. The total was right and every queue read and every fetch
-        // behind it was a T-state early, which the bus schedule then compensated
-        // for; when the bus stopped compensating, 140,000 cases of the override
-        // population were `+1` for this alone.
+        // **A prefix costs a T-state of its own, after the byte is read, and
+        // that T-state is already spent.** The recording puts the cost beyond
+        // argument: `3E 8B 3D` from a full queue reads the override on the
+        // opening T-state, nothing on the next, and the opcode on the one after,
+        // on every case of the file. What took two attempts to place is *where*.
         //
-        // It is not charged back to the microcode, because it *is* the
-        // microcode: the second of the prefix's two documented clocks, moved to
-        // the side of the read that it happens on. See
-        // [`I8088::begin_execute_phase`], which no longer adds it there.
-        if was_prefix {
-            self.loader_stall = timing::PREFIX_PAUSE;
-        }
+        // It is the return in [`I8088::tick_eu`] behind this call. A byte that
+        // is not a prefix falls through there and reads the next one on the same
+        // T-state; a prefix cannot, because the stage is still `Opcode` and only
+        // a ModR/M is admitted, so the clock goes on the prefix and nothing
+        // else. Setting a loader stall here as well charged the same clock a
+        // second time, and every case in the corpus that begins with a prefix
+        // took the byte behind it a T-state late.
+        //
+        // Before that it had been charged at the far end instead, as microcode,
+        // which is where the manual's second clock per prefix had been going.
+        // The total was right and every queue read and every fetch behind it was
+        // a T-state early, which the bus schedule then compensated for; when the
+        // bus stopped compensating, 140,000 cases of the override population were
+        // `+1` for that alone. See [`I8088::begin_execute_phase`], which no
+        // longer adds it there either.
         if complete {
             if self.immediate_resuming {
                 // The loader has just gone back for the immediate of an
@@ -3051,6 +3068,42 @@ impl I8088 {
                 // the fetch's T3 and abandoned it. Three clocks, on every
                 // register-form case of the file.
                 microcode::Step::Susp => {
+                    // **This is a faithful transcription and its residual is not
+                    // in the condition.** `biu_fetch_suspend` is five lines:
+                    // set `Suspended`, wait for the bus if `bus_status_latch ==
+                    // CodeFetch`, and reset `ta_cycle` and `pl_status`
+                    // unconditionally. `biu_bus_wait_finish` cycles until
+                    // `t_cycle == T4`, stopping at it. That is what is written
+                    // below, line for line, `T0` special cases included by
+                    // being absent.
+                    //
+                    // What differs is *when* the two are asked. The published
+                    // suspend is called between one `cycle()` and the next, so
+                    // it reads the bus as of the end of a clock; this runs
+                    // inside `execute_cycle` before `tick_bus`, so it reads the
+                    // bus as of the end of the clock *before*. Everything left
+                    // on this line follows from that one T-state, and it is a
+                    // structural difference, not a term to add.
+                    //
+                    // **Two attempts to patch it by hand are refuted, with
+                    // numbers.** Both treated an address cycle at `T0` as
+                    // already latched, which is what the ordering argument
+                    // implies:
+                    //
+                    // - Waiting there deadlocks, because the suspension set
+                    //   below is itself what stops `advance_address_cycle` ever
+                    //   latching a `T0`. Latching the cycle by hand to get past
+                    //   that took the state gate to 2780889 of 2977000.
+                    // - Declining to suspend for that one clock, so the bus tick
+                    //   latches it and the wait below takes over next clock,
+                    //   keeps the state gate whole and still loses: the
+                    //   unprefixed population went 97.52% to 96.50%, 66 cases,
+                    //   against 4 gained on the prefixed one.
+                    //
+                    // `retn` is why. Its fetch starts at cycle 9 and the part
+                    // cancels it at cycle 11; `jl` under a prefix and `jmp bp`
+                    // have theirs kept and driven to T4. Both look identical to
+                    // a `T0` test from in here.
                     self.fetch = FetchState::Suspended;
                     // `SUSP` does two different things, and which one applies
                     // turns on whether the fetch has reached the bus:
