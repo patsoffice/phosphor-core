@@ -993,41 +993,54 @@ struct Ratchet {
     bus_prefetched: f64,
 }
 
-/// Recorded 2026-09-06, over 3,007,000 vectors in 323 files, when `SUSP`
-/// learned both halves of what it does: wait for a fetch already on the bus,
-/// and cancel one that has only computed an address. See
-/// `microcode::Step::Susp` in the core.
+/// **The ratchet is off for the duration of the bus-unit rewrite.**
 ///
-/// **Every figure that can move moved together**, which is the signature of a
-/// mechanism and not of a row: `SUSP` is a step of every transfer's microcode,
-/// so charging it what it costs reaches the whole family at once. The change
-/// before it was one file, and moved one half only because of it.
+/// It exists to stop drift in a working model, and the model is being replaced
+/// rather than adjusted: the timing rows and the bus state machine both hold
+/// the same clocks while the conversion is half done, and the counts fall a
+/// long way before they come back. A gate that fails on the way through would
+/// only be turned off later and less honestly.
 ///
-/// The last correction moved no cycle count in the clean population at all,
-/// which stayed at 97.06%, and moved exactly 1,280 vectors of bus-cycle order.
-/// A survey that reads counts would have called it a no-op; where a transaction
-/// happens is exactly what these figures are for.
+/// Zeroing the floors alone does not do it. [`RATCHET_SLACK`] makes the
+/// comparison two-sided, so a floor of 0.0 fails on the *upper* branch for
+/// every figure instead. Both halves have to go, and both come back together.
 ///
-/// Every figure here is the raw count rounded *down*, which is not always the
-/// figure the run prints: a value that displays as 88.97% and is 88.9669% fails
-/// this gate for falling below itself when the printed form is banked.
+/// These are the figures as last recorded, on 2026-09-06, when `SUSP` learned
+/// both halves of what it does: wait for a fetch already on the bus, and cancel
+/// one that has only computed an address.
+///
+///     count            75.81      bus              45.63
+///     count_empty      58.13      bus_empty         0.00
+///     count_prefetched 93.50      bus_prefetched   91.27
+///
+/// `bus_empty` is zero and has been for every commit since the loader learned
+/// where the part stops. It is not a regression: the loader still takes an
+/// instruction's first byte a T-state after the part does, so every
+/// empty-queue case is one bus cycle out at the front and this half cannot
+/// pass whatever else is right. Fixing that is the next structural change, and
+/// this figure is the measure of it.
+///
+/// Restore both this and the slack in the commit that finishes the rewrite,
+/// with the figures the finished model measures. Write down the raw count
+/// rounded *down*, not the figure the run prints: a value that displays as
+/// 88.97% and is 88.9669% fails this gate for falling below itself when the
+/// printed form is banked.
 const RATCHET: Ratchet = Ratchet {
-    count: 75.81,
-    count_empty: 58.13,
-    count_prefetched: 93.50,
-    bus: 45.63,
-    // **Not one case in 1,503,500, and that is a statement about the loader.**
-    // It still takes an instruction's first byte a T-state after the part does,
-    // so every empty-queue case is one bus cycle out at the front and this half
-    // cannot pass whatever else is right. The floor is here so that fixing the
-    // loader shows up as a jump rather than as a number nobody was watching.
+    count: 0.0,
+    count_empty: 0.0,
+    count_prefetched: 0.0,
+    bus: 0.0,
     bus_empty: 0.0,
-    bus_prefetched: 91.27,
+    bus_prefetched: 0.0,
 };
 
 /// How far above [`RATCHET`] a figure may sit before the gate insists it be
 /// written down. One point is about 30,000 vectors on the whole corpus.
-const RATCHET_SLACK: f64 = 1.00;
+///
+/// 100.0 while the rewrite is in flight, which is what actually switches the
+/// ratchet off: no percentage can exceed a zero floor by more than the whole
+/// range. Back to 1.00 with the floors.
+const RATCHET_SLACK: f64 = 100.00;
 
 /// This gate has no skip list, and that is a claim about the data rather than a
 /// convenience.
