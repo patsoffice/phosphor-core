@@ -1702,9 +1702,7 @@ impl I8088 {
         match self.fetch {
             FetchState::Suspended => self.ta = TaCycle::Td,
             FetchState::PausedFull => {
-                if self.t_cycle == TCycle::Ti {
-                    self.ta = TaCycle::Td;
-                } else {
+                if self.t_cycle != TCycle::Ti {
                     // Inside a bus cycle the fetch resumes at the T4 decision,
                     // so there is nothing to do here.
                     return;
@@ -1876,19 +1874,26 @@ impl I8088 {
     /// Drive one byte of an execution-unit transfer, and say whether the
     /// execution unit is free to move on this T-state.
     ///
-    /// **A read holds to T4 and a write lets go at T3.** The asymmetry is real:
-    /// a read has to wait for the byte the device drives, and a write has
-    /// nothing left to wait for once the data is on the pins. It is why the
-    /// next instruction's first byte comes out of the queue on the very
-    /// T-state that finishes a write, with that write's T4 going out behind it.
+    /// **A read holds to T4 and the last byte of a write lets go at T3.** The
+    /// asymmetry is real: a read has to wait for the byte the device drives,
+    /// and a write has nothing left to wait for once the data is on the pins.
+    /// It is why the next instruction's first byte comes out of the queue on
+    /// the very T-state that finishes a write, with that write's T4 going out
+    /// behind it.
     ///
+    /// **Only the last byte.** A word write is two bus cycles and the part
+    /// waits out the first one to T4 before asking for the second; only the
+    /// cycle that ends the transfer releases early. Releasing both at T3 costs
+    /// one clock on every word write, which is what put the whole `PUSH` family
+    /// at `-1` on all 5,000 cases of each of its twelve files while `POP`, which
+    /// reads, was exact.
     /// **A phase that has more bytes to move must ask for the next one on the
     /// same clock**, which is why every caller is a loop. The part's microcode
     /// asks for the second byte of a word while the first is still at T4, and
-    /// that is what puts the two cycles back to back: [`Self::begin_bus_request`]
-    /// spends no address cycle from there. Waiting for the next clock instead
-    /// asks from `Ti`, where the whole address cycle runs, and costs three
-    /// clocks on every byte after the first.
+    /// that is what puts the two cycles back to back:
+    /// [`Self::begin_bus_request`] spends no address cycle from there. Waiting
+    /// for the next clock instead asks from `Ti`, where the whole address cycle
+    /// runs, and costs three clocks on every byte after the first.
     fn eu_bus_step(&mut self, req: BusRequest) -> bool {
         if !self.eu_owns_bus {
             if self.bus_req.is_none() {
@@ -1897,10 +1902,11 @@ impl I8088 {
             self.poll_bus_request();
             return false;
         }
-        let releases_at_t3 = matches!(
-            self.bus_status_latch,
-            BusStatus::MemWrite | BusStatus::IoWrite
-        );
+        let releases_at_t3 = self.final_transfer
+            && matches!(
+                self.bus_status_latch,
+                BusStatus::MemWrite | BusStatus::IoWrite
+            );
         let done = if releases_at_t3 {
             self.t_cycle == TCycle::T3
         } else {
@@ -2121,9 +2127,6 @@ impl I8088 {
         // slot from under it.
         self.fetch = FetchState::Normal;
         self.fetch_start();
-        self.instr_len = 0;
-        self.instr_pos = 0;
-        self.stage = Stage::Opcode;
         // The EU goes back to the start too. Discarding the loaded instruction
         // without discarding the pipeline phase that was operating on it leaves
         // a read or write phase running against an instruction that no longer
@@ -2133,13 +2136,22 @@ impl I8088 {
         // zero-length instruction.
         //
         // **Unless a step list is still running**, which is the one flush that
-        // is not the end of anything. `INT n` throws the queue away with a
-        // push still to go, so that the reload at the handler is on the bus
-        // before the return offset is; tearing the phase down here would drop
-        // that push and hand the loader a half-retired instruction. The queue
-        // and the prefetcher above are flushed either way, because those are
-        // what the step actually does.
+        // is not the end of anything. `INT n` throws the queue away with a push
+        // still to go, so that the reload at the handler is on the bus before
+        // the return offset is, and `IRET` with its flag pop and the whole of
+        // its body still to come. Tearing the phase down here would drop those
+        // and hand the loader a half-retired instruction. The queue and the
+        // prefetcher above are flushed either way, because those are what the
+        // step actually does.
+        //
+        // The loaded instruction survives for the same reason. A routine that
+        // flushes in the middle of itself still has to run its body, and
+        // `run_execute_step` reads the opcode and its length out of exactly
+        // these fields.
         if self.mc.is_none() {
+            self.instr_len = 0;
+            self.instr_pos = 0;
+            self.stage = Stage::Opcode;
             self.eu = Eu::Loading;
             self.operand_at = None;
             self.operand_written = false;
@@ -2896,6 +2908,15 @@ impl I8088 {
                 // The routine is over. Everything it was going to put on the
                 // bus is there, and the flush, if it had one, has already
                 // happened at the point its microcode puts it.
+                //
+                // A routine that flushed does not owe another. The executor
+                // points the stream at the target on its way through the body,
+                // which arms the transfer again after the step already
+                // discharged it, and `finish_instruction` would throw the queue
+                // away a second time on the strength of that.
+                if cursor.flushed {
+                    self.transferred = false;
+                }
                 self.mc = None;
                 self.finish_instruction();
                 return self.eu;
@@ -2955,6 +2976,8 @@ impl I8088 {
                 microcode::Step::Flush => {
                     self.pending_flush = true;
                     self.transferred = false;
+                    cursor.flushed = true;
+                    self.mc = Some(cursor);
                 }
                 // A read is not on the bus on the clock its microcode asks for
                 // it: the address cycle runs in front of it. That is the bus
@@ -2972,10 +2995,50 @@ impl I8088 {
                         byte: 0,
                     };
                 }
+                // A pop is a read the routine drives rather than one the
+                // pipeline runs ahead of it, which is what lets a step come
+                // between two of them. The far returns and `IRET` all need one:
+                // a `SUSP` between the offset and the segment, and a `Flush`
+                // between the segment and the flags.
+                microcode::Step::Pop => {
+                    return Eu::PoppingStack {
+                        word: cursor.popped,
+                        total: cursor.popped + 1,
+                        byte: 0,
+                    };
+                }
+                microcode::Step::ReadPort => {
+                    let acc = access::port_access(self.opcode()).expect("a port instruction");
+                    return Eu::PortReading {
+                        byte: 0,
+                        total: acc.width.bytes(),
+                    };
+                }
+                microcode::Step::WritePort => {
+                    let acc = access::port_access(self.opcode()).expect("a port instruction");
+                    // The executor staged the byte on the `Run` before this and
+                    // asked for a write; the routine is what places it, so the
+                    // request is discharged here.
+                    self.port_written = false;
+                    return Eu::PortWriting {
+                        byte: 0,
+                        total: acc.width.bytes(),
+                    };
+                }
                 // Costs nothing: the values the pushes carry are decided here,
                 // and the clocks the part spends deciding them are the spends
                 // on either side.
                 microcode::Step::Run => self.run_execute_step(bus, master),
+                // The transfer alone, out of the words already popped, so a
+                // flush can follow it with the rest of the instruction still to
+                // come. Word 0 is the offset and word 1 the segment, which is
+                // the order they came off the stack in.
+                microcode::Step::Transfer { far } => {
+                    if far {
+                        self.set_cs(self.stack_words[1]);
+                    }
+                    self.set_ip(self.stack_words[0]);
+                }
             }
         }
     }
@@ -3496,7 +3559,13 @@ impl I8088 {
                 };
                 continue;
             }
-            if reading {
+            // A port cycle inside a step list is one step of several, and what
+            // follows it is the next step rather than the instruction: an `IN`
+            // runs its body behind the read and an `OUT` retires behind the
+            // write.
+            if self.mc.is_some() {
+                self.eu = self.advance_microcode(bus, master);
+            } else if reading {
                 // The port's bytes are in hand, so the instruction can run.
                 self.eu = Eu::Loading;
                 self.run_execute_step(bus, master);
@@ -3684,6 +3753,17 @@ impl I8088 {
                 continue;
             }
             if popping {
+                // A pop inside a step list is one word of several, and what
+                // follows it is the next step rather than the instruction: a
+                // far return suspends the prefetcher between its offset and its
+                // segment, and `IRET` throws the queue away between its segment
+                // and its flags.
+                if let Some(mut cursor) = self.mc {
+                    cursor.popped += 1;
+                    self.mc = Some(cursor);
+                    self.eu = self.advance_microcode(bus, master);
+                    return;
+                }
                 // Everything the instruction will pop is in hand.
                 self.stack_pos = 0;
                 self.eu = self.begin_execute_phase();

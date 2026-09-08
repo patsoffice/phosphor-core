@@ -44,6 +44,7 @@
 
 use std::collections::BTreeMap;
 use std::io::Read;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use phosphor_core::core::{BusMaster, BusMasterComponent};
 use phosphor_core::cpu::i8088::{I8088, QueueStatus};
@@ -549,12 +550,19 @@ fn side_by_side() {
     // tell them apart. Whatever separates them is in these two traces.
     dump_side_by_side("9A", false, 4);
     dump_side_by_side("EA", false, 4);
-    // The stack pair, from a full queue, where `fetch_gap_diff` says this core
-    // runs a code fetch inside a `POP`'s span that the part does not run at
-    // all, and starts a `PUSH`'s first write a T-state early. Both uniform on
-    // every case of every file in their families.
+    // The stack pair, from a full queue. `POP` is exact cycle for cycle since
+    // its microcode was transcribed; `PUSH` is the one that still runs short.
     dump_side_by_side("58", false, 4);
     dump_side_by_side("50", false, 4);
+    // The port family, whose four encodings differ only in how many clocks sit
+    // in front of the transfer and which way it goes. `EC` reads through DX
+    // with no microcode at all and is exact; `E4` reads with one clock in front
+    // and runs long; `EE` writes with one clock in front and runs short. Same
+    // step list, opposite errors, which is the discriminator between the
+    // transfer's position and the point the instruction retires.
+    dump_side_by_side("EC", false, 4);
+    dump_side_by_side("E4", false, 4);
+    dump_side_by_side("EE", false, 4);
 }
 
 /// Replay a case and count the code fetches this core starts before its first
@@ -1493,6 +1501,66 @@ fn every_opcode_file() -> Vec<String> {
         .collect()
 }
 
+/// Replay `f` over every file at once, returning the results in input order.
+///
+/// **These instruments are dominated by loading, not by replaying.** Each of
+/// the 323 files is a gzip stream that has to be decompressed and parsed as
+/// JSON before a single T-state runs, and that work is per file and shares
+/// nothing. Spreading it over the machine takes the whole-corpus survey from
+/// about seventy seconds to a few, which matters because it is the instrument
+/// run between every change.
+///
+/// Results come back in input order however the work was scheduled, so a
+/// failure list stays diffable between runs, the same guarantee the harness's
+/// registry sweeps make. `PHOSPHOR_TEST_THREADS=1` forces it back to sequential
+/// for bisecting.
+fn map_files<R, F>(stems: &[String], f: F) -> Vec<R>
+where
+    R: Send,
+    F: Fn(&str) -> R + Sync,
+{
+    let threads = survey_threads().min(stems.len().max(1));
+    if threads <= 1 {
+        return stems.iter().map(|s| f(s)).collect();
+    }
+
+    // Files differ in size by a factor of twenty, so the work is handed out one
+    // at a time rather than in contiguous blocks: a thread that draws the small
+    // files comes back for more instead of finishing early.
+    let next = AtomicUsize::new(0);
+    let mut done: Vec<(usize, R)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..threads)
+            .map(|_| {
+                let next = &next;
+                let f = &f;
+                scope.spawn(move || {
+                    let mut mine = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(stem) = stems.get(i) else { break };
+                        mine.push((i, f(stem)));
+                    }
+                    mine
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().expect("a survey thread panicked"))
+            .collect()
+    });
+    done.sort_by_key(|&(i, _)| i);
+    done.into_iter().map(|(_, r)| r).collect()
+}
+
+/// How many threads a whole-corpus sweep may use.
+fn survey_threads() -> usize {
+    match std::env::var("PHOSPHOR_TEST_THREADS") {
+        Ok(v) => v.parse().unwrap_or(1).max(1),
+        Err(_) => std::thread::available_parallelism().map_or(1, |n| n.get()),
+    }
+}
+
 /// The same residual, split by addressing mode, so that a memory-operand
 /// instruction's error can be attributed to a component of its address rather
 /// than to the instruction.
@@ -2262,23 +2330,26 @@ fn segment_override_rows() {
 #[test]
 #[ignore = "survey, not a check: how far each row is from the recording"]
 fn row_residuals() {
-    let mut rows: Vec<RowResidual> = Vec::new();
-    for stem in every_opcode_file() {
-        let hist = residual_histogram(&stem);
+    let files = every_opcode_file();
+    let mut rows: Vec<RowResidual> = map_files(&files, |stem| {
+        let hist = residual_histogram(stem);
         let cases: usize = hist.values().sum();
         if cases == 0 {
-            continue;
+            return None;
         }
         let exact = hist.get(&0).copied().unwrap_or(0);
         let mut modes: Vec<(i64, usize)> = hist.into_iter().collect();
         modes.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
-        rows.push(RowResidual {
-            stem,
+        Some(RowResidual {
+            stem: stem.to_string(),
             cases,
             wrong: cases - exact,
             modes,
-        });
-    }
+        })
+    })
+    .into_iter()
+    .flatten()
+    .collect();
 
     let cases: usize = rows.iter().map(|r| r.cases).sum();
     let wrong: usize = rows.iter().map(|r| r.wrong).sum();

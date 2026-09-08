@@ -119,22 +119,13 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
     let reg = (modrm >> 3) & 7;
 
     match opcode {
-        // PUSH and POP of a segment register sit in the last two columns of the
-        // ALU block's rows and have nothing to do with it. They are matched
-        // ahead of it so that the block's `opcode & 7` dispatch cannot charge
-        // PUSH ES the accumulator-immediate time.
+        // `POP CS`, the one member of the pop family without a routine. It is a
+        // pop on this part and a prefix escape on every later one. Matched
+        // ahead of the ALU block so that its `opcode & 7` dispatch cannot
+        // charge it the accumulator-immediate time.
         //
-        // Table 1-16 gives PUSH seg 10 clocks with one transfer and POP seg 8
-        // with one.
-        //
-        // **The push is 11 on this part, not 10**, uniformly: -1 on all 5000
-        // cases of each of the four files, where `PUSH reg`, documented at 11,
-        // reads +0. `PUSHF` is documented at 10 and reads the same -1. So all
-        // three push forms cost the part 11 and the table's 10 describes none
-        // of them. Both numbers are here rather than the disagreement being
-        // tidied away.
-        0x06 | 0x0E | 0x16 | 0x1E => 11 - 4,
-        0x07 | 0x0F | 0x17 | 0x1F => 8 - 4,
+        // Table 1-16 gives POP seg 8 clocks with one transfer.
+        0x0F => 8 - 4,
 
         // DAA and DAS sit in the same block for the same reason, and take 4
         // clocks whichever way their adjust goes. AAA and AAS are the other two
@@ -421,141 +412,41 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
                     11 - 4
                 }
             }
-            // The indirect calls and jumps, measured like the direct ones.
-            // Documented at 16 and 21+EA for the near call, 11 and 18+EA for
-            // the near jump, 37+EA and 24+EA for the two far forms, which have
-            // no register encoding at all.
-            //
-            // The memory forms sit one clock above their register counterparts
-            // here, which is what the recording's commonest case gives and what
-            // the manual's own difference between the two rows says. It is a
-            // weaker number than the rest: a memory form's recorded span also
-            // carries the effective address and the operand read, and those
-            // have a residual of their own that is not this instruction's.
-            2 => {
-                if is_mem {
-                    9
-                } else {
-                    8
-                }
-            }
+            // The indirect far call and far jump, documented at 37+EA and
+            // 24+EA, with no register encoding at all. The near forms beside
+            // them, reg 2 and 4, have no row: they run transcribed routines,
+            // and these two go the same way once a step can drive the operand
+            // read that their microcode sits in front of.
             3 => 16,
-            4 => {
-                if is_mem {
-                    8
-                } else {
-                    7
-                }
-            }
             5 => 10,
             _ => 0,
         },
 
-        // PUSH and POP with the register in the opcode: 11 and 8 clocks, one
-        // transfer each. NOP needs no arm of its own: it is an XCHG of AX with
-        // itself and the table gives both 3.
-        0x50..=0x57 => 11 - 4,
-        0x58..=0x5F => 8 - 4,
-
-        // PUSHF and POPF, which the table gives at 10 and 8 with one transfer.
-        // The push is 11 on this part, for the reason under the segment pushes
-        // above: every push form costs 11 and only `PUSH reg` is documented so.
-        0x9C => 11 - 4,
-        0x9D => 8 - 4,
-
-        // -------------------------------------------------------------------
-        // The control transfers that always transfer. Measured, for the reason
-        // in the module documentation; the documented clocks are quoted beside
-        // each so the disagreement stays visible rather than being tidied away.
-        // -------------------------------------------------------------------
-
-        // CALL far direct, which pushes CS and IP. Documented 28 with two
-        // transfers.
+        // The unconditional transfers that carry their target in the
+        // instruction have no rows: `CALL rel16`, `JMP rel16`, `JMP rel8`,
+        // `JMP far` and `CALL far` all run transcribed routines.
         //
-        // Two clocks below what the recorded span alone would give, for the
-        // reason set out under `0xEA`: both are five bytes long, which is one
-        // more than the queue holds, and over an instruction that long the
-        // part's read schedule and this core's differ.
+        // Their old rows recorded a disagreement worth keeping in mind while
+        // the transcriptions are checked. `9A` and `EA` are five bytes long,
+        // one more than the queue holds, so their spans included the execution
+        // unit waiting for a byte, and the row was measured against a read
+        // schedule that differed from the part's. Both read `-1` on every
+        // full-queue case and were exact on every empty-queue one, which is
+        // what a population-blind constant looks like when the error is really
+        // in the refill.
         //
-        // **Its `-1` is not this row's, and raising the row is measured and
-        // wrong.** Since [`loader_stall`] landed, `9A` and `EA` read `-1` on
-        // every full-queue case, and a uniform residual usually means a wrong
-        // constant. It does not here: they are already exact in the
-        // empty-queue population, and a row is population-blind, so raising it
-        // by one traded 2,489 cases for more than it gained, at 73.59% against
-        // 73.76% with every other figure down with it. See the note under
-        // `charged_to_microcode`'s caller: the clock is in the refill, which
-        // this pipeline cannot express without moving a bus cycle.
-        //
-        // Its **bus order** is still wrong, and the count cannot see it. This
-        // core runs both pushes, then flushes, then reloads; the part starts
-        // the fetch at the target between its two pushes:
+        // `9A`'s **bus order** was wrong in a way no count could see. The rows
+        // ran both pushes, then flushed, then reloaded; the part starts the
+        // fetch at the target between its two pushes:
         //
         // ```text
         //   got  [... W:CS W:CS W:IP W:IP F:target]
         //   want [... W:CS W:CS F:target W:IP W:IP]
         // ```
         //
-        // Every address and byte matches. Only the interleaving differs, and
-        // only the bus-cycle comparison says so.
-        0x9A => 14,
-        // The near returns and their undocumented aliases one encoding below,
-        // popping IP. Documented 20 and 16, one transfer each.
-        0xC0 | 0xC2 => 10,
-        0xC1 | 0xC3 => 5,
-        // The far returns, popping IP and CS. Documented 25 and 26, two
-        // transfers each.
-        0xC8 | 0xCA => 13,
-        0xC9 | 0xCB => 11,
-        // INT 3 and INT n. Documented 52 with five transfers, and the pipeline
-        // now runs all five: the four bytes of the vector as MEMR cycles ahead
-        // of the microcode, and the three words of flags, CS and IP as MEMW
-        // cycles after it. That is the order the recording shows.
-        0xCC => 24,
-        0xCD => 23,
-        // IRET, popping IP, CS and the flags. Documented 32, three transfers.
-        0xCF => 13,
-        // IN and OUT. Documented 10 with an immediate port and 8 through DX,
-        // one transfer each, and the transfer is an I/O cycle the pipeline
-        // runs. A word port is two of them, at consecutive port numbers.
-        //
-        // `IN` lands on the documented figure exactly, on all 5,000 cases of
-        // each of its four encodings. `OUT` needs one clock more, uniformly,
-        // which is the asymmetry the manual gives the ModR/M forms of `MOV`
-        // and does not give these: a store costs the EU one more than a load.
-        // The direct-address `MOV`s are the same story, printed equal in the
-        // table and measured a clock apart.
-        0xE4 | 0xE5 => 10 - 4,
-        0xE6 | 0xE7 => 10 - 4 + 1,
-        0xEC | 0xED => 8 - 4,
-        0xEE | 0xEF => 8 - 4 + 1,
-
-        // CALL near direct, pushing IP. Documented 19, one transfer.
-        0xE8 => 8,
-        // JMP near, far and short, none of which touch memory. All three are
-        // documented at 15 and all three come out at 10, which is worth
-        // noticing: the manual gives them one number and so does the part.
-        //
-        // The far form needed a correction the other two did not, and it is the
-        // one place where a recorded span cannot be read off directly. `JMP
-        // far` is five bytes long, one more than the queue holds, so its span
-        // includes the EU waiting for a byte, and the part waits differently
-        // from this core: it reads its opcode, idles a cycle, then takes the
-        // next three back to back, where this core takes all four back to back
-        // and then stalls. The microcode window is what is comparable, and the
-        // recording measures it directly: from the last instruction byte read
-        // to the queue flush is five cycles, and five plus its five bytes is
-        // this row. Reading the span instead gives 12 and runs two clocks long
-        // on every case.
-        //
-        // That idle cycle is now [`loader_stall`]'s, which leaves this row a
-        // clock short on the full-queue cases and exactly right on the
-        // empty-queue ones. Raising it to 11 was measured and rejected for the
-        // reason under `0x9A`. `E9` and `EB` are three and two bytes, never
-        // outrun the queue, and are exact.
-        0xE9 => 10,
-        0xEA => 10,
-        0xEB => 10,
+        // The routine places the flush where FARCALL puts it, between the two,
+        // which is the whole reason a step list can express this and a row
+        // cannot.
 
         // Everything else: not yet modeled, and charged nothing. See the module
         // documentation.
@@ -1763,39 +1654,39 @@ mod tests {
         );
     }
 
-    /// The segment pushes and pops live inside the ALU block's opcode range and
-    /// share none of its timing. Dispatching them through the block's
-    /// `opcode & 7` would give PUSH ES the accumulator-immediate cost of 4
-    /// rather than its own 6.
+    /// **No opcode may be priced twice.** An instruction whose microcode has
+    /// been transcribed is walked step by step and never reaches
+    /// [`eu_cycles`], so a row left behind for it is dead; but a row left
+    /// behind is also how the two models come back to life together after
+    /// somebody adds an arm here without checking. Since the bus unit grew a
+    /// real address cycle the row is longer than the instruction by exactly the
+    /// clocks it holds for one, so charging both is not a small error.
+    ///
+    /// This is the invariant that replaces the old per-family row assertions
+    /// for the stack and the returns: those families are the microcode
+    /// module's now, and `microcode`'s own sweeps hold their shape.
     #[test]
-    fn segment_pushes_and_pops_are_not_alu_operations() {
-        for op in [0x06u8, 0x0E, 0x16, 0x1E] {
-            assert_eq!(eu_cycles(op, 0), 7, "{op:#04X} PUSH seg");
+    fn an_opcode_with_a_routine_has_no_row() {
+        for opcode in 0..=u8::MAX {
+            for modrm in [0x00u8, 0xC0, 0x10, 0xD0, 0x20, 0xE0, 0x30, 0xF0] {
+                if super::super::microcode::routine(opcode, modrm).is_some() {
+                    assert_eq!(
+                        eu_cycles(opcode, modrm),
+                        0,
+                        "{opcode:#04X}/{modrm:#04X} is priced by a routine and by a row"
+                    );
+                }
+            }
         }
-        for op in [0x07u8, 0x0F, 0x17, 0x1F] {
-            assert_eq!(eu_cycles(op, 0), 4, "{op:#04X} POP seg");
-        }
-        assert_eq!(eu_cycles(0x50, 0), 7, "PUSH AX");
-        assert_eq!(eu_cycles(0x58, 0), 4, "POP AX");
-        assert_eq!(eu_cycles(0x9C, 0), 7, "PUSHF");
-        assert_eq!(eu_cycles(0x9D, 0), 4, "POPF");
     }
 
-    /// Every push costs the part the same, whatever it is pushing, and the pops
-    /// likewise. Table 1-16 says otherwise for four of the six: it gives the
-    /// segment pushes and `PUSHF` 10 clocks against `PUSH reg`'s 11. The
-    /// recording is uniform against all three, so the rows agree here and
-    /// disagree with the manual, which is the way round worth pinning.
+    /// `POP CS` keeps its row, and keeps it out of the ALU block it sits
+    /// inside. Dispatching it through that block's `opcode & 7` would give it
+    /// the accumulator-immediate cost of 4 by a different route and hide the
+    /// omission.
     #[test]
-    fn every_push_costs_the_same_whatever_it_pushes() {
-        let push = eu_cycles(0x50, 0);
-        for op in [0x06u8, 0x0E, 0x16, 0x1E, 0x9C] {
-            assert_eq!(eu_cycles(op, 0), push, "{op:#04X} against PUSH reg");
-        }
-        let pop = eu_cycles(0x58, 0);
-        for op in [0x07u8, 0x0F, 0x17, 0x1F, 0x9D] {
-            assert_eq!(eu_cycles(op, 0), pop, "{op:#04X} against POP reg");
-        }
+    fn pop_cs_is_not_an_alu_operation() {
+        assert_eq!(eu_cycles(0x0F, 0), 4, "POP CS");
     }
 
     /// The single-byte `INC`/`DEC` opcodes encode a *word* register and are
@@ -1872,7 +1763,12 @@ mod tests {
         // unconditional transfers sitting next to them in the opcode map.
         for opcode in [0x9Au8, 0xC3, 0xCB, 0xCF, 0xE8, 0xE9, 0xEA, 0xEB] {
             assert!(!branches_on_state(opcode), "{opcode:#04X}");
-            assert!(eu_cycles(opcode, 0) > 0, "{opcode:#04X}");
+            // Priced by a row or by a routine, but priced. The returns moved to
+            // the microcode module and their rows went with them.
+            assert!(
+                eu_cycles(opcode, 0) > 0 || super::super::microcode::routine(opcode, 0).is_some(),
+                "{opcode:#04X}"
+            );
         }
     }
 
@@ -1913,24 +1809,22 @@ mod tests {
         }
     }
 
-    /// The undocumented aliases cost what the documented encodings cost. The
-    /// part decodes 0xC0 as 0xC2 and 0xC8 as 0xCA, and the recording gives the
-    /// pairs identical spans.
+    /// The undocumented aliases run what the documented encodings run. The part
+    /// decodes 0xC0 as 0xC2 and 0xC8 as 0xCA, and the recording gives the pairs
+    /// identical spans.
+    ///
+    /// Asked of the routines rather than of rows, because that is where the
+    /// returns are priced now. The aliasing is the thing worth pinning either
+    /// way: it is a property of the part's decoder, not of whichever model
+    /// happens to hold the clocks.
     #[test]
-    fn the_return_aliases_cost_what_they_alias() {
-        assert_eq!(eu_cycles(0xC0, 0), eu_cycles(0xC2, 0));
-        assert_eq!(eu_cycles(0xC1, 0), eu_cycles(0xC3, 0));
-        assert_eq!(eu_cycles(0xC8, 0), eu_cycles(0xCA, 0));
-        assert_eq!(eu_cycles(0xC9, 0), eu_cycles(0xCB, 0));
-    }
-
-    /// A return that pops arguments off the stack costs more than one that does
-    /// not, and a far return costs more than a near one. Both orderings are
-    /// easy to transpose and neither would look wrong on its own.
-    #[test]
-    fn the_returns_are_ordered_by_how_much_they_do() {
-        assert!(eu_cycles(0xC2, 0) > eu_cycles(0xC3, 0), "RET n over RET");
-        assert!(eu_cycles(0xCB, 0) > eu_cycles(0xC3, 0), "RETF over RET");
-        assert!(eu_cycles(0xCA, 0) > eu_cycles(0xCB, 0), "RETF n over RETF");
+    fn the_return_aliases_run_what_they_alias() {
+        for (alias, documented) in [(0xC0u8, 0xC2u8), (0xC1, 0xC3), (0xC8, 0xCA), (0xC9, 0xCB)] {
+            assert_eq!(
+                super::super::microcode::routine(alias, 0),
+                super::super::microcode::routine(documented, 0),
+                "{alias:#04X} against {documented:#04X}"
+            );
+        }
     }
 }
