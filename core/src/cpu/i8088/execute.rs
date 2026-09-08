@@ -1146,6 +1146,20 @@ impl I8088 {
         flags::set(&mut self.flags, Flag::TF, false);
         self.push16(bus, master, self.cs);
         self.push16(bus, master, self.ip);
+
+        // The vector, from wherever it came from. The pipeline reads it over
+        // four MEMR bus cycles for the interrupts whose vector it can know
+        // before the instruction runs, which is `INT`, `INT 3` and a taken
+        // `INTO`; those arrive here already in hand. The interrupts a fault
+        // raises cannot be known that far ahead, so `DIV`, `IDIV` and `AAM`
+        // still read theirs here, off the bus in no time at all, and their
+        // timing rows carry the sixteen clocks it should have cost.
+        if self.vector_staged {
+            let (offset, segment) = self.vector_words;
+            self.set_ip(offset);
+            self.set_cs(segment);
+            return;
+        }
         // IVT: 4 bytes per vector at physical 0000:(vector*4)
         let ivt_addr = (vector as u16).wrapping_mul(4);
         self.set_ip(self.read_word(bus, master, 0, ivt_addr));
@@ -1768,12 +1782,19 @@ mod tests {
         let acc = access::operand_access(opcode, modrm_byte);
         let has_modrm = format::format_of(opcode).modrm;
 
-        // Resolve without committing, exactly as the pipeline does.
-        if has_modrm {
+        // Resolve without committing, exactly as the pipeline does. The
+        // opcodes with no ModR/M byte that still address memory, the
+        // direct-address moves and XLAT, go through the same `direct_operand`
+        // the pipeline uses rather than a second copy of it.
+        {
             let saved_ip = cpu.ip;
-            let modrm = cpu.fetch_modrm();
-            if let Operand::Memory { segment, offset } = cpu.resolve_modrm(modrm) {
-                cpu.operand_at = Some((segment, offset));
+            if has_modrm {
+                let modrm = cpu.fetch_modrm();
+                if let Operand::Memory { segment, offset } = cpu.resolve_modrm(modrm) {
+                    cpu.operand_at = Some((segment, offset));
+                }
+            } else {
+                cpu.operand_at = cpu.direct_operand(opcode);
             }
             cpu.ip = saved_ip;
             cpu.instr_pos = 0;

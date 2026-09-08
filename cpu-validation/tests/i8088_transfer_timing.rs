@@ -165,7 +165,8 @@ fn row_residuals() {
     for stem in [
         "70", "E0", "E1", "E2", "E3", "E8", "E9", "EA", "EB", "9A", "C2", "C3", "CA", "CB", "CC",
         "CD", "CE", "CF", "A0", "A1", "A2", "A3", "D7", "98", "99", "9E", "9F", "27", "37", "C4",
-        "C5", "F8", "FF.2", "FF.3", "FF.4", "FF.5", "8B", "01", "50", "58", "90",
+        "C5", "F8", "FF.2", "FF.3", "FF.4", "FF.5", "8B", "01", "50", "58", "90", "D4", "D5",
+        "F6.6", "F7.6", "F6.4", "F7.4",
     ] {
         residuals(stem);
     }
@@ -300,6 +301,287 @@ fn dump_empty(stem: &str) {
     }
 }
 
+/// `AAM` divides AL by its immediate through the same `CORD` loop `DIV` uses,
+/// and `AAD` multiplies AH by its immediate through the same loop `MUL` uses.
+/// If that is right, their spans follow the same two rules: the number of
+/// *compared* subtracts for the divide, and the number of set bits in the
+/// multiplier for the multiply.
+///
+/// Prints the span grouped by the key, so a rule that holds shows up as one
+/// span per group rather than as a correlation.
+fn ascii_adjust_survey(stem: &str, key: fn(u8, u8) -> u32, label: &str) {
+    let Some(tests) = load(stem) else { return };
+    let mut groups: BTreeMap<u32, BTreeMap<usize, usize>> = BTreeMap::new();
+    for tc in &tests {
+        if tc.cycles.is_empty() || tc.initial.queue.len() != 4 {
+            continue;
+        }
+        if tc.bytes.first().is_some_and(|&b| is_prefix(b)) {
+            continue;
+        }
+        let Some(&imm) = tc.bytes.get(1) else {
+            continue;
+        };
+        let ax = tc.initial.regs.ax;
+        *groups
+            .entry(key(ax as u8, imm))
+            .or_default()
+            .entry(tc.cycles.len())
+            .or_default() += 1;
+    }
+    eprintln!("\n{stem} by {label}");
+    for (k, hist) in &groups {
+        let mut modes: Vec<(usize, usize)> = hist.iter().map(|(a, b)| (*a, *b)).collect();
+        modes.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
+        let top: Vec<String> = modes
+            .iter()
+            .take(4)
+            .map(|(v, n)| format!("{v}:{n}"))
+            .collect();
+        eprintln!("  {k:3}: {}", top.join(" "));
+    }
+}
+
+/// The compared subtracts an 8-bit long division makes, which is what `DIV`'s
+/// cost was found to follow: the pass that jumps straight to the subtract costs
+/// the same as the pass that does not subtract at all, and only the pass that
+/// compares first and then subtracts is longer.
+fn compared_subtracts(dividend: u16, divisor: u8) -> u32 {
+    if divisor == 0 {
+        return 0;
+    }
+    let divisor = u32::from(divisor);
+    let mut a = u32::from(dividend >> 8);
+    let mut c = u32::from(dividend & 0xFF);
+    let mut qbit = 0u32;
+    let mut compared = 0;
+    for _ in 0..8 {
+        let carry_out = a & 0x80 != 0;
+        a = ((a << 1) & 0xFF) | u32::from(c & 0x80 != 0);
+        c = ((c << 1) & 0xFF) | qbit;
+        if carry_out {
+            a = a.wrapping_sub(divisor) & 0xFF;
+            qbit = 1;
+        } else if a >= divisor {
+            compared += 1;
+            a -= divisor;
+            qbit = 1;
+        } else {
+            qbit = 0;
+        }
+    }
+    compared
+}
+
+#[test]
+#[ignore = "survey, not a check: do AAM and AAD follow the divide and multiply loops"]
+fn ascii_adjust_loops() {
+    // AAM divides AL by the immediate, so the dividend is AL with a zero high
+    // half.
+    ascii_adjust_survey(
+        "D4",
+        |al, imm| compared_subtracts(u16::from(al), imm),
+        "compared subtracts dividing AL",
+    );
+    // AAD's multiplier: AH is the candidate, the immediate the other.
+    ascii_adjust_survey("D5", |_, imm| imm.count_ones(), "set bits in the immediate");
+}
+
+/// AAM's compared-subtract groups are not uniform: each splits in two, two
+/// clocks apart. This asks what separates them.
+#[test]
+#[ignore = "survey, not a check: what splits AAM's groups"]
+fn aam_residual() {
+    let Some(tests) = load("D4") else { return };
+    let mut groups: BTreeMap<(u32, bool, bool, bool), BTreeMap<usize, usize>> = BTreeMap::new();
+    for tc in &tests {
+        if tc.cycles.is_empty() || tc.initial.queue.len() != 4 {
+            continue;
+        }
+        if tc.bytes.first().is_some_and(|&b| is_prefix(b)) {
+            continue;
+        }
+        let Some(&imm) = tc.bytes.get(1) else {
+            continue;
+        };
+        if imm == 0 {
+            continue;
+        }
+        let al = tc.initial.regs.ax as u8;
+        let quotient = al / imm;
+        let key = (
+            compared_subtracts(u16::from(al), imm),
+            quotient & 1 != 0,
+            al.is_multiple_of(imm),
+            quotient.count_ones() > 1,
+        );
+        *groups
+            .entry(key)
+            .or_default()
+            .entry(tc.cycles.len())
+            .or_default() += 1;
+    }
+    eprintln!("\nD4 by (compared, odd quotient, zero remainder, multi-bit quotient)");
+    for (k, hist) in &groups {
+        let mut modes: Vec<(usize, usize)> = hist.iter().map(|(a, b)| (*a, *b)).collect();
+        modes.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
+        let top: Vec<String> = modes
+            .iter()
+            .take(3)
+            .map(|(v, n)| format!("{v}:{n}"))
+            .collect();
+        eprintln!("  {k:?}: {}", top.join(" "));
+    }
+}
+
+/// `AAM`'s groups split on the low bit of its quotient, two clocks apart. `DIV`
+/// has a residual of up to two clocks that was never explained, and the two
+/// share the same `CORD` loop, so this asks the same question of `DIV`.
+///
+/// Register operands only, so no effective address or operand read is in the
+/// span, and non-faulting cases only.
+#[test]
+#[ignore = "survey, not a check: does DIV's residual split the way AAM's does"]
+fn divide_residual() {
+    for (stem, word) in [("F6.6", false), ("F7.6", true)] {
+        let Some(tests) = load(stem) else { continue };
+        let mut groups: BTreeMap<(u32, bool), BTreeMap<usize, usize>> = BTreeMap::new();
+        for tc in &tests {
+            if tc.cycles.is_empty() || tc.initial.queue.len() != 4 {
+                continue;
+            }
+            if tc.bytes.first().is_some_and(|&b| is_prefix(b)) {
+                continue;
+            }
+            let Some(&modrm) = tc.bytes.get(1) else {
+                continue;
+            };
+            if modrm >> 6 != 3 {
+                continue;
+            }
+            let r = &tc.initial.regs;
+            let divisor: u32 = if word {
+                match modrm & 7 {
+                    0 => r.ax,
+                    1 => r.cx,
+                    2 => r.dx,
+                    3 => r.bx,
+                    4 => r.sp,
+                    5 => r.bp,
+                    6 => r.si,
+                    _ => r.di,
+                }
+                .into()
+            } else {
+                let regs = [
+                    r.ax as u8,
+                    r.cx as u8,
+                    r.dx as u8,
+                    r.bx as u8,
+                    (r.ax >> 8) as u8,
+                    (r.cx >> 8) as u8,
+                    (r.dx >> 8) as u8,
+                    (r.bx >> 8) as u8,
+                ];
+                regs[(modrm & 7) as usize].into()
+            };
+            let dividend: u32 = if word {
+                (u32::from(r.dx) << 16) | u32::from(r.ax)
+            } else {
+                r.ax.into()
+            };
+            let limit = if word { 0xFFFF } else { 0xFF };
+            if divisor == 0 || dividend / divisor > limit {
+                // The divide error, which never enters the loop. Grouped under
+                // a compared count of 99 so it is visible rather than skipped.
+                *groups
+                    .entry((99, divisor == 0))
+                    .or_default()
+                    .entry(tc.cycles.len())
+                    .or_default() += 1;
+                continue;
+            }
+            let quotient = dividend / divisor;
+            *groups
+                .entry((cord_compared(dividend, divisor, word), quotient & 1 != 0))
+                .or_default()
+                .entry(tc.cycles.len())
+                .or_default() += 1;
+        }
+        eprintln!("\n{stem} by (compared subtracts, odd quotient)");
+        for (k, hist) in &groups {
+            let mut modes: Vec<(usize, usize)> = hist.iter().map(|(a, b)| (*a, *b)).collect();
+            modes.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
+            let top: Vec<String> = modes
+                .iter()
+                .take(3)
+                .map(|(v, n)| format!("{v}:{n}"))
+                .collect();
+            eprintln!("  {k:?}: {}", top.join(" "));
+        }
+    }
+}
+
+/// The compared subtracts of the long division at either width, the same walk
+/// `timing::divide_cycles` makes.
+fn cord_compared(dividend: u32, divisor: u32, word: bool) -> u32 {
+    let width = if word { 16 } else { 8 };
+    let mask = (1u32 << width) - 1;
+    let top = 1u32 << (width - 1);
+    let mut a = (dividend >> width) & mask;
+    let mut c = dividend & mask;
+    let mut qbit = 0u32;
+    let mut compared = 0;
+    for _ in 0..width {
+        let carry_out = (a & top) != 0;
+        a = ((a << 1) & mask) | u32::from((c & top) != 0);
+        c = ((c << 1) & mask) | qbit;
+        if carry_out {
+            a = a.wrapping_sub(divisor) & mask;
+            qbit = 1;
+        } else if a >= divisor {
+            compared += 1;
+            a -= divisor;
+            qbit = 1;
+        } else {
+            qbit = 0;
+        }
+    }
+    compared
+}
+
+/// AAD again, keyed on AH rather than on the immediate.
+#[test]
+#[ignore = "survey, not a check: which operand AAD's multiply loop tests"]
+fn aad_multiplier() {
+    let Some(tests) = load("D5") else { return };
+    let mut groups: BTreeMap<u32, BTreeMap<usize, usize>> = BTreeMap::new();
+    for tc in &tests {
+        if tc.cycles.is_empty() || tc.initial.queue.len() != 4 {
+            continue;
+        }
+        if tc.bytes.first().is_some_and(|&b| is_prefix(b)) {
+            continue;
+        }
+        *groups
+            .entry((tc.initial.regs.ax >> 8).count_ones())
+            .or_default()
+            .entry(tc.cycles.len())
+            .or_default() += 1;
+    }
+    eprintln!("\nD5 by set bits in AH");
+    for (k, hist) in &groups {
+        let mut modes: Vec<(usize, usize)> = hist.iter().map(|(a, b)| (*a, *b)).collect();
+        modes.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
+        let top: Vec<String> = modes
+            .iter()
+            .take(4)
+            .map(|(v, n)| format!("{v}:{n}"))
+            .collect();
+        eprintln!("  {k:3}: {}", top.join(" "));
+    }
+}
+
 /// The modal recorded span for the simplest population there is: a full queue,
 /// no prefix, and a register operand where there is a ModR/M byte at all. If
 /// Table 1-16's clock counts describe anything directly observable, it is this.
@@ -360,6 +642,7 @@ fn empty_queue_traces() {
 #[ignore = "survey, not a check: where a transfer flushes and how it reloads"]
 fn control_transfer_traces() {
     dump("EA", true);
+    dump("CC", true);
     dump("9A", true);
     dump("EB", true);
     dump("70", true);

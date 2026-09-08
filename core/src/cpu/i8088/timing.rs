@@ -55,7 +55,7 @@
 //!                     documented   recorded span   this table
 //!   JMP short             15            17            10
 //!   JMP near              15            17            10
-//!   JMP far               15            19            12
+//!   JMP far               15            19            10
 //!   Jcc, taken            16            17            10
 //!   Jcc, not taken         4             4             4
 //!   LOOP, taken           17            17            10
@@ -85,12 +85,18 @@
 //!
 //! # What is not here yet
 //!
-//! The string operations, the BCD adjusts, `XLAT`, the far-pointer loads, and
-//! `IMUL`/`IDIV`. The last two are quoted as *ranges* because their microcode
-//! is data-dependent, so no single constant can match them and pretending
-//! otherwise would turn a known gap into a number that looks like an answer. An
-//! opcode with no entry here is charged nothing, which undercounts it;
-//! [`eu_cycles`] returning zero means "not yet modeled", not "free".
+//! The string operations and their `REP` loops, which need bus modeling rather
+//! than a row, and `IMUL` and `IDIV`. Those two are quoted as *ranges* because
+//! their microcode is data-dependent, and unlike `MUL`, `DIV`, `AAM` and `AAD`
+//! the rule behind the range is not worked out: each of `IMUL`'s four sign
+//! combinations follows its own base plus the multiplier's set bits, and
+//! solving the four for independent per-negation costs gives minus one clock
+//! for negating the multiplicand. A four-way lookup would be a fitted table in
+//! a rule's clothing.
+//!
+//! An opcode with no entry here is charged nothing, which undercounts it;
+//! [`eu_cycles`] returning zero means "not yet modeled", not "free", and
+//! [`is_modeled`] is what tells the two apart.
 
 /// Clocks the EU spends on `opcode`, beyond its bus cycles and its
 /// effective-address calculation.
@@ -424,14 +430,12 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
         // transfers each.
         0xC8 | 0xCA => 13,
         0xC9 | 0xCB => 11,
-        // INT 3 and INT n. Documented 52 with five transfers, of which this
-        // pipeline runs three: the pushes of flags, CS and IP go over the bus,
-        // and the two words of the interrupt vector do not, because the
-        // executor still reads those directly. So sixteen clocks of vector read
-        // are sitting inside these two numbers. When the vector fetch becomes a
-        // bus cycle they drop to 24 and 23, and the count should not move.
-        0xCC => 40,
-        0xCD => 39,
+        // INT 3 and INT n. Documented 52 with five transfers, and the pipeline
+        // now runs all five: the four bytes of the vector as MEMR cycles ahead
+        // of the microcode, and the three words of flags, CS and IP as MEMW
+        // cycles after it. That is the order the recording shows.
+        0xCC => 24,
+        0xCD => 23,
         // IRET, popping IP, CS and the flags. Documented 32, three transfers.
         0xCF => 13,
         // CALL near direct, pushing IP. Documented 19, one transfer.
@@ -549,11 +553,11 @@ pub(crate) fn branch_cycles(opcode: u8, taken: bool) -> u8 {
             }
         }
         // INTO, which is an INT 4 when the overflow flag is set and four clocks
-        // when it is not. Documented 53 and 4. The taken figure carries the
-        // same sixteen clocks of vector read as `INT` does; see [`eu_cycles`].
+        // when it is not. Documented 53 and 4, and one clock dearer than `INT`
+        // taken, which is the flag test.
         0xCE => {
             if taken {
-                41
+                25
             } else {
                 4
             }
@@ -643,22 +647,51 @@ pub(crate) fn multiply_cycles(word: bool, multiplier: u16, product_high_zero: bo
 /// thing that works.
 ///
 /// A divide error is a different path entirely. `CORD` compares before it
-/// loops and leaves for `INT0` at once, so it costs the same 79 clocks for
-/// every faulting case at either width, which the vectors confirm across all
-/// 699 of them.
+/// loops and leaves for `INT 0` at once, so it costs the same whatever caused
+/// it, at either width: the recorded span is 79 clocks on every faulting case.
 ///
-/// **Known residual**: the non-faulting rule predicts the floor of every group
-/// and some cases run up to two clocks over it. The cause is not the quotient's
-/// top bit and not a zero remainder; both were tried and neither splits the
-/// groups. Left as a stated gap rather than absorbed into a fudge term.
+/// The number here is 48 rather than 79 because 31 of those clocks are ones
+/// the pipeline spends itself. A fault takes an interrupt, and this core writes
+/// its three words onto the stack over six MEMW bus cycles and then flushes and
+/// reloads the queue, which is 24 and 7. What is *not* subtracted is the
+/// interrupt vector read: a fault is conditional on the operands, so the
+/// pipeline cannot know to read the vector ahead of the instruction the way it
+/// does for `INT`, and the executor still reads it off the bus in no time.
+/// Sixteen clocks of that are inside this number.
+///
+/// **And the last pass costs two clocks more when it subtracts.** That was the
+/// residual this rule carried for a while: the compared-subtract count
+/// predicted the floor of every group and some cases ran up to two clocks over
+/// it. The quotient's top bit was tried and so was a zero remainder, and
+/// neither splits the groups; the quotient's *low* bit splits them exactly, at
+/// both widths, with every group uniform.
+///
+/// It is a rule rather than a fitted term because `AAM` confirms it
+/// independently. `AAM` divides AL by its immediate through this same `CORD`
+/// loop, and its spans follow `77 + compared + 2 x (quotient is odd)`, the same
+/// two clocks on the same condition, over a different opcode and a different
+/// operand range. See [`aam_cycles`].
 pub(crate) fn divide_cycles(word: bool, dividend: u32, divisor: u32) -> u16 {
     let width = if word { 16 } else { 8 };
     let limit = (1u64 << width) - 1;
     if divisor == 0 || u64::from(dividend) / u64::from(divisor) > limit {
         // The divide error, which never enters the loop.
-        return 79;
+        return 48;
     }
 
+    let (compared, last_bit) = cord(dividend, divisor, width);
+    let base = if word { 144 } else { 80 };
+    base + compared + 2 * u16::from(last_bit)
+}
+
+/// Step the microcode's long division and report what its cost depends on: how
+/// many passes compared before subtracting, and whether the last pass set its
+/// quotient bit.
+///
+/// Shared by [`divide_cycles`] and [`aam_cycles`], which is the point: they are
+/// the same `CORD` routine reached from two opcodes, and writing the walk twice
+/// would let the two drift while both looked right.
+fn cord(dividend: u32, divisor: u32, width: u32) -> (u16, bool) {
     let mask = (1u32 << width) - 1;
     let top = 1u32 << (width - 1);
     let mut a = (dividend >> width) & mask;
@@ -682,8 +715,54 @@ pub(crate) fn divide_cycles(word: bool, dividend: u32, divisor: u32) -> u16 {
         }
     }
 
-    let base = if word { 144 } else { 80 };
-    base + compared
+    (compared, qbit == 1)
+}
+
+/// Clocks `AAM` spends, given AL and the immediate it divides by.
+///
+/// `AAM` is a divide wearing a BCD adjust's name: it puts `AL / imm` in AH and
+/// `AL mod imm` in AL, through the same `CORD` loop [`divide_cycles`] walks.
+/// So it follows the same rule with its own base, and the recording says so
+/// over the whole `D4` file with every group uniform:
+///
+/// ```text
+/// 77 + compared subtracts + 2 x (the quotient is odd)
+/// ```
+///
+/// **That is what makes the two-clock term a rule rather than a fudge.** It was
+/// found here, on an opcode with an 8-bit dividend and a range of immediates,
+/// and it then predicted `DIV`'s residual at both widths without adjustment.
+///
+/// A zero immediate is a divide error, which never enters the loop: the
+/// recorded span is 77, the same as the base, and 46 is what is left after the
+/// 31 clocks the pipeline spends pushing, flushing and reloading. See
+/// [`divide_cycles`], whose fault path is the same one two clocks up.
+///
+/// Table 1-16 quotes the whole instruction at 83.
+pub(crate) fn aam_cycles(al: u8, imm: u8) -> u16 {
+    if imm == 0 {
+        return 46;
+    }
+    let (compared, last_bit) = cord(u32::from(al), u32::from(imm), 8);
+    77 + compared + 2 * u16::from(last_bit)
+}
+
+/// Clocks `AAD` spends, given the immediate it multiplies by.
+///
+/// The mirror of `AAM`: a multiply wearing a BCD adjust's name, folding AH into
+/// AL by multiplying it by the immediate, through the same shift-and-add loop
+/// `MUL` uses. It follows the same rule, one clock per set bit of the
+/// multiplier, and the recording says which operand that is: grouped by the set
+/// bits of the **immediate** every group is uniform, 59 through 67, and grouped
+/// by the set bits of AH nothing separates at all.
+///
+/// That is the opposite of `MUL`, where the accumulator is the multiplier. It
+/// is not a contradiction: the microcode moves a different operand into the
+/// register it shifts. Table 1-16 quotes the instruction at 60, which is what
+/// this gives for a one-bit immediate, the commonest by far in real code
+/// because the immediate is nearly always 10.
+pub(crate) fn aad_cycles(imm: u8) -> u16 {
+    59 + imm.count_ones() as u16
 }
 
 /// Extra clocks a shift or rotate by `CL` spends, one per bit shifted.
@@ -749,9 +828,10 @@ pub(crate) fn is_modeled(opcode: u8, modrm: u8) -> bool {
         0xC8..=0xCF => true,
         // The shifts and rotates.
         0xD0..=0xD3 => true,
-        // AAM and AAD, whose microcode is a divide and a multiply loop, and
-        // SALC, which is not an instruction Intel documents. XLAT is modeled.
-        0xD4..=0xD6 => false,
+        // AAM and AAD, from the divide and multiply loops their microcode runs.
+        0xD4 | 0xD5 => true,
+        // SALC, which Intel does not document and which has no row anywhere.
+        0xD6 => false,
         0xD7 => true,
         // The coprocessor escapes, which this core does not perform the operand
         // read for at all.
@@ -864,15 +944,62 @@ mod tests {
         }
     }
 
-    /// A divide error never enters the loop, so no operand changes its cost.
+    /// A divide error never enters the loop, so no operand changes its cost,
+    /// and the width does not either. The recorded span is 79 at both; 48 is
+    /// what is left once the pipeline's own pushes, flush and reload come out.
     #[test]
     fn a_divide_error_costs_the_same_however_it_was_caused() {
         // Division by zero.
-        assert_eq!(divide_cycles(false, 0x1234, 0), 79);
-        assert_eq!(divide_cycles(true, 0x1234_5678, 0), 79);
+        assert_eq!(divide_cycles(false, 0x1234, 0), 48);
+        assert_eq!(divide_cycles(true, 0x1234_5678, 0), 48);
         // And a quotient too large for the destination.
-        assert_eq!(divide_cycles(false, 0xFF00, 1), 79);
-        assert_eq!(divide_cycles(true, 0xFFFF_0000, 1), 79);
+        assert_eq!(divide_cycles(false, 0xFF00, 1), 48);
+        assert_eq!(divide_cycles(true, 0xFFFF_0000, 1), 48);
+        // AAM's is the same path two clocks below it.
+        assert_eq!(aam_cycles(0x42, 0), 46);
+    }
+
+    /// `AAM` and `DIV` walk the same long division, so over the same operands
+    /// they must differ by exactly the gap between their two bases, whatever
+    /// the operands do to the loop. That is the check that ties the two rules
+    /// together: the two-clock term for a last pass that subtracts was found on
+    /// `AAM` and is what closed `DIV`'s residual, and if either drifted this
+    /// would stop holding.
+    #[test]
+    fn aam_and_divide_walk_the_same_loop() {
+        for imm in 1..=255u8 {
+            for al in [0u8, 1, 7, 8, 9, 10, 63, 64, 127, 128, 200, 255] {
+                assert_eq!(
+                    divide_cycles(false, u32::from(al), u32::from(imm)) - aam_cycles(al, imm),
+                    3,
+                    "AL={al} imm={imm}"
+                );
+            }
+        }
+    }
+
+    /// The odd-quotient term is not separable from the compared-subtract count
+    /// by choosing operands: a last pass that subtracts is a compared subtract
+    /// too, nearly always, so an odd quotient costs three rather than two more
+    /// than its even neighbor. That is why the term had to be found by
+    /// grouping thousands of recorded cases rather than by picking a pair, and
+    /// it is why the check above is a relation between two instructions rather
+    /// than an arithmetic identity.
+    #[test]
+    fn the_odd_quotient_term_does_not_stand_on_its_own() {
+        assert_eq!(
+            divide_cycles(false, 202, 2),
+            divide_cycles(false, 200, 2) + 3
+        );
+    }
+
+    /// `AAD` multiplies by its immediate, one clock a set bit, which is the
+    /// opposite operand from the one `MUL` tests.
+    #[test]
+    fn the_ascii_multiply_counts_the_immediates_bits() {
+        assert_eq!(aad_cycles(0), 59);
+        assert_eq!(aad_cycles(0x0A), 61, "the usual base of ten, two bits");
+        assert_eq!(aad_cycles(0xFF), 67);
     }
 
     /// The count follows the compared subtracts and ignores the immediate
@@ -953,13 +1080,20 @@ mod tests {
         assert_eq!(eu_cycles(0x9D, 0), 4, "POPF");
     }
 
-    /// The BCD adjusts share the ALU block's range and are not extracted, so
-    /// they must report as unmodeled rather than picking up a neighbour's cost.
+    /// The BCD adjusts share the ALU block's opcode range and none of its
+    /// timing, so dispatching them through the block would give `DAA` the
+    /// accumulator-immediate cost of 4 by coincidence and `AAA` the same, when
+    /// the part takes 8 or 9 over them.
     #[test]
-    fn the_bcd_adjusts_are_unmodeled_rather_than_borrowing_a_neighbour() {
-        for op in [0x27u8, 0x2F, 0x37, 0x3F] {
-            assert_eq!(eu_cycles(op, 0), 0, "{op:#04X}");
-            assert!(!is_modeled(op, 0), "{op:#04X}");
+    fn the_bcd_adjusts_are_not_alu_operations() {
+        for op in [0x27u8, 0x2F] {
+            assert_eq!(eu_cycles(op, 0), 4, "{op:#04X}");
+            assert!(is_modeled(op, 0), "{op:#04X}");
+        }
+        for op in [0x37u8, 0x3F] {
+            assert!(is_modeled(op, 0), "{op:#04X}");
+            assert!(branches_on_state(op), "{op:#04X}");
+            assert!(branch_cycles(op, true) >= 8, "{op:#04X}");
         }
     }
 

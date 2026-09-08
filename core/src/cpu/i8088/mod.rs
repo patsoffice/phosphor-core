@@ -204,6 +204,13 @@ pub(crate) enum Eu {
         byte: u8,
         t: u8,
     },
+    /// Reading the four bytes of an interrupt vector out of the table at the
+    /// bottom of memory, `byte` of four, on T-state `t`.
+    ///
+    /// Ahead of the pushes, which is the order the recording shows: `INT 3`
+    /// reads 0000C through 0000F and only then writes the three words onto the
+    /// stack.
+    ReadingVector { byte: u8, t: u8 },
     /// Running the instruction's microcode, with the clocks still to go.
     ///
     /// The bus is free throughout, so the BIU prefetches through it. That is
@@ -344,6 +351,18 @@ pub struct I8088 {
     /// Where in `stack_words` the executor's next pop or push lands.
     #[save_skip(default)]
     pub(crate) stack_pos: u8,
+    /// The interrupt vector the pipeline read for this instruction, offset then
+    /// segment, and whether it read one at all.
+    ///
+    /// Set for `INT`, `INT 3` and a taken `INTO`, whose vector number is known
+    /// before the instruction runs. Not set for the interrupts an instruction
+    /// takes only when it faults: `DIV`, `IDIV` and `AAM` read their vector
+    /// from inside the executor, off the bus entirely, and their timing rows
+    /// carry those sixteen clocks instead.
+    #[save_skip(default)]
+    pub(crate) vector_words: (u16, u16),
+    #[save_skip(default)]
+    pub(crate) vector_staged: bool,
     /// Whether the pipeline is handling this instruction's stack traffic.
     ///
     /// False for the conditional cases a fixed count cannot predict, where
@@ -467,6 +486,8 @@ impl I8088 {
             operand_written: false,
             stack_words: [0; 3],
             stack_pos: 0,
+            vector_words: (0, 0),
+            vector_staged: false,
             stack_staged: false,
             stack_base: 0,
             operand_ops: (0, 0),
@@ -616,6 +637,7 @@ impl I8088 {
             // instruction with a memory operand leaves the queue emptier than
             // one without, and why the instruction after it may then stall.
             Eu::Reading { .. } => self.tick_operand_read(bus, master),
+            Eu::ReadingVector { .. } => self.tick_vector_read(bus, master),
             Eu::Writing { .. } => self.tick_operand_write(bus, master),
             Eu::PoppingStack { .. } => self.tick_stack(bus, master, true),
             Eu::PushingStack { .. } => self.tick_stack(bus, master, false),
@@ -990,6 +1012,8 @@ impl I8088 {
         self.stack_pos = 0;
         self.stack_staged = false;
         self.stack_base = self.sp;
+        self.vector_staged = false;
+        self.vector_words = (0, 0);
 
         // Resolve the operand before running anything, by walking the loaded
         // bytes exactly as the executor is about to and then rewinding.
@@ -1042,7 +1066,7 @@ impl I8088 {
         }
 
         let _ = operand_access;
-        self.eu = self.begin_stack_pop_phase();
+        self.eu = self.begin_pre_execute_phase();
         if self.eu == Eu::Loading {
             self.run_execute_step(bus, master);
         }
@@ -1087,29 +1111,50 @@ impl I8088 {
                 t: 1,
             }
         } else {
-            self.begin_stack_pop_phase()
+            self.begin_pre_execute_phase()
         }
     }
 
-    /// Enter the stack-pop phase if this instruction takes words off the stack,
-    /// otherwise go on to the microcode.
+    /// Everything an instruction reads between its operand and its microcode:
+    /// words off the stack, or an interrupt vector.
     ///
-    /// Pops come after any operand read and before execution, which is the
-    /// order the instructions need: `POP [mem]` takes its word off the stack
-    /// and then writes the operand, and an indirect far `CALL` reads its
-    /// pointer operand before pushing anything.
-    fn begin_stack_pop_phase(&mut self) -> Eu {
+    /// Both come after any operand read and before execution, which is the
+    /// order the instructions need and the order the recording shows. `POP
+    /// [mem]` takes its word off the stack and then writes the operand; an
+    /// indirect far `CALL` reads its pointer operand before pushing anything;
+    /// and `INT 3` reads the four bytes of its vector before it writes the
+    /// first of its three words. No instruction does both.
+    fn begin_pre_execute_phase(&mut self) -> Eu {
         let stack = access::stack_access(self.opcode(), self.instr[self.opcode_at as usize + 1]);
         self.stack_staged = true;
         self.stack_pos = 0;
-        match stack.pops {
-            0 => self.begin_execute_phase(),
-            total => Eu::PoppingStack {
+        if stack.pops > 0 {
+            return Eu::PoppingStack {
                 word: 0,
-                total,
+                total: stack.pops,
                 byte: 0,
                 t: 1,
-            },
+            };
+        }
+        if self.staged_vector().is_some() {
+            return Eu::ReadingVector { byte: 0, t: 1 };
+        }
+        self.begin_execute_phase()
+    }
+
+    /// The interrupt vector this instruction is going to take, when the
+    /// pipeline can know it before the instruction runs.
+    ///
+    /// `INT 3` and `INTO` carry theirs in the opcode and `INT n` in its
+    /// immediate. The interrupts a fault raises are not here: `DIV`, `IDIV` and
+    /// `AAM` take one only on operands that fault, so their vector read stays
+    /// inside the executor and their timing rows carry its clocks.
+    fn staged_vector(&self) -> Option<u8> {
+        match self.opcode() {
+            0xCC => Some(3),
+            0xCD => Some(self.instr[self.opcode_at as usize + 1]),
+            0xCE if flags::get(self.flags, flags::Flag::OF) => Some(4),
+            _ => None,
         }
     }
 
@@ -1206,6 +1251,19 @@ impl I8088 {
         };
         if matches!(opcode, 0xD2 | 0xD3) {
             cycles += i32::from(timing::shift_count_cycles(self.cl()));
+        }
+        // AAM and AAD are a divide and a multiply behind a BCD adjust's name,
+        // and their loops run on the immediate byte, which is in the
+        // instruction rather than in a register.
+        {
+            // The byte after the opcode, which for these two is the immediate
+            // rather than a ModR/M byte.
+            let imm = self.instr[self.opcode_at as usize + 1];
+            match opcode {
+                0xD4 => cycles += i32::from(timing::aam_cycles(self.al(), imm)),
+                0xD5 => cycles += i32::from(timing::aad_cycles(imm)),
+                _ => {}
+            }
         }
         // MUL and DIV take a time that is a function of their operands rather
         // than of their encoding, so it is computed here, where the operand is
@@ -1435,6 +1493,64 @@ impl I8088 {
         }
     }
 
+    /// One T-state of the interrupt-vector read: four MEMR bus cycles from the
+    /// table at the bottom of memory, offset first and then segment.
+    ///
+    /// The vector table is at physical zero and is addressed through no segment
+    /// register at all, which is why this cannot go through the operand
+    /// pipeline: `operand_at` is a segment and an offset, and here the segment
+    /// really is zero rather than defaulting to DS.
+    fn tick_vector_read<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let Eu::ReadingVector { byte, t } = self.eu else {
+            return;
+        };
+        let vector = self.staged_vector().expect("a vector phase has a vector");
+        let addr = u32::from(vector) * 4 + u32::from(byte);
+
+        match t {
+            1 => {
+                self.begin_bus_cycle(BusStatus::MemRead, addr, SegReg::DS);
+                self.eu = Eu::ReadingVector { byte, t: 2 };
+            }
+            2 => {
+                self.drive_bus_cycle(BusStatus::MemRead, TState::T2, SegReg::DS);
+                self.eu = Eu::ReadingVector { byte, t: 3 };
+            }
+            3 => {
+                self.drive_bus_cycle(BusStatus::MemRead, TState::T3, SegReg::DS);
+                let value = bus.read(master, addr);
+                self.bus.data = Some(value);
+                let shift = 8 * u32::from(byte & 1);
+                let word = if byte < 2 {
+                    &mut self.vector_words.0
+                } else {
+                    &mut self.vector_words.1
+                };
+                *word = (*word & !(0xFF << shift)) | (u16::from(value) << shift);
+                self.eu = Eu::ReadingVector { byte, t: 4 };
+            }
+            _ => {
+                self.drive_bus_cycle(BusStatus::MemRead, TState::T4, SegReg::DS);
+                if byte + 1 < 4 {
+                    self.eu = Eu::ReadingVector {
+                        byte: byte + 1,
+                        t: 1,
+                    };
+                } else {
+                    self.vector_staged = true;
+                    self.eu = self.begin_execute_phase();
+                    if self.eu == Eu::Loading {
+                        self.run_execute_step(bus, master);
+                    }
+                }
+            }
+        }
+    }
+
     /// One T-state of the operand read phase: a MEMR bus cycle per byte, low
     /// byte first, the 8088's data bus being one byte wide.
     fn tick_operand_read<B: Bus<Address = u32, Data = u8> + ?Sized>(
@@ -1475,7 +1591,7 @@ impl I8088 {
                 } else {
                     // The operand is in hand; the stack comes next, then the
                     // microcode.
-                    self.eu = self.begin_stack_pop_phase();
+                    self.eu = self.begin_pre_execute_phase();
                     if self.eu == Eu::Loading {
                         self.run_execute_step(bus, master);
                     }
