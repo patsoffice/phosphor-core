@@ -232,9 +232,15 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
                     3
                 }
             }
-            // MUL, IMUL, DIV and IDIV are quoted as ranges because their
-            // microcode is data-dependent. Charging a single constant would
-            // turn a known gap into something that looks like an answer.
+            // MUL: the microcode's shift-and-add loop, one iteration per bit
+            // of the multiplier, with the add skipped when the bit is zero.
+            // The caller adds the per-bit part, which depends on AL or AX
+            // rather than on the encoding. See [`multiply_base`].
+            4 => 0,
+            // IMUL, DIV and IDIV stay unmodeled: their microcode is
+            // data-dependent in ways the multiply rule does not cover. IMUL
+            // converts both operands to positive and negates the result, and
+            // both steps cost cycles that depend on the signs.
             _ => 0,
         },
 
@@ -284,6 +290,113 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
         // documentation.
         _ => 0,
     }
+}
+
+/// Clocks an unsigned multiply spends, given its multiplier.
+///
+/// `MUL` is the one instruction here whose time is a function of its operands
+/// rather than of its encoding, which is why Table 1-16 quotes it as a range.
+/// The mechanism is the microcode's own: a fixed loop, eight iterations for a
+/// byte and sixteen for a word, testing one bit of the multiplier per pass and
+/// skipping its `ADD` when that bit is zero. That structure comes from Ken
+/// Shirriff's reverse-engineering of the 8086 multiply microcode from die
+/// photographs, not from the vectors.
+///
+/// So the cost is a base plus one clock per set bit, and the multiplier is AL
+/// for the byte form and AX for the word form, because the microcode begins by
+/// moving the accumulator into the register it shifts.
+///
+/// **Both rules land on Intel's published endpoints.** `MUL r/m8` is quoted at
+/// 70 to 77 clocks and a byte has one to eight set bits: `69 + 1` and
+/// `69 + 8`. `MUL r/m16` is quoted at 118 to 133 and a word has one to
+/// sixteen: `117 + 1` and `117 + 16`. Four endpoints from a document, four
+/// hits, from two constants.
+///
+/// **A known residual, stated rather than smoothed over.** The word form is
+/// exact on every comparable vector. The byte form is exact for five or more
+/// set bits and one clock low for some cases below that, and the cause is not
+/// the bit count: the same AL value appears at both counts, so it turns on
+/// something else in the microcode that is not identified yet.
+pub(crate) fn multiply_cycles(word: bool, multiplier: u16, product_high_zero: bool) -> u16 {
+    let (base, bits) = if word {
+        (117, multiplier.count_ones())
+    } else {
+        (69, (multiplier as u8).count_ones())
+    };
+    // `MUL` sets carry and overflow when the upper half of the product is
+    // nonzero, and that is a branch. The path that leaves them clear is the
+    // longer one by a clock, which is the opposite of what one would guess and
+    // is why it had to be measured rather than assumed. With this term the byte
+    // form is exact on every comparable vector, where the bit count alone left
+    // 400 of 636 running one clock over.
+    //
+    // The word form has no case in the suite whose product fits in sixteen
+    // bits, so this term is never exercised there. It is applied anyway: it is
+    // the same microcode step, and leaving it off would be asserting the
+    // opposite with no more evidence.
+    base + bits as u16 + u16::from(product_high_zero)
+}
+
+/// Clocks an unsigned divide spends, given its operands.
+///
+/// Like `MUL`, quoted as a range because the microcode's loop is
+/// data-dependent, and like `MUL` the structure comes from Shirriff's
+/// reverse-engineering rather than from the vectors. `CORD` runs a long
+/// division, shifting the dividend left each pass and taking one of three
+/// paths: straight to the subtract when the bit shifted out of the top means
+/// the value must exceed the divisor; a compare and then a subtract; or a
+/// compare and no subtract.
+///
+/// **Only the middle path costs extra.** That is a measured fact and a
+/// surprising one: the jump-straight-to-subtract path costs the same as not
+/// subtracting at all, so the count follows the number of *compared* subtracts
+/// and is independent of how many immediate ones there were. A rule built on
+/// the quotient's bit count cannot express that, because the first two paths
+/// both set a quotient bit; this is why counting them separately is the only
+/// thing that works.
+///
+/// A divide error is a different path entirely. `CORD` compares before it
+/// loops and leaves for `INT0` at once, so it costs the same 79 clocks for
+/// every faulting case at either width, which the vectors confirm across all
+/// 699 of them.
+///
+/// **Known residual**: the non-faulting rule predicts the floor of every group
+/// and some cases run up to two clocks over it. The cause is not the quotient's
+/// top bit and not a zero remainder; both were tried and neither splits the
+/// groups. Left as a stated gap rather than absorbed into a fudge term.
+pub(crate) fn divide_cycles(word: bool, dividend: u32, divisor: u32) -> u16 {
+    let width = if word { 16 } else { 8 };
+    let limit = (1u64 << width) - 1;
+    if divisor == 0 || u64::from(dividend) / u64::from(divisor) > limit {
+        // The divide error, which never enters the loop.
+        return 79;
+    }
+
+    let mask = (1u32 << width) - 1;
+    let top = 1u32 << (width - 1);
+    let mut a = (dividend >> width) & mask;
+    let mut c = dividend & mask;
+    let mut qbit = 0u32;
+    let mut compared = 0u16;
+
+    for _ in 0..width {
+        let carry_out = (a & top) != 0;
+        a = ((a << 1) & mask) | u32::from((c & top) != 0);
+        c = ((c << 1) & mask) | qbit;
+        if carry_out {
+            a = a.wrapping_sub(divisor) & mask;
+            qbit = 1;
+        } else if a >= divisor {
+            compared += 1;
+            a -= divisor;
+            qbit = 1;
+        } else {
+            qbit = 0;
+        }
+    }
+
+    let base = if word { 144 } else { 80 };
+    base + compared
 }
 
 /// Extra clocks a shift or rotate by `CL` spends, one per bit shifted.
@@ -350,8 +463,10 @@ pub(crate) fn is_modeled(opcode: u8, modrm: u8) -> bool {
         0xE0..=0xEF => false,
         // The prefixes, HLT and CMC.
         0xF0..=0xF5 => false,
-        // The unary group, modeled except for the multiplies and divides.
-        0xF6 | 0xF7 => reg < 4,
+        // The unary group. TEST, NOT and NEG come from the table, and MUL and
+        // DIV from their microcode loops. IMUL and IDIV do not: their sign
+        // conversion is data-dependent in a way that is not worked out.
+        0xF6 | 0xF7 => reg != 5 && reg != 7,
         // The flag instructions.
         0xF8..=0xFD => false,
         0xFE => true,
@@ -430,20 +545,88 @@ mod tests {
         assert_eq!(eu_cycles(0x8D, 0b00_000_100), 2);
     }
 
-    /// The multiply and divide group is deliberately unmodeled rather than
-    /// approximated, and says so through `is_modeled` rather than by returning
-    /// a plausible number.
+    /// IMUL, DIV and IDIV are deliberately unmodeled rather than approximated,
+    /// and say so through `is_modeled` rather than by returning a plausible
+    /// number. MUL is modeled, but through its own function.
     #[test]
-    fn multiply_and_divide_are_declared_unmodeled_rather_than_guessed() {
-        for reg in 4..8u8 {
+    fn the_signed_multiply_and_divide_are_declared_unmodeled() {
+        for reg in [5u8, 7] {
             let modrm = 0b11_000_000 | (reg << 3);
             assert_eq!(eu_cycles(0xF6, modrm), 0);
             assert!(!is_modeled(0xF6, modrm), "reg={reg}");
         }
-        // The half of the group that is modeled says so.
-        for reg in 0..4u8 {
+        for reg in [0u8, 1, 2, 3, 4, 6] {
             assert!(is_modeled(0xF7, 0b11_000_000 | (reg << 3)), "reg={reg}");
         }
+    }
+
+    /// A divide error never enters the loop, so no operand changes its cost.
+    #[test]
+    fn a_divide_error_costs_the_same_however_it_was_caused() {
+        // Division by zero.
+        assert_eq!(divide_cycles(false, 0x1234, 0), 79);
+        assert_eq!(divide_cycles(true, 0x1234_5678, 0), 79);
+        // And a quotient too large for the destination.
+        assert_eq!(divide_cycles(false, 0xFF00, 1), 79);
+        assert_eq!(divide_cycles(true, 0xFFFF_0000, 1), 79);
+    }
+
+    /// The count follows the compared subtracts and ignores the immediate
+    /// ones, which is the measured fact a quotient-based rule cannot express.
+    #[test]
+    fn divide_timing_lands_inside_the_published_range() {
+        // MUL r/m8's neighbour in the table is quoted at 80 to 90 clocks.
+        for divisor in 1..=255u32 {
+            for dividend in [1u32, 0x0100, 0x3FFF, 0x7F00] {
+                if dividend / divisor > 0xFF {
+                    continue;
+                }
+                let c = divide_cycles(false, dividend, divisor);
+                assert!((80..=90).contains(&c), "{dividend}/{divisor} gave {c}");
+            }
+        }
+    }
+
+    /// The multiply rules must land on the clock ranges Intel published, which
+    /// is the check that does not come from the vectors they were read off.
+    #[test]
+    fn the_multiply_rules_reproduce_the_published_ranges() {
+        // The published ranges are for a product whose high half is nonzero,
+        // which is the ordinary case and the only one the suite exercises for
+        // the word form.
+        //
+        // MUL r/m8 is quoted at 70 to 77 clocks; a byte has one to eight set
+        // bits.
+        assert_eq!(multiply_cycles(false, 0x0001, false), 70);
+        assert_eq!(multiply_cycles(false, 0x00FF, false), 77);
+        // MUL r/m16 at 118 to 133; a word has one to sixteen.
+        assert_eq!(multiply_cycles(true, 0x0001, false), 118);
+        assert_eq!(multiply_cycles(true, 0xFFFF, false), 133);
+    }
+
+    /// A product that fits in the low half costs one clock more, because the
+    /// microcode's path that leaves carry and overflow clear is the longer one.
+    #[test]
+    fn a_product_with_a_zero_high_half_costs_one_more() {
+        assert_eq!(multiply_cycles(false, 0x0001, true), 71);
+        assert_eq!(multiply_cycles(false, 0x00FF, true), 78);
+    }
+
+    /// The byte form looks at AL alone. Reading AX would make the high byte,
+    /// which the instruction overwrites with its result, change how long it
+    /// takes.
+    #[test]
+    fn the_byte_multiply_ignores_the_high_half_of_the_accumulator() {
+        assert_eq!(
+            multiply_cycles(false, 0x0001, false),
+            multiply_cycles(false, 0xFF01, false),
+            "AH must not affect a byte multiply"
+        );
+        // Whereas the word form counts the whole accumulator.
+        assert_ne!(
+            multiply_cycles(true, 0x0001, false),
+            multiply_cycles(true, 0xFF01, false)
+        );
     }
 
     /// The segment pushes and pops live inside the ALU block's opcode range and

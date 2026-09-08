@@ -1051,6 +1051,31 @@ impl I8088 {
         }
     }
 
+    /// The unary group's byte operand, wherever it lives.
+    ///
+    /// `MUL` and `DIV` need their operand's value to know how long they will
+    /// take, and by this point the pipeline has it: a memory operand was read
+    /// over MEMR cycles into `operand_bytes`, and a register one is just a
+    /// register. Nothing here touches the bus.
+    fn unary_operand8(&self) -> u8 {
+        let modrm = self.instr[self.opcode_at as usize + 1];
+        if modrm >> 6 == 3 {
+            self.get_reg8(modrm & 7)
+        } else {
+            self.operand_bytes[0]
+        }
+    }
+
+    /// The unary group's word operand. See [`Self::unary_operand8`].
+    fn unary_operand16(&self) -> u16 {
+        let modrm = self.instr[self.opcode_at as usize + 1];
+        if modrm >> 6 == 3 {
+            self.get_reg16(modrm & 7)
+        } else {
+            u16::from_le_bytes([self.operand_bytes[0], self.operand_bytes[1]])
+        }
+    }
+
     /// Enter the microcode phase, or go straight to running the instruction
     /// when nothing is left to spend.
     ///
@@ -1075,6 +1100,39 @@ impl I8088 {
         let mut cycles = i32::from(timing::eu_cycles(opcode, modrm));
         if matches!(opcode, 0xD2 | 0xD3) {
             cycles += i32::from(timing::shift_count_cycles(self.cl()));
+        }
+        // MUL and DIV take a time that is a function of their operands rather
+        // than of their encoding, so it is computed here, where the operand is
+        // in hand and the pipeline has already read it. IMUL and IDIV are not
+        // modeled: their sign conversion is data-dependent in a way that has
+        // not been worked out.
+        if matches!(opcode, 0xF6 | 0xF7) {
+            let word = opcode == 0xF7;
+            let operand = if word {
+                u32::from(self.unary_operand16())
+            } else {
+                u32::from(self.unary_operand8())
+            };
+            cycles += match (modrm >> 3) & 7 {
+                4 => {
+                    let product = if word {
+                        u64::from(self.ax) * u64::from(operand)
+                    } else {
+                        u64::from(self.al()) * u64::from(operand)
+                    };
+                    let high_zero = product >> if word { 16 } else { 8 } == 0;
+                    i32::from(timing::multiply_cycles(word, self.ax, high_zero))
+                }
+                6 => {
+                    let dividend = if word {
+                        (u32::from(self.dx) << 16) | u32::from(self.ax)
+                    } else {
+                        u32::from(self.ax)
+                    };
+                    i32::from(timing::divide_cycles(word, dividend, operand))
+                }
+                _ => 0,
+            };
         }
         cycles -= i32::from(self.instr_len - self.opcode_at);
 
