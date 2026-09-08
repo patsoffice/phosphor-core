@@ -648,6 +648,13 @@ fn memory_residual_by_mode() {
     for stem in ["80.7", "81.7", "82.7", "83.7"] {
         residuals_by_mode(stem);
     }
+    // The coprocessor escapes, which this core does not perform the operand
+    // read for at all. The recording shows the part reading a *word* and
+    // discarding it, which is what lets a coprocessor snoop the bus. Their
+    // residual is two-valued, -11 and -10, and if that is the even-address
+    // rounding then it separates by addressing mode.
+    residuals_by_mode("D8");
+    residuals_by_mode("D9");
 }
 
 /// Does the suite record an interrupt acknowledge anywhere, or an asserted

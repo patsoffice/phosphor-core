@@ -1104,9 +1104,27 @@ impl I8088 {
             0xFD => flags::set(&mut self.flags, Flag::DF, true),  // STD
 
             // =============================================================
-            // Opcodes with no implementation here: the FPU escapes
-            // (0xD8-0xDF), SALC (0xD6), POP CS (0x0F), the RET aliases
-            // (0xC0, 0xC1, 0xC8, 0xC9) and the undefined FF.7.
+            // The 8087 escapes. The CPU does nothing with the operand, but it
+            // does *read* it, so that a coprocessor on the bus can see it, and
+            // the read is the whole instruction here.
+            //
+            // Reading and discarding is not the same as not reading. The
+            // operand table says these access memory and the pipeline runs the
+            // bus cycle for them; the cross-check below compares that table
+            // against what this executor actually did, and it fired on every
+            // memory form of all eight opcodes when this arm fell through to
+            // the catch-all. Two statements of the same fact, kept honest by
+            // making them disagree loudly.
+            // =============================================================
+            0xD8..=0xDF => {
+                let modrm = self.fetch_modrm();
+                let operand = self.resolve_modrm(modrm);
+                let _ = self.read_operand16(operand, bus, master);
+            }
+
+            // =============================================================
+            // Opcodes with no implementation here: SALC (0xD6), POP CS (0x0F),
+            // the RET aliases (0xC0, 0xC1, 0xC8, 0xC9) and the undefined FF.7.
             //
             // Doing nothing is not the same as consuming nothing. The part
             // fetches every byte of an instruction whether or not it acts on

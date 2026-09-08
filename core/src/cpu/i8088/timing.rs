@@ -271,6 +271,24 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
         // effective address and this core does not charge as one.
         0xD7 => 11 - 4 + 1,
 
+        // The 8087 escapes, straight from the table for once. `ESC` is 2 clocks
+        // with a register operand and `8+EA` with one transfer in memory, which
+        // on the 8088 is 12 and two bus cycles for the word the part actually
+        // reads. See [`super::access::operand_access`], which performs that
+        // read so a coprocessor could see the operand.
+        //
+        // The check on the memory figure is the recording's own two-valued
+        // residual before the read went in: -10 on every even effective address
+        // and -11 on every odd one, which is 8 clocks of bus, these 4, and the
+        // rounding to an even clock that the pipeline already applies.
+        0xD8..=0xDF => {
+            if is_mem {
+                12 - 8
+            } else {
+                2
+            }
+        }
+
         // CBW and CWD, the sign extensions. CBW is the manual's 2. CWD is
         // quoted at 5 and takes 5 when AX is positive and 6 when it is not,
         // which is the microcode's own branch: writing 0FFFFh into DX is a
@@ -1132,9 +1150,8 @@ pub(crate) fn is_modeled(opcode: u8, modrm: u8) -> bool {
         // SALC, which Intel does not document and which has no row anywhere.
         0xD6 => false,
         0xD7 => true,
-        // The coprocessor escapes, which this core does not perform the operand
-        // read for at all.
-        0xD8..=0xDF => false,
+        // The coprocessor escapes, whose operand read this core now performs.
+        0xD8..=0xDF => true,
         // The loops and JCXZ.
         0xE0..=0xE3 => true,
         // IN and OUT, with an immediate port and through DX.

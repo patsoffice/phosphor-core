@@ -402,10 +402,17 @@ pub(crate) fn operand_access(opcode: u8, modrm: u8) -> Access {
 
         // The 8087 escapes. The part fetches the ModR/M byte and performs the
         // memory read it describes, so that a coprocessor could see the operand
-        // on the bus. This core has no 8087 and does not perform that read,
-        // which is a real gap rather than a modeling choice: it is why these
-        // eight files stay on the state gate's skip list.
-        0xD8..=0xDF => NONE,
+        // on the bus, and it reads a **word**: the recording shows two MEMR
+        // cycles at consecutive addresses on every memory form.
+        //
+        // The CPU itself does nothing with the value, so the executor never
+        // looks at it. That is the whole instruction on a machine with no
+        // coprocessor: an address on the bus and a byte pair nobody reads.
+        //
+        // Leaving this as `NONE` was worth 8 clocks plus the even-address
+        // rounding on every memory form of all eight opcodes, which read -10 on
+        // every even effective address and -11 on every odd one.
+        0xD8..=0xDF => READ_W,
 
         // The unary group. TEST occupies two of the eight encodings and only
         // reads; NOT and NEG write back; the multiplies and divides read the

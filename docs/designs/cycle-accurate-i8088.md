@@ -886,6 +886,66 @@ A constant that changes no output is not a measurement. It came back out, and
 what is left in its place is a comment saying so and a finding on the issue,
 which is worth more than a number that looks like progress and is not.
 
+## The escapes, and what a skip list costs
+
+**2026-09-05.** `ESC`, the eight coprocessor escapes `D8`-`DF`, were invisible
+to **both** gates at once. The state gate skipped them; the per-cycle gate had
+them behind `is_modeled == false`, which takes an opcode out of the denominator
+rather than reporting it as wrong. Eighty thousand vectors, unchecked by
+anything, and neither number moved when they were wrong.
+
+**The part performs the memory read its ModR/M byte describes**, so a
+coprocessor sitting on the bus can see the operand. It reads a *word*: two MEMR
+cycles at consecutive addresses on every memory form of every one of the eight
+files. The CPU itself does nothing with the value. That is the entire
+instruction on a machine with no 8087, and this core was not doing the read.
+
+**The residual said exactly what was missing, once grouped by addressing
+mode.** It is two-valued, -10 and -11, and the split is not by opcode or by
+operand: it is by the *parity of the effective address*. Every even EA reads
+-10, every odd one -11. That is the even-clock bus rounding the pipeline
+already applies to every memory operand, so:
+
+```text
+  missing = 8 (the word read) + 2 (microcode) + 1 if the EA is odd
+```
+
+which is Table 1-16's `8+EA` with one transfer, read for the 8088 as 12 and two
+bus cycles. For once the manual's row is right and the recording only confirms
+how it splits.
+
+| | before | after |
+|---|---|---|
+| State gate | 2,887,000 across 310 files, 13 skipped | **2,967,000 across 318, 5 skipped** |
+| Cycle count | 63.56% | 64.73% |
+| Bus-cycle order | 57.60% | 59.02% |
+| Clean population | 95.14% | 96.68% |
+
+**The eighty thousand went from unchecked to asserted**, which is worth more
+than the percentage points: a skip list and an `is_modeled` flag are both
+places work hides, and this epic has now found the same instruction hiding in
+two of them simultaneously. What is left on the state gate's list is five
+files, and `D6` is the only one of them that is an instruction rather than a
+prefix.
+
+**And the operand table's cross-check paid for itself again.** Declaring the
+read in `access.rs` made the table say `ESC` reads memory while the executor's
+catch-all arm still only consumed its bytes, and the `debug_assert` that
+compares the two fired on every memory form of all eight opcodes:
+
+```text
+  opcode DE modrm 2E: the operand table says reads=true writes=false,
+                      the executor did 0 reads and 0 writes
+```
+
+The release runs used to measure the improvement compile that assert out, so
+the numbers were real and the tree was inconsistent underneath them. `ESC` has
+a real executor arm now, which reads the operand and discards it, because that
+is what the part does. **The ROM-gated `save_state_rom_test` caught the same
+defect independently**, by running a game that executes an escape, which is the
+standing lesson of this epic: the vector harnesses all start from a clean CPU
+and the boards do not.
+
 ## Sequencing against the M68000
 
 `phosphor-emulator-cycle-accurate-i8088-nvrh` is currently sequenced *after* the

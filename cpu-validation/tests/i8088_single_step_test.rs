@@ -40,6 +40,15 @@ use phosphor_cpu_validation::{I8088InitialState, I8088Metadata, I8088TestCase, T
 /// cycle trace rather than in `initial.ram`. It reads the trace now, through
 /// [`I8088TestCase::port_reads`], which is the coverage the design doc said the
 /// conversion would pay for itself with.
+///
+/// And eight more, `D8`-`DF`, the coprocessor escapes. Their reason was that
+/// this core did not perform the operand read the part performs, which is now
+/// in `access.rs`. On a machine with no 8087 the instruction leaves no
+/// architectural state behind at all beyond IP, so once the read and the byte
+/// consumption are right there is nothing left for this gate to disagree with.
+/// A skip list is a place work hides: these were invisible to both gates at
+/// once, this one because they were skipped and the per-cycle one because
+/// `is_modeled` kept them out of its denominator.
 fn should_skip(filename: &str) -> bool {
     // Strip .json.gz suffix to get the opcode identifier
     let stem = filename.strip_suffix(".json.gz").unwrap_or(filename);
@@ -50,8 +59,6 @@ fn should_skip(filename: &str) -> bool {
         "26" | "2E" | "36" | "3E" | "F0" | "F1" | "F2" | "F3"
         // HLT (0xF4) — blocks forever in test harness (no interrupts)
         | "F4"
-        // FPU ESC opcodes (0xD8-0xDF)
-        | "D8" | "D9" | "DA" | "DB" | "DC" | "DD" | "DE" | "DF"
         // SALC / undocumented (0xD6)
         | "D6"
         // D0.6/D1.6/D2.6/D3.6 — undocumented SETMO/SETMOC
