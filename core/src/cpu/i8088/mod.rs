@@ -211,6 +211,14 @@ pub(crate) enum Eu {
     /// reads 0000C through 0000F and only then writes the three words onto the
     /// stack.
     ReadingVector { byte: u8, t: u8 },
+    /// A `REP` prefix's setup, before the first iteration reaches the bus.
+    StringEntry(u8),
+    /// One access of a string operation's current iteration: which of the
+    /// three, `byte` of the one or two it moves, on T-state `t`.
+    StringAccess { part: StringPart, byte: u8, t: u8 },
+    /// The microcode time of a string iteration, with the clocks still to go.
+    /// Ends with either another iteration or the end of the instruction.
+    StringDelay(u8),
     /// Acknowledging a maskable interrupt: two INTA bus cycles, `cycle` being
     /// 0 or 1 and `t` the T-state within it.
     ///
@@ -235,6 +243,21 @@ pub(crate) enum Eu {
     Executing(u8),
     /// Writing the memory operand back after the instruction has run.
     Writing { byte: u8, total: u8, t: u8 },
+}
+
+/// Which of a string iteration's three possible accesses is happening.
+///
+/// In this order, which is the order the recording shows: `CMPS` reads its
+/// source and then its destination, and `MOVS` reads its source and then writes
+/// its destination, with prefetches falling in between.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StringPart {
+    /// `[DS:SI]`, for `MOVS`, `CMPS` and `LODS`.
+    Source,
+    /// `[ES:DI]` read, for `CMPS` and `SCAS`.
+    Destination,
+    /// `[ES:DI]` written, for `MOVS` and `STOS`.
+    Write,
 }
 
 /// An interrupt the pipeline is servicing in place of an instruction.
@@ -384,6 +407,16 @@ pub struct I8088 {
     /// Where in `stack_words` the executor's next pop or push lands.
     #[save_skip(default)]
     pub(crate) stack_pos: u8,
+    /// Where the current string iteration reads and writes: the source
+    /// `[DS:SI]` and the destination `[ES:DI]`, as they stood when the
+    /// iteration began.
+    ///
+    /// Taken once per iteration rather than read off SI and DI at each access,
+    /// because the iteration steps both registers and some of its bus cycles
+    /// come after that. `MOVS` was writing to the address after the one it
+    /// should have, and `STOS` likewise, for exactly that reason.
+    #[save_skip(default)]
+    pub(crate) string_at: [(u16, u16); 2],
     /// The interrupt the pipeline is servicing, if it is servicing one rather
     /// than running an instruction. See [`Servicing`].
     #[save_skip(default)]
@@ -551,6 +584,7 @@ impl I8088 {
             operand_written: false,
             stack_words: [0; 3],
             stack_pos: 0,
+            string_at: [(0, 0); 2],
             servicing: None,
             port_bytes: [0; 2],
             port_written: false,
@@ -709,6 +743,21 @@ impl I8088 {
             // instruction with a memory operand leaves the queue emptier than
             // one without, and why the instruction after it may then stall.
             Eu::Reading { .. } => self.tick_operand_read(bus, master),
+            // A string operation's own clocks leave the bus free, so the BIU
+            // prefetches through them, as it does through any microcode.
+            Eu::StringEntry(remaining) => {
+                self.eu = if remaining > 1 {
+                    Eu::StringEntry(remaining - 1)
+                } else {
+                    self.begin_string_iteration()
+                };
+                self.tick_biu(bus, master);
+            }
+            Eu::StringDelay(_) => {
+                self.tick_string_delay();
+                self.tick_biu(bus, master);
+            }
+            Eu::StringAccess { .. } => self.tick_string(bus, master),
             Eu::Acknowledging { .. } => self.tick_acknowledge(),
             Eu::ReadingVector { .. } => self.tick_vector_read(bus, master),
             Eu::PortReading { .. } => self.tick_port(bus, master, true),
@@ -1150,6 +1199,22 @@ impl I8088 {
         };
         self.ip = saved_ip;
         self.instr_pos = 0;
+
+        // The string operations are the pipeline's own, from here to the end of
+        // the last iteration: the executor is called once per iteration rather
+        // than once for the instruction, so `execute` never sees these opcodes.
+        // Consuming the prefixes here is what moves IP past them and sets the
+        // REP prefix the iterations ask about.
+        if access::string_access(opcode).is_some() {
+            let _ = self.consume_prefixes();
+            let entry = timing::string_entry_cycles(self.rep_prefix.is_some());
+            self.eu = if entry > 0 {
+                Eu::StringEntry(entry)
+            } else {
+                self.begin_string_iteration()
+            };
+            return;
+        }
 
         // A memory operand has to have its address worked out before anything
         // can be done with it, and that arithmetic takes the EU real clocks.
@@ -1742,6 +1807,167 @@ impl I8088 {
             0xE4..=0xE7 => u16::from(self.instr[self.opcode_at as usize + 1]),
             _ => self.dx,
         }
+    }
+
+    /// The microcode clocks one iteration of the current string operation
+    /// spends, beyond its bus cycles.
+    fn string_iteration_cycles(&self) -> u8 {
+        timing::string_cycles(self.opcode(), self.rep_prefix.is_some())
+    }
+
+    /// Start a string operation, or the next iteration of one.
+    ///
+    /// Returns the phase to be in. A repeated operation whose count is already
+    /// zero does nothing at all, which is the one case with no iteration and no
+    /// bus cycle.
+    fn begin_string_iteration(&mut self) -> Eu {
+        let opcode = self.opcode();
+        let access = access::string_access(opcode).expect("a string operation");
+        if self.rep_prefix.is_some() && self.cx == 0 {
+            return Eu::StringDelay(0);
+        }
+        // Both addresses, before the iteration steps the registers they come
+        // from.
+        let (source, dest) = self.string_addresses();
+        self.string_at = [source, dest];
+        let part = if access.reads_source {
+            StringPart::Source
+        } else if access.reads_dest {
+            StringPart::Destination
+        } else {
+            // `STOS` reads nothing, so its iteration has to run before the
+            // write rather than after: the write goes out of the buffer the
+            // iteration stages the accumulator into.
+            self.string_iteration(opcode);
+            StringPart::Write
+        };
+        Eu::StringAccess {
+            part,
+            byte: 0,
+            t: 1,
+        }
+    }
+
+    /// One T-state of a string operation's bus traffic.
+    ///
+    /// Every iteration is up to two accesses of up to two bytes each, and the
+    /// pipeline walks them one T-state at a time so that a `REP` of a thousand
+    /// cycles takes a thousand cycles. The executor is not called between them:
+    /// it is called once per iteration, in [`I8088::string_iteration`], with
+    /// the reads already done.
+    fn tick_string<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let Eu::StringAccess { part, byte, t } = self.eu else {
+            return;
+        };
+        let opcode = self.opcode();
+        let access = access::string_access(opcode).expect("a string operation");
+        let (segment, offset) = match part {
+            StringPart::Source => self.string_at[0],
+            _ => self.string_at[1],
+        };
+        let addr = Self::physical_addr(segment, offset.wrapping_add(u16::from(byte)));
+        let writing = part == StringPart::Write;
+        let status = if writing {
+            BusStatus::MemWrite
+        } else {
+            BusStatus::MemRead
+        };
+        // The source is read through DS or an override; everything at the
+        // destination goes through ES, which no prefix can change.
+        let seg_reg = match part {
+            StringPart::Source => self.segment_override.unwrap_or(SegReg::DS),
+            _ => SegReg::ES,
+        };
+        // Where the byte lands: the source in the first half of the buffer,
+        // the destination read in the second, and a write comes out of the
+        // first, which is where the iteration staged it.
+        let slot = match part {
+            StringPart::Destination => 2 + byte as usize,
+            _ => byte as usize,
+        };
+
+        match t {
+            1 => {
+                self.begin_bus_cycle(status, addr, seg_reg);
+                self.eu = Eu::StringAccess { part, byte, t: 2 };
+            }
+            2 => {
+                self.drive_bus_cycle(status, TState::T2, seg_reg);
+                self.eu = Eu::StringAccess { part, byte, t: 3 };
+            }
+            3 => {
+                self.drive_bus_cycle(status, TState::T3, seg_reg);
+                if writing {
+                    let value = self.operand_bytes[slot];
+                    self.bus.data = Some(value);
+                    bus.write(master, addr, value);
+                } else {
+                    let value = bus.read(master, addr);
+                    self.bus.data = Some(value);
+                    self.operand_bytes[slot] = value;
+                }
+                self.eu = Eu::StringAccess { part, byte, t: 4 };
+            }
+            _ => {
+                self.drive_bus_cycle(status, TState::T4, seg_reg);
+                if byte + 1 < access.width {
+                    self.eu = Eu::StringAccess {
+                        part,
+                        byte: byte + 1,
+                        t: 1,
+                    };
+                    return;
+                }
+                self.eu = match part {
+                    // The source is read; the destination may still have to be
+                    // read or written, and the iteration runs between the two.
+                    StringPart::Source if access.reads_dest => Eu::StringAccess {
+                        part: StringPart::Destination,
+                        byte: 0,
+                        t: 1,
+                    },
+                    StringPart::Source | StringPart::Destination => {
+                        self.string_iteration(opcode);
+                        if access.writes_dest {
+                            Eu::StringAccess {
+                                part: StringPart::Write,
+                                byte: 0,
+                                t: 1,
+                            }
+                        } else {
+                            Eu::StringDelay(self.string_iteration_cycles())
+                        }
+                    }
+                    StringPart::Write => Eu::StringDelay(self.string_iteration_cycles()),
+                };
+            }
+        }
+    }
+
+    /// One T-state of a string iteration's microcode time, and the decision at
+    /// the end of it: another iteration, or the end of the instruction.
+    fn tick_string_delay(&mut self) {
+        let Eu::StringDelay(remaining) = self.eu else {
+            return;
+        };
+        if remaining > 1 {
+            self.eu = Eu::StringDelay(remaining - 1);
+            return;
+        }
+        if self.string_repeats_again(self.opcode()) {
+            self.eu = self.begin_string_iteration();
+            return;
+        }
+        // The executor never ran for this instruction, so the length it would
+        // have consumed is settled here instead. IP has already moved past the
+        // prefixes and the opcode.
+        self.instr_pos = self.instr_len;
+        self.rep_prefix = None;
+        self.finish_instruction();
     }
 
     /// One T-state of an I/O access: a four-T-state IOR or IOW cycle per byte,

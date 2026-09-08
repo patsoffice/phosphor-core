@@ -1,15 +1,31 @@
 # Intel 8088 CPU
 
-Instruction-level emulation of the Intel 8088 microprocessor, implementing 279 opcodes across all major instruction categories. The 8088 is the 8-bit external bus variant of the 8086, used in the original IBM PC and Gottlieb System 80 arcade boards. Validated against [SingleStepTests/8088](https://github.com/SingleStepTests/8088) with 2,577,000 test vectors (100% pass rate).
+Per-cycle emulation of the Intel 8088 microprocessor, implementing 279 opcodes across all major instruction categories. The 8088 is the 8-bit external bus variant of the 8086, used in the original IBM PC and Gottlieb System 80 arcade boards. One `execute_cycle` is one T-state: a bus interface unit drives four-T-state bus cycles and keeps a four-byte prefetch queue, and the execution unit takes its bytes out of that queue. Validated against [SingleStepTests/8088](https://github.com/SingleStepTests/8088), which records eleven fields per CPU cycle from real hardware, on both the state its instructions leave behind and the bus and queue traffic on the way.
 
 ## Status
 
 | Metric | Value |
 |--------|-------|
 | Opcodes | 279 (documented + sub-opcode variants) |
-| Unit tests | 325 |
-| Cross-validation | 2,797,000/2,797,000 (100%) |
-| Timing | Instruction-level (not cycle-accurate) |
+| Unit tests | 389 |
+| State validation | 2,877,000/2,877,000 across 309 opcode files |
+| Queue operations, asserted | 3,007,000/3,007,000 (100%) |
+| Cycle count, reported | 1,758,141/3,007,000 (58.47%) |
+| Bus-cycle sequence, reported | 995,460/3,007,000 (33.10%) |
+
+### What is not covered
+
+- **`HLT`'s HALT bus status is unvalidated and will stay so.** The suite records
+  no vectors for it, because it blocks forever in a harness with no interrupt
+  source, so nothing checks what this core drives on the pins for it.
+- **The interrupt acknowledge sequence has no oracle either.** No trace in the
+  suite contains an INTA cycle, and INTR and NMI are never asserted on any cycle
+  of any file. Those cycles come from Intel's timing table and are checked by
+  this crate's own tests rather than against the hardware recording.
+- **The string operations, `IMUL` and `IDIV` have no execution timing yet**, so
+  they run short by their microcode time. `timing::is_modeled` is what
+  distinguishes "costs nothing" from "not yet measured", and the per-cycle gate
+  reports the two populations apart.
 
 ## Registers
 

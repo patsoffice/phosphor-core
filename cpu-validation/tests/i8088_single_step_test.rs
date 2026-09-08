@@ -58,8 +58,6 @@ fn should_skip(filename: &str) -> bool {
         | "D0.6" | "D1.6" | "D2.6" | "D3.6"
         // 0x0F — POP CS (undocumented, rarely used)
         | "0F"
-        // FF.7 — undefined sub-opcode
-        | "FF.7"
     )
 }
 
@@ -113,9 +111,12 @@ fn run_test_case(tc: &I8088TestCase, flags_mask: u16) -> Option<String> {
         if cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0)) {
             break;
         }
-        if total_ticks > 500 {
+        // Generous, because a repeated string operation really is this long: a
+        // `REP STOSB` in the recording runs to 1,193 cycles. The cap is here to
+        // catch a core that never retires, not to bound an instruction.
+        if total_ticks > 4000 {
             return Some(format!(
-                "{}: instruction did not complete in 500 cycles",
+                "{}: instruction did not complete in 4000 cycles",
                 tc.name
             ));
         }

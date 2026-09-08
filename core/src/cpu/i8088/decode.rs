@@ -142,19 +142,13 @@ impl I8088 {
         }
     }
 
-    /// Read a byte from memory at segment:offset.
-    #[inline]
-    pub(crate) fn read_byte<B: Bus<Address = u32, Data = u8> + ?Sized>(
-        &self,
-        bus: &mut B,
-        master: BusMaster,
-        segment: u16,
-        offset: u16,
-    ) -> u8 {
-        bus.read(master, Self::physical_addr(segment, offset))
-    }
-
     /// Read a 16-bit word from memory at segment:offset (little-endian).
+    ///
+    /// The byte-wide pair this used to sit beside is gone: the string
+    /// operations were its last callers, and they reach memory through the
+    /// pipeline's bus cycles now. What is left of this pair reads and writes
+    /// the interrupt vector for a fault, which is the one access still made
+    /// from inside the executor.
     #[inline]
     pub(crate) fn read_word<B: Bus<Address = u32, Data = u8> + ?Sized>(
         &self,
@@ -166,19 +160,6 @@ impl I8088 {
         let lo = bus.read(master, Self::physical_addr(segment, offset)) as u16;
         let hi = bus.read(master, Self::physical_addr(segment, offset.wrapping_add(1))) as u16;
         (hi << 8) | lo
-    }
-
-    /// Write a byte to memory at segment:offset.
-    #[inline]
-    pub(crate) fn write_byte<B: Bus<Address = u32, Data = u8> + ?Sized>(
-        &self,
-        bus: &mut B,
-        master: BusMaster,
-        segment: u16,
-        offset: u16,
-        data: u8,
-    ) {
-        bus.write(master, Self::physical_addr(segment, offset), data);
     }
 
     /// Write a 16-bit word to memory at segment:offset (little-endian).

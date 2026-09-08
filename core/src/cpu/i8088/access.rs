@@ -143,7 +143,8 @@ pub(crate) fn stack_access(opcode: u8, modrm: u8) -> StackAccess {
         0xFF => match (modrm >> 3) & 7 {
             2 => StackAccess::pushes(1),
             3 => StackAccess::pushes(2),
-            6 => StackAccess::pushes(1),
+            // PUSH r/m16, and its undocumented alias one encoding above.
+            6 | 7 => StackAccess::pushes(1),
             _ => StackAccess::default(),
         },
         _ => StackAccess::default(),
@@ -202,6 +203,49 @@ pub(crate) fn ea_cycles(modrm: u8) -> u8 {
         // caller does not ask.
         _ => 0,
     }
+}
+
+/// What one iteration of a string operation touches.
+///
+/// The fourth way an instruction reaches memory, and the one the ModR/M operand
+/// table cannot describe at all: the addresses come from SI and DI rather than
+/// from an encoding, there can be two of them, and a `REP` prefix runs the
+/// whole thing again with both moved on. The source is `[DS:SI]`, with the
+/// segment overridable; the destination is `[ES:DI]`, and ES is not.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StringAccess {
+    /// `MOVS`, `CMPS` and `LODS` read `[DS:SI]`.
+    pub reads_source: bool,
+    /// `CMPS` and `SCAS` read `[ES:DI]`.
+    pub reads_dest: bool,
+    /// `MOVS` and `STOS` write `[ES:DI]`.
+    pub writes_dest: bool,
+    /// One byte or two, from the opcode's low bit.
+    pub width: u8,
+}
+
+/// What `opcode`'s string operation touches, or `None` if it is not one.
+pub(crate) fn string_access(opcode: u8) -> Option<StringAccess> {
+    let width = if opcode & 1 == 0 { 1 } else { 2 };
+    let (reads_source, reads_dest, writes_dest) = match opcode {
+        // MOVS: read the source, write the destination.
+        0xA4 | 0xA5 => (true, false, true),
+        // CMPS: read both and compare.
+        0xA6 | 0xA7 => (true, true, false),
+        // STOS: write the accumulator to the destination.
+        0xAA | 0xAB => (false, false, true),
+        // LODS: read the source into the accumulator.
+        0xAC | 0xAD => (true, false, false),
+        // SCAS: read the destination and compare it against the accumulator.
+        0xAE | 0xAF => (false, true, false),
+        _ => return None,
+    };
+    Some(StringAccess {
+        reads_source,
+        reads_dest,
+        writes_dest,
+        width,
+    })
 }
 
 /// What `opcode` does to an I/O port, and how wide.
@@ -385,10 +429,10 @@ pub(crate) fn operand_access(opcode: u8, modrm: u8) -> Access {
         0xFF => match reg_of(modrm) {
             0 | 1 => RMW_W,
             // CALL far and JMP far read a far pointer out of memory; the near
-            // forms read a single word.
+            // forms read a single word. reg=7 is PUSH again, for the reason in
+            // `execute.rs`.
             3 | 5 => READ_FAR,
-            2 | 4 | 6 => READ_W,
-            _ => NONE,
+            _ => READ_W,
         },
 
         // Everything else has no ModR/M byte.

@@ -348,8 +348,9 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
                 }
             }
             // PUSH r/m16: 16 clocks and two transfers, the operand read and
-            // the stack write.
-            6 => {
+            // the stack write. reg=7 is the same instruction: the group's
+            // decoder does not check the top bit of the reg field.
+            6 | 7 => {
                 if is_mem {
                     16 - 8
                 } else {
@@ -780,6 +781,77 @@ pub(crate) fn aad_cycles(imm: u8) -> u16 {
     59 + imm.count_ones() as u16
 }
 
+/// Clocks one iteration of a string operation spends, beyond its bus cycles.
+///
+/// Table 1-16 gives these twice: once for a single operation and once for a
+/// repeated one, quoted as `9 + 17/rep`. The two halves are not the same
+/// number and the difference is real: a repeated `LODS` costs more per
+/// iteration than a lone one, a repeated `CMPS` one more, and a repeated `MOVS`
+/// exactly the same.
+///
+/// The decomposition is the usual one and self-checks the usual way, because
+/// the microcode does not know how wide its operand is. `MOVS` is 18 clocks
+/// with two transfers, so on the 8088 its word form is 26 with four bus cycles;
+/// `18 - 8` and `26 - 16` are both 10, less the opcode byte the loader pulls.
+///
+/// What is not here is the `REP` prefix's own setup, the `9 +` half of the
+/// quotation. That is [`string_entry_cycles`].
+/// A single operation is one clock dearer than the manual's number, on four of
+/// the five. `MOVS`, `STOS`, `LODS` and `SCAS` each run a clock longer than
+/// `documented - bus - opcode byte` predicts, uniformly over every unprefixed
+/// case in their files, and `CMPS` lands on it exactly. The four are corrected
+/// here and the odd one out is left alone rather than averaged with them.
+pub(crate) fn string_cycles(opcode: u8, repeated: bool) -> u8 {
+    match opcode {
+        // MOVS: 18 alone and 17 repeated, two transfers either way.
+        0xA4 | 0xA5 => {
+            if repeated {
+                9
+            } else {
+                10
+            }
+        }
+        // CMPS: 22 both ways, two transfers.
+        0xA6 | 0xA7 => {
+            if repeated {
+                14
+            } else {
+                13
+            }
+        }
+        // STOS: 11 alone, 10 repeated, one transfer.
+        0xAA | 0xAB => {
+            if repeated {
+                6
+            } else {
+                7
+            }
+        }
+        // LODS: 12 alone, 13 repeated, one transfer. The one operation the
+        // table makes *dearer* to repeat.
+        0xAC | 0xAD => {
+            if repeated {
+                9
+            } else {
+                8
+            }
+        }
+        // SCAS: 15 both ways, one transfer.
+        0xAE | 0xAF => 11,
+        _ => 0,
+    }
+}
+
+/// Clocks a `REP` prefix spends before its first iteration.
+///
+/// The `9 +` in Table 1-16's `9 + 17/rep`, less the two bytes the loader pulls
+/// for the prefix and the opcode behind it. A repeated operation whose count is
+/// already zero spends this and nothing else, which is the one way a string
+/// operation runs no bus cycle at all.
+pub(crate) fn string_entry_cycles(repeated: bool) -> u8 {
+    if repeated { 7 } else { 0 }
+}
+
 /// Extra clocks a shift or rotate by `CL` spends, one per bit shifted.
 ///
 /// Table 1-16 quotes these forms as `8+4/bit` and `20+4/bit`, where the base is
@@ -826,11 +898,11 @@ pub(crate) fn is_modeled(opcode: u8, modrm: u8) -> bool {
         // MOV to and from a direct address.
         0xA0..=0xA3 => true,
         // MOVS and CMPS.
-        0xA4..=0xA7 => false,
+        0xA4..=0xA7 => true,
         // TEST with an immediate.
         0xA8 | 0xA9 => true,
         // STOS, LODS, SCAS.
-        0xAA..=0xAF => false,
+        0xAA..=0xAF => true,
         // MOV with an immediate.
         0xB0..=0xBF => true,
         // The near returns and their aliases.
@@ -869,9 +941,12 @@ pub(crate) fn is_modeled(opcode: u8, modrm: u8) -> bool {
         // The flag instructions.
         0xF8..=0xFD => true,
         0xFE => true,
-        // INC, DEC, PUSH and the four indirect transfers. Only reg=7 is left,
-        // which is not an instruction.
-        0xFF => reg != 7,
+        // INC, DEC, PUSH and the four indirect transfers, and reg=7, which the
+        // part decodes as PUSH again.
+        0xFF => {
+            let _ = reg;
+            true
+        }
     }
 }
 

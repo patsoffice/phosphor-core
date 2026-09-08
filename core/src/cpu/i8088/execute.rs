@@ -471,21 +471,13 @@ impl I8088 {
             // =============================================================
             // String operations (0xA4-0xA7, 0xAA-0xAF)
             //
-            // REP prefix handling: when rep_prefix is set, the string
-            // operation loops with CX as the counter. REP is used with
-            // MOVS/STOS/LODS; REPZ/REPNZ with CMPS/SCAS (early exit
-            // on ZF mismatch).
+            // These never arrive here. The pipeline runs them itself, one
+            // iteration at a time, because each iteration is up to four bus
+            // cycles and a `REP` runs the whole thing again with SI and DI
+            // moved on: a thousand-cycle instruction cannot happen on one
+            // T-state. See [`I8088::string_iteration`] for the part that is
+            // still this file's, which is everything except the bus.
             // =============================================================
-            0xA4 => self.string_op_movsb(bus, master),
-            0xA5 => self.string_op_movsw(bus, master),
-            0xA6 => self.string_op_cmpsb(bus, master),
-            0xA7 => self.string_op_cmpsw(bus, master),
-            0xAA => self.string_op_stosb(bus, master),
-            0xAB => self.string_op_stosw(bus, master),
-            0xAC => self.string_op_lodsb(bus, master),
-            0xAD => self.string_op_lodsw(bus, master),
-            0xAE => self.string_op_scasb(bus, master),
-            0xAF => self.string_op_scasw(bus, master),
 
             // =============================================================
             // TEST AL, imm8 (0xA8) | TEST AX, imm16 (0xA9)
@@ -1077,14 +1069,20 @@ impl I8088 {
                             self.set_cs(new_cs);
                         }
                     }
-                    6 => {
-                        // PUSH r/m16. The 8088 quirk is that pushing SP stores
-                        // the *decremented* value, which is what pushing
-                        // `SP - 2` comes to: `push16` decrements first and then
-                        // writes, so the value lands equal to the new SP.
-                        // Spelling it that way rather than open-coding the
-                        // store keeps the push visible to the stack-access
-                        // cross-check, which is how this was found.
+                    // PUSH r/m16, and reg=7 with it: the group's decoder does
+                    // not check the top bit of the reg field, so 0xFF /7 is
+                    // another PUSH. The suite's own capture disassembles it
+                    // that way and times it as one, and it used to do nothing
+                    // here, which cost it every cycle it should have taken.
+                    //
+                    // The 8088 quirk is that pushing SP stores the
+                    // *decremented* value, which is what pushing `SP - 2`
+                    // comes to: `push16` decrements first and then writes, so
+                    // the value lands equal to the new SP. Spelling it that way
+                    // rather than open-coding the store keeps the push visible
+                    // to the stack-access cross-check, which is how this was
+                    // found.
+                    _ => {
                         let val = if operand == Operand::Register(4) {
                             self.sp.wrapping_sub(2)
                         } else {
@@ -1092,7 +1090,6 @@ impl I8088 {
                         };
                         self.push16(bus, master, val);
                     }
-                    _ => {}
                 }
             }
 
@@ -1352,330 +1349,110 @@ impl I8088 {
         self.effective_segment(SegReg::DS)
     }
 
-    /// MOVSB: [ES:DI] <- [DS:SI], SI += step, DI += step
-    fn string_op_movsb<B: Bus<Address = u32, Data = u8> + ?Sized>(
-        &mut self,
-        bus: &mut B,
-        master: BusMaster,
-    ) {
-        let rep = self.rep_prefix.take();
-        let step = self.string_step(false);
-        match rep {
-            Some(_) => {
-                while self.cx != 0 {
-                    let seg = self.string_src_seg();
-                    let val = self.read_byte(bus, master, seg, self.si);
-                    self.write_byte(bus, master, self.es, self.di, val);
-                    self.si = self.si.wrapping_add(step);
-                    self.di = self.di.wrapping_add(step);
-                    self.cx = self.cx.wrapping_sub(1);
-                }
-            }
-            None => {
-                let seg = self.string_src_seg();
-                let val = self.read_byte(bus, master, seg, self.si);
-                self.write_byte(bus, master, self.es, self.di, val);
+    /// Where one iteration of a string operation reads from and writes to.
+    ///
+    /// The source is `[DS:SI]` with the segment overridable, the destination
+    /// `[ES:DI]` with ES fixed. Both are recomputed every iteration, because
+    /// both registers move.
+    pub(crate) fn string_addresses(&self) -> ((u16, u16), (u16, u16)) {
+        ((self.string_src_seg(), self.si), (self.es, self.di))
+    }
+
+    /// Run one iteration of a string operation, with whatever it reads already
+    /// in hand and nothing reaching the bus.
+    ///
+    /// The pipeline in [`super`] ran the reads before calling this and will run
+    /// the write after, so what is left here is the part that was always this
+    /// file's: the flags, the accumulator, and stepping SI and DI. That is the
+    /// same division the operand pipeline made for the other 279 opcodes, and
+    /// it is what lets a `REP` of a thousand cycles be a thousand cycles.
+    ///
+    /// The buffer convention is [`I8088::operand_bytes`]: the source in the
+    /// first two, the destination read in the second two, and whatever is to be
+    /// written back in the first two when this returns.
+    pub(crate) fn string_iteration(&mut self, opcode: u8) {
+        let word = opcode & 1 == 1;
+        let step = self.string_step(word);
+        let source = u16::from_le_bytes([self.operand_bytes[0], self.operand_bytes[1]]);
+        let dest = u16::from_le_bytes([self.operand_bytes[2], self.operand_bytes[3]]);
+
+        match opcode {
+            // MOVS: what was read is what gets written, and both pointers move.
+            0xA4 | 0xA5 => {
                 self.si = self.si.wrapping_add(step);
                 self.di = self.di.wrapping_add(step);
             }
-        }
-    }
-
-    /// MOVSW: [ES:DI] <- [DS:SI], SI += step*2, DI += step*2
-    fn string_op_movsw<B: Bus<Address = u32, Data = u8> + ?Sized>(
-        &mut self,
-        bus: &mut B,
-        master: BusMaster,
-    ) {
-        let rep = self.rep_prefix.take();
-        let step = self.string_step(true);
-        match rep {
-            Some(_) => {
-                while self.cx != 0 {
-                    let seg = self.string_src_seg();
-                    let val = self.read_word(bus, master, seg, self.si);
-                    self.write_word(bus, master, self.es, self.di, val);
-                    self.si = self.si.wrapping_add(step);
-                    self.di = self.di.wrapping_add(step);
-                    self.cx = self.cx.wrapping_sub(1);
-                }
-            }
-            None => {
-                let seg = self.string_src_seg();
-                let val = self.read_word(bus, master, seg, self.si);
-                self.write_word(bus, master, self.es, self.di, val);
+            // CMPS: source minus destination, for the flags only.
+            0xA6 => {
+                alu::sub8(&mut self.flags, source as u8, dest as u8, false);
                 self.si = self.si.wrapping_add(step);
                 self.di = self.di.wrapping_add(step);
             }
-        }
-    }
-
-    /// CMPSB: [DS:SI] - [ES:DI] (set flags), SI += step, DI += step
-    fn string_op_cmpsb<B: Bus<Address = u32, Data = u8> + ?Sized>(
-        &mut self,
-        bus: &mut B,
-        master: BusMaster,
-    ) {
-        let rep = self.rep_prefix.take();
-        let step = self.string_step(false);
-        match rep {
-            Some(prefix) => {
-                while self.cx != 0 {
-                    let seg = self.string_src_seg();
-                    let a = self.read_byte(bus, master, seg, self.si);
-                    let b = self.read_byte(bus, master, self.es, self.di);
-                    alu::sub8(&mut self.flags, a, b, false);
-                    self.si = self.si.wrapping_add(step);
-                    self.di = self.di.wrapping_add(step);
-                    self.cx = self.cx.wrapping_sub(1);
-                    // REPZ: continue while ZF=1; REPNZ: continue while ZF=0
-                    let zf = flags::get(self.flags, Flag::ZF);
-                    match prefix {
-                        RepPrefix::Rep => {
-                            if !zf {
-                                break;
-                            }
-                        }
-                        RepPrefix::Repnz => {
-                            if zf {
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            None => {
-                let seg = self.string_src_seg();
-                let a = self.read_byte(bus, master, seg, self.si);
-                let b = self.read_byte(bus, master, self.es, self.di);
-                alu::sub8(&mut self.flags, a, b, false);
+            0xA7 => {
+                alu::sub16(&mut self.flags, source, dest, false);
                 self.si = self.si.wrapping_add(step);
                 self.di = self.di.wrapping_add(step);
             }
-        }
-    }
-
-    /// CMPSW: [DS:SI] - [ES:DI] (set flags, 16-bit), SI += step, DI += step
-    fn string_op_cmpsw<B: Bus<Address = u32, Data = u8> + ?Sized>(
-        &mut self,
-        bus: &mut B,
-        master: BusMaster,
-    ) {
-        let rep = self.rep_prefix.take();
-        let step = self.string_step(true);
-        match rep {
-            Some(prefix) => {
-                while self.cx != 0 {
-                    let seg = self.string_src_seg();
-                    let a = self.read_word(bus, master, seg, self.si);
-                    let b = self.read_word(bus, master, self.es, self.di);
-                    alu::sub16(&mut self.flags, a, b, false);
-                    self.si = self.si.wrapping_add(step);
-                    self.di = self.di.wrapping_add(step);
-                    self.cx = self.cx.wrapping_sub(1);
-                    let zf = flags::get(self.flags, Flag::ZF);
-                    match prefix {
-                        RepPrefix::Rep => {
-                            if !zf {
-                                break;
-                            }
-                        }
-                        RepPrefix::Repnz => {
-                            if zf {
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            None => {
-                let seg = self.string_src_seg();
-                let a = self.read_word(bus, master, seg, self.si);
-                let b = self.read_word(bus, master, self.es, self.di);
-                alu::sub16(&mut self.flags, a, b, false);
-                self.si = self.si.wrapping_add(step);
+            // STOS: the accumulator goes out, so stage it where the write
+            // phase looks.
+            0xAA => {
+                self.operand_bytes[0] = self.al();
                 self.di = self.di.wrapping_add(step);
             }
-        }
-    }
-
-    /// STOSB: [ES:DI] <- AL, DI += step
-    fn string_op_stosb<B: Bus<Address = u32, Data = u8> + ?Sized>(
-        &mut self,
-        bus: &mut B,
-        master: BusMaster,
-    ) {
-        let rep = self.rep_prefix.take();
-        let step = self.string_step(false);
-        let al = self.al();
-        match rep {
-            Some(_) => {
-                while self.cx != 0 {
-                    self.write_byte(bus, master, self.es, self.di, al);
-                    self.di = self.di.wrapping_add(step);
-                    self.cx = self.cx.wrapping_sub(1);
-                }
-            }
-            None => {
-                self.write_byte(bus, master, self.es, self.di, al);
+            0xAB => {
+                self.operand_bytes[..2].copy_from_slice(&self.ax.to_le_bytes());
                 self.di = self.di.wrapping_add(step);
             }
-        }
-    }
-
-    /// STOSW: [ES:DI] <- AX, DI += step
-    fn string_op_stosw<B: Bus<Address = u32, Data = u8> + ?Sized>(
-        &mut self,
-        bus: &mut B,
-        master: BusMaster,
-    ) {
-        let rep = self.rep_prefix.take();
-        let step = self.string_step(true);
-        let ax = self.ax;
-        match rep {
-            Some(_) => {
-                while self.cx != 0 {
-                    self.write_word(bus, master, self.es, self.di, ax);
-                    self.di = self.di.wrapping_add(step);
-                    self.cx = self.cx.wrapping_sub(1);
-                }
-            }
-            None => {
-                self.write_word(bus, master, self.es, self.di, ax);
-                self.di = self.di.wrapping_add(step);
-            }
-        }
-    }
-
-    /// LODSB: AL <- [DS:SI], SI += step
-    fn string_op_lodsb<B: Bus<Address = u32, Data = u8> + ?Sized>(
-        &mut self,
-        bus: &mut B,
-        master: BusMaster,
-    ) {
-        let rep = self.rep_prefix.take();
-        let step = self.string_step(false);
-        match rep {
-            Some(_) => {
-                while self.cx != 0 {
-                    let seg = self.string_src_seg();
-                    let val = self.read_byte(bus, master, seg, self.si);
-                    self.set_al(val);
-                    self.si = self.si.wrapping_add(step);
-                    self.cx = self.cx.wrapping_sub(1);
-                }
-            }
-            None => {
-                let seg = self.string_src_seg();
-                let val = self.read_byte(bus, master, seg, self.si);
-                self.set_al(val);
+            // LODS: the source lands in the accumulator.
+            0xAC => {
+                self.set_al(source as u8);
                 self.si = self.si.wrapping_add(step);
             }
-        }
-    }
-
-    /// LODSW: AX <- [DS:SI], SI += step
-    fn string_op_lodsw<B: Bus<Address = u32, Data = u8> + ?Sized>(
-        &mut self,
-        bus: &mut B,
-        master: BusMaster,
-    ) {
-        let rep = self.rep_prefix.take();
-        let step = self.string_step(true);
-        match rep {
-            Some(_) => {
-                while self.cx != 0 {
-                    let seg = self.string_src_seg();
-                    let val = self.read_word(bus, master, seg, self.si);
-                    self.ax = val;
-                    self.si = self.si.wrapping_add(step);
-                    self.cx = self.cx.wrapping_sub(1);
-                }
-            }
-            None => {
-                let seg = self.string_src_seg();
-                let val = self.read_word(bus, master, seg, self.si);
-                self.ax = val;
+            0xAD => {
+                self.ax = source;
                 self.si = self.si.wrapping_add(step);
             }
-        }
-    }
-
-    /// SCASB: AL - [ES:DI] (set flags), DI += step
-    fn string_op_scasb<B: Bus<Address = u32, Data = u8> + ?Sized>(
-        &mut self,
-        bus: &mut B,
-        master: BusMaster,
-    ) {
-        let rep = self.rep_prefix.take();
-        let step = self.string_step(false);
-        match rep {
-            Some(prefix) => {
-                while self.cx != 0 {
-                    let al = self.al();
-                    let val = self.read_byte(bus, master, self.es, self.di);
-                    alu::sub8(&mut self.flags, al, val, false);
-                    self.di = self.di.wrapping_add(step);
-                    self.cx = self.cx.wrapping_sub(1);
-                    let zf = flags::get(self.flags, Flag::ZF);
-                    match prefix {
-                        RepPrefix::Rep => {
-                            if !zf {
-                                break;
-                            }
-                        }
-                        RepPrefix::Repnz => {
-                            if zf {
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            None => {
+            // SCAS: the accumulator minus the destination, for the flags.
+            0xAE => {
                 let al = self.al();
-                let val = self.read_byte(bus, master, self.es, self.di);
-                alu::sub8(&mut self.flags, al, val, false);
+                alu::sub8(&mut self.flags, al, dest as u8, false);
                 self.di = self.di.wrapping_add(step);
             }
+            0xAF => {
+                alu::sub16(&mut self.flags, self.ax, dest, false);
+                self.di = self.di.wrapping_add(step);
+            }
+            _ => {}
+        }
+
+        // A repeated operation counts one off CX per iteration. Without a
+        // prefix there is no count and nothing to decrement.
+        if self.rep_prefix.is_some() {
+            self.cx = self.cx.wrapping_sub(1);
         }
     }
 
-    /// SCASW: AX - [ES:DI] (set flags, 16-bit), DI += step
-    fn string_op_scasw<B: Bus<Address = u32, Data = u8> + ?Sized>(
-        &mut self,
-        bus: &mut B,
-        master: BusMaster,
-    ) {
-        let rep = self.rep_prefix.take();
-        let step = self.string_step(true);
-        match rep {
-            Some(prefix) => {
-                while self.cx != 0 {
-                    let val = self.read_word(bus, master, self.es, self.di);
-                    alu::sub16(&mut self.flags, self.ax, val, false);
-                    self.di = self.di.wrapping_add(step);
-                    self.cx = self.cx.wrapping_sub(1);
-                    let zf = flags::get(self.flags, Flag::ZF);
-                    match prefix {
-                        RepPrefix::Rep => {
-                            if !zf {
-                                break;
-                            }
-                        }
-                        RepPrefix::Repnz => {
-                            if zf {
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            None => {
-                let val = self.read_word(bus, master, self.es, self.di);
-                alu::sub16(&mut self.flags, self.ax, val, false);
-                self.di = self.di.wrapping_add(step);
-            }
+    /// Whether a repeated string operation runs another iteration.
+    ///
+    /// Asked after [`Self::string_iteration`], so CX has already come down.
+    /// `REP` alone stops when the count runs out; on `CMPS` and `SCAS` the
+    /// prefix also watches the zero flag, and which way it watches is the
+    /// difference between `REPE` and `REPNE`, which share their encodings with
+    /// `REP` and `REPNE` on the operations that do not compare.
+    pub(crate) fn string_repeats_again(&self, opcode: u8) -> bool {
+        let Some(prefix) = self.rep_prefix else {
+            return false;
+        };
+        if self.cx == 0 {
+            return false;
+        }
+        if !matches!(opcode, 0xA6 | 0xA7 | 0xAE | 0xAF) {
+            return true;
+        }
+        let zf = flags::get(self.flags, Flag::ZF);
+        match prefix {
+            RepPrefix::Rep => zf,
+            RepPrefix::Repnz => !zf,
         }
     }
 }
@@ -1762,6 +1539,27 @@ mod tests {
     /// pipeline does, load it, run, and store back whatever was staged.
     fn exec(cpu: &mut I8088, bus: &mut TestBus, opcode: u8) {
         use crate::cpu::i8088::{MAX_INSTRUCTION, access, addressing::Operand, format};
+
+        // A string operation is the pipeline's, one iteration at a time, so
+        // there is nothing for `execute` to be handed. These tests drive the
+        // real phases instead: the prefixes the caller set are left alone,
+        // which is what lets a test say "REPNZ" or "with a segment override"
+        // without assembling one in memory.
+        if access::string_access(opcode).is_some() {
+            use crate::core::component::BusMasterComponent;
+            cpu.instr[0] = opcode;
+            cpu.instr_len = 1;
+            cpu.instr_pos = 0;
+            cpu.opcode_at = 0;
+            cpu.operand_bytes = [0; 4];
+            cpu.eu = cpu.begin_string_iteration();
+            for _ in 0..200_000 {
+                if cpu.tick_with_bus(bus, M) {
+                    break;
+                }
+            }
+            return;
+        }
 
         let base = I8088::physical_addr(cpu.cs, cpu.ip) as usize;
         for i in 0..MAX_INSTRUCTION {

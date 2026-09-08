@@ -382,6 +382,55 @@ fn interrupt_pins_and_acknowledge() {
     eprintln!("files with NMI asserted on any cycle:       {files_with_nmi:?}");
 }
 
+/// The residual for the *repeated* string operations, which every other survey
+/// here filters out along with the rest of the prefixed cases.
+///
+/// Grouped by how many iterations the recording ran, because a per-iteration
+/// error and a fixed one look the same on a single count and completely
+/// different across a range: a row that is one clock out per iteration shows a
+/// residual that grows with the count, and a wrong `REP` setup shows the same
+/// residual at every count.
+#[test]
+#[ignore = "survey, not a check: the repeated string operations"]
+fn rep_residuals() {
+    eprintln!("\nrepeated string operations, residual by iteration count");
+    for stem in ["A4", "A5", "A6", "A7", "AA", "AB", "AC", "AD", "AE", "AF"] {
+        let Some(tests) = load(stem) else { continue };
+        let mut groups: BTreeMap<u16, BTreeMap<i64, usize>> = BTreeMap::new();
+        for tc in &tests {
+            if tc.cycles.is_empty() || tc.initial.queue.len() != 4 {
+                continue;
+            }
+            // Exactly one REP prefix and nothing else in front of the opcode.
+            if !matches!(tc.bytes.first(), Some(0xF2 | 0xF3))
+                || tc.bytes.get(1).is_some_and(|&b| is_prefix(b))
+            {
+                continue;
+            }
+            let Some(ours) = replay(tc) else { continue };
+            // How many iterations ran: CX before, less CX after.
+            let before = tc.initial.regs.cx;
+            let after = tc.final_state.regs.cx.unwrap_or(before);
+            *groups
+                .entry(before.wrapping_sub(after))
+                .or_default()
+                .entry(ours as i64 - tc.cycles.len() as i64)
+                .or_default() += 1;
+        }
+        let shown: Vec<String> = groups
+            .iter()
+            .take(6)
+            .map(|(iterations, hist)| {
+                let mut modes: Vec<(i64, usize)> = hist.iter().map(|(a, b)| (*a, *b)).collect();
+                modes.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
+                let (d, n) = modes[0];
+                format!("{iterations} iters {d:+} ({n})")
+            })
+            .collect();
+        eprintln!("  {stem}: {}", shown.join("  "));
+    }
+}
+
 #[test]
 #[ignore = "survey, not a check: how far each row is from the recording"]
 fn row_residuals() {
@@ -391,7 +440,8 @@ fn row_residuals() {
         "CD", "CE", "CF", "A0", "A1", "A2", "A3", "D7", "98", "99", "9E", "9F", "27", "37", "C4",
         "C5", "F8", "FF.2", "FF.3", "FF.4", "FF.5", "8B", "01", "50", "58", "90", "D4", "D5", "E4",
         "E5", "E6", "E7", "EC", "ED", "EE", "EF", "F6.6", "F7.6", "F6.4", "F7.4", "8D", "8A", "88",
-        "00", "02", "80.0", "81.0", "83.0", "C6", "C7", "FE.0", "FF.0", "D1.4", "F7.2",
+        "00", "02", "80.0", "81.0", "83.0", "C6", "C7", "FE.0", "FF.0", "D1.4", "F7.2", "A4", "A5",
+        "A6", "A7", "AA", "AB", "AC", "AD", "AE", "AF",
     ] {
         residuals(stem);
     }
