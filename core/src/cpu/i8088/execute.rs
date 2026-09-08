@@ -1122,8 +1122,18 @@ impl I8088 {
                 let _ = self.read_operand16(operand, bus, master);
             }
 
+            // SALC, which Intel never documented and never named: it smears
+            // carry across AL, setting it to 0xFF or to zero, and touches no
+            // other flag or register. Its timing is measured rather than
+            // transcribed, for want of a row to transcribe: 4 clocks with carry
+            // and 3 without, uniform on every recorded case.
+            0xD6 => {
+                let carry = flags::get(self.flags, Flag::CF);
+                self.set_al(if carry { 0xFF } else { 0x00 });
+            }
+
             // =============================================================
-            // Opcodes with no implementation here: SALC (0xD6), POP CS (0x0F),
+            // Opcodes with no implementation here: POP CS (0x0F),
             // the RET aliases (0xC0, 0xC1, 0xC8, 0xC9) and the undefined FF.7.
             //
             // Doing nothing is not the same as consuming nothing. The part

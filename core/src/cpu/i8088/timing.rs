@@ -477,6 +477,16 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
         // more than the queue holds, and over an instruction that long the
         // part's read schedule and this core's differ.
         //
+        // **Its `-1` is not this row's, and raising the row is measured and
+        // wrong.** Since [`loader_stall`] landed, `9A` and `EA` read `-1` on
+        // every full-queue case, and a uniform residual usually means a wrong
+        // constant. It does not here: they are already exact in the
+        // empty-queue population, and a row is population-blind, so raising it
+        // by one traded 2,489 cases for more than it gained, at 73.59% against
+        // 73.76% with every other figure down with it. See the note under
+        // `charged_to_microcode`'s caller: the clock is in the refill, which
+        // this pipeline cannot express without moving a bus cycle.
+        //
         // Its **bus order** is still wrong, and the count cannot see it. This
         // core runs both pushes, then flushes, then reloads; the part starts
         // the fetch at the target between its two pushes:
@@ -537,6 +547,12 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
         // to the queue flush is five cycles, and five plus its five bytes is
         // this row. Reading the span instead gives 12 and runs two clocks long
         // on every case.
+        //
+        // That idle cycle is now [`loader_stall`]'s, which leaves this row a
+        // clock short on the full-queue cases and exactly right on the
+        // empty-queue ones. Raising it to 11 was measured and rejected for the
+        // reason under `0x9A`. `E9` and `EB` are three and two bytes, never
+        // outrun the queue, and are exact.
         0xE9 => 10,
         0xEA => 10,
         0xEB => 10,
@@ -602,6 +618,19 @@ pub(crate) fn branch_cycles(opcode: u8, taken: bool) -> u8 {
                 5
             }
         }
+        // SALC, which Intel never documented and which therefore has no row to
+        // transcribe: it sets AL to 0xFF when carry is set and to zero when it
+        // is not. Measured, and the split is exactly that branch, uniform on
+        // every case: 4 clocks with carry, 3 without. Writing the ones is a
+        // clock dearer than writing the zeros, which is the same shape `CWD`
+        // has one line above.
+        0xD6 => {
+            if taken {
+                4
+            } else {
+                3
+            }
+        }
         // Jcc and its aliases sixteen below. Documented 16 taken, 4 not.
         0x60..=0x7F => {
             if taken {
@@ -651,7 +680,211 @@ pub(crate) fn branch_cycles(opcode: u8, taken: bool) -> u8 {
 /// Whether `opcode`'s microcode branches on the state, so that
 /// [`branch_cycles`] gives its cost instead of [`eu_cycles`].
 pub(crate) fn branches_on_state(opcode: u8) -> bool {
-    matches!(opcode, 0x37 | 0x3F | 0x60..=0x7F | 0x99 | 0xCE | 0xE0..=0xE3)
+    matches!(
+        opcode,
+        0x37 | 0x3F | 0x60..=0x7F | 0x99 | 0xCE | 0xD6 | 0xE0..=0xE3
+    )
+}
+
+/// Whether `opcode` can redirect the instruction stream, and so may throw the
+/// prefetch queue away rather than run on through it.
+///
+/// Asked by the loader's queue-length correction, which charges a clock for the
+/// refill behind an instruction that drained the queue. An instruction that
+/// flushes has no such refill: the reload at the target is already counted
+/// separately, as the seven clocks under [`eu_cycles`]'s control transfers.
+///
+/// Conservative on purpose. The conditional forms are included whether or not
+/// they take their branch, because this decides a table entry and not a
+/// per-case cost, and a `Jcc` that falls through is two bytes and never reaches
+/// the four-byte condition anyway.
+pub(crate) fn may_flush_the_queue(opcode: u8) -> bool {
+    matches!(
+        opcode,
+        0x60..=0x7F        // the conditional jumps
+            | 0x9A          // CALL far direct
+            | 0xC2 | 0xC3 | 0xC0 | 0xC1   // RET near and its aliases
+            | 0xCA | 0xCB | 0xC8 | 0xC9   // RET far and its aliases
+            | 0xCC..=0xCF   // INT, INT 3, INTO, IRET
+            | 0xE0..=0xE3   // LOOP and JCXZ
+            | 0xE8..=0xEB   // CALL near, JMP near, JMP far, JMP short
+            | 0xFF          // the indirect calls and jumps live in this group
+    )
+}
+
+/// T-states a pop's microcode runs before its first read reaches the bus.
+///
+/// Measured: `POP AX` from a full queue drives its read's T1 three T-states
+/// after the opcode is taken from the queue, and this core drove it one after,
+/// on every case of every file in the family. Taken out of the microcode that
+/// follows the read, so an instruction's total is unchanged and only the bus
+/// cycle moves. See [`super::Eu::StackLeadIn`].
+pub(crate) const STACK_POP_LEAD_IN: u8 = 3;
+
+/// Where in an instruction the loader stops for a T-state, and for how long.
+///
+/// See [`loader_stall`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LoaderStall {
+    /// The loader runs flat out, a byte per T-state.
+    None,
+    /// It pauses after the opcode byte, before the immediate or displacement
+    /// behind it. Given back by [`eu_cycles`]'s caller.
+    AfterOpcode(u8),
+    /// It pauses after the ModR/M byte of a **memory** form, before the
+    /// displacement. Given back by [`super::access::address_phase_cycles`],
+    /// where the displacement's own read time already lives.
+    BeforeDisplacement(u8),
+    /// It pauses after the ModR/M byte of a **register** form, before the
+    /// immediate. Given back by [`eu_cycles`]'s caller.
+    BeforeImmediate(u8),
+}
+
+impl LoaderStall {
+    /// The T-states spent, wherever they are given back.
+    pub(crate) fn clocks(self) -> u8 {
+        match self {
+            LoaderStall::None => 0,
+            LoaderStall::AfterOpcode(n)
+            | LoaderStall::BeforeDisplacement(n)
+            | LoaderStall::BeforeImmediate(n) => n,
+        }
+    }
+
+    /// The part the microcode has to give back, which is all of it except the
+    /// pause before a displacement: that one is spent inside the effective
+    /// address, and the address phase gives it back instead.
+    ///
+    /// Measured, both ways round. Charging the displacement pause to the
+    /// microcode instead takes the count from 72.68% to 71.86% and the
+    /// bus-cycle order from 68.41% to 60.73%: those clocks belong to the
+    /// effective address, and taking them from anywhere else moves the operand
+    /// access off the cycle the part starts it on.
+    pub(crate) fn charged_to_microcode(self) -> u8 {
+        match self {
+            LoaderStall::BeforeDisplacement(_) => 0,
+            other => other.clocks(),
+        }
+    }
+}
+
+/// **The part's loader does not take a byte every T-state.** Where it stops,
+/// and for how long, depends on the opcode.
+///
+/// Measured, not transcribed: no table quotes this, because Table 1-16 gives
+/// totals and this is about their distribution. `loader_read_pattern` reports
+/// the gaps between successive reads of one instruction over the whole corpus,
+/// restricted to a full queue and no prefix so that every byte is already in
+/// hand and nothing in the pattern can be waiting on a fetch. **94 of 323 files
+/// stall and every one of them is 100.00% uniform.**
+///
+/// ```text
+///   gap after the opcode, when no ModR/M byte follows it      2 T-states
+///   the same for E0-E3, the loop forms                        4 T-states
+///   gap after the ModR/M byte of a memory form                4 T-states
+///   gap after the ModR/M byte of F6 /0, F6 /1, F7 /0, F7 /1   2 T-states
+/// ```
+///
+/// The third is the widest by far: **every ModR/M opcode reads its displacement
+/// four T-states after the ModR/M byte**, and this core read it in one.
+/// `loader_read_gap_diff` puts our rhythm beside the part's and 148 files differ
+/// on exactly that gap, from `8B` and `89` through the whole ALU block, `C4`-`C7`,
+/// the shifts, the escapes and the `FF` group. The clocks are the effective
+/// address's: Table 1-16 folds the displacement's fetch into `+EA`, which is
+/// why [`super::access::address_phase_cycles`] already takes the displacement's
+/// own read time out, and this comes out of the same place.
+///
+/// The last is a decode the part cannot avoid: in that group alone the `reg`
+/// field decides whether an immediate follows at all, which is what
+/// [`super::format::Imm::ByteIfTest`] exists to express, so the loader cannot
+/// know what to fetch until it has read and decoded the ModR/M byte. It shows
+/// only on the register forms, because a memory form defers its immediate past
+/// the operand access and takes the displacement pause above instead.
+///
+/// **None of this is a cost on top of the instruction.** Where the queue is
+/// full and the EU is the critical path an instruction takes its documented
+/// clocks however its reads are distributed, so every one of these T-states is
+/// given back: see [`LoaderStall::charged_to_microcode`] for which giver.
+/// What the pause changes is *when the queue drains*, which sets when the
+/// refill behind it lands, and so the whole fetch schedule.
+/// The pause before a **deferred** immediate: the one belonging to a memory
+/// form, which the loader goes back for after the operand access rather than
+/// fetching with the rest of the instruction.
+///
+/// Two T-states, measured and uniform. `loader_read_gap_diff` reports the gap
+/// from the last displacement byte to the immediate as exactly two short across
+/// the whole `80`, `81`, `82`, `83`, `F6` and `F7` set, in every addressing
+/// mode and whether or not the form carries a displacement at all: `1 4 1 14 1`
+/// here against `1 4 1 16 1`, `1 17` against `1 19`, `1 4 11` against `1 4 13`.
+///
+/// Given back by [`eu_cycles`]'s caller, like the other pauses that are not the
+/// effective address's.
+/// **Only where the operand is read.** `C6` and `C7` write their memory operand
+/// and never read it, and they take no pause: giving them one put their gap at
+/// nine against the part's six, where leaving them alone puts it at seven. So
+/// the two T-states belong to the read-modify-write turnaround and not to the
+/// deferral itself.
+pub(crate) fn deferred_immediate_stall(opcode: u8, modrm: u8) -> u8 {
+    use super::format;
+
+    let f = format::format_of(opcode);
+    // The loader defers an immediate exactly when the operand is in memory, so
+    // that the address can be computed and the operand read first. See
+    // `I8088::begin_immediate`.
+    if f.modrm
+        && modrm >> 6 != 3
+        && f.imm.len(Some(modrm)) > 0
+        && super::access::operand_access(opcode, modrm).reads
+    {
+        2
+    } else {
+        0
+    }
+}
+
+pub(crate) fn loader_stall(opcode: u8, modrm: u8) -> LoaderStall {
+    use super::format::{self, Imm};
+
+    let f = format::format_of(opcode);
+    if !f.modrm {
+        // Nothing behind the opcode is nothing to wait for.
+        if f.imm.len(None) == 0 {
+            return LoaderStall::None;
+        }
+        return match opcode {
+            0xE0..=0xE3 => LoaderStall::AfterOpcode(3),
+            _ => LoaderStall::AfterOpcode(1),
+        };
+    }
+    if format::displacement_len(modrm) > 0 {
+        // The gap is the address arithmetic on the *register* components, done
+        // before the displacement is read. Measured by
+        // `modrm_to_displacement_gap`, pooled over every opcode that carries a
+        // ModR/M byte, uniform within each mode on 98% of cases, and `mod=01`
+        // and `mod=10` agree exactly:
+        //
+        //   two registers            6, or 7 for BX+DI and BP+SI
+        //   one register             4
+        //   none, the direct form    2
+        //
+        // Those are the effective-address table's own pairings, including its
+        // asymmetry: BX+DI and BP+SI cost a clock more there too. The loader
+        // already spends one T-state taking the byte, so the pause is one less.
+        let gap: u8 = match (modrm >> 6, modrm & 7) {
+            (0, 6) => 2,
+            (_, 0 | 3) => 6,
+            (_, 1 | 2) => 7,
+            _ => 4,
+        };
+        return LoaderStall::BeforeDisplacement(gap - 1);
+    }
+    if matches!(f.imm, Imm::ByteIfTest | Imm::WordIfTest)
+        && modrm >> 6 == 3
+        && f.imm.len(Some(modrm)) > 0
+    {
+        return LoaderStall::BeforeImmediate(1);
+    }
+    LoaderStall::None
 }
 
 /// Whether `opcode` is one of the conditional *transfers*, the subset of
@@ -1147,8 +1380,8 @@ pub(crate) fn is_modeled(opcode: u8, modrm: u8) -> bool {
         0xD0..=0xD3 => true,
         // AAM and AAD, from the divide and multiply loops their microcode runs.
         0xD4 | 0xD5 => true,
-        // SALC, which Intel does not document and which has no row anywhere.
-        0xD6 => false,
+        // SALC, undocumented, measured off the recording rather than a table.
+        0xD6 => true,
         0xD7 => true,
         // The coprocessor escapes, whose operand read this core now performs.
         0xD8..=0xDF => true,
