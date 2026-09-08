@@ -211,6 +211,16 @@ pub(crate) enum Eu {
     /// reads 0000C through 0000F and only then writes the three words onto the
     /// stack.
     ReadingVector { byte: u8, t: u8 },
+    /// Acknowledging a maskable interrupt: two INTA bus cycles, `cycle` being
+    /// 0 or 1 and `t` the T-state within it.
+    ///
+    /// The part runs two rather than one, and the interrupting device puts the
+    /// vector number on the data pins during the second. Here the board has
+    /// already supplied that number through `InterruptState`, so these cycles
+    /// carry no information this core needs; they are driven because a device
+    /// watching the bus can see them, and because the interrupt costs the eight
+    /// clocks they take.
+    Acknowledging { cycle: u8, t: u8 },
     /// Reading an I/O port, `byte` of `total`, on T-state `t`. IOR rather than
     /// MEMR, and after the microcode rather than before it: the recording puts
     /// `IN AL, imm8`'s port cycle four clocks after its last instruction byte.
@@ -225,6 +235,23 @@ pub(crate) enum Eu {
     Executing(u8),
     /// Writing the memory operand back after the instruction has run.
     Writing { byte: u8, total: u8, t: u8 },
+}
+
+/// An interrupt the pipeline is servicing in place of an instruction.
+///
+/// A hardware interrupt is not an instruction and does not pretend to be one
+/// here: nothing is loaded, no queue byte is read, and the phases that would
+/// look at an opcode ask this instead. What it shares with `INT n` is
+/// everything after the vector number is known, which is why it runs through
+/// the same vector read and the same three pushes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Servicing {
+    /// The interrupt vector to take.
+    pub vector: u8,
+    /// Whether the bus runs an acknowledge pair first. A maskable interrupt
+    /// acknowledges; NMI does not, because nothing has to tell the part which
+    /// vector it is.
+    pub acknowledge: bool,
 }
 
 /// Which part of the instruction the loader's next fetched byte belongs to.
@@ -357,6 +384,10 @@ pub struct I8088 {
     /// Where in `stack_words` the executor's next pop or push lands.
     #[save_skip(default)]
     pub(crate) stack_pos: u8,
+    /// The interrupt the pipeline is servicing, if it is servicing one rather
+    /// than running an instruction. See [`Servicing`].
+    #[save_skip(default)]
+    pub(crate) servicing: Option<Servicing>,
     /// The bytes an `IN` read from its port, or an `OUT` is about to write,
     /// low byte first, and whether the instruction produced any.
     ///
@@ -520,6 +551,7 @@ impl I8088 {
             operand_written: false,
             stack_words: [0; 3],
             stack_pos: 0,
+            servicing: None,
             port_bytes: [0; 2],
             port_written: false,
             immediate_deferred: false,
@@ -607,32 +639,24 @@ impl I8088 {
             return;
         }
 
-        if self.halted {
-            // A halted 8088 stops prefetching, so the BIU does not run here.
+        if self.halted && self.servicing.is_none() {
+            // A halted 8088 stops prefetching, so the BIU does not run here. An
+            // interrupt is what gets it going again, and it runs the same
+            // sequence it would have run at an instruction boundary.
             let ints = bus.check_interrupts(master);
-            let nmi_edge = crate::cpu::flags::detect_rising_edge(ints.nmi, &mut self.nmi_prev);
-            if nmi_edge {
-                self.nmi_pending = true;
-            }
-            if self.nmi_pending {
-                self.nmi_pending = false;
+            if self.begin_interrupt(ints) {
                 self.halted = false;
-                self.interrupt(bus, master, 2);
-                self.flush_queue();
-            } else if ints.irq && flags::get(self.flags, flags::Flag::IF) {
-                self.halted = false;
-                self.interrupt(bus, master, ints.irq_vector);
-                self.flush_queue();
             }
             return;
         }
 
         // Interrupts are recognized between instructions, which is the only
         // point the queue can be redirected without discarding a partial fetch.
-        if self.at_instruction_boundary() {
+        // Recognizing one costs this T-state; the acknowledge, the vector read
+        // and the pushes follow on the ones after it.
+        if self.servicing.is_none() && self.at_instruction_boundary() {
             let ints = bus.check_interrupts(master);
-            if self.handle_interrupts(ints, bus, master) {
-                self.flush_queue();
+            if self.begin_interrupt(ints) {
                 return;
             }
         }
@@ -685,6 +709,7 @@ impl I8088 {
             // instruction with a memory operand leaves the queue emptier than
             // one without, and why the instruction after it may then stall.
             Eu::Reading { .. } => self.tick_operand_read(bus, master),
+            Eu::Acknowledging { .. } => self.tick_acknowledge(),
             Eu::ReadingVector { .. } => self.tick_vector_read(bus, master),
             Eu::PortReading { .. } => self.tick_port(bus, master, true),
             Eu::PortWriting { .. } => self.tick_port(bus, master, false),
@@ -981,6 +1006,9 @@ impl I8088 {
         self.immediate_deferred = false;
         self.immediate_resuming = false;
         self.port_written = false;
+        // Not `servicing`: a flush is what a taken interrupt *ends* with, so
+        // clearing it here would tear down the sequence at the moment it
+        // succeeds. `finish_instruction` clears it, before the flush.
         self.queue_status = Some((QueueStatus::Emptied, 0));
     }
 
@@ -1266,6 +1294,10 @@ impl I8088 {
     /// `AAM` take one only on operands that fault, so their vector read stays
     /// inside the executor and their timing rows carry its clocks.
     fn staged_vector(&self) -> Option<u8> {
+        // A hardware interrupt is not an instruction and has no opcode to ask.
+        if let Some(servicing) = self.servicing {
+            return Some(servicing.vector);
+        }
         match self.opcode() {
             0xCC => Some(3),
             0xCD => Some(self.instr[self.opcode_at as usize + 1]),
@@ -1368,6 +1400,40 @@ impl I8088 {
     /// is the one form whose cost depends on a register rather than on the
     /// encoding, so it is added here, where CL is in hand.
     fn begin_execute_phase(&mut self) -> Eu {
+        // A serviced interrupt has no instruction to price. Table 1-16 gives
+        // the whole sequence 61 clocks for a maskable interrupt and 50 for NMI,
+        // with 7 and 5 transfers; what is left for the EU is what the pipeline
+        // does not already spend on the acknowledge pair, the vector read, the
+        // three pushes and the reload at the handler.
+        if let Some(servicing) = self.servicing {
+            /// The T-state the interrupt is recognized on, before any of it
+            /// reaches the bus.
+            const RECOGNITION: u16 = 1;
+            /// Two INTA cycles, for a maskable interrupt only.
+            const ACKNOWLEDGE: u16 = 8;
+            /// Four MEMR cycles for the vector's offset and segment.
+            const VECTOR_READ: u16 = 16;
+            /// Six MEMW cycles for the flags, CS and IP.
+            const PUSHES: u16 = 24;
+            /// The flush, the two-cycle prefetch restart, and the fetch at the
+            /// handler, whose byte the EU takes the cycle after T4.
+            const FLUSH_AND_RELOAD: u16 = 8;
+            let spent = RECOGNITION
+                + VECTOR_READ
+                + PUSHES
+                + FLUSH_AND_RELOAD
+                + if servicing.acknowledge {
+                    ACKNOWLEDGE
+                } else {
+                    0
+                };
+            let documented = if servicing.acknowledge { 61 } else { 50 };
+            return match documented - spent {
+                0 => Eu::Loading,
+                n => Eu::Executing(n as u8),
+            };
+        }
+
         let opcode = self.opcode();
         let modrm = self.instr[self.opcode_at as usize + 1];
         let mut cycles = if timing::branches_on_state(opcode) {
@@ -1445,6 +1511,22 @@ impl I8088 {
         bus: &mut B,
         master: BusMaster,
     ) {
+        // A serviced interrupt runs here in place of an instruction, with its
+        // vector already read off the bus. What it does is the same three
+        // pushes and the same transfer `INT n` does, so it goes through the
+        // same `interrupt`, and the pushes it stages leave through the same
+        // stack phase. None of the per-instruction cross-checks below apply:
+        // there is no opcode, no operand and no loaded length to check.
+        if self.servicing.is_some() {
+            let vector = self.staged_vector().unwrap_or(0);
+            self.stack_ops = (0, 0);
+            self.interrupt(bus, master, vector);
+            if !self.hand_staged_pushes_to_the_bus() {
+                self.finish_instruction();
+            }
+            return;
+        }
+
         self.instr_pos = 0;
         self.operand_ops = (0, 0);
         self.stack_ops = (0, 0);
@@ -1557,9 +1639,20 @@ impl I8088 {
             self.instr_pos,
         );
 
-        // Words the instruction pushed go out first, then any operand
-        // write-back. That order matters for `PUSH [mem]`, which reads its
-        // operand and pushes it, and it is the order the recorded traces show.
+        if self.hand_staged_pushes_to_the_bus() {
+            return;
+        }
+
+        self.finish_or_write_operand();
+    }
+
+    /// Send whatever the instruction pushed out over the bus, and say whether
+    /// there was any.
+    ///
+    /// Pushes go before an operand write-back, which matters for `PUSH [mem]`:
+    /// it reads its operand and pushes it, and that is the order the recorded
+    /// traces show.
+    fn hand_staged_pushes_to_the_bus(&mut self) -> bool {
         if self.stack_staged && self.stack_pos > 0 && self.stack_ops.1 > 0 {
             let total = self.stack_pos;
             self.stack_pos = 0;
@@ -1569,10 +1662,9 @@ impl I8088 {
                 byte: 0,
                 t: 1,
             };
-            return;
+            return true;
         }
-
-        self.finish_or_write_operand();
+        false
     }
 
     /// Send the operand write-back out if the instruction produced one, and
@@ -1626,6 +1718,9 @@ impl I8088 {
         // boot check rather than in any CPU vector.
         self.stack_staged = false;
         self.stack_pos = 0;
+        // And the interrupt, if that is what just finished. Left set, the next
+        // instruction's execute step would take itself for an interrupt.
+        self.servicing = None;
 
         if self.transferred {
             // The queue holds bytes from the path not taken, and throwing them
@@ -2017,33 +2112,100 @@ impl I8088 {
             .unwrap_or_else(|| self.default_segment_for_rm(modrm & 7, modrm >> 6))
     }
 
-    /// Check for pending interrupts. Returns true if an interrupt was taken.
-    fn handle_interrupts<B: Bus<Address = u32, Data = u8> + ?Sized>(
-        &mut self,
-        ints: InterruptState,
-        bus: &mut B,
-        master: BusMaster,
-    ) -> bool {
+    /// Check for pending interrupts, and start servicing one if there is one.
+    ///
+    /// Returns true when the pipeline has taken it over, which is the caller's
+    /// signal that this T-state belongs to the interrupt rather than to an
+    /// instruction. What follows is a sequence of bus cycles rather than a
+    /// single call: the acknowledge pair for a maskable interrupt, then the
+    /// vector read, then the three pushes. See [`Servicing`].
+    fn begin_interrupt(&mut self, ints: InterruptState) -> bool {
         // NMI is edge-triggered
         let nmi_edge = crate::cpu::flags::detect_rising_edge(ints.nmi, &mut self.nmi_prev);
         if nmi_edge {
             self.nmi_pending = true;
         }
 
-        // NMI takes priority over IRQ
-        if self.nmi_pending {
+        // NMI takes priority over IRQ, and runs no acknowledge cycles: nothing
+        // on the bus has to tell the part which vector it is.
+        let servicing = if self.nmi_pending {
             self.nmi_pending = false;
-            self.interrupt(bus, master, 2); // NMI = vector 2
-            return true;
-        }
+            Servicing {
+                vector: 2,
+                acknowledge: false,
+            }
+        } else if ints.irq && flags::get(self.flags, flags::Flag::IF) {
+            // Level-triggered and masked by IF. The vector comes from the
+            // board, which is what the acknowledge cycles would fetch from the
+            // interrupting device on a real one.
+            Servicing {
+                vector: ints.irq_vector,
+                acknowledge: true,
+            }
+        } else {
+            return false;
+        };
 
-        // IRQ: level-triggered, masked by IF
-        if ints.irq && flags::get(self.flags, flags::Flag::IF) {
-            self.interrupt(bus, master, ints.irq_vector);
-            return true;
-        }
+        self.servicing = Some(servicing);
+        self.stack_staged = true;
+        self.stack_pos = 0;
+        self.stack_base = self.sp;
+        self.vector_staged = false;
+        self.eu = if servicing.acknowledge {
+            Eu::Acknowledging { cycle: 0, t: 1 }
+        } else {
+            Eu::ReadingVector { byte: 0, t: 1 }
+        };
+        true
+    }
 
-        false
+    /// One T-state of the interrupt-acknowledge pair.
+    ///
+    /// Two INTA bus cycles back to back, which is what the part runs and what
+    /// an interrupt controller on the board is watching for. **Nothing in the
+    /// test suite records one**: no trace contains an INTA cycle and INTR is
+    /// never asserted on any cycle of any file, so unlike every other bus cycle
+    /// this core drives, these are built from the manual and checked only by
+    /// this crate's own tests. Table 1-16 gives the whole sequence 61 clocks
+    /// and 7 transfers, of which these are two.
+    fn tick_acknowledge(&mut self) {
+        let Eu::Acknowledging { cycle, t } = self.eu else {
+            return;
+        };
+        let vector = self.servicing.map_or(0, |s| s.vector);
+        match t {
+            1 => {
+                self.bus = BusPins {
+                    status: BusStatus::Inta,
+                    t_state: TState::T1,
+                    address: None,
+                    data: None,
+                    segment: None,
+                };
+                self.eu = Eu::Acknowledging { cycle, t: 2 };
+            }
+            2 => {
+                self.drive_port_cycle(BusStatus::Inta, TState::T2);
+                self.eu = Eu::Acknowledging { cycle, t: 3 };
+            }
+            3 => {
+                self.drive_port_cycle(BusStatus::Inta, TState::T3);
+                // The vector number is on the data pins during the second
+                // cycle, put there by the interrupting device.
+                if cycle == 1 {
+                    self.bus.data = Some(vector);
+                }
+                self.eu = Eu::Acknowledging { cycle, t: 4 };
+            }
+            _ => {
+                self.drive_port_cycle(BusStatus::Inta, TState::T4);
+                self.eu = if cycle == 0 {
+                    Eu::Acknowledging { cycle: 1, t: 1 }
+                } else {
+                    Eu::ReadingVector { byte: 0, t: 1 }
+                };
+            }
+        }
     }
 
     /// Default segment for a given addressing mode base register.
@@ -2414,6 +2576,195 @@ mod tests {
                 && cycles.contains(&(BusStatus::IoWrite, 0x301)),
             "two IOW cycles: {cycles:?}"
         );
+    }
+
+    /// A bus that asserts an interrupt line, so the acknowledge sequence can be
+    /// watched. Nothing in the test suite records one: no trace contains an
+    /// INTA cycle and neither INTR nor NMI is ever asserted, so these tests are
+    /// the only check this sequence has.
+    struct IrqBus {
+        mem: Box<[u8; 0x10_0000]>,
+        irq: bool,
+        nmi: bool,
+        vector: u8,
+    }
+
+    impl IrqBus {
+        fn new() -> Self {
+            Self {
+                mem: Box::new([0x90; 0x10_0000]),
+                irq: false,
+                nmi: false,
+                vector: 0x40,
+            }
+        }
+    }
+
+    impl Bus for IrqBus {
+        type Address = u32;
+        type Data = u8;
+
+        fn read(&mut self, _master: BusMaster, addr: u32) -> u8 {
+            self.mem[(addr & 0xF_FFFF) as usize]
+        }
+
+        fn write(&mut self, _master: BusMaster, addr: u32, data: u8) {
+            self.mem[(addr & 0xF_FFFF) as usize] = data;
+        }
+
+        fn is_halted_for(&self, _master: BusMaster) -> bool {
+            false
+        }
+
+        fn check_interrupts(&mut self, _target: BusMaster) -> InterruptState {
+            InterruptState {
+                irq: self.irq,
+                nmi: self.nmi,
+                irq_vector: self.vector,
+                ..InterruptState::default()
+            }
+        }
+    }
+
+    /// Run until the CPU has transferred to the handler, collecting the bus
+    /// cycles it drove and how many T-states it took.
+    /// Runs to the end of the sequence rather than to the transfer: CS changes
+    /// partway through, while three words are still to be pushed, so stopping
+    /// there would miss half the bus cycles.
+    fn service_interrupt(cpu: &mut I8088, bus: &mut IrqBus) -> (Vec<BusStatus>, usize) {
+        let mut kinds = Vec::new();
+        let mut ticks = 0;
+        let mut started = false;
+        for _ in 0..400 {
+            ticks += 1;
+            cpu.tick_with_bus(bus, BusMaster::Cpu(0));
+            if cpu.bus.t_state == TState::T1 {
+                kinds.push(cpu.bus.status);
+            }
+            started |= cpu.servicing.is_some();
+            if started && cpu.servicing.is_none() {
+                break;
+            }
+        }
+        (kinds, ticks)
+    }
+
+    /// A maskable interrupt runs two acknowledge cycles, then reads its vector,
+    /// then pushes flags, CS and IP, and the handler's address comes out of the
+    /// vector table.
+    #[test]
+    fn a_maskable_interrupt_acknowledges_then_reads_its_vector() {
+        let mut cpu = I8088::new();
+        let mut bus = IrqBus::new();
+        cpu.cs = 0;
+        cpu.ip = 0x100;
+        cpu.ss = 0;
+        cpu.sp = 0x200;
+        cpu.load_prefetch_queue(&[]);
+        flags::set(&mut cpu.flags, flags::Flag::IF, true);
+        bus.irq = true;
+        // Vector 0x40 lives at 0x100 in the table: handler at 9000:1234.
+        bus.mem[0x100] = 0x34;
+        bus.mem[0x101] = 0x12;
+        bus.mem[0x102] = 0x00;
+        bus.mem[0x103] = 0x90;
+
+        let (kinds, _) = service_interrupt(&mut cpu, &mut bus);
+        assert_eq!(cpu.cs, 0x9000, "the handler's segment");
+        assert_eq!(cpu.ip, 0x1234, "and its offset");
+        assert_eq!(
+            kinds.iter().filter(|k| **k == BusStatus::Inta).count(),
+            2,
+            "two acknowledge cycles: {kinds:?}"
+        );
+        // The four bytes of the vector, then the three words pushed.
+        assert_eq!(
+            kinds.iter().filter(|k| **k == BusStatus::MemRead).count(),
+            4,
+            "{kinds:?}"
+        );
+        assert_eq!(
+            kinds.iter().filter(|k| **k == BusStatus::MemWrite).count(),
+            6,
+            "{kinds:?}"
+        );
+        assert_eq!(cpu.sp, 0x200 - 6, "three words deeper");
+        assert!(
+            !flags::get(cpu.flags, flags::Flag::IF),
+            "and interrupts are off inside the handler"
+        );
+    }
+
+    /// NMI runs no acknowledge cycles: nothing on the bus has to tell the part
+    /// which vector it is. It is also not maskable, so a clear IF does not stop
+    /// it.
+    #[test]
+    fn nmi_takes_no_acknowledge_and_ignores_the_interrupt_flag() {
+        let mut cpu = I8088::new();
+        let mut bus = IrqBus::new();
+        cpu.cs = 0;
+        cpu.ip = 0x400;
+        cpu.ss = 0;
+        cpu.sp = 0x200;
+        cpu.load_prefetch_queue(&[]);
+        flags::set(&mut cpu.flags, flags::Flag::IF, false);
+        bus.nmi = true;
+        // Vector 2 is at 0x008: handler at 7000:5678.
+        bus.mem[0x008] = 0x78;
+        bus.mem[0x009] = 0x56;
+        bus.mem[0x00A] = 0x00;
+        bus.mem[0x00B] = 0x70;
+
+        let (kinds, _) = service_interrupt(&mut cpu, &mut bus);
+        assert_eq!((cpu.cs, cpu.ip), (0x7000, 0x5678));
+        assert!(
+            !kinds.contains(&BusStatus::Inta),
+            "no acknowledge for NMI: {kinds:?}"
+        );
+    }
+
+    /// What the sequence costs. Table 1-16 gives a maskable interrupt 61 clocks
+    /// and NMI 50, and this is the one number in the core that no recording can
+    /// check, so it is pinned here instead.
+    ///
+    /// Measured from the cycle the interrupt is recognized to the cycle the
+    /// handler's first byte is read, which is the same span the per-cycle gate
+    /// measures for an instruction.
+    #[test]
+    fn an_interrupt_costs_what_the_manual_says() {
+        for (nmi, documented) in [(false, 61), (true, 50)] {
+            let mut cpu = I8088::new();
+            let mut bus = IrqBus::new();
+            cpu.cs = 0;
+            cpu.ip = 0x100;
+            cpu.ss = 0;
+            cpu.sp = 0x200;
+            cpu.load_prefetch_queue(&[]);
+            flags::set(&mut cpu.flags, flags::Flag::IF, true);
+            bus.irq = !nmi;
+            bus.nmi = nmi;
+
+            let mut ticks = 0;
+            let mut started = false;
+            for _ in 0..400 {
+                cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+                if !started {
+                    started = cpu.servicing.is_some();
+                    if started {
+                        ticks = 1;
+                    }
+                    continue;
+                }
+                ticks += 1;
+                // The handler's first byte coming out of the queue ends the
+                // sequence, exactly as a First Byte ends an instruction's span.
+                if matches!(cpu.queue_status, Some((QueueStatus::First, _))) {
+                    break;
+                }
+            }
+            let what = if nmi { "NMI" } else { "INTR" };
+            assert_eq!(ticks, documented, "{what} should take {documented} clocks");
+        }
     }
 
     #[test]
