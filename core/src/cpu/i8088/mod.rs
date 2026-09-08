@@ -807,6 +807,31 @@ pub struct I8088 {
     /// instruction ends and the next begins.
     #[save_skip(default)]
     pub queue_status: Option<(QueueStatus, u8)>,
+    /// What the EU did to the queue on the T-state just gone, to be reported on
+    /// this one.
+    ///
+    /// The part's status lines run a T-state behind the operation: `q_op` is
+    /// written from `last_queue_op`, rolled over at the end of the cycle the
+    /// operation happened on (`cycle.rs:367`, `mod.rs:1167`). So a read on clock
+    /// C is reported on C+1, and this holds it over.
+    #[save_skip(default)]
+    pub(crate) queue_status_pending: Option<(QueueStatus, u8)>,
+    /// The next instruction's first byte, taken out of the queue by the boundary
+    /// fetch at the end of the instruction before it.
+    ///
+    /// **The part is a byte ahead of the queue at every instruction boundary.**
+    /// `biu_fetch_next` is the published RNI: it waits for a byte if the queue is
+    /// empty, pops it into a preload register, raises `QueueOp::First` and then
+    /// spends a clock (`biu.rs:301-330`). The next instruction's first
+    /// `biu_queue_read` finds the preload and returns it without a cycle
+    /// (`biu.rs:196`).
+    ///
+    /// This is not bookkeeping: it is a byte's worth of queue room, one T-state
+    /// earlier than this core used to free it, and prefetch decisions turn on
+    /// exactly that. On `mov sp, dx` from a full queue the part has two bytes out
+    /// of the queue by the first cycle of the span and this core had one.
+    #[save_skip(default)]
+    pub(crate) preload: Option<u8>,
     /// What the bus pins are doing this T-state, rewritten at the start of each
     /// one. This is the other half of what an outside observer can see, and the
     /// half the recorded vectors devote eight of their eleven fields to.
@@ -895,6 +920,8 @@ impl I8088 {
             eu_owns_bus: false,
             fetch: FetchState::Normal,
             queue_status: None,
+            queue_status_pending: None,
+            preload: None,
             bus: BusPins::default(),
             segment_override: None,
             rep_prefix: None,
@@ -957,7 +984,9 @@ impl I8088 {
         master: BusMaster,
     ) {
         self.clock += 1;
-        self.queue_status = None;
+        // The status lines carry what the execution unit did to the queue on the
+        // T-state just gone. See [`I8088::queue_status_pending`].
+        self.queue_status = self.queue_status_pending.take();
         self.retired = false;
         // Pins default to passive and idle every cycle, so a cycle that drives
         // nothing reads as Ti rather than as whatever the last bus cycle left
@@ -1105,6 +1134,41 @@ impl I8088 {
         // Waiting for an instruction to begin is not this instruction's wait.
         if self.instr_len == 0 {
             self.loader_starved = 0;
+            // **An instruction's first byte is taken from the queue a T-state
+            // before the instruction begins, and that T-state is spent.** This
+            // is the published RNI: `biu_fetch_next` waits for a byte if there
+            // is none, pops it into the preload, and then cycles
+            // (`biu.rs:301-330`). The clock it spends is the last cycle of the
+            // retiring instruction's span, which is why `RET` near measures 20
+            // and not 19. See [`I8088::preload`].
+            let Some(byte) = self.preload.take() else {
+                self.boundary_fetch();
+                return;
+            };
+            let complete = self.accept_loader_byte(byte, Stage::Opcode, bus, master);
+            // **The ModR/M byte comes with the dispatch; anything else waits for
+            // its own microcode line.** The preloaded opcode costs no cycle of
+            // its own (the published read returns a preload without cycling,
+            // `biu.rs:196`), so a ModR/M byte behind it is read on this same
+            // T-state: `mov sp, dx` has two bytes out of the queue by the first
+            // cycle of its span. An immediate does not, because the line that
+            // reads it is a clock further on: `add al, 2Dh` has one byte out at
+            // that point and reads its immediate at `018: Q -> tmpbL` on the
+            // cycle after.
+            if complete {
+                // **A preloaded byte occupies no T-state, so the microcode
+                // behind it runs on this one.** A queue read costs its clock and
+                // the instruction's first line follows on the next, which is why
+                // `add al, 2Dh` reaches `JMP` a clock after reading its
+                // immediate; an instruction whose only byte was preloaded has no
+                // such read, and `inc ax` is executing on the very cycle its
+                // opcode is consumed.
+                self.spend_first_execute_clock(bus, master);
+                return;
+            }
+            if self.stage != Stage::Modrm || self.loader_stall > 0 || self.queue_len == 0 {
+                return;
+            }
         }
 
         // Decoding, not waiting. The part's loader stops for a T-state at points
@@ -1143,7 +1207,10 @@ impl I8088 {
         // First Byte statuses until the first byte that is a non-prefixed
         // opcode byte is read". The loader's opcode stage is exactly that span,
         // so the stage is the status.
-        self.queue_status = Some((
+        //
+        // Reported on the T-state after the read. See
+        // [`I8088::queue_status_pending`].
+        self.queue_status_pending = Some((
             if self.stage == Stage::Opcode {
                 QueueStatus::First
             } else {
@@ -1152,6 +1219,21 @@ impl I8088 {
             byte,
         ));
 
+        self.accept_loader_byte(byte, stage_before, bus, master);
+    }
+
+    /// Take one instruction byte into the loader, wherever it came from, and
+    /// return whether it completed the instruction.
+    ///
+    /// Shared by the queue read and by the preload the boundary fetch left, the
+    /// two being the same event to everything downstream of the queue.
+    fn accept_loader_byte<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        byte: u8,
+        stage_before: Stage,
+        bus: &mut B,
+        master: BusMaster,
+    ) -> bool {
         assert!(
             (self.instr_len as usize) < MAX_INSTRUCTION,
             "instruction longer than {MAX_INSTRUCTION} bytes at {:04X}:{:04X}",
@@ -1209,6 +1291,48 @@ impl I8088 {
                 self.run_loaded_instruction(bus, master);
             }
         }
+        complete
+    }
+
+    /// Charge this T-state to the execution phase the loader has just entered,
+    /// rather than to the loader.
+    ///
+    /// Used where the byte that completed the instruction cost no clock of its
+    /// own, which is only ever the preload: the published read hands one back
+    /// without cycling, so the microcode line behind it is what spends the
+    /// T-state.
+    fn spend_first_execute_clock<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match self.eu {
+            Eu::Executing(n) if n > 1 => self.eu = Eu::Executing(n - 1),
+            Eu::Executing(_) => {
+                self.eu = Eu::Loading;
+                self.run_execute_step(bus, master);
+            }
+            _ => {}
+        }
+    }
+
+    /// The published RNI: take the next instruction's first byte out of the
+    /// queue, before the instruction that is retiring has finished its clock.
+    ///
+    /// `biu_fetch_next` waits for a byte if the queue is empty, pops it into the
+    /// preload, raises `QueueOp::First` and spends a clock (`biu.rs:301-330`).
+    /// The wait and the clock are the loader's own business, on the T-states
+    /// after this one; what belongs here is the pop, because it is what frees a
+    /// queue slot a T-state earlier than the loader would and so changes the
+    /// prefetch decision the bus makes on this very clock.
+    fn boundary_fetch(&mut self) {
+        if self.instr_len != 0 || self.preload.is_some() || self.queue_len == 0 {
+            return;
+        }
+        let byte = self.pop_queue();
+        self.fetch_on_queue_read();
+        self.preload = Some(byte);
+        self.queue_status_pending = Some((QueueStatus::First, byte));
     }
 
     /// Whether this instruction's operand is addressed in memory at all,
@@ -1585,6 +1709,25 @@ impl I8088 {
                     // so there is nothing to do here.
                     return;
                 }
+                // **A fetch resuming from a full queue runs the whole address
+                // cycle**, `Tr` included, so its T1 is three clocks behind the
+                // read. The reference's queue-read path says so literally, with
+                // the alternative struck out beside it: `ta_cycle = Td`, and
+                // `//self.ta_cycle = TaCycle::Ta;` above it (`biu.rs:269`).
+                //
+                // The suite README's observable looks like it says otherwise:
+                // "It takes two cycles to begin a fetch after reading from a
+                // full queue, therefore tests that specify an initial queue
+                // state will start with two 'Ti' cycle states." Both are true
+                // and they were never in conflict. The part reads a byte a
+                // T-state before its status line reports it, so its address
+                // cycle starts one clock before the measured span opens and its
+                // T1 still lands on the third cycle of that span. Skipping `Tr`
+                // to compensate for reading a clock late puts T1 in the same
+                // place by two errors that cancel. With the boundary fetch
+                // taking the byte on the part's clock, the reference's own line
+                // is also the one that measures right. See [`I8088::preload`].
+                self.ta = TaCycle::Td;
             }
             _ => {}
         }
@@ -1965,6 +2108,10 @@ impl I8088 {
     /// the only way an outside observer can see a branch being taken.
     pub(crate) fn flush_queue(&mut self) {
         self.queue_len = 0;
+        // The preload goes with it: the published `Queue::flush` clears it in
+        // the same breath (`queue.rs:209`), and it holds a byte from the path
+        // not taken like any other.
+        self.preload = None;
         self.prefetch_ip = self.ip;
         // A flush is itself the request for the reload: the address cycle
         // starts here, on the clock the queue is thrown away, rather than
@@ -2714,10 +2861,14 @@ impl I8088 {
             cycles += 1;
         }
 
-        match cycles.clamp(0, i32::from(u8::MAX)) as u8 {
-            0 => Eu::Loading,
-            n => Eu::Executing(n),
-        }
+        // **No instruction executes in no clocks.** The published unit takes the
+        // last byte of an instruction on one T-state and runs that instruction's
+        // first microcode line on the next: `inc ax` reads its opcode on cycle 0
+        // and reaches `17C: M -> tmpb` on cycle 1, and every trace has the same
+        // shape. A row of zero here is a row that was fitted while the loader
+        // was holding that clock; with the loader taking its bytes on the part's
+        // T-states, the clock has to be where the part spends it.
+        Eu::Executing(cycles.clamp(1, i32::from(u8::MAX)) as u8)
     }
 
     /// Walk the step list until a step that occupies a T-state, and return the

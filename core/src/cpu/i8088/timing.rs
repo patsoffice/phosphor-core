@@ -871,9 +871,15 @@ pub(crate) fn loader_stall(opcode: u8, modrm: u8) -> LoaderStall {
         if f.imm.len(None) == 0 {
             return LoaderStall::None;
         }
+        // **Nothing between the opcode and the byte behind it.** The clock that
+        // used to sit here was the loader's lead-in, spent because this core
+        // took the opcode a T-state after the part did; with the boundary fetch
+        // taking it on the part's clock the gap is gone. `add al, 2Dh` reads its
+        // opcode on cycle 0 and its immediate on cycle 1, with nothing between.
+        // See [`I8088::preload`].
         return match opcode {
             0xE0..=0xE3 => LoaderStall::AfterOpcode(3),
-            _ => LoaderStall::AfterOpcode(1),
+            _ => LoaderStall::None,
         };
     }
     if format::displacement_len(modrm) > 0 {
