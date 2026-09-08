@@ -1332,6 +1332,36 @@ impl I8088 {
         };
     }
 
+    /// Whether an address cycle sitting in `T0` will reach the bus on this
+    /// clock, asked from the execution unit's half of the tick.
+    ///
+    /// The same condition [`I8088::tick_bus`] applies when it takes `T0` to
+    /// `Td`, minus the EU's own claim: this is asked by microcode that is
+    /// about to spend clocks rather than use the bus. It exists because the
+    /// bus unit runs second on a tick, so a fetch that is one transition away
+    /// from being latched is invisible to anything that reads [`Biu`]
+    /// directly. `SUSP` is the step that needs to know.
+    fn fetch_reaches_the_bus_now(&self) -> bool {
+        let bus_t = match self.biu {
+            Biu::Fetching { t, .. } => Some(t),
+            Biu::Starting { .. } => return false,
+            Biu::Idle => match self.bus.status {
+                BusStatus::Passive => None,
+                _ => match self.bus.t_state {
+                    TState::T1 => Some(1),
+                    TState::T2 => Some(2),
+                    TState::T3 => Some(3),
+                    TState::T4 => Some(4),
+                    // A wait state is not the end of the cycle, so the bus is
+                    // not about to come free.
+                    TState::Wait => Some(3),
+                    TState::Idle => None,
+                },
+            },
+        };
+        bus_t.is_none_or(|t| t == BUS_CYCLE_CLOCKS) && self.queue_has_room()
+    }
+
     /// Decide whether to begin a code fetch.
     ///
     /// The queue being full is not the same answer as the EU having claimed the
@@ -2436,24 +2466,41 @@ impl I8088 {
                 // register-form case of the file.
                 microcode::Step::Susp => {
                     self.fetch = FetchState::Suspended;
-                    // A fetch is in flight from the moment its **address
-                    // cycle** starts, not from its T1. `TaCycle` is those
-                    // clocks and they are not in [`Biu`], so a `SUSP` that
-                    // asks only about `Biu` sees an idle bus and abandons a
-                    // cycle that is already committed.
+                    // `SUSP` does two different things, and which one applies
+                    // turns on whether the fetch has reached the bus:
                     //
-                    // That it is committed is not an assumption: the memory
-                    // forms suspend on the clock before their last code fetch
-                    // and the fetch drives T1 anyway, here and in the
-                    // recording alike. `SUSP` stops the prefetcher from
-                    // starting another one; it does not unwind the one whose
-                    // address is already being computed.
-                    let in_flight = self.ta != TaCycle::Td
+                    // - A fetch whose bus cycle has begun runs to its end and
+                    //   the execution unit waits for it.
+                    // - A fetch that has only got as far as computing an
+                    //   address is **cancelled**, along with the address
+                    //   cycle carrying it.
+                    //
+                    // The awkward part is that this core asks the question a
+                    // clock earlier than the part's microcode does. The bus
+                    // unit runs after the execution unit on a tick, so a
+                    // fetch that is about to be latched on this very clock
+                    // still reads as a pending address cycle here, where by
+                    // the time the published routine reaches its `SUSP` the
+                    // latch has already happened. Asking "is it latched
+                    // *now*" therefore cancels cycles the part runs, and
+                    // asking "is any address cycle pending" waits for cycles
+                    // the part cancels. Both were measured and both are
+                    // wrong, at 96.93% and 97.06% of the clean population
+                    // against this one.
+                    //
+                    // So the question is asked the way the bus unit will
+                    // answer it at the end of this clock, which is the point
+                    // the part's microcode observes.
+                    let will_latch = self.ta == TaCycle::T0 && self.fetch_reaches_the_bus_now();
+                    let in_flight = will_latch
                         || match self.biu {
                             Biu::Fetching { t, .. } => t < BUS_CYCLE_CLOCKS,
                             Biu::Starting { .. } => true,
                             Biu::Idle => false,
                         };
+                    if !will_latch {
+                        self.ta = TaCycle::Td;
+                    }
                     if in_flight {
                         cursor.rewind_to_wait();
                         self.mc = Some(cursor);

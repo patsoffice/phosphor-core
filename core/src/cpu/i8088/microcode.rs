@@ -99,19 +99,29 @@ pub(crate) const INTERRUPT: &[Step] = &[
     Step::Push,
     // 0x1a6, then FARCALL2's jump, 0x06c, CORR and 0x06d.
     //
-    // **Six, where reading the routine off gives five.** The recording is
-    // unambiguous: the return segment's write drives T1 on the T-state after
-    // this list's other anchors all land exactly, and five leaves it one
-    // early. The likely sixth is the jump into FARCALL2 costing a clock on
-    // top of the 0x06b it arrives at, which is the one line the far call and
-    // the interrupt do not share.
+    // **Six, where reading the routine off gives five.** The published
+    // routine is not ambiguous about this and was checked to the primitive:
+    // one clock per microcode line, one for CORR, and the two flag clears
+    // free. 0x1a6, the jump into FARCALL2, 0x06c, CORR and 0x06d is five.
     //
-    // The other reading was measured and is wrong. A push could instead be
-    // releasing the execution unit at T4 rather than at T3, which would put
-    // this clock here without adding one to the routine; but it also adds one
-    // between the next push and the flush, and that moves the reload at the
-    // handler to the T-state after the recording puts it. Six here satisfies
-    // both ends and the release rule satisfies neither.
+    // The recording wants six, and the likeliest sixth is one of those flag
+    // clears. Interrupts and traps are disabled at exactly this seam, between
+    // the flags reaching the stack and the far call beginning, and a part
+    // that spends a microcode line doing it would put the clock here and
+    // nowhere else.
+    //
+    // The other reading is refuted rather than merely doubted. A push could
+    // instead be releasing the execution unit at T4 rather than at T3, which
+    // would put this clock here without adding one to the routine; but it
+    // adds one at the NEXT seam too, and that seam is three in the routine,
+    // three here, and exact. One release rule cannot make this seam six and
+    // leave that one at three.
+    // Nor is it `SUSP` waiting for a fetch on the bus, which is the obvious
+    // suspect once that is understood: this six was fitted while `SUSP` was
+    // still free, so it could have been absorbing it. It was not. Putting the
+    // five back afterwards makes the file -1 on all 5,000 cases, exactly as
+    // it was before, so the two are independent and this clock is still the
+    // one thing in the list the published routine does not account for.
     Step::Spend(6),
     Step::Push,
     // 0x06e, 0x06f, then NEARCALL's MC_JUMP.

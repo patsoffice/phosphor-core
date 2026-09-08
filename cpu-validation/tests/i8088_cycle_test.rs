@@ -994,29 +994,35 @@ struct Ratchet {
 }
 
 /// Recorded 2026-09-06, over 3,007,000 vectors in 323 files, when `SUSP`
-/// learned to wait for a fetch already on the bus. See `microcode::Step::Susp`
-/// in the core.
+/// learned both halves of what it does: wait for a fetch already on the bus,
+/// and cancel one that has only computed an address. See
+/// `microcode::Step::Susp` in the core.
 ///
 /// **Every figure that can move moved together**, which is the signature of a
 /// mechanism and not of a row: `SUSP` is a step of every transfer's microcode,
 /// so charging it what it costs reaches the whole family at once. The change
 /// before it was one file, and moved one half only because of it.
 ///
+/// The last correction moved no cycle count in the clean population at all,
+/// which stayed at 97.06%, and moved exactly 1,280 vectors of bus-cycle order.
+/// A survey that reads counts would have called it a no-op; where a transaction
+/// happens is exactly what these figures are for.
+///
 /// Every figure here is the raw count rounded *down*, which is not always the
 /// figure the run prints: a value that displays as 88.97% and is 88.9669% fails
 /// this gate for falling below itself when the printed form is banked.
 const RATCHET: Ratchet = Ratchet {
-    count: 75.79,
+    count: 75.81,
     count_empty: 58.13,
-    count_prefetched: 93.45,
-    bus: 45.59,
+    count_prefetched: 93.50,
+    bus: 45.63,
     // **Not one case in 1,503,500, and that is a statement about the loader.**
     // It still takes an instruction's first byte a T-state after the part does,
     // so every empty-queue case is one bus cycle out at the front and this half
     // cannot pass whatever else is right. The floor is here so that fixing the
     // loader shows up as a jump rather than as a number nobody was watching.
     bus_empty: 0.0,
-    bus_prefetched: 91.19,
+    bus_prefetched: 91.27,
 };
 
 /// How far above [`RATCHET`] a figure may sit before the gate insists it be
