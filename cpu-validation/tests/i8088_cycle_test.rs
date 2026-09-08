@@ -22,17 +22,16 @@
 //! - **Cycle count**, reported. Execution is still atomic, so the core charges
 //!   nothing for effective-address calculation or for operand bus cycles, and
 //!   the count is a floor rather than an answer.
-//! - **Instruction fetches in order**, reported, and **not yet an independent
-//!   check**. The address and byte of each CODE bus cycle are compared, which
-//!   is real, but how *many* fetches fall inside the measured span is decided
-//!   by how long the span is, and the span is short for the same reason the
-//!   cycle count is low. Until execution takes its cycles this number tracks
-//!   the count rather than saying anything the count does not. It is here
-//!   because it becomes an independent check the moment that changes, and
-//!   because a number that moves for a known reason is worth watching.
+//! - **Bus cycles in order**, reported. Every CODE, MEMR and MEMW transaction
+//!   the core ran, as kind, address and byte, against the recording. This is
+//!   the most diagnostic of the three, because a failure says *where* rather
+//!   than *how much*: the commonest one is that the hardware slipped a
+//!   prefetch in between an operand read and its write-back, in execution time
+//!   this core does not yet spend, and the mismatch shows that as an ordering
+//!   difference with every address and byte still correct.
 //!
-//! Operand reads and writes do not reach the bus as MEMR and MEMW cycles yet,
-//! so bus status is only ever CODE or passive.
+//! I/O and interrupt-acknowledge cycles are M4; a trace containing one is left
+//! uncompared rather than silently matched against nothing.
 //!
 //! The vectors are a fixed, external, hardware-recorded standard. Nothing in
 //! here may adjust them, and no tolerance may be widened to make a milestone
@@ -83,60 +82,88 @@ struct Verdict {
     /// The queue operations we performed against the ones recorded, compared
     /// as ordered sequences. `None` when there was no trace to compare.
     queue: Option<Result<(), String>>,
-    /// The instruction fetches the BIU ran against the ones recorded, compared
-    /// as ordered sequences of address and byte.
+    /// The bus cycles this core ran against the ones recorded, compared as
+    /// ordered sequences of kind, address and byte.
     fetches: Option<Result<(), String>>,
     /// Our core never reached an instruction boundary.
     hung: bool,
 }
 
-/// One completed instruction fetch: where the BIU read, and what came back.
+/// One completed bus cycle: what kind, where, and what was on the data pins.
 ///
 /// The address is taken from T1, the only cycle it is on the multiplexed pins,
-/// and the byte from T3. Pairing them is what makes a fetch comparable at all:
-/// neither field alone identifies the transaction.
+/// and the byte from T3. Pairing them is what makes a transaction comparable at
+/// all: neither field alone identifies it. That pairing is exactly what the
+/// external address latch on a real board does, which is why the recorded trace
+/// leaves it to the reader.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Fetch {
+struct BusCycle {
+    kind: Kind,
     address: u32,
     byte: u8,
 }
 
-impl std::fmt::Display for Fetch {
+/// The kinds of bus cycle this core can currently drive. I/O and interrupt
+/// acknowledge are M4.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Code,
+    MemRead,
+    MemWrite,
+}
+
+impl std::fmt::Display for BusCycle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:05X}:{:02X}", self.address, self.byte)
+        let k = match self.kind {
+            Kind::Code => "F",
+            Kind::MemRead => "R",
+            Kind::MemWrite => "W",
+        };
+        write!(f, "{k}{:05X}:{:02X}", self.address, self.byte)
     }
 }
 
-/// The instruction fetches the hardware recorded, in order.
+/// The bus cycles the hardware recorded, in order.
 ///
-/// A `CODE` bus cycle spans four rows of the trace. The address is on the row
-/// whose ALE pin is asserted and the data on the row where the memory read
-/// status line is active, which is T3. Walking the rows and pairing them is
-/// exactly what an external address latch does.
-fn recorded_fetches(tc: &I8088TestCase) -> Vec<Fetch> {
+/// A bus cycle spans four rows of the trace. The address is on the row whose
+/// ALE pin is asserted; the data is on the row where the i8288 asserts a
+/// command line, which is T3. Using the status line rather than the T-state
+/// name means this still finds the byte if a wait state moves it.
+fn recorded_bus_cycles(tc: &I8088TestCase) -> Vec<BusCycle> {
     let mut out = Vec::new();
-    let mut pending: Option<u32> = None;
+    let mut pending: Option<(Kind, u32)> = None;
     for c in &tc.cycles {
-        if let Some(addr) = c.address()
-            && c.status() == BusStatus::CODE
-        {
-            pending = Some(addr);
+        if let Some(addr) = c.address() {
+            let kind = match c.status() {
+                BusStatus::CODE => Some(Kind::Code),
+                BusStatus::MEMR => Some(Kind::MemRead),
+                BusStatus::MEMW => Some(Kind::MemWrite),
+                // INTA, IOR, IOW, HALT and PASV are not driven by this core
+                // yet. A trace containing one is left for M4 rather than
+                // silently compared against nothing.
+                _ => None,
+            };
+            pending = kind.map(|k| (k, addr));
         }
-        // The data bus is valid on T3, which is also where MRDC is asserted for
-        // a read. Using the status line rather than the T-state name means this
-        // would still find the byte if a wait state moved it.
+        // T3 is where the data is valid, and where the i8288 asserts either the
+        // read line or one of the two write lines.
+        let commanded = c.3.read() || c.3.advanced_write() || c.3.write();
         if c.t_state() == TState::T3
-            && c.3.read()
-            && let Some(address) = pending.take()
+            && commanded
+            && let Some((kind, address)) = pending.take()
         {
-            out.push(Fetch { address, byte: c.6 });
+            out.push(BusCycle {
+                kind,
+                address,
+                byte: c.6,
+            });
         }
     }
     out
 }
 
-fn compare_fetches(ours: &[Fetch], theirs: &[Fetch]) -> Result<(), String> {
-    let render = |f: &[Fetch]| {
+fn compare_bus_cycles(ours: &[BusCycle], theirs: &[BusCycle]) -> Result<(), String> {
+    let render = |f: &[BusCycle]| {
         f.iter()
             .map(|x| x.to_string())
             .collect::<Vec<_>>()
@@ -144,7 +171,7 @@ fn compare_fetches(ours: &[Fetch], theirs: &[Fetch]) -> Result<(), String> {
     };
     if ours.len() != theirs.len() {
         return Err(format!(
-            "{} instruction fetches, hardware ran {}: got [{}] want [{}]",
+            "{} bus cycles, hardware ran {}: got [{}] want [{}]",
             ours.len(),
             theirs.len(),
             render(ours),
@@ -152,15 +179,41 @@ fn compare_fetches(ours: &[Fetch], theirs: &[Fetch]) -> Result<(), String> {
         ));
     }
     for (i, (a, b)) in ours.iter().zip(theirs).enumerate() {
-        if a != b {
+        if !same_bus_cycle(a, b) {
             return Err(format!(
-                "fetch {i} is {a}, hardware had {b}: got [{}] want [{}]",
+                "bus cycle {i} is {a}, hardware had {b}: got [{}] want [{}]",
                 render(ours),
                 render(theirs),
             ));
         }
     }
     Ok(())
+}
+
+/// The filler the recording rig prefetched, and the byte it reports for every
+/// code fetch past an instruction's own bytes. See its use in
+/// [`same_bus_cycle`].
+const CODE_FETCH_FILLER: u8 = 0x90;
+
+/// Whether two bus cycles are the same event.
+///
+/// Kind and address always have to match. **The byte on a code fetch does not,
+/// where the recording reports the rig's filler.** The suite's README says "all
+/// bytes fetched after the initial instruction bytes are set to 0x90", and that
+/// is a property of the recording rather than of the address: the rig reports
+/// `0x90` for such a fetch whatever memory actually holds there. Every case the
+/// suite seeds is therefore a disagreement waiting to happen, and the two that
+/// happen are a fetch that runs into the operand the case seeded, and a
+/// backwards branch that lands back on the instruction's own bytes.
+///
+/// A recorded byte that is *not* the filler is real and is still compared, so a
+/// fetch of an instruction's own bytes is held to the recording as before. This
+/// is the data on a code fetch only: reads and writes are compared whole.
+fn same_bus_cycle(ours: &BusCycle, theirs: &BusCycle) -> bool {
+    if ours.kind != theirs.kind || ours.address != theirs.address {
+        return false;
+    }
+    ours.byte == theirs.byte || (ours.kind == Kind::Code && theirs.byte == CODE_FETCH_FILLER)
 }
 
 /// One queue operation: what the EU did, and the byte it read.
@@ -312,8 +365,8 @@ fn run_test_case(tc: &I8088TestCase) -> Verdict {
     // So: run to the first queue read, start measuring there, and stop on the
     // next First Byte.
     let mut ours: Vec<QueueEvent> = Vec::new();
-    let mut fetches: Vec<Fetch> = Vec::new();
-    let mut pending: Option<u32> = None;
+    let mut fetches: Vec<BusCycle> = Vec::new();
+    let mut pending: Option<(Kind, u32)> = None;
     let mut ticks = 0usize;
     let mut measuring = false;
     let mut retired = false;
@@ -375,14 +428,24 @@ fn run_test_case(tc: &I8088TestCase) -> Verdict {
         }
         // And latch the address off T1 and the byte off T3, the same way the
         // external latch on the board does.
-        if cpu.bus.status == CoreBusStatus::Code {
-            if let Some(addr) = cpu.bus.address {
-                pending = Some(addr);
+        let kind = match cpu.bus.status {
+            CoreBusStatus::Code => Some(Kind::Code),
+            CoreBusStatus::MemRead => Some(Kind::MemRead),
+            CoreBusStatus::MemWrite => Some(Kind::MemWrite),
+            _ => None,
+        };
+        if let Some(kind) = kind {
+            if let Some(address) = cpu.bus.address {
+                pending = Some((kind, address));
             }
             if let Some(byte) = cpu.bus.data
-                && let Some(address) = pending.take()
+                && let Some((kind, address)) = pending.take()
             {
-                fetches.push(Fetch { address, byte });
+                fetches.push(BusCycle {
+                    kind,
+                    address,
+                    byte,
+                });
             }
         }
     }
@@ -401,7 +464,7 @@ fn run_test_case(tc: &I8088TestCase) -> Verdict {
     Verdict {
         counts: Some((elapsed + 1, tc.cycles.len())),
         queue: Some(compare_queue_events(&ours, &recorded_queue_events(tc))),
-        fetches: Some(compare_fetches(&fetches, &recorded_fetches(tc))),
+        fetches: Some(compare_bus_cycles(&fetches, &recorded_bus_cycles(tc))),
         hung: false,
     }
 }
@@ -436,9 +499,20 @@ struct FileOutcome {
     /// Cases whose queue-operation sequence matched the recording.
     queue_matched: usize,
     queue_total: usize,
-    /// Cases whose instruction-fetch sequence matched the recording.
+    /// Cases whose bus-cycle sequence matched the recording, split by
+    /// population the way the cycle count is.
+    ///
+    /// Reported apart because the aggregate cannot distinguish "the operand
+    /// path interleaves wrongly" from "the loader schedules its fetches
+    /// wrongly", and those are different pieces of work. A single percentage
+    /// over both populations is what would let this sit at a third for several
+    /// milestones with nobody able to say what it was made of.
     fetch_matched: usize,
     fetch_total: usize,
+    fetch_matched_empty: usize,
+    fetch_total_empty: usize,
+    fetch_matched_prefetched: usize,
+    fetch_total_prefetched: usize,
     /// The first differing case of each kind, kept for the report.
     first_difference: Option<String>,
     first_queue_difference: Option<String>,
@@ -536,11 +610,25 @@ fn i8088_cycle_counts_against_the_hardware_trace() {
 
                 if let Some(f) = verdict.fetches {
                     out.fetch_total += 1;
+                    if prefetched {
+                        out.fetch_total_prefetched += 1;
+                    } else {
+                        out.fetch_total_empty += 1;
+                    }
                     match f {
-                        Ok(()) => out.fetch_matched += 1,
+                        Ok(()) => {
+                            out.fetch_matched += 1;
+                            if prefetched {
+                                out.fetch_matched_prefetched += 1;
+                            } else {
+                                out.fetch_matched_empty += 1;
+                            }
+                        }
                         Err(why) => {
                             if out.first_fetch_difference.is_none() {
-                                out.first_fetch_difference = Some(format!("{}: {why}", tc.name));
+                                let queue = if prefetched { "prefetched" } else { "empty" };
+                                out.first_fetch_difference =
+                                    Some(format!("{}: {why} ({queue} queue)", tc.name));
                             }
                         }
                     }
@@ -563,6 +651,10 @@ fn i8088_cycle_counts_against_the_hardware_trace() {
     let mut queue_total = 0usize;
     let mut fetch_matched = 0usize;
     let mut fetch_total = 0usize;
+    let mut fetch_matched_empty = 0usize;
+    let mut fetch_total_empty = 0usize;
+    let mut fetch_matched_prefetched = 0usize;
+    let mut fetch_total_prefetched = 0usize;
     let mut examples: Vec<String> = Vec::new();
     let mut queue_examples: Vec<String> = Vec::new();
     let mut fetch_examples: Vec<String> = Vec::new();
@@ -580,6 +672,10 @@ fn i8088_cycle_counts_against_the_hardware_trace() {
         queue_total += o.queue_total;
         fetch_matched += o.fetch_matched;
         fetch_total += o.fetch_total;
+        fetch_matched_empty += o.fetch_matched_empty;
+        fetch_total_empty += o.fetch_total_empty;
+        fetch_matched_prefetched += o.fetch_matched_prefetched;
+        fetch_total_prefetched += o.fetch_total_prefetched;
         if let Some(d) = &o.first_fetch_difference
             && fetch_examples.len() < 20
         {
@@ -615,9 +711,17 @@ fn i8088_cycle_counts_against_the_hardware_trace() {
         pct(queue_matched, queue_total)
     );
     eprintln!(
-        "  {fetch_matched} of {fetch_total} vectors match on the instruction-fetch \
+        "  {fetch_matched} of {fetch_total} vectors match on the bus-cycle \
          sequence ({:.2}%)",
         pct(fetch_matched, fetch_total)
+    );
+    eprintln!(
+        "    empty queue:  {fetch_matched_empty} of {fetch_total_empty} ({:.2}%)",
+        pct(fetch_matched_empty, fetch_total_empty)
+    );
+    eprintln!(
+        "    prefetched:   {fetch_matched_prefetched} of {fetch_total_prefetched} ({:.2}%)",
+        pct(fetch_matched_prefetched, fetch_total_prefetched)
     );
     eprintln!(
         "  {matched} of {compared} vectors match on cycle count ({:.2}%)",
@@ -646,11 +750,34 @@ fn i8088_cycle_counts_against_the_hardware_trace() {
     }
     if !fetch_examples.is_empty() {
         eprintln!(
-            "\nFirst instruction-fetch difference per file (first {}):",
+            "\nFirst bus-cycle difference per file (first {}):",
             fetch_examples.len()
         );
         for e in &fetch_examples {
             eprintln!("  {e}");
+        }
+    }
+    // **Which files the bus-cycle residual is actually in.** The example list
+    // above says what went wrong in each file and nothing about how much, so a
+    // file with four failures and a file with four thousand read the same.
+    // Ranking them is what says which one to open, and the difference is large:
+    // the residual is not spread over the corpus but piled in a handful of
+    // files.
+    let mut fetch_worst: Vec<(usize, &str)> = outcomes
+        .iter()
+        .map(|o| (o.fetch_total - o.fetch_matched, o.filename.as_str()))
+        .filter(|(failed, _)| *failed > 0)
+        .collect();
+    fetch_worst.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
+    if !fetch_worst.is_empty() {
+        let shown = fetch_worst.len().min(20);
+        eprintln!(
+            "\nBus-cycle failures by file ({} of {} files, worst {shown}):",
+            fetch_worst.len(),
+            files,
+        );
+        for (failed, name) in fetch_worst.iter().take(shown) {
+            eprintln!("  {failed:>7}  {name}");
         }
     }
     if !queue_examples.is_empty() {
