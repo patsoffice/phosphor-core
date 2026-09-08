@@ -149,7 +149,10 @@ pub(crate) enum Biu {
     /// on T1. The address is held here rather than recomputed, because the EU
     /// consuming bytes while a fetch is in flight must not move an address the
     /// BIU has already put on the pins.
-    Fetching { t: u8, addr: u32 },
+    ///
+    /// `byte` is what the addressed device drove on T3, held until the end of
+    /// T4, which is when it joins the queue. See [`I8088::tick_biu`].
+    Fetching { t: u8, addr: u32, byte: u8 },
 }
 
 /// What the execution unit is doing, at the granularity of whole bus cycles.
@@ -690,29 +693,49 @@ impl I8088 {
             Biu::Restarting(_) => {
                 let addr = Self::physical_addr(self.cs, self.prefetch_ip);
                 self.begin_bus_cycle(BusStatus::Code, addr, SegReg::CS);
-                self.biu = Biu::Fetching { t: 2, addr };
+                self.biu = Biu::Fetching {
+                    t: 2,
+                    addr,
+                    byte: 0,
+                };
             }
             // T2 turns the multiplexed pins around for data. The address is off
             // them by now, which is what the external latch exists for.
-            Biu::Fetching { t: 2, addr } => {
+            Biu::Fetching { t: 2, addr, .. } => {
                 self.drive_bus_cycle(BusStatus::Code, TState::T2, SegReg::CS);
-                self.biu = Biu::Fetching { t: 3, addr };
+                self.biu = Biu::Fetching {
+                    t: 3,
+                    addr,
+                    byte: 0,
+                };
             }
-            // T3: the addressed device drives the byte back.
-            Biu::Fetching { t: 3, addr } => {
+            // T3: the addressed device drives the byte back. It goes on the pins
+            // here and is held; it does not reach the queue until T4 is over.
+            Biu::Fetching { t: 3, addr, .. } => {
                 self.drive_bus_cycle(BusStatus::Code, TState::T3, SegReg::CS);
                 let byte = bus.read(master, addr);
                 self.bus.data = Some(byte);
-                self.push_queue(byte);
                 self.prefetch_ip = self.prefetch_ip.wrapping_add(1);
-                self.biu = Biu::Fetching { t: 4, addr };
+                self.biu = Biu::Fetching { t: 4, addr, byte };
             }
-            // T4 completes the transaction. A fetch that ends with room left in
-            // the queue runs straight into the next T1, back to back, with no
-            // idle cycle between: `Restarting(0)` drives T1 on the very next
-            // tick.
-            Biu::Fetching { .. } => {
+            // T4 completes the transaction, and the byte joins the queue as it
+            // ends. The EU runs before the BIU on a tick, so a byte delivered
+            // here is one the EU can take on the *next* T-state.
+            //
+            // That one cycle is not a detail. The recorded traces show a fetched
+            // byte being read out of the queue on the cycle after T4, never on
+            // T4 itself: an instruction fetched into an empty queue has its
+            // opcode latched on T3 and read two cycles later. Delivering it on
+            // T3, which is what this did first, ran the EU a cycle ahead of the
+            // part every time the queue was empty, and made every jump's reload
+            // one cycle short.
+            //
+            // A fetch that ends with room left in the queue runs straight into
+            // the next T1, back to back, with no idle cycle between:
+            // `Restarting(0)` drives T1 on the very next tick.
+            Biu::Fetching { byte, .. } => {
                 self.drive_bus_cycle(BusStatus::Code, TState::T4, SegReg::CS);
+                self.push_queue(byte);
                 self.biu = if self.queue_has_room() {
                     Biu::Restarting(0)
                 } else {
@@ -1002,7 +1025,7 @@ impl I8088 {
         // `run_execute_step`.
         if self.operand_at.is_some() {
             let modrm = self.instr[self.opcode_at as usize + 1];
-            let cycles = access::ea_cycles(modrm, self.segment_override.is_some());
+            let cycles = access::ea_cycles(modrm);
             self.eu = Eu::AddressCalc(cycles);
             return;
         }
@@ -1076,6 +1099,30 @@ impl I8088 {
         }
     }
 
+    /// Whether a conditional transfer is going to transfer, decided before the
+    /// instruction runs because that is when the pipeline has to know how many
+    /// clocks to charge.
+    ///
+    /// This asks the same question the executor is about to ask, through the
+    /// same [`I8088::test_condition`], rather than a second copy of the
+    /// condition table. The loop forms are the ones that need care: `CX` is
+    /// decremented by the instruction and the transfer turns on the value
+    /// *after* that, so the prediction has to decrement too. Reading the flags
+    /// and CX early is otherwise safe, because none of these instructions
+    /// changes either.
+    fn will_transfer(&self, opcode: u8) -> bool {
+        let next_cx = self.cx.wrapping_sub(1);
+        match opcode {
+            0x60..=0x7F => self.test_condition(opcode & 0x0F),
+            0xE0 => next_cx != 0 && !flags::get(self.flags, flags::Flag::ZF),
+            0xE1 => next_cx != 0 && flags::get(self.flags, flags::Flag::ZF),
+            0xE2 => next_cx != 0,
+            0xE3 => self.cx == 0,
+            0xCE => flags::get(self.flags, flags::Flag::OF),
+            _ => true,
+        }
+    }
+
     /// Enter the microcode phase, or go straight to running the instruction
     /// when nothing is left to spend.
     ///
@@ -1087,9 +1134,15 @@ impl I8088 {
     /// the first version of this did: `ADD DX, SP` took five cycles against the
     /// hardware's three, over exactly its two bytes.
     ///
-    /// Prefix bytes are not subtracted, because the manual's counts do not
-    /// include them. A segment override's cost is the two extra clocks
-    /// [`access::ea_cycles`] already adds.
+    /// A prefix costs two clocks, of which the loader already spent one pulling
+    /// the byte, so each one adds a clock here. The manual gives the segment
+    /// override, `LOCK` and `REP` two clocks apiece, and the recording agrees
+    /// exactly: a `MOV` with a segment override runs two clocks longer than the
+    /// same `MOV` without one, and it does so on the register forms as much as
+    /// on the memory forms. That is why this is charged per prefix byte rather
+    /// than inside the effective-address calculation, where it used to be: an
+    /// override on `MOV AX, BX` costs the same two clocks and computes no
+    /// address at all.
     ///
     /// A shift or rotate by CL adds four clocks a bit on top of its base. That
     /// is the one form whose cost depends on a register rather than on the
@@ -1097,7 +1150,14 @@ impl I8088 {
     fn begin_execute_phase(&mut self) -> Eu {
         let opcode = self.opcode();
         let modrm = self.instr[self.opcode_at as usize + 1];
-        let mut cycles = i32::from(timing::eu_cycles(opcode, modrm));
+        let mut cycles = if timing::is_conditional(opcode) {
+            i32::from(timing::conditional_cycles(
+                opcode,
+                self.will_transfer(opcode),
+            ))
+        } else {
+            i32::from(timing::eu_cycles(opcode, modrm))
+        };
         if matches!(opcode, 0xD2 | 0xD3) {
             cycles += i32::from(timing::shift_count_cycles(self.cl()));
         }
@@ -1135,6 +1195,7 @@ impl I8088 {
             };
         }
         cycles -= i32::from(self.instr_len - self.opcode_at);
+        cycles += i32::from(self.opcode_at);
 
         match cycles.clamp(0, i32::from(u8::MAX)) as u8 {
             0 => Eu::Loading,
@@ -1153,7 +1214,32 @@ impl I8088 {
         self.operand_ops = (0, 0);
         self.stack_ops = (0, 0);
         let opcode = self.consume_prefixes();
+
+        // What the pipeline predicted about a conditional transfer, asked again
+        // here, where the instruction has not run yet and the registers are
+        // still what they were when [`Self::begin_execute_phase`] looked at
+        // them. Comparing it against what the instruction actually did is the
+        // same discipline the operand and stack tables are held to: the
+        // prediction is a second statement of something `execute.rs` already
+        // knows, and a pair like that drifts silently. Getting it backwards
+        // would charge every taken branch the not-taken time and every
+        // fall-through the taken time, and nothing but the gate's aggregate
+        // would notice.
+        #[cfg(debug_assertions)]
+        let predicted = timing::is_conditional(opcode).then(|| self.will_transfer(opcode));
+
         self.execute(opcode, bus, master);
+
+        #[cfg(debug_assertions)]
+        if let Some(predicted) = predicted {
+            debug_assert_eq!(
+                predicted, self.transferred,
+                "opcode {opcode:02X}: the pipeline charged the {} time and the \
+                 instruction {} transfer",
+                if predicted { "taken" } else { "not taken" },
+                if self.transferred { "did" } else { "did not" },
+            );
+        }
 
         // Cross-check the stack table the same way, and before anything depends
         // on it. A count fixed by the opcode cannot describe the instructions

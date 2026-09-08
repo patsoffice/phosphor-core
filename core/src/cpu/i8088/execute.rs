@@ -1276,8 +1276,14 @@ impl I8088 {
 
     /// Test a condition code (0x0-0xF) against the current FLAGS register.
     /// Condition codes come in pairs: even = condition, odd = NOT condition.
+    ///
+    /// Visible to the pipeline as well as to the executor, because a
+    /// conditional jump costs a different number of clocks depending on whether
+    /// it is taken, and the pipeline has to know that *before* the instruction
+    /// runs. Reading the flags early is safe: a conditional transfer changes
+    /// none of them.
     #[inline]
-    fn test_condition(&self, cc: u8) -> bool {
+    pub(crate) fn test_condition(&self, cc: u8) -> bool {
         let f = self.flags;
         let cf = flags::get(f, Flag::CF);
         let zf = flags::get(f, Flag::ZF);

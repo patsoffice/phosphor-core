@@ -39,14 +39,58 @@
 //! stays visible in that comparison, because it leaves the prefetches
 //! interleaved in the wrong order even when the total is right.
 //!
+//! # The control transfers, where Table 1-16 does not describe the part
+//!
+//! Every row above is the manual's, and the hardware recording agrees with the
+//! manual exactly: replay a full queue and no prefix, and the span from an
+//! instruction's First Byte to the next one's *is* the documented clock count,
+//! on `NOP`, on `MOV`, on `PUSH`, on the ALU block, on the flag instructions.
+//!
+//! The control transfers are the exception, and it is not a small one. Measured
+//! the same way, over thousands of cases each and uniform to the case within
+//! every one of them, the published clocks are three to eight out, in both
+//! directions:
+//!
+//! ```text
+//!                     documented   recorded span   this table
+//!   JMP short             15            17            10
+//!   JMP near              15            17            10
+//!   JMP far               15            19            12
+//!   Jcc, taken            16            17            10
+//!   Jcc, not taken         4             4             4
+//!   LOOP, taken           17            17            10
+//!   CALL near             19+4          23             8
+//!   RET near              16+4          20             5
+//!   RETF                  26+8          34            11
+//!   IRET                  32+12         44            13
+//! ```
+//!
+//! So these rows are measured rather than transcribed, and the third column
+//! above is what this table holds: the recorded span less everything the
+//! pipeline spends on its own account. For a taken transfer that is the bus
+//! cycles, plus **seven clocks** for the flush and the reload, which is the
+//! queue being thrown away, the two-cycle prefetch restart, and the four
+//! T-states of the fetch at the target. Those seven are not a fitted
+//! correction: they are cycles this core visibly spends, and the recording
+//! shows the part spending exactly seven there too, from the cycle its queue
+//! status lines report the flush to the cycle they report the next First Byte.
+//!
+//! **What makes this a measurement rather than a fit.** Each number is read off
+//! one population, the cases that begin with a full queue, and it then has to
+//! predict the other half of the suite, which begins with an empty one and
+//! reaches the same instruction through a completely different sequence of
+//! fetches. It also has to predict the cases carrying a segment override. The
+//! per-cycle gate reports both, so a number that only described what it was
+//! read off would show up there rather than pass unnoticed.
+//!
 //! # What is not here yet
 //!
-//! The string operations, the control transfers, and `MUL`/`IMUL`/`DIV`/`IDIV`.
-//! The last of those are quoted as *ranges* (`DIV reg8` is 80-90) because their
-//! microcode is data-dependent, so no single constant can match them and
-//! pretending otherwise would turn a known gap into a number that looks like an
-//! answer. An opcode with no entry here is charged nothing, which undercounts
-//! it; [`eu_cycles`] returning zero means "not yet modeled", not "free".
+//! The string operations, the BCD adjusts, `XLAT`, the far-pointer loads, and
+//! `IMUL`/`IDIV`. The last two are quoted as *ranges* because their microcode
+//! is data-dependent, so no single constant can match them and pretending
+//! otherwise would turn a known gap into a number that looks like an answer. An
+//! opcode with no entry here is charged nothing, which undercounts it;
+//! [`eu_cycles`] returning zero means "not yet modeled", not "free".
 
 /// Clocks the EU spends on `opcode`, beyond its bus cycles and its
 /// effective-address calculation.
@@ -271,8 +315,33 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
                     11 - 4
                 }
             }
-            // The indirect calls and jumps are control transfers, not yet
-            // modeled.
+            // The indirect calls and jumps, measured like the direct ones.
+            // Documented at 16 and 21+EA for the near call, 11 and 18+EA for
+            // the near jump, 37+EA and 24+EA for the two far forms, which have
+            // no register encoding at all.
+            //
+            // The memory forms sit one clock above their register counterparts
+            // here, which is what the recording's commonest case gives and what
+            // the manual's own difference between the two rows says. It is a
+            // weaker number than the rest: a memory form's recorded span also
+            // carries the effective address and the operand read, and those
+            // have a residual of their own that is not this instruction's.
+            2 => {
+                if is_mem {
+                    9
+                } else {
+                    8
+                }
+            }
+            3 => 16,
+            4 => {
+                if is_mem {
+                    8
+                } else {
+                    7
+                }
+            }
+            5 => 10,
             _ => 0,
         },
 
@@ -286,10 +355,141 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
         0x9C => 10 - 4,
         0x9D => 8 - 4,
 
+        // -------------------------------------------------------------------
+        // The control transfers that always transfer. Measured, for the reason
+        // in the module documentation; the documented clocks are quoted beside
+        // each so the disagreement stays visible rather than being tidied away.
+        // -------------------------------------------------------------------
+
+        // CALL far direct, which pushes CS and IP. Documented 28 with two
+        // transfers.
+        //
+        // **The one row here that does not come out right**, and it is the
+        // pipeline rather than the number. This core runs both pushes, then
+        // flushes, then reloads, strictly in that order; the part starts the
+        // fetch at the target *between* the two pushes, which the bus-cycle
+        // comparison shows directly:
+        //
+        // ```text
+        //   got  [... W:CS W:CS W:IP W:IP F:target]
+        //   want [... W:CS W:CS F:target W:IP W:IP]
+        // ```
+        //
+        // Every address and byte matches; what differs is that four T-states of
+        // pushing overlap the reload on the part and cannot here, so this runs
+        // two clocks long on every case. Lowering the number to 14 would hide a
+        // structural difference behind a constant, which is the one thing this
+        // table is not allowed to do.
+        0x9A => 16,
+        // The near returns and their undocumented aliases one encoding below,
+        // popping IP. Documented 20 and 16, one transfer each.
+        0xC0 | 0xC2 => 10,
+        0xC1 | 0xC3 => 5,
+        // The far returns, popping IP and CS. Documented 25 and 26, two
+        // transfers each.
+        0xC8 | 0xCA => 13,
+        0xC9 | 0xCB => 11,
+        // INT 3 and INT n. Documented 52 with five transfers, of which this
+        // pipeline runs three: the pushes of flags, CS and IP go over the bus,
+        // and the two words of the interrupt vector do not, because the
+        // executor still reads those directly. So sixteen clocks of vector read
+        // are sitting inside these two numbers. When the vector fetch becomes a
+        // bus cycle they drop to 24 and 23, and the count should not move.
+        0xCC => 40,
+        0xCD => 39,
+        // IRET, popping IP, CS and the flags. Documented 32, three transfers.
+        0xCF => 13,
+        // CALL near direct, pushing IP. Documented 19, one transfer.
+        0xE8 => 8,
+        // JMP near, far and short, none of which touch memory. All three are
+        // documented at 15.
+        0xE9 => 10,
+        0xEA => 12,
+        0xEB => 10,
+
         // Everything else: not yet modeled, and charged nothing. See the module
         // documentation.
         _ => 0,
     }
+}
+
+/// Clocks a conditional transfer spends, which depends on whether it transfers.
+///
+/// The one class of instruction whose cost turns on the flags rather than on
+/// its encoding, so it cannot come out of [`eu_cycles`], which sees only the
+/// opcode and the ModR/M byte. The caller evaluates the condition before the
+/// instruction runs, which is safe because none of these change the flag they
+/// test.
+///
+/// Measured, like the unconditional transfers, and for the same reason. The
+/// not-taken numbers are the ones the manual gets right: `Jcc` at 4 and the
+/// loops at 6 are exactly what the recording shows, which is worth saying,
+/// because it means the disagreement is confined to the taken path where the
+/// queue is thrown away.
+///
+/// Two of these are **not exercised by the suite at all**, and are stated here
+/// rather than left at zero:
+///
+/// - `LOOP` not taken needs CX to be 1 on entry, and the vectors draw CX at
+///   random from sixteen bits. It is given the 6 clocks its two neighbors take
+///   when they fall through, which is also what the manual gives them; the
+///   manual's own 5 for `LOOP` is the same number it gets wrong for `LOOPNE`,
+///   where the recording says 6.
+/// - `JCXZ` taken needs CX to be 0, and for the same reason never happens. It
+///   is given `LOOPE`'s taken cost, which shares its documented 18 clocks and
+///   its shape: test a register, then transfer.
+pub(crate) fn conditional_cycles(opcode: u8, taken: bool) -> u8 {
+    match opcode {
+        // Jcc and its aliases sixteen below. Documented 16 taken, 4 not.
+        0x60..=0x7F => {
+            if taken {
+                10
+            } else {
+                4
+            }
+        }
+        // LOOPNE and LOOPE. Documented 19 and 18 taken, 5 and 6 not.
+        0xE0 | 0xE1 => {
+            if taken {
+                14
+            } else {
+                6
+            }
+        }
+        // LOOP. Documented 17 taken, 5 not.
+        0xE2 => {
+            if taken {
+                10
+            } else {
+                6
+            }
+        }
+        // JCXZ. Documented 18 taken, 6 not.
+        0xE3 => {
+            if taken {
+                14
+            } else {
+                6
+            }
+        }
+        // INTO, which is an INT 4 when the overflow flag is set and four clocks
+        // when it is not. Documented 53 and 4. The taken figure carries the
+        // same sixteen clocks of vector read as `INT` does; see [`eu_cycles`].
+        0xCE => {
+            if taken {
+                41
+            } else {
+                4
+            }
+        }
+        _ => 0,
+    }
+}
+
+/// Whether `opcode` is one of the conditional transfers, whose cost
+/// [`conditional_cycles`] gives instead of [`eu_cycles`].
+pub(crate) fn is_conditional(opcode: u8) -> bool {
+    matches!(opcode, 0x60..=0x7F | 0xE0..=0xE3 | 0xCE)
 }
 
 /// Clocks an unsigned multiply spends, given its multiplier.
@@ -430,14 +630,16 @@ pub(crate) fn is_modeled(opcode: u8, modrm: u8) -> bool {
         0x00..=0x3F => true,
         // INC, DEC, PUSH and POP with the register in the opcode.
         0x40..=0x5F => true,
-        // The conditional jumps and their aliases: control transfers.
-        0x60..=0x7F => false,
+        // The conditional jumps and their aliases.
+        0x60..=0x7F => true,
         // The immediate group, TEST, XCHG, MOV, LEA and POP r/m16.
         0x80..=0x8F => true,
         // XCHG with the accumulator, including NOP.
         0x90..=0x97 => true,
-        // CBW, CWD, CALL far, WAIT, SAHF and LAHF.
-        0x98..=0x9B | 0x9E | 0x9F => false,
+        // CBW, CWD, WAIT, SAHF and LAHF.
+        0x98 | 0x99 | 0x9B | 0x9E | 0x9F => false,
+        // CALL far direct.
+        0x9A => true,
         // PUSHF and POPF.
         0x9C | 0x9D => true,
         // MOV to and from a direct address.
@@ -450,17 +652,25 @@ pub(crate) fn is_modeled(opcode: u8, modrm: u8) -> bool {
         0xAA..=0xAF => false,
         // MOV with an immediate.
         0xB0..=0xBF => true,
-        // The returns, the far-pointer loads, and the interrupts.
-        0xC0..=0xC5 => false,
+        // The near returns and their aliases.
+        0xC0..=0xC3 => true,
+        // LES and LDS, the far-pointer loads.
+        0xC4 | 0xC5 => false,
         // MOV r/m, immediate.
         0xC6 | 0xC7 => true,
-        0xC8..=0xCF => false,
+        // The far returns and their aliases, the interrupts and IRET.
+        0xC8..=0xCF => true,
         // The shifts and rotates.
         0xD0..=0xD3 => true,
         // AAM, AAD, SALC, XLAT and the coprocessor escapes.
         0xD4..=0xDF => false,
-        // The loops, the jumps, and the I/O instructions.
-        0xE0..=0xEF => false,
+        // The loops and JCXZ.
+        0xE0..=0xE3 => true,
+        // The I/O instructions, which are M4.
+        0xE4..=0xE7 => false,
+        // CALL near, and the three direct jumps.
+        0xE8..=0xEB => true,
+        0xEC..=0xEF => false,
         // The prefixes, HLT and CMC.
         0xF0..=0xF5 => false,
         // The unary group. TEST, NOT and NEG come from the table, and MUL and
@@ -470,9 +680,9 @@ pub(crate) fn is_modeled(opcode: u8, modrm: u8) -> bool {
         // The flag instructions.
         0xF8..=0xFD => false,
         0xFE => true,
-        // INC, DEC and PUSH within the group. The indirect calls and jumps are
-        // control transfers, which are not extracted.
-        0xFF => matches!(reg, 0 | 1 | 6),
+        // INC, DEC, PUSH and the four indirect transfers. Only reg=7 is left,
+        // which is not an instruction.
+        0xFF => reg != 7,
     }
 }
 
@@ -668,14 +878,64 @@ mod tests {
         assert_eq!(shift_count_cycles(255), 1020);
     }
 
-    /// Nothing panics and nothing returns an absurd value.
+    /// Nothing panics and nothing returns an absurd value. The interrupts are
+    /// the only rows above twenty clocks, and they are there because an
+    /// interrupt really is a forty-clock instruction: three pushes, two words
+    /// of vector, and a transfer.
     #[test]
     fn every_opcode_and_form_gives_a_sane_answer() {
         for opcode in 0..=0xFFu8 {
             for modrm in [0b00_000_100u8, 0b11_000_001, 0b01_111_110, 0b10_100_010] {
                 let c = eu_cycles(opcode, modrm);
-                assert!(c <= 20, "{opcode:#04X}/{modrm:#04X} gave {c}");
+                let limit = if matches!(opcode, 0xCC | 0xCD) {
+                    40
+                } else {
+                    20
+                };
+                assert!(c <= limit, "{opcode:#04X}/{modrm:#04X} gave {c}");
             }
         }
+    }
+
+    /// A conditional transfer costs more when it transfers, and every one of
+    /// them is more expensive taken than not. Getting the sense of the
+    /// condition backwards would still produce two plausible numbers, and the
+    /// only thing that would notice is the gate.
+    #[test]
+    fn a_conditional_transfer_costs_more_when_it_transfers() {
+        for opcode in [0x60u8, 0x70, 0x7F, 0xE0, 0xE1, 0xE2, 0xE3, 0xCE] {
+            assert!(
+                conditional_cycles(opcode, true) > conditional_cycles(opcode, false),
+                "{opcode:#04X}"
+            );
+            assert!(is_conditional(opcode), "{opcode:#04X}");
+        }
+        // And nothing else claims to be conditional, in particular the
+        // unconditional transfers sitting next to them in the opcode map.
+        for opcode in [0x9Au8, 0xC3, 0xCB, 0xCF, 0xE8, 0xE9, 0xEA, 0xEB] {
+            assert!(!is_conditional(opcode), "{opcode:#04X}");
+            assert!(eu_cycles(opcode, 0) > 0, "{opcode:#04X}");
+        }
+    }
+
+    /// The undocumented aliases cost what the documented encodings cost. The
+    /// part decodes 0xC0 as 0xC2 and 0xC8 as 0xCA, and the recording gives the
+    /// pairs identical spans.
+    #[test]
+    fn the_return_aliases_cost_what_they_alias() {
+        assert_eq!(eu_cycles(0xC0, 0), eu_cycles(0xC2, 0));
+        assert_eq!(eu_cycles(0xC1, 0), eu_cycles(0xC3, 0));
+        assert_eq!(eu_cycles(0xC8, 0), eu_cycles(0xCA, 0));
+        assert_eq!(eu_cycles(0xC9, 0), eu_cycles(0xCB, 0));
+    }
+
+    /// A return that pops arguments off the stack costs more than one that does
+    /// not, and a far return costs more than a near one. Both orderings are
+    /// easy to transpose and neither would look wrong on its own.
+    #[test]
+    fn the_returns_are_ordered_by_how_much_they_do() {
+        assert!(eu_cycles(0xC2, 0) > eu_cycles(0xC3, 0), "RET n over RET");
+        assert!(eu_cycles(0xCB, 0) > eu_cycles(0xC3, 0), "RETF over RET");
+        assert!(eu_cycles(0xCA, 0) > eu_cycles(0xCB, 0), "RETF n over RETF");
     }
 }

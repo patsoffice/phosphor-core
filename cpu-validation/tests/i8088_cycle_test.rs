@@ -822,6 +822,42 @@ fn i8088_cycle_counts_against_the_hardware_trace() {
         }
     }
 
+    // And the same question asked the useful way round. The list above is
+    // ordered by filename, so it says what 0x00 through 0x14 are doing and
+    // nothing about the rest; this one says which opcodes are furthest from the
+    // hardware, which is where the next row of the timing table comes from.
+    let mut worst: Vec<&FileOutcome> = outcomes
+        .iter()
+        .filter(|o| o.total_empty + o.total_prefetched > 0)
+        .collect();
+    worst.sort_by(|a, b| {
+        let rate = |o: &FileOutcome| {
+            (o.matched_empty + o.matched_prefetched) as f64
+                / (o.total_empty + o.total_prefetched) as f64
+        };
+        rate(a)
+            .partial_cmp(&rate(b))
+            .unwrap()
+            .then_with(|| a.filename.cmp(&b.filename))
+    });
+    eprintln!("\nFurthest from the hardware on cycle count (worst 25 files):");
+    for o in worst.iter().take(25) {
+        let total = o.total_empty + o.total_prefetched;
+        let matched = o.matched_empty + o.matched_prefetched;
+        eprintln!(
+            "  {}  {matched} of {total} ({:.1}%)  {}",
+            o.filename,
+            pct(matched, total),
+            o.first_difference.as_deref().unwrap_or(""),
+        );
+        // With, where there is one, the bus-cycle difference for the same file,
+        // which says *where* the missing time is rather than how much of it
+        // there is.
+        if let Some(d) = &o.first_fetch_difference {
+            eprintln!("      {d}");
+        }
+    }
+
     // What this test asserts, and deliberately does not.
     //
     // It does NOT assert that the CYCLE COUNTS match. They overwhelmingly do

@@ -159,16 +159,31 @@ pub(crate) fn stack_access(opcode: u8, modrm: u8) -> StackAccess {
 /// the part and not a transcription error: `BX+SI` and `BP+DI` take 7 where
 /// `BX+DI` and `BP+SI` take 8.
 ///
+/// **The hardware recording confirms every one of these numbers**, through
+/// `LEA`. `LEA` is the one instruction that computes an effective address and
+/// runs no bus cycle at all, so its recorded span is its own two clocks plus
+/// the EA and nothing else, and it separates the address calculation from
+/// everything that happens on the way to memory. Over the whole `8D` file, at a
+/// full queue and with no prefix, every addressing mode is uniform and every
+/// one of them lands on `2 + EA` for the values above, asymmetric pairings
+/// included. Nothing else in this core is confirmed that directly.
+///
+/// The segment override's clocks are **not** here. The recording puts them at
+/// two, on the register forms as much as the memory ones, which makes them a
+/// property of the prefix rather than of the address calculation; the pipeline
+/// charges them in [`super::I8088::begin_execute_phase`], where a prefix on an
+/// instruction with no memory operand can be charged too.
+///
 /// Deliberately **not** applied: the datasheet's further "add 4 for word
 /// operands at odd addresses". That is an 8086 penalty, where a misaligned word
 /// costs a second bus cycle on a 16-bit bus. The 8088's bus is one byte wide,
 /// so every word operand is already two bus cycles whatever its alignment, and
 /// the pipeline issues both. Adding it here would charge that twice.
-pub(crate) fn ea_cycles(modrm: u8, segment_override: bool) -> u8 {
+pub(crate) fn ea_cycles(modrm: u8) -> u8 {
     let mod_bits = (modrm >> 6) & 3;
     let rm = modrm & 7;
 
-    let base = match (mod_bits, rm) {
+    match (mod_bits, rm) {
         // mod=00 rm=110 is a bare 16-bit address, the one mode with a
         // displacement and nothing to add it to.
         (0, 6) => 6,
@@ -186,9 +201,7 @@ pub(crate) fn ea_cycles(modrm: u8, segment_override: bool) -> u8 {
         // mod=11 is a register operand with no address to compute, and the
         // caller does not ask.
         _ => 0,
-    };
-
-    base + if segment_override { 2 } else { 0 }
+    }
 }
 
 /// The ModR/M `reg` field, which selects the operation inside a group opcode.
@@ -395,19 +408,19 @@ mod tests {
     #[test]
     fn ea_cost_rises_with_the_number_of_components() {
         // One register.
-        assert_eq!(ea_cycles(0b00_000_100, false), 5, "[SI]");
-        assert_eq!(ea_cycles(0b00_000_111, false), 5, "[BX]");
+        assert_eq!(ea_cycles(0b00_000_100), 5, "[SI]");
+        assert_eq!(ea_cycles(0b00_000_111), 5, "[BX]");
         // A bare displacement, which costs one more than a register.
-        assert_eq!(ea_cycles(0b00_000_110, false), 6, "[disp16]");
+        assert_eq!(ea_cycles(0b00_000_110), 6, "[disp16]");
         // Two registers.
-        assert_eq!(ea_cycles(0b00_000_000, false), 7, "[BX+SI]");
-        assert_eq!(ea_cycles(0b00_000_011, false), 7, "[BP+DI]");
+        assert_eq!(ea_cycles(0b00_000_000), 7, "[BX+SI]");
+        assert_eq!(ea_cycles(0b00_000_011), 7, "[BP+DI]");
         // One register and a displacement.
-        assert_eq!(ea_cycles(0b01_000_111, false), 9, "[BX+d8]");
-        assert_eq!(ea_cycles(0b10_000_110, false), 9, "[BP+d16]");
+        assert_eq!(ea_cycles(0b01_000_111), 9, "[BX+d8]");
+        assert_eq!(ea_cycles(0b10_000_110), 9, "[BP+d16]");
         // Three components.
-        assert_eq!(ea_cycles(0b01_000_000, false), 11, "[BX+SI+d8]");
-        assert_eq!(ea_cycles(0b10_000_001, false), 12, "[BX+DI+d16]");
+        assert_eq!(ea_cycles(0b01_000_000), 11, "[BX+SI+d8]");
+        assert_eq!(ea_cycles(0b10_000_001), 12, "[BX+DI+d16]");
     }
 
     /// The two base-plus-index pairings differ by a clock. This is a real
@@ -415,28 +428,17 @@ mod tests {
     /// someone tidying the table.
     #[test]
     fn the_two_base_plus_index_pairings_cost_differently() {
-        assert_eq!(ea_cycles(0b00_000_000, false), 7, "[BX+SI]");
-        assert_eq!(ea_cycles(0b00_000_011, false), 7, "[BP+DI]");
-        assert_eq!(ea_cycles(0b00_000_001, false), 8, "[BX+DI]");
-        assert_eq!(ea_cycles(0b00_000_010, false), 8, "[BP+SI]");
-    }
-
-    #[test]
-    fn a_segment_override_costs_two_more_whatever_the_mode() {
-        for modrm in [0b00_000_100u8, 0b00_000_110, 0b01_000_000, 0b10_000_010] {
-            assert_eq!(
-                ea_cycles(modrm, true),
-                ea_cycles(modrm, false) + 2,
-                "{modrm:#010b}"
-            );
-        }
+        assert_eq!(ea_cycles(0b00_000_000), 7, "[BX+SI]");
+        assert_eq!(ea_cycles(0b00_000_011), 7, "[BP+DI]");
+        assert_eq!(ea_cycles(0b00_000_001), 8, "[BX+DI]");
+        assert_eq!(ea_cycles(0b00_000_010), 8, "[BP+SI]");
     }
 
     /// A register operand has no address to compute.
     #[test]
     fn a_register_operand_costs_nothing_to_address() {
         for rm in 0..8u8 {
-            assert_eq!(ea_cycles(0b11_000_000 | rm, false), 0, "rm={rm}");
+            assert_eq!(ea_cycles(0b11_000_000 | rm), 0, "rm={rm}");
         }
     }
 }
