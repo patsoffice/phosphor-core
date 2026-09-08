@@ -800,6 +800,92 @@ confuse when only the aggregate is visible.
 - **`ESC` runs no operand read at all**, and a faulting `IDIV` still reads its
   vector off the bus in no time, both already known.
 
+## The memory tail is two mechanisms, not one
+
+**2026-09-05.** The one-clock memory tail is `-1` on the forms that only read
+and `+1` on the read-modify-write forms, and the tidy guess was that the
+bus-cycle order's missing prefetch was the same bug: a four-cycle fetch does
+not fit in a gap a clock too short. **That guess is wrong**, and the thing that
+refuted it was putting the two traces side by side rather than comparing
+transaction lists.
+
+`side_by_side` in `i8088_transfer_timing.rs` prints one case cycle by cycle,
+ours against the recording, and carries our queue depth. The depth is the point:
+a bus-cycle list cannot tell an idle BIU apart from a full queue, and those are
+very different bugs.
+
+**`MUL` word with a memory operand, `-1`.** Every cycle matches, T-state for
+T-state, for 142 cycles. The part then idles *one more* cycle before its next
+First Byte. There is no missing prefetch and no misplaced transaction: the
+microcode is one clock short and nothing else is wrong.
+
+**`NEG` word with a memory operand, `+1`.** Identical through cycle 30, and then:
+
+```text
+        OURS                        HARDWARE
+   28   MemWrite T1 9D3AE           MEMW T1 9D3AE
+   29   MemWrite T2                 MEMW T2
+   30   MemWrite T3                 PASV T3
+   31   MemWrite T4                 <- span already closed
+```
+
+The part reads the **next instruction's First Byte on the same cycle as the
+final write's T4**. This core finishes the write, then reads on the cycle after.
+The queue sits at four bytes throughout, so the BIU is idle for the right
+reason and the missing prefetch is not in this case at all.
+
+**The obvious generalization is already refuted, which is why no fix went in
+with this.** If the EU could always start the next instruction on the last
+write's T4, `MOV [mem], reg` would be a clock shorter too, and `88` and `89`
+read `+0` on 88% of their cases. So the overlap is conditional on something not
+yet identified, and applying it universally would trade one wrong row for
+several. Two errors cancelling is exactly the shape this epic keeps finding, and
+a rule fitted to the two rows in front of it is how the next one gets written.
+
+What is established: the tail is **two** mechanisms with two different causes,
+and neither is the missing prefetch.
+
+## Three rows the by-mode grouping closed, and one it refused to
+
+**2026-09-05.** Grouping each row's residual by addressing mode, rather than
+reading its aggregate, split the memory tail into rows that are simply wrong
+and rows that are something else. Uniform across all 24 memory modes and all 8
+register ones is the standard; anything less is not a constant.
+
+```text
+  NOT and NEG in memory      F6/2 F6/3 F7/2 F7/3   +1 on all 24, +0 on all 8
+  MUL IMUL DIV IDIV memory   eight files            -1 on all 24, +0 on all 8
+  CMP with an immediate      80/7 81/7 82/7 83/7    -1 on all 24
+  MOV [mem], reg             88 and 89              +1 on rm 0 and 3, mod 0 and 1
+```
+
+The first three are wrong constants and are now the measured values: `NOT` and
+`NEG` in memory cost 7 rather than the table's `16 - 8`; the multiplies and
+divides cost one clock beyond their register form, its bus cycles and its
+effective address, where Table 1-16's memory rows imply two at both widths;
+`CMP` with an immediate in memory costs 7 rather than `10 - 4`.
+
+**`MOV [mem], reg` is not one of them, and that is why the grouping mattered.**
+Its `+1` lands only on `BX+SI` and `BP+DI`, and only without a `disp16`. A row
+constant cannot express that, and the aggregate would have invited one.
+
+Clean population 92.10% to **95.14%**, files exact on every case 247 to **261
+of 323**. Cycle count 61.85% to 63.56%, its prefetched half 79.27% to 82.55%.
+
+**And one change was reverted after it was measured.** The `0x81` register form
+reads -1 on all eight register modes for both `ADD` and `CMP`, where `0x80`,
+`0x82` and `0x83` read +0; `0x81` is the only one of the four carrying a 16-bit
+immediate, so a clock for the extra byte is the obvious reading. Putting 5 in
+the row changed nothing at all: `81.0` came back byte-identical, 649 of 2463
+wrong either way, and `81.7` kept its `-1` on exactly its register modes. The
+unit test confirms the row returns 5, so **the pipeline is not spending this
+row for that form** and the missing clock is somewhere between the table and
+the span.
+
+A constant that changes no output is not a measurement. It came back out, and
+what is left in its place is a comment saying so and a finding on the issue,
+which is worth more than a number that looks like progress and is not.
+
 ## Sequencing against the M68000
 
 `phosphor-emulator-cycle-accurate-i8088-nvrh` is currently sequenced *after* the

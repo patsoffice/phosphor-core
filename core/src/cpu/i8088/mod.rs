@@ -624,6 +624,16 @@ impl I8088 {
         !self.halted && self.instr_len == 0
     }
 
+    /// Bytes currently in the prefetch queue, out of [`QUEUE_LEN`].
+    ///
+    /// For diagnostics rather than for emulation: whether the BIU is idle
+    /// because it has nothing to do or because the queue is full is the
+    /// difference between two very different bugs, and a bus-cycle trace cannot
+    /// tell them apart on its own.
+    pub fn queue_len(&self) -> usize {
+        self.queue_len as usize
+    }
+
     /// Total T-states executed since creation.
     pub fn clock(&self) -> u64 {
         self.clock

@@ -381,6 +381,133 @@ fn code_start_by_queue_length(stem: &str) {
     }
 }
 
+/// One case, cycle by cycle, ours beside the recording.
+///
+/// The instrument for "the part ran a bus cycle here and we did not". A
+/// bus-cycle list says *which* transaction is missing; this says what both
+/// machines were doing on the cycle it should have started, and it carries our
+/// queue depth, which is what tells an idle BIU apart from a full queue. Those
+/// are very different bugs and the transaction list cannot separate them.
+///
+/// `want_mem` picks a memory-operand form, which is where the differences are.
+fn dump_side_by_side(stem: &str, want_mem: bool) {
+    let Some(tests) = load(stem) else { return };
+    for tc in &tests {
+        if tc.cycles.is_empty() || tc.initial.queue.len() != 4 {
+            continue;
+        }
+        if tc.bytes.first().is_some_and(|&b| is_prefix(b)) {
+            continue;
+        }
+        let Some(&modrm) = tc.bytes.get(1) else {
+            continue;
+        };
+        if (modrm >> 6 != 3) != want_mem {
+            continue;
+        }
+
+        // Replay, recording one line per cycle over the same span the gate
+        // measures.
+        let mut cpu = I8088::new();
+        let mut bus = TracingBus20::new();
+        bus.memory.fill(0x90);
+        let r = &tc.initial.regs;
+        cpu.ax = r.ax;
+        cpu.bx = r.bx;
+        cpu.cx = r.cx;
+        cpu.dx = r.dx;
+        cpu.cs = r.cs;
+        cpu.ss = r.ss;
+        cpu.ds = r.ds;
+        cpu.es = r.es;
+        cpu.sp = r.sp;
+        cpu.bp = r.bp;
+        cpu.si = r.si;
+        cpu.di = r.di;
+        cpu.ip = r.ip;
+        cpu.flags = r.flags;
+        for &(addr, val) in &tc.initial.ram {
+            bus.memory[(addr & 0xF_FFFF) as usize] = val;
+        }
+        cpu.load_prefetch_queue(&tc.initial.queue);
+
+        let mut mine: Vec<String> = Vec::new();
+        let mut ticks = 0usize;
+        let mut measuring = false;
+        let mut retired = false;
+        loop {
+            ticks += 1;
+            if ticks > 4000 {
+                break;
+            }
+            let was_retired = retired;
+            retired |= cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+            let next = matches!(cpu.queue_status, Some((QueueStatus::First, _))) && was_retired;
+            if !measuring {
+                if cpu.queue_status.is_some() {
+                    measuring = true;
+                } else {
+                    continue;
+                }
+            } else if next {
+                break;
+            }
+            let q = match cpu.queue_status {
+                Some((op, b)) => format!("{op:?}:{b:02X}"),
+                None => "-".to_string(),
+            };
+            let addr = match cpu.bus.address {
+                Some(a) => format!("{a:05X}"),
+                None => "     ".to_string(),
+            };
+            mine.push(format!(
+                "{:?} {:?} {addr} q={q} len={}",
+                cpu.bus.status,
+                cpu.bus.t_state,
+                cpu.queue_len()
+            ));
+        }
+
+        eprintln!(
+            "\n{stem} {} ({} cycles hardware, {} ours)",
+            tc.name,
+            tc.cycles.len(),
+            mine.len()
+        );
+        eprintln!("  {:<38}  HARDWARE", "OURS");
+        let rows = mine.len().max(tc.cycles.len());
+        for i in 0..rows {
+            let ours = mine.get(i).cloned().unwrap_or_default();
+            let theirs = match tc.cycles.get(i) {
+                Some(c) => {
+                    let q = match c.queue_op() {
+                        Some((op, b)) => format!("{op:?}:{b:02X}"),
+                        None => "-".to_string(),
+                    };
+                    let addr = match c.address() {
+                        Some(a) => format!("{a:05X}"),
+                        None => "     ".to_string(),
+                    };
+                    format!("{:?} {:?} {addr} q={q}", c.status(), c.t_state())
+                }
+                None => String::new(),
+            };
+            eprintln!("  {i:3} {ours:<38}  {theirs}");
+        }
+        return;
+    }
+}
+
+#[test]
+#[ignore = "survey, not a check: one case, ours beside the recording"]
+fn side_by_side() {
+    // The read-modify-write form that runs a clock long and still fits one
+    // fewer prefetch than the part, which additive time cannot explain.
+    dump_side_by_side("F7.3", true);
+    // And a read-only memory form, which runs a clock short.
+    dump_side_by_side("F7.4", true);
+}
+
 #[test]
 #[ignore = "survey, not a check: where the loader's first fetch lands"]
 fn code_fetch_start() {
@@ -494,6 +621,33 @@ fn memory_residual_by_mode() {
     residuals_by_mode("89");
     residuals_by_mode("01");
     residuals_by_mode("81.0");
+    // The two halves of the one-clock memory tail, and the store that refutes
+    // the tidy explanation of the second.
+    //
+    // `NEG` in memory runs a clock long, and the side-by-side trace says why:
+    // the part reads the next instruction's First Byte on the same cycle as the
+    // final write's T4. `MOV [mem], reg` ends in a write too and is `+0` on
+    // most of its cases, so the overlap is conditional on something. If that
+    // something is the addressing mode, it is visible here.
+    residuals_by_mode("F7.3");
+    residuals_by_mode("F7.4");
+    residuals_by_mode("88");
+    // The rest of the family the ranked sweep gives the same shape to. Checking
+    // them rather than assuming is the whole discipline: `F7.3` and `F7.4` are
+    // uniform across all 24 memory modes, and a row that is uniform is a wrong
+    // constant, but a row that only *looks* like them in the aggregate could be
+    // two modes cancelling.
+    for stem in [
+        "F6.2", "F6.3", "F7.2", "F6.4", "F6.5", "F6.6", "F6.7", "F7.5", "F7.6", "F7.7",
+    ] {
+        residuals_by_mode(stem);
+    }
+    // And the CMP-immediate rows, which do not write back and carry the same
+    // `-1` as the multiplies. `81.7` is the odd one: the sweep says it is wrong
+    // on its register forms too, unlike the other three.
+    for stem in ["80.7", "81.7", "82.7", "83.7"] {
+        residuals_by_mode(stem);
+    }
 }
 
 /// Does the suite record an interrupt acknowledge anywhere, or an asserted

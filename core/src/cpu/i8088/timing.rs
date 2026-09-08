@@ -179,10 +179,22 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
         // The immediate-to-r/m group. 17 clocks and two transfers in memory,
         // again 10 and one for CMP.
         // -------------------------------------------------------------------
+        // **`CMP` in memory is 7, not the table's `10 - 4`**, measured: all four
+        // of `0x80` through `0x83` read -1 on all 24 memory modes.
+        //
+        // The register forms stay at the table's 4, and one of them is known
+        // wrong: `0x81`, the only one of the four carrying a *16-bit*
+        // immediate, reads -1 on all eight register modes for both `ADD` and
+        // `CMP` where `0x80`, `0x82` and `0x83` read +0. Putting 5 here does not
+        // fix it. The span does not move at all, on either opcode, so the
+        // pipeline is not spending this row for that form and the missing clock
+        // is somewhere between here and the span. A constant that changes no
+        // output is not a measurement, so it is not here; the finding is on the
+        // issue instead.
         0x80..=0x83 => match (is_mem, reg == 7) {
             (false, _) => 4,
             (true, false) => 17 - 8,
-            (true, true) => 10 - 4,
+            (true, true) => 7,
         },
 
         // TEST r/m, reg: non-destructive, so one transfer.
@@ -328,9 +340,14 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
                     5
                 }
             }
+            // NOT and NEG. The register form is the table's 3. **The memory
+            // form is 7, not the table's `16 - 8`**: all four of `F6 /2`,
+            // `F6 /3`, `F7 /2` and `F7 /3` read +1 on all 24 memory modes and
+            // +0 on all 8 register ones, so the read-modify-write path is a
+            // clock dearer here than the part spends.
             2 | 3 => {
                 if is_mem {
-                    16 - 8
+                    7
                 } else {
                     3
                 }
@@ -338,8 +355,18 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
             // The four multiplies and divides are functions of their operands
             // rather than of their encoding, so the caller computes them, from
             // [`multiply_cycles`], [`signed_multiply_cycles`],
-            // [`divide_cycles`] and [`signed_divide_cycles`].
-            _ => 0,
+            // [`divide_cycles`] and [`signed_divide_cycles`]. Those four rules
+            // are calibrated on the register forms, which read +0.
+            //
+            // **A memory operand costs one clock more than the register form
+            // plus its bus cycles and its effective address**, on all eight of
+            // `F6`/`F7` `/4` through `/7` and all 24 memory modes. Table 1-16's
+            // memory rows imply *two*: `MUL r/m8` is 70-77 in a register and
+            // (76-83)+EA in memory, and the difference less the one transfer is
+            // 2 at both widths. The recording says 1, at both widths, which is
+            // the byte-and-word agreement that makes it a row rather than a
+            // fudge.
+            _ => u8::from(is_mem),
         },
 
         // INC and DEC as the single-byte register forms. **Measured at 2**,
@@ -1177,6 +1204,11 @@ mod tests {
     /// CMP costs less than the operations it otherwise resembles, because it
     /// does not write its result back. Getting this wrong would charge every
     /// comparison in a program four clocks it never spent.
+    ///
+    /// The immediate group's memory figure is 7 rather than the table's
+    /// `10 - 4`, measured: all four of `0x80` through `0x83` read -1 on all 24
+    /// memory modes. The property this test is about is unaffected, which is
+    /// the point of asserting the relation and not only the numbers.
     #[test]
     fn cmp_costs_less_than_the_alu_operations_it_resembles() {
         let mem = 0b00_000_100;
@@ -1184,7 +1216,24 @@ mod tests {
         assert_eq!(eu_cycles(0x38, mem), 5, "CMP r/m8, reg8 in memory");
         // And in the immediate group, where the reg field picks the operation.
         assert_eq!(eu_cycles(0x80, 0b00_000_100), 9, "ADD r/m8, imm8");
-        assert_eq!(eu_cycles(0x80, 0b00_111_100), 6, "CMP r/m8, imm8");
+        assert_eq!(eu_cycles(0x80, 0b00_111_100), 7, "CMP r/m8, imm8");
+        assert!(
+            eu_cycles(0x80, 0b00_111_100) < eu_cycles(0x80, 0b00_000_100),
+            "CMP must stay cheaper than the operations that write back"
+        );
+    }
+
+    /// A memory operand costs the multiplies and divides one clock beyond their
+    /// register form, its bus cycles and its effective address. Table 1-16's
+    /// memory rows imply two; the recording says one, at both widths.
+    #[test]
+    fn a_memory_operand_costs_the_multiplies_one_clock() {
+        for op in [0xF6u8, 0xF7] {
+            for reg in [4u8, 5, 6, 7] {
+                assert_eq!(eu_cycles(op, 0b11_000_000 | (reg << 3)), 0, "register form");
+                assert_eq!(eu_cycles(op, 0b00_000_100 | (reg << 3)), 1, "memory form");
+            }
+        }
     }
 
     /// A store costs the EU one clock more than a load. The two numbers are
