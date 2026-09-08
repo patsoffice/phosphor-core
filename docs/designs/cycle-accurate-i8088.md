@@ -438,6 +438,41 @@ given under M1.
   is one queue read past where this replay stops, and reconciling that needs
   the cycle counts M3 brings.
 
+## M3 as built so far
+
+**In progress, 2026-09-04.** The bus is fully modeled; the EU's own clocks are
+not.
+
+| Gate | After M2 | Now |
+|---|---|---|
+| State, vectors | 2,797,000 across 301 files | unchanged, green |
+| Queue operations | 3,007,000 (100.00%) | unchanged, still asserted |
+| Per-cycle, count only | 24,104 (0.80%) | **580,995 (19.32%)** |
+| Q\*bert throughput | 10.20x | 9.45x |
+
+Two errors were found that M2's order-only checks could not see, both about
+*position*: every queue refill was taking five T-states rather than four,
+because the BIU spent a cycle transitioning out of its restart state before
+driving T1; and the gate had been measuring a different span from the recording
+since M1, so every cycle-count figure reported for M1 and M2 was against the
+wrong span. The suite defines a test as First-Byte to First-Byte, and the
+harness was measuring from CPU start to retirement.
+
+Memory operands now reach the bus as MEMR and MEMW cycles through a three-phase
+pipeline: read the operand, run the instruction, write the result. `access.rs`
+is the table that drives it, and the way it was built is the part worth
+copying. It is a second statement of something `execute.rs` already knew, so it
+was cross-checked against the executor on all 3,007,000 vectors *before*
+anything depended on it, and made load-bearing only once that ran clean. It
+found five real disagreements on its first run.
+
+**What is left of M3.** The mean signed error is -20.90 cycles, and none of it
+is bus structure any more: it is the cycles the EU spends calculating an
+effective address and running its own microcode. Those are datasheet numbers
+rather than mechanism, which is why they are a separate step rather than part of
+this one, and the positional per-cycle comparison of status, T-state, address
+and data cannot mean anything until they land.
+
 ## Sequencing against the M68000
 
 `phosphor-emulator-cycle-accurate-i8088-nvrh` is currently sequenced *after* the

@@ -564,9 +564,7 @@ impl I8088 {
             0xC4 | 0xC5 => {
                 let modrm = self.fetch_modrm();
                 let operand = self.resolve_modrm(modrm);
-                if let Operand::Memory { segment, offset } = operand {
-                    let new_offset = self.read_word(bus, master, segment, offset);
-                    let new_seg = self.read_word(bus, master, segment, offset.wrapping_add(2));
+                if let Some((new_offset, new_seg)) = self.read_operand_far(operand, bus, master) {
                     self.set_reg16(modrm.reg, new_offset);
                     if opcode == 0xC4 {
                         self.es = new_seg;
@@ -1049,10 +1047,8 @@ impl I8088 {
                     }
                     3 => {
                         // CALL far indirect: push CS, push IP, load CS:IP from m32
-                        if let Operand::Memory { segment, offset } = operand {
-                            let new_ip = self.read_word(bus, master, segment, offset);
-                            let new_cs =
-                                self.read_word(bus, master, segment, offset.wrapping_add(2));
+                        if let Some((new_ip, new_cs)) = self.read_operand_far(operand, bus, master)
+                        {
                             self.push16(bus, master, self.cs);
                             self.push16(bus, master, self.ip);
                             self.set_ip(new_ip);
@@ -1066,10 +1062,8 @@ impl I8088 {
                     }
                     5 => {
                         // JMP far indirect: load CS:IP from m32
-                        if let Operand::Memory { segment, offset } = operand {
-                            let new_ip = self.read_word(bus, master, segment, offset);
-                            let new_cs =
-                                self.read_word(bus, master, segment, offset.wrapping_add(2));
+                        if let Some((new_ip, new_cs)) = self.read_operand_far(operand, bus, master)
+                        {
                             self.set_ip(new_ip);
                             self.set_cs(new_cs);
                         }
@@ -1728,15 +1722,61 @@ mod tests {
     /// [`crate::cpu::i8088`], the panic in `fetch_byte` when the two disagree
     /// in the running core, and the 2,577,000-vector state gate, which reports
     /// a short read as an IP mismatch.
+    /// It also stands in for the operand pipeline, which normally brackets
+    /// `execute` with MEMR cycles before and MEMW cycles after. These tests
+    /// check what an instruction computes, not how long it takes, so the reads
+    /// and writes happen here in one go: resolve the operand the same way the
+    /// pipeline does, load it, run, and store back whatever was staged.
     fn exec(cpu: &mut I8088, bus: &mut TestBus, opcode: u8) {
-        use crate::cpu::i8088::MAX_INSTRUCTION;
+        use crate::cpu::i8088::{MAX_INSTRUCTION, access, addressing::Operand, format};
+
         let base = I8088::physical_addr(cpu.cs, cpu.ip) as usize;
         for i in 0..MAX_INSTRUCTION {
             cpu.instr[i] = bus.mem[(base + i) & 0xF_FFFF];
         }
+        // The opcode is passed separately by these tests, so the buffer holds
+        // only what follows it. `opcode_at` points at the byte before the
+        // buffer; a ModR/M byte, when there is one, is at index 0.
         cpu.instr_len = MAX_INSTRUCTION as u8;
         cpu.instr_pos = 0;
+        cpu.operand_at = None;
+        cpu.operand_bytes = [0; 4];
+        cpu.operand_written = false;
+
+        let modrm_byte = cpu.instr[0];
+        let acc = access::operand_access(opcode, modrm_byte);
+        let has_modrm = format::format_of(opcode).modrm;
+
+        // Resolve without committing, exactly as the pipeline does.
+        if has_modrm {
+            let saved_ip = cpu.ip;
+            let modrm = cpu.fetch_modrm();
+            if let Operand::Memory { segment, offset } = cpu.resolve_modrm(modrm) {
+                cpu.operand_at = Some((segment, offset));
+            }
+            cpu.ip = saved_ip;
+            cpu.instr_pos = 0;
+        }
+
+        if let Some((segment, offset)) = cpu.operand_at
+            && acc.reads
+        {
+            for i in 0..acc.width.bytes() {
+                let addr = I8088::physical_addr(segment, offset.wrapping_add(i.into()));
+                cpu.operand_bytes[i as usize] = bus.mem[addr as usize];
+            }
+        }
+
         cpu.execute(opcode, bus, M);
+
+        if let Some((segment, offset)) = cpu.operand_at
+            && cpu.operand_written
+        {
+            for i in 0..acc.width.bytes() {
+                let addr = I8088::physical_addr(segment, offset.wrapping_add(i.into()));
+                bus.mem[addr as usize] = cpu.operand_bytes[i as usize];
+            }
+        }
     }
 
     // =====================================================================

@@ -10,6 +10,7 @@
 //! via internal state. The bus interface uses `Address = u32` for 20-bit
 //! physical addresses and `Data = u8` for the 8-bit external data bus.
 
+pub(crate) mod access;
 pub mod addressing;
 pub mod alu;
 pub mod decode;
@@ -150,6 +151,36 @@ pub(crate) enum Biu {
     Fetching { t: u8, addr: u32 },
 }
 
+/// What the execution unit is doing, at the granularity of whole bus cycles.
+///
+/// An instruction with a memory operand is three phases, and they have to be
+/// three because the middle one cannot start until the first has finished and
+/// the last cannot start until the middle has decided what to write:
+///
+/// ```text
+/// Loading -> Reading (MEMR, 1, 2 or 4 cycles) -> execute -> Writing (MEMW)
+/// ```
+///
+/// `execute` itself is still one indivisible step. What has moved out of it is
+/// the bus traffic on either side.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Eu {
+    /// Taking instruction bytes out of the queue.
+    #[default]
+    Loading,
+    /// Reading the memory operand before the instruction runs.
+    Reading {
+        /// Which byte of the operand, counting from zero.
+        byte: u8,
+        /// How many there are: 1, 2, or 4 for a far pointer.
+        total: u8,
+        /// T-state within the current bus cycle.
+        t: u8,
+    },
+    /// Writing the memory operand back after the instruction has run.
+    Writing { byte: u8, total: u8, t: u8 },
+}
+
 /// Which part of the instruction the loader's next fetched byte belongs to.
 ///
 /// This is the shape of an 8088 instruction read left to right, and the loader
@@ -253,6 +284,33 @@ pub struct I8088 {
     /// Which part of the instruction the loader is fetching.
     #[save_skip(default)]
     pub(crate) stage: Stage,
+    /// Which phase of an instruction the execution unit is in.
+    #[save_skip(default)]
+    pub(crate) eu: Eu,
+    /// The memory operand this instruction addresses, once resolved, as
+    /// segment and offset. `None` for a register operand or no operand at all,
+    /// which is also the case where no bus cycle is owed.
+    #[save_skip(default)]
+    pub(crate) operand_at: Option<(u16, u16)>,
+    /// The operand's bytes, low first: read into here before the instruction
+    /// runs, and written out of here after. Four bytes because a far pointer is
+    /// the widest operand there is.
+    #[save_skip(default = [0; 4])]
+    pub(crate) operand_bytes: [u8; 4],
+    /// Set when the instruction wrote its memory operand, so the write-back
+    /// phase knows there is something to do.
+    #[save_skip(default)]
+    pub(crate) operand_written: bool,
+    /// What the executor actually did to its ModR/M operand while running the
+    /// current instruction, as (reads, writes).
+    ///
+    /// This exists to keep [`access`] honest. That table is a second statement
+    /// of something `execute.rs` already knows implicitly, and the pair is
+    /// exactly the shape that drifts apart silently, so the table is checked
+    /// against what the executor did rather than trusted. Written in release
+    /// too, because a pair of counter bumps is cheaper than two code paths.
+    #[save_skip(default)]
+    pub(crate) operand_ops: (u8, u8),
     /// Set for the one T-state on which an instruction retires.
     #[save_skip(default)]
     pub(crate) retired: bool,
@@ -345,6 +403,11 @@ impl I8088 {
             instr_pos: 0,
             opcode_at: 0,
             stage: Stage::Opcode,
+            eu: Eu::Loading,
+            operand_at: None,
+            operand_bytes: [0; 4],
+            operand_written: false,
+            operand_ops: (0, 0),
             retired: false,
             transferred: false,
             pending_flush: false,
@@ -452,8 +515,18 @@ impl I8088 {
             }
         }
 
-        self.tick_eu(bus, master);
-        self.tick_biu(bus, master);
+        match self.eu {
+            Eu::Loading => {
+                self.tick_eu(bus, master);
+                self.tick_biu(bus, master);
+            }
+            // There is one bus, and while the EU is using it the BIU cannot
+            // prefetch. That contention is not incidental: it is why an
+            // instruction with a memory operand leaves the queue emptier than
+            // one without, and why the instruction after it may then stall.
+            Eu::Reading { .. } => self.tick_operand_read(bus, master),
+            Eu::Writing { .. } => self.tick_operand_write(bus, master),
+        }
     }
 
     /// The execution unit's cycle: take one byte from the queue, if there is
@@ -677,6 +750,16 @@ impl I8088 {
         self.instr_len = 0;
         self.instr_pos = 0;
         self.stage = Stage::Opcode;
+        // The EU goes back to the start too. Discarding the loaded instruction
+        // without discarding the pipeline phase that was operating on it leaves
+        // a read or write phase running against an instruction that no longer
+        // exists, and it finishes by trying to execute nothing. `reset` found
+        // this the hard way: it flushes, and a frame boundary lands mid-phase
+        // often enough that the next frame started by executing a
+        // zero-length instruction.
+        self.eu = Eu::Loading;
+        self.operand_at = None;
+        self.operand_written = false;
         self.queue_status = Some((QueueStatus::Emptied, 0));
     }
 
@@ -767,9 +850,95 @@ impl I8088 {
         master: BusMaster,
     ) {
         self.transferred = false;
+        self.operand_at = None;
+        self.operand_bytes = [0; 4];
+        self.operand_written = false;
+
+        // Resolve the operand before running anything, by walking the loaded
+        // bytes exactly as the executor is about to and then rewinding.
+        //
+        // Rewinding rather than duplicating the addressing logic is the whole
+        // trick here. `consume_prefixes`, `fetch_modrm` and `resolve_modrm` are
+        // the only code that knows how an effective address is built, and a
+        // second copy of that knowledge would drift from the first. They are
+        // safe to run twice: the only things they change are IP and
+        // `instr_pos`, both restored here, and the prefix state, which is
+        // recomputed identically. The address itself is a pure function of
+        // registers the instruction has not touched yet.
+        let saved_ip = self.ip;
         self.instr_pos = 0;
         let opcode = self.consume_prefixes();
+        let operand_access = if format::format_of(opcode).modrm {
+            let modrm = self.fetch_modrm();
+            let resolved = self.resolve_modrm(modrm);
+            if let addressing::Operand::Memory { segment, offset } = resolved {
+                self.operand_at = Some((segment, offset));
+            }
+            access::operand_access(opcode, self.instr[self.opcode_at as usize + 1])
+        } else {
+            access::operand_access(opcode, 0)
+        };
+        self.ip = saved_ip;
+        self.instr_pos = 0;
+
+        // A read has to happen before the instruction can run, so the
+        // instruction does not run on this cycle at all: the pipeline goes into
+        // its read phase and comes back here through `finish_execute`.
+        if self.operand_at.is_some() && operand_access.reads {
+            self.eu = Eu::Reading {
+                byte: 0,
+                total: operand_access.width.bytes(),
+                t: 1,
+            };
+            return;
+        }
+
+        self.run_execute_step(bus, master);
+    }
+
+    /// Run the instruction proper, with its operand already in hand, and then
+    /// hand off to the write-back phase if it produced one.
+    fn run_execute_step<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.instr_pos = 0;
+        self.operand_ops = (0, 0);
+        let opcode = self.consume_prefixes();
         self.execute(opcode, bus, master);
+
+        // Cross-check the operand-access table against what the executor
+        // actually did, before anything depends on the table.
+        //
+        // `access::operand_access` is a second, independent statement of
+        // something `execute.rs` already knows implicitly, and a pair like that
+        // drifts silently. Rather than trust it, compare: the table predicted
+        // this instruction would read and write its ModR/M operand, and here is
+        // what it did. A debug build runs this on all 3,007,000 per-cycle
+        // vectors, which is what makes the table load-bearing safely.
+        //
+        // Only instructions with a ModR/M byte addressing *memory* are checked.
+        // The others reach memory through push, pop, the string moves and the
+        // interrupt vector reads, which this table does not describe and the
+        // pipeline will have to handle separately; and a register operand
+        // costs no bus cycle either way, which is what lets `PUSH SP` take its
+        // own path through the 8088's push-the-decremented-value quirk without
+        // looking like a disagreement.
+        #[cfg(debug_assertions)]
+        if format::format_of(opcode).modrm && self.instr[self.opcode_at as usize + 1] >> 6 != 3 {
+            let modrm = self.instr[self.opcode_at as usize + 1];
+            let want = access::operand_access(opcode, modrm);
+            let (reads, writes) = self.operand_ops;
+            debug_assert_eq!(
+                (reads > 0, writes > 0),
+                (want.reads, want.writes),
+                "opcode {opcode:02X} modrm {modrm:02X}: the operand table says \
+                 reads={} writes={}, the executor did {reads} reads and {writes} writes",
+                want.reads,
+                want.writes,
+            );
+        }
 
         // The loader and the executor have to agree on how long the
         // instruction was, or one of them is reading bytes the other never
@@ -788,6 +957,28 @@ impl I8088 {
             self.instr_pos,
         );
 
+        // A write goes out over the bus after the instruction has decided what
+        // to write, which is another phase rather than another cycle of this
+        // one.
+        if self.operand_written && self.operand_at.is_some() {
+            let width =
+                access::operand_access(self.opcode(), self.instr[self.opcode_at as usize + 1])
+                    .width;
+            self.eu = Eu::Writing {
+                byte: 0,
+                total: width.bytes(),
+                t: 1,
+            };
+            return;
+        }
+
+        self.finish_instruction();
+    }
+
+    /// Retire the instruction: the last thing every path through the pipeline
+    /// does.
+    fn finish_instruction(&mut self) {
+        self.eu = Eu::Loading;
         self.instr_len = 0;
         self.instr_pos = 0;
 
@@ -800,6 +991,103 @@ impl I8088 {
         } else {
             self.retired = true;
         }
+    }
+
+    /// One T-state of the operand read phase: a MEMR bus cycle per byte, low
+    /// byte first, the 8088's data bus being one byte wide.
+    fn tick_operand_read<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let Eu::Reading { byte, total, t } = self.eu else {
+            return;
+        };
+        let (segment, offset) = self.operand_at.expect("a read phase has an operand");
+        let addr = Self::physical_addr(segment, offset.wrapping_add(byte.into()));
+
+        match t {
+            1 => {
+                self.begin_bus_cycle(BusStatus::MemRead, addr, self.operand_segment());
+                self.eu = Eu::Reading { byte, total, t: 2 };
+            }
+            2 => {
+                self.drive_bus_cycle(BusStatus::MemRead, TState::T2, self.operand_segment());
+                self.eu = Eu::Reading { byte, total, t: 3 };
+            }
+            3 => {
+                self.drive_bus_cycle(BusStatus::MemRead, TState::T3, self.operand_segment());
+                let value = bus.read(master, addr);
+                self.bus.data = Some(value);
+                self.operand_bytes[byte as usize] = value;
+                self.eu = Eu::Reading { byte, total, t: 4 };
+            }
+            _ => {
+                self.drive_bus_cycle(BusStatus::MemRead, TState::T4, self.operand_segment());
+                if byte + 1 < total {
+                    self.eu = Eu::Reading {
+                        byte: byte + 1,
+                        total,
+                        t: 1,
+                    };
+                } else {
+                    self.eu = Eu::Loading;
+                    self.run_execute_step(bus, master);
+                }
+            }
+        }
+    }
+
+    /// One T-state of the operand write-back phase: a MEMW bus cycle per byte.
+    fn tick_operand_write<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        let Eu::Writing { byte, total, t } = self.eu else {
+            return;
+        };
+        let (segment, offset) = self.operand_at.expect("a write phase has an operand");
+        let addr = Self::physical_addr(segment, offset.wrapping_add(byte.into()));
+
+        match t {
+            1 => {
+                self.begin_bus_cycle(BusStatus::MemWrite, addr, self.operand_segment());
+                self.eu = Eu::Writing { byte, total, t: 2 };
+            }
+            2 => {
+                self.drive_bus_cycle(BusStatus::MemWrite, TState::T2, self.operand_segment());
+                self.eu = Eu::Writing { byte, total, t: 3 };
+            }
+            3 => {
+                self.drive_bus_cycle(BusStatus::MemWrite, TState::T3, self.operand_segment());
+                let value = self.operand_bytes[byte as usize];
+                self.bus.data = Some(value);
+                bus.write(master, addr, value);
+                self.eu = Eu::Writing { byte, total, t: 4 };
+            }
+            _ => {
+                self.drive_bus_cycle(BusStatus::MemWrite, TState::T4, self.operand_segment());
+                if byte + 1 < total {
+                    self.eu = Eu::Writing {
+                        byte: byte + 1,
+                        total,
+                        t: 1,
+                    };
+                } else {
+                    self.finish_instruction();
+                }
+            }
+        }
+    }
+
+    /// Which segment register the operand's address was computed from, for the
+    /// S3/S4 status lines. An override picks it; otherwise it is whatever the
+    /// addressing mode defaults to.
+    fn operand_segment(&self) -> SegReg {
+        let modrm = self.instr[self.opcode_at as usize + 1];
+        self.segment_override
+            .unwrap_or_else(|| self.default_segment_for_rm(modrm & 7, modrm >> 6))
     }
 
     /// Check for pending interrupts. Returns true if an interrupt was taken.

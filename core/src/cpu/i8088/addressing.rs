@@ -105,44 +105,89 @@ impl I8088 {
     // -----------------------------------------------------------------------
 
     /// Read an 8-bit value from a resolved operand.
+    ///
+    /// A memory operand no longer comes off the bus here. The pipeline in
+    /// [`super`] read it over its own MEMR bus cycles before the instruction
+    /// started, which is the whole point: an operand read is four T-states the
+    /// instruction has to wait for, and it cannot wait from inside a function
+    /// call. What arrives here is the byte those cycles fetched.
     pub(crate) fn read_operand8<B: Bus<Address = u32, Data = u8> + ?Sized>(
-        &self,
+        &mut self,
         operand: Operand,
-        bus: &mut B,
-        master: BusMaster,
+        _bus: &mut B,
+        _master: BusMaster,
     ) -> u8 {
+        self.operand_ops.0 += 1;
         match operand {
             Operand::Register(rm) => self.get_reg8(rm),
-            Operand::Memory { segment, offset } => self.read_byte(bus, master, segment, offset),
+            Operand::Memory { .. } => self.operand_bytes[0],
         }
     }
 
     /// Write an 8-bit value to a resolved operand.
+    ///
+    /// A memory operand is staged rather than written: the pipeline sends it
+    /// out over a MEMW bus cycle once the instruction has finished. See
+    /// [`Self::read_operand8`].
     pub(crate) fn write_operand8<B: Bus<Address = u32, Data = u8> + ?Sized>(
         &mut self,
         operand: Operand,
-        bus: &mut B,
-        master: BusMaster,
+        _bus: &mut B,
+        _master: BusMaster,
         val: u8,
     ) {
+        self.operand_ops.1 += 1;
         match operand {
             Operand::Register(rm) => self.set_reg8(rm, val),
-            Operand::Memory { segment, offset } => {
-                self.write_byte(bus, master, segment, offset, val);
+            Operand::Memory { .. } => {
+                self.operand_bytes[0] = val;
+                self.operand_written = true;
             }
         }
     }
 
-    /// Read a 16-bit value from a resolved operand.
-    pub(crate) fn read_operand16<B: Bus<Address = u32, Data = u8> + ?Sized>(
-        &self,
+    /// Read a far pointer, offset then segment, from a resolved memory operand.
+    ///
+    /// `LES`, `LDS` and the indirect far `CALL` and `JMP` all read the same
+    /// four bytes the same way, and all four used to spell it out separately
+    /// with two `read_word` calls. That mattered once the operand-access table
+    /// existed: an access made through `read_word` is invisible to the
+    /// cross-check that keeps the table honest, so three of the four opcodes
+    /// looked like they touched no operand at all.
+    ///
+    /// Returns `None` for a register operand, which is an undefined encoding
+    /// the test suite deliberately excludes.
+    pub(crate) fn read_operand_far<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
         operand: Operand,
-        bus: &mut B,
-        master: BusMaster,
+        _bus: &mut B,
+        _master: BusMaster,
+    ) -> Option<(u16, u16)> {
+        let Operand::Memory { .. } = operand else {
+            return None;
+        };
+        self.operand_ops.0 += 1;
+        let b = self.operand_bytes;
+        Some((
+            u16::from_le_bytes([b[0], b[1]]),
+            u16::from_le_bytes([b[2], b[3]]),
+        ))
+    }
+
+    /// Read a 16-bit value from a resolved operand. See [`Self::read_operand8`]
+    /// for why this takes `&mut self`.
+    pub(crate) fn read_operand16<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        operand: Operand,
+        _bus: &mut B,
+        _master: BusMaster,
     ) -> u16 {
+        self.operand_ops.0 += 1;
         match operand {
             Operand::Register(rm) => self.get_reg16(rm),
-            Operand::Memory { segment, offset } => self.read_word(bus, master, segment, offset),
+            Operand::Memory { .. } => {
+                u16::from_le_bytes([self.operand_bytes[0], self.operand_bytes[1]])
+            }
         }
     }
 
@@ -150,14 +195,16 @@ impl I8088 {
     pub(crate) fn write_operand16<B: Bus<Address = u32, Data = u8> + ?Sized>(
         &mut self,
         operand: Operand,
-        bus: &mut B,
-        master: BusMaster,
+        _bus: &mut B,
+        _master: BusMaster,
         val: u16,
     ) {
+        self.operand_ops.1 += 1;
         match operand {
             Operand::Register(rm) => self.set_reg16(rm, val),
-            Operand::Memory { segment, offset } => {
-                self.write_word(bus, master, segment, offset, val);
+            Operand::Memory { .. } => {
+                self.operand_bytes[..2].copy_from_slice(&val.to_le_bytes());
+                self.operand_written = true;
             }
         }
     }
@@ -586,18 +633,30 @@ mod tests {
         assert_eq!(cpu.al(), 0xFF);
     }
 
+    /// A memory operand does not reach the bus through these helpers any more.
+    /// The pipeline reads it over MEMR cycles before the instruction runs and
+    /// writes it back over MEMW cycles after, so what these do is take from and
+    /// stage into the buffer between the two.
     #[test]
-    fn read_write_operand8_memory() {
+    fn a_memory_operand_is_staged_rather_than_written() {
         let (mut cpu, mut bus) = setup();
         let op = Operand::Memory {
             segment: 0x2000,
             offset: 0x0050,
         };
-        // Write then read
+
         cpu.write_operand8(op, &mut bus, MASTER, 0xAB);
+        assert!(
+            cpu.operand_written,
+            "the write-back phase has something to do"
+        );
+        assert_eq!(cpu.operand_bytes[0], 0xAB);
+        assert_eq!(
+            bus.mem[0x20050], 0x00,
+            "nothing reached memory: that is the pipeline's job, on its own cycle"
+        );
+
         assert_eq!(cpu.read_operand8(op, &mut bus, MASTER), 0xAB);
-        // Verify at physical address 0x20050
-        assert_eq!(bus.mem[0x20050], 0xAB);
     }
 
     #[test]
@@ -611,18 +670,19 @@ mod tests {
         assert_eq!(cpu.bx, 0xABCD);
     }
 
+    /// A word operand is staged low byte first, because that is the order the
+    /// write-back phase puts it on a one-byte-wide bus.
     #[test]
-    fn read_write_operand16_memory() {
+    fn a_word_operand_is_staged_low_byte_first() {
         let (mut cpu, mut bus) = setup();
         let op = Operand::Memory {
             segment: 0x2000,
             offset: 0x0060,
         };
         cpu.write_operand16(op, &mut bus, MASTER, 0x1234);
+        assert_eq!(cpu.operand_bytes[0], 0x34, "low byte goes out first");
+        assert_eq!(cpu.operand_bytes[1], 0x12);
         assert_eq!(cpu.read_operand16(op, &mut bus, MASTER), 0x1234);
-        // Verify little-endian at physical address 0x20060
-        assert_eq!(bus.mem[0x20060], 0x34);
-        assert_eq!(bus.mem[0x20061], 0x12);
     }
 
     // -- Prefix consumption --
