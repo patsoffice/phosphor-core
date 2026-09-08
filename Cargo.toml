@@ -1,6 +1,10 @@
 [workspace]
 members = ["core", "macros", "machines", "cpu-validation", "frontend", "harness", "tools/bench", "tools/disasm", "tools/script", "tools/sound-compare"]
 default-members = ["core", "machines", "frontend"]
+# `tools/marty-probe` links a foreign 8088 core and is built on its own. It is
+# excluded rather than a member so that nothing shipped can depend on it and so
+# that a missing reference checkout cannot break the workspace build.
+exclude = ["tools/marty-probe"]
 resolver = "2"
 
 # Optimize workspace crates in dev builds for real-time emulation speed

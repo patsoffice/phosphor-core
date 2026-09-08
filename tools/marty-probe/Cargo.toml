@@ -1,0 +1,22 @@
+[package]
+name = "marty-probe"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Deliberately outside the phosphor workspace: it links a foreign emulator core
+# and must never become a dependency of anything shipped. See README.md.
+
+[dependencies]
+marty_core = { path = "/tmp/martypc/crates/lib/marty_core", default-features = false, features = [
+    "cpu_collect_cycle_states",
+    "cpu_cycle_trace",
+    "cpu_trace_comments",
+] }
+phosphor-core = { path = "../../core" }
+phosphor-cpu-validation = { path = "../../cpu-validation" }
+serde = "1"
+serde_derive = "1"
+serde_json = "1"
+flate2 = "1"
+clap = { version = "4", features = ["derive"] }
