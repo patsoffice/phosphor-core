@@ -166,14 +166,8 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
         // the microcode rather than to a number fitted to it. `0x83` takes that
         // jump too, being a word-sized instruction with a byte-sized immediate.
 
-        // TEST r/m, reg: non-destructive, so one transfer.
-        0x84 | 0x85 => {
-            if is_mem {
-                9 - 4
-            } else {
-                3
-            }
-        }
+        // `TEST r/m, reg` at 84 and 85 has no row: it prices from its microcode,
+        // which is one clock at 0x094 and nothing else. See `microcode::routine`.
 
         // XCHG r/m, reg: 4 for two registers; 17 clocks and two transfers when
         // one of them is in memory.
@@ -191,25 +185,12 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
         // it: 0x000 and 0x001 sit in front of the write back and there is
         // nothing in front of a register destination.
 
-        // MOV r/m16, sreg and MOV sreg, r/m16, same two numbers.
-        0x8C => {
-            if is_mem {
-                9 - 4
-            } else {
-                2
-            }
-        }
-        0x8E => {
-            if is_mem {
-                8 - 4
-            } else {
-                2
-            }
-        }
-        // LEA: 2 clocks and no transfers. All of its cost is the EA
-        // calculation, which is charged separately, and it is the only
-        // memory-addressing instruction that runs no bus cycle at all.
-        0x8D => 2,
+        // `MOV r/m, sreg` and `MOV sreg, r/m` have no rows either: they run the
+        // transcribed routine at 0x0ec, which spends 0x0ec only when the
+        // destination is an address.
+        // `LEA` has no row: it runs the transcribed routine at 0x004, whose two
+        // clocks are the way out of the address routine for a form that reads
+        // nothing.
         // POP r/m16: 17 clocks and two transfers, the stack read and the
         // operand write.
         0x8F => 17 - 8,
@@ -217,36 +198,19 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
         // XCHG AX, reg16.
         0x90..=0x97 => 3,
 
-        // MOV accumulator to and from a direct address: 10 clocks, one
-        // transfer, either way. The recording agrees for the two loads and puts
-        // the two stores one clock higher, which is the same asymmetry the
-        // manual itself gives the ModR/M forms of MOV: a store costs the EU one
-        // more than a load. It simply prints the same 10 for both of these.
-        0xA0 | 0xA1 => 10 - 4,
-        0xA2 | 0xA3 => 10 - 4 + 1,
+        // `MOV acc, [addr]` and `MOV [addr], acc` at A0 through A3 have no rows:
+        // they price from their microcode, which spends nothing at all. See
+        // `microcode::routine`.
 
         // XLAT, documented 11 with one transfer, recorded one clock above that.
         // Its address is BX plus AL, which the manual does not quote as an
         // effective address and this core does not charge as one.
         0xD7 => 11 - 4 + 1,
 
-        // The 8087 escapes, straight from the table for once. `ESC` is 2 clocks
-        // with a register operand and `8+EA` with one transfer in memory, which
-        // on the 8088 is 12 and two bus cycles for the word the part actually
-        // reads. See [`super::access::operand_access`], which performs that
-        // read so a coprocessor could see the operand.
-        //
-        // The check on the memory figure is the recording's own two-valued
-        // residual before the read went in: -10 on every even effective address
-        // and -11 on every odd one, which is 8 clocks of bus, these 4, and the
-        // rounding to an even clock that the pipeline already applies.
-        0xD8..=0xDF => {
-            if is_mem {
-                12 - 8
-            } else {
-                2
-            }
-        }
+        // The 8087 escapes have no rows: they run the transcribed routine at
+        // 0x108, which reads the operand so a coprocessor could see it and
+        // spends nothing at all. See [`super::access::operand_access`], which
+        // performs that read.
 
         // CBW and CWD, the sign extensions. CBW is the manual's 2. CWD is
         // quoted at 5 and takes 5 when AX is positive and 6 when it is not,
@@ -267,8 +231,10 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
         // LES and LDS have no rows: they run the transcribed routines at 0x0f0
         // and 0x0f4, which read the segment half of the far pointer themselves.
 
-        // TEST accumulator, immediate.
-        0xA8 | 0xA9 => 4,
+        // `TEST acc, imm` at A8 and A9 has no row: it prices from its
+        // microcode, which is a jump over the immediate's second queue read for
+        // the byte form and nothing at all for the word form. See
+        // `microcode::routine`.
 
         // `MOV reg, imm` at 0x01c and `MOV r/m, imm` at 0x014 have no rows.
 
@@ -1434,10 +1400,19 @@ mod tests {
     }
 
     /// LEA runs no bus cycle, so all of its 2 clocks are EU time and none of
-    /// them is a transfer being subtracted.
+    /// them is a transfer being subtracted. They are the way out of the address
+    /// routine for a form that reads nothing: `1E3: tmpa -> IND` and the return
+    /// behind it. Its own `004: IND -> R` costs nothing and shares the boundary
+    /// fetch's clock.
     #[test]
     fn lea_is_two_clocks_and_no_transfers() {
-        assert_eq!(eu_cycles(0x8D, 0b00_000_100), 2);
+        assert_eq!(eu_cycles(0x8D, 0b00_000_100), 0, "no row");
+        assert_eq!(
+            super::super::microcode::routine(0x8D, 0b00_000_100, false)
+                .expect("LEA runs a routine")
+                .clocks(),
+            2
+        );
     }
 
     /// The four multiplies and divides are modeled, but through their own
@@ -1836,15 +1811,25 @@ mod tests {
         }
     }
 
-    /// The five opcodes that reach memory without a ModR/M byte are modeled,
-    /// and a store costs one clock more than a load even here, where Table 1-16
-    /// prints the same number for both.
+    /// The five opcodes that reach memory without a ModR/M byte are modeled.
+    ///
+    /// The four moves price from their microcode now rather than from a row,
+    /// and it spends nothing: `mc_060` reads the operand and sets the
+    /// accumulator, `mc_064` takes the accumulator and writes it, and neither
+    /// runs a `cycle_i`. Their span is the transfer's and the boundary fetch's.
+    /// `XLAT` still has a row.
     #[test]
     fn the_direct_address_moves_and_xlat_are_modeled() {
-        assert_eq!(eu_cycles(0xA0, 0), 6, "MOV AL, [addr]");
-        assert_eq!(eu_cycles(0xA1, 0), 6, "MOV AX, [addr]");
-        assert_eq!(eu_cycles(0xA2, 0), 7, "MOV [addr], AL");
-        assert_eq!(eu_cycles(0xA3, 0), 7, "MOV [addr], AX");
+        for opcode in [0xA0u8, 0xA1, 0xA2, 0xA3] {
+            assert_eq!(eu_cycles(opcode, 0), 0, "{opcode:#04X} has no row");
+            assert_eq!(
+                super::super::microcode::routine(opcode, 0, false)
+                    .expect("a direct-address move runs a routine")
+                    .clocks(),
+                0,
+                "{opcode:#04X} spends no microcode clock"
+            );
+        }
         assert_eq!(eu_cycles(0xD7, 0), 8, "XLAT");
         for opcode in [0xA0u8, 0xA1, 0xA2, 0xA3, 0xD7] {
             assert!(is_modeled(opcode, 0), "{opcode:#04X}");

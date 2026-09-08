@@ -302,6 +302,82 @@ pub(crate) fn routine(opcode: u8, modrm: u8, branch: bool) -> Option<Routine> {
             Some(r.done())
         }
 
+        // `LEA` at 0x004. It computes an effective address and reads nothing, so
+        // it leaves the address routine the way every write-only form does:
+        // `1E3: tmpa -> IND` with a clock of its own and `RET` behind it. Its
+        // own line costs nothing, `004: IND -> R` sharing the boundary fetch's
+        // clock on `lea dx, [ds:bx+di-46FDh]`, where the span ends.
+        0x8D => Some(mc().spend(2).then(Step::Run).done()),
+
+        // `ESC` at 0x108, opcodes D8 through DF. With no coprocessor to hand the
+        // operand to, `mc_108` reads it and does nothing whatever: on
+        // `esc word [ds:di]` the `108:` line shares the boundary fetch's clock
+        // and the span ends there. A memory form has only the
+        // effective-address routine's return in front of it.
+        0xD8..=0xDF => {
+            let mut r = mc();
+            if !register_form {
+                r = r.spend(1);
+            }
+            Some(r.then(Step::Run).done())
+        }
+
+        // `MOV sreg, r/m` and `MOV r/m, sreg` at 0x0ec, opcodes 8C and 8E.
+        // `mc_0ec` spends 0x0ec only when the destination is an address, and
+        // nothing otherwise: reading into a segment register costs no clock of
+        // its own, so `mov es, word [ds:bx+si-3Ch]` reaches `0EC: R -> M` on the
+        // same T-state as `FETCH_NEXT` and the span ends there.
+        0x8C | 0x8E => {
+            let stores = opcode == 0x8C;
+            let mut r = mc();
+            if !register_form {
+                // A store never reads its destination, so it leaves the address
+                // routine through `1E3: tmpa -> IND` with a clock of its own and
+                // `RET` behind it. A load leaves through `1E2`, which is the
+                // line that spends the read's T4, and only `RET` is left.
+                r = r.spend(if stores { 2 } else { 1 });
+                if stores {
+                    // 0x0ec.
+                    r = r.spend(1);
+                }
+            }
+            r = r.then(Step::Run);
+            if stores && !register_form {
+                r = r.then(Step::WriteOperand);
+            }
+            Some(r.done())
+        }
+
+        // `MOV acc, [addr]` at 0x060 and `MOV [addr], acc` at 0x064, opcodes A0
+        // through A3. **Neither spends a clock of its own.** `mc_060` reads the
+        // operand and sets the accumulator; `mc_064` takes the accumulator and
+        // writes it. The address comes out of the instruction rather than a
+        // ModR/M byte, so there is no effective-address routine to return from
+        // either, and on `mov al, byte [ds:AD30h]` the read's T4 carries
+        // `FETCH_NEXT` and the span ends on it.
+        0xA0 | 0xA1 => Some(mc().then(Step::Run).done()),
+        0xA2 | 0xA3 => Some(mc().then(Step::Run).then(Step::WriteOperand).done()),
+
+        // `TEST acc, imm` at 0x09c, opcodes A8 and A9. `mc_09c` reads the
+        // immediate and, for the byte form only, spends `MC_JUMP` to skip the
+        // second queue read. The word form spends nothing at all: its
+        // `09E: XA -> tmpa` shares the boundary fetch's clock, the label being
+        // the microcode counter left over rather than a line with a T-state.
+        0xA8 | 0xA9 => Some(mc().spend(u8::from(opcode == 0xA8)).then(Step::Run).done()),
+
+        // `TEST r/m, reg` at 0x094, opcodes 84 and 85. One clock and nothing
+        // else: `mc_094` reads both operands, ANDs them for the flags and spends
+        // 0x094. It writes nothing, so a memory form has only the
+        // effective-address routine's return in front of it.
+        0x84 | 0x85 => {
+            let mut r = mc();
+            if !register_form {
+                r = r.spend(1);
+            }
+            // 0x094.
+            Some(r.spend(1).then(Step::Run).done())
+        }
+
         // The ALU block's register forms at 0x008: `ADD`, `OR`, `ADC`, `SBB`,
         // `AND`, `SUB`, `XOR` and `CMP` against a ModR/M operand, opcodes
         // 00 through 3B with the low two bits selecting the direction.

@@ -2565,7 +2565,28 @@ impl I8088 {
         // microcode: `FF /2` reads its pointer and only then suspends the
         // prefetcher, spends its clocks and flushes.
         if self.begin_microcode_routine() {
-            return self.advance_microcode(bus, master);
+            // **Whether the operand read's T4 is already spoken for depends on
+            // there having been an effective address at all.** A ModR/M form
+            // leaves the address routine through `1E2: OPR -> tmpb`, and that is
+            // the line that spends the read's T4, so the routine behind it
+            // starts on the clock after. `mov al, byte [ds:AD30h]` carries its
+            // address in the instruction, runs no address routine and has no
+            // `1E2`: its read's T4 is the first clock of what follows, which for
+            // that opcode is nothing at all, so the boundary fetch takes it and
+            // the span ends there.
+            //
+            // And there has to have *been* a read. Most instructions reach here
+            // with no transfer behind them at all, and handing them a release
+            // clock they never earned gives every one of them a clock back:
+            // `add al, 2Dh` has no memory operand and no T4 to spend.
+            let released = self.operand_at.is_some()
+                && !format::format_of(self.opcode()).modrm
+                && access::operand_access(self.opcode(), 0).reads;
+            return if released {
+                self.advance_microcode_after_transfer(bus, master)
+            } else {
+                self.advance_microcode(bus, master)
+            };
         }
         let stack = access::stack_access(self.opcode(), self.instr[self.opcode_at as usize + 1]);
         self.stack_staged = true;
@@ -2961,14 +2982,17 @@ impl I8088 {
             cycles += 1;
         }
 
-        // **No instruction executes in no clocks.** The published unit takes the
-        // last byte of an instruction on one T-state and runs that instruction's
-        // first microcode line on the next: `inc ax` reads its opcode on cycle 0
-        // and reaches `17C: M -> tmpb` on cycle 1, and every trace has the same
-        // shape. A row of zero here is a row that was fitted while the loader
-        // was holding that clock; with the loader taking its bytes on the part's
-        // T-states, the clock has to be where the part spends it.
-        Eu::Executing(cycles.clamp(1, i32::from(u8::MAX)) as u8)
+        // **An instruction may execute in no clocks at all**, and the trailing
+        // one it looks like it has is the boundary fetch's. `inc ax` shows
+        // `17C: M -> tmpb` on its last cycle and `test ax, imm16` shows
+        // `09E: XA -> tmpa` on its, but both of those lines carry `FETCH_NEXT`
+        // and `FETCH_END` beside them: the label is the microcode counter left
+        // over from the instruction, and the clock belongs to the RNI. See
+        // [`I8088::boundary_fetch`].
+        match cycles.clamp(0, i32::from(u8::MAX)) as u8 {
+            0 => Eu::Loading,
+            n => Eu::Executing(n),
+        }
     }
 
     /// Walk the step list until a step that occupies a T-state, and return the
