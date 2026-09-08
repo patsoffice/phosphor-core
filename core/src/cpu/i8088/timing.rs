@@ -85,14 +85,24 @@
 //!
 //! # What is not here yet
 //!
-//! The string operations and their `REP` loops, which need bus modeling rather
-//! than a row, and `IMUL` and `IDIV`. Those two are quoted as *ranges* because
-//! their microcode is data-dependent, and unlike `MUL`, `DIV`, `AAM` and `AAD`
-//! the rule behind the range is not worked out: each of `IMUL`'s four sign
-//! combinations follows its own base plus the multiplier's set bits, and
-//! solving the four for independent per-negation costs gives minus one clock
-//! for negating the multiplicand. A four-way lookup would be a fitted table in
-//! a rule's clothing.
+//! Every instruction the suite records has a row or a rule now, but coverage is
+//! not the same as being right, and the ranked sweep in `row_residuals` says
+//! which rows are not. Over the clean population (a full queue and no prefix,
+//! where the recorded span *is* the instruction's clock count) 92.10% of cases
+//! are exact and 247 of 323 files are exact on every case. What is left, worst
+//! first:
+//!
+//! - the coprocessor escapes `0xD8`-`0xDF`, whose operand read this core does
+//!   not perform at all, and `SALC`, which has no row anywhere;
+//! - a one-clock memory tail whose sign follows write-back: `-1` on the forms
+//!   that only read (the multiplies, the divides, `CMP` with an immediate) and
+//!   `+1` on the read-modify-write forms (`NOT`, `NEG`);
+//! - the indirect transfers `FF /2`-`FF /5`, `MOV mem, imm`, `MOV r/m, sreg`
+//!   and `POP r/m16`, which are multi-valued rather than offset.
+//!
+//! Those are rows. Separately and larger, the gate's empty-queue half is held
+//! down by the loader reading its bytes on a different clock from the part,
+//! which no row here can reach.
 //!
 //! An opcode with no entry here is charged nothing, which undercounts it;
 //! [`eu_cycles`] returning zero means "not yet modeled", not "free", and
@@ -114,8 +124,16 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
         // ahead of it so that the block's `opcode & 7` dispatch cannot charge
         // PUSH ES the accumulator-immediate time.
         //
-        // PUSH seg is 10 clocks with one transfer, POP seg 8 with one.
-        0x06 | 0x0E | 0x16 | 0x1E => 10 - 4,
+        // Table 1-16 gives PUSH seg 10 clocks with one transfer and POP seg 8
+        // with one.
+        //
+        // **The push is 11 on this part, not 10**, uniformly: -1 on all 5000
+        // cases of each of the four files, where `PUSH reg`, documented at 11,
+        // reads +0. `PUSHF` is documented at 10 and reads the same -1. So all
+        // three push forms cost the part 11 and the table's 10 describes none
+        // of them. Both numbers are here rather than the disagreement being
+        // tidied away.
+        0x06 | 0x0E | 0x16 | 0x1E => 11 - 4,
         0x07 | 0x0F | 0x17 | 0x1F => 8 - 4,
 
         // DAA and DAS sit in the same block for the same reason, and take 4
@@ -317,21 +335,22 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
                     3
                 }
             }
-            // MUL: the microcode's shift-and-add loop, one iteration per bit
-            // of the multiplier, with the add skipped when the bit is zero.
-            // The caller adds the per-bit part, which depends on AL or AX
-            // rather than on the encoding. See [`multiply_base`].
-            4 => 0,
-            // IMUL, DIV and IDIV stay unmodeled: their microcode is
-            // data-dependent in ways the multiply rule does not cover. IMUL
-            // converts both operands to positive and negates the result, and
-            // both steps cost cycles that depend on the signs.
+            // The four multiplies and divides are functions of their operands
+            // rather than of their encoding, so the caller computes them, from
+            // [`multiply_cycles`], [`signed_multiply_cycles`],
+            // [`divide_cycles`] and [`signed_divide_cycles`].
             _ => 0,
         },
 
-        // INC and DEC, both as the single-byte register forms and as the
-        // group: 3 clocks in a register, 15 and two transfers in memory.
-        0x40..=0x4F => 3,
+        // INC and DEC as the single-byte register forms. **Measured at 2**,
+        // uniformly: this arm held 3 and read +1 against the recording on all
+        // 5000 cases of each of the sixteen files.
+        //
+        // The 3 came from the byte-register form the `0xFE` group encodes.
+        // These opcodes have no byte form at all, so the two rows were being
+        // charged one number, and nothing caught it because the per-row meter
+        // had never been pointed at this range.
+        0x40..=0x4F => 2,
         0xFE => {
             if is_mem {
                 15 - 8
@@ -394,7 +413,9 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
         0x58..=0x5F => 8 - 4,
 
         // PUSHF and POPF, which the table gives at 10 and 8 with one transfer.
-        0x9C => 10 - 4,
+        // The push is 11 on this part, for the reason under the segment pushes
+        // above: every push form costs 11 and only `PUSH reg` is documented so.
+        0x9C => 11 - 4,
         0x9D => 8 - 4,
 
         // -------------------------------------------------------------------
@@ -642,6 +663,170 @@ pub(crate) fn multiply_cycles(word: bool, multiplier: u16, product_high_zero: bo
     // the same microcode step, and leaving it off would be asserting the
     // opposite with no more evidence.
     base + bits as u16 + u16::from(product_high_zero)
+}
+
+/// What a signed multiply or divide pays for making its operands positive,
+/// beyond what the unsigned form of the same instruction pays.
+///
+/// `PREIMUL` and `PREIDIV` each test two operands and negate the ones that are
+/// negative, and the routine after the loop negates the result if exactly one
+/// of them was. Each of those three points is a conditional branch, and what
+/// this returns is the *difference* the branch makes: the negate path's cost
+/// less the skip path's.
+///
+/// **Two of those differences are negative, and that is the shape of the
+/// answer rather than a problem with it.** A short jump costs the 8086's
+/// microcode sequencer a clock when it is taken, so a test written as "jump
+/// over the negate if positive" charges the positive case for the jump and the
+/// negative case for the `NEG`, and the two need not come out equal. Where the
+/// negate path is the fall-through it can be the cheaper of the two, which is
+/// what `-1` means here. Treating these as costs that must be non-negative is
+/// what made the four sign combinations look undecomposable for two passes:
+/// solving them under that constraint gives no answer at all.
+///
+/// **The measurement.** Recorded spans, register operands, full queue, no
+/// prefix, grouped by the two signs with the loop's own terms subtracted off.
+/// Every group is one value.
+///
+/// ```text
+///                        IMUL byte  IMUL word   IDIV byte  IDIV word
+///   neither negative         79        127         101        165
+///   left operand negative    90        138         105        169
+///   right operand negative   93        141         100        164
+///   both negative            80        128         104        168
+/// ```
+///
+/// The offsets from the first row are the same at both widths, which is the
+/// evidence that this is microcode overhead rather than anything the loop does:
+/// the word loop runs twice as long and pays the same correction. For `IDIV`
+/// they are also the same on all three of its populations, including the fault
+/// path that never reaches the loop at all.
+fn sign_correction(left_negative: bool, right_negative: bool, cost: SignCost) -> i16 {
+    let (left, right, result) = match cost {
+        // IMUL: the multiplicand comes from the ModR/M byte and the multiplier
+        // from the accumulator, and the product is the double-width value
+        // `NEGATE` works on.
+        SignCost::Multiply => (-1, 2, 12),
+        // IDIV: the dividend is double-width, which is why negating it is the
+        // expensive one, and negating the quotient costs nothing beyond the
+        // path `POSTIDIV` always walks.
+        SignCost::Divide => (4, -1, 0),
+    };
+    i16::from(left_negative) * left
+        + i16::from(right_negative) * right
+        + i16::from(left_negative != right_negative) * result
+}
+
+/// Which of the two signed routines [`sign_correction`] is being asked about.
+#[derive(Clone, Copy)]
+enum SignCost {
+    /// `PREIMUL`, whose left operand is the multiplicand and right the
+    /// multiplier.
+    Multiply,
+    /// `PREIDIV`, whose left operand is the dividend and right the divisor.
+    Divide,
+}
+
+/// Clocks a signed multiply spends, given its operands.
+///
+/// `IMUL` is `MUL` with `PREIMUL` in front of it and `NEGATE` behind it: the
+/// operands are made positive, the same `CORX` shift-and-add loop runs, and the
+/// product is negated if exactly one of them was negative. Everything
+/// [`multiply_cycles`] establishes therefore carries over unchanged, and the
+/// recording says so:
+///
+/// - **The loop is the same loop.** One clock per set bit of the multiplier,
+///   and the multiplier is the accumulator, exactly as for `MUL`. Grouped by
+///   `popcount(|AL|)` at byte width and `popcount(|AX|)` at word width, every
+///   group is uniform.
+/// - **The flag step is the same step, asking the signed question.** `MUL`
+///   costs one clock more when the product's upper half is zero; `IMUL` costs
+///   one clock more when the product's upper half is the *sign extension* of
+///   its lower, which is the same test for an instruction whose result is
+///   signed. Substituting the unsigned test here leaves the groups split; the
+///   signed one closes them.
+/// - **The base is `MUL`'s base plus ten**, at both widths: 69 to 79 and 117 to
+///   127. Those ten clocks are `PREIMUL`'s two sign tests and the check after
+///   the loop, in the case where all three fall through.
+///
+/// What is left is [`sign_correction`], which is the only part of this that the
+/// unsigned form does not already vouch for.
+///
+/// The word form has no case in the suite whose product sign-extends, exactly
+/// as it has none whose product's upper half is zero for `MUL`. The term is
+/// applied at both widths anyway, for the reason it is there: it is one
+/// microcode step, and leaving it off at one width would be asserting the
+/// opposite with no more evidence.
+pub(crate) fn signed_multiply_cycles(
+    word: bool,
+    multiplicand: i32,
+    multiplier: i32,
+    product_sign_extends: bool,
+) -> u16 {
+    let base: i16 = if word { 127 } else { 79 };
+    let bits = multiplier.unsigned_abs().count_ones() as i16;
+    (base
+        + bits
+        + i16::from(product_sign_extends)
+        + sign_correction(multiplicand < 0, multiplier < 0, SignCost::Multiply)) as u16
+}
+
+/// Clocks a signed divide spends, given its operands.
+///
+/// `IDIV` is `DIV` with `PREIDIV` in front of it, so [`divide_cycles`]'s two
+/// terms carry over unchanged: the compared subtracts of the `CORD` loop, and
+/// two more clocks when the last pass subtracts. Both are computed from the
+/// *magnitudes*, which is what `PREIDIV` leaves the loop.
+///
+/// **It has three populations rather than two, and the extra one is the
+/// interesting part.** `CORD` checks before it loops, and its check is the
+/// unsigned one: it leaves for `INT 0` when the quotient would not fit the
+/// operand's full width. A signed quotient has one bit less of room, so a
+/// quotient between the two limits passes the check, runs the whole loop, and
+/// only then faults. Those cases cost the loop *and* the fault, and the
+/// recording separates them cleanly:
+///
+/// ```text
+///                                        byte   word
+///   quotient fits signed                  101    165   + loop
+///   fits unsigned but not signed          160    224   + loop
+///   CORD's check fails, or a zero divisor  89     89
+/// ```
+///
+/// The difference between the first two rows is 59 clocks at both widths and in
+/// all four sign combinations, which is what says the late fault really is the
+/// same divide with an interrupt on the end of it. The early fault is one
+/// number at both widths, because nothing width-dependent has run yet, and it
+/// is `DIV`'s own 79 plus the ten clocks `PREIDIV` costs when neither operand
+/// needs negating.
+///
+/// What this returns is 31 clocks below the recorded span on the faulting
+/// paths, for the reason [`divide_cycles`] is: the pipeline itself spends 24 on
+/// the interrupt's six stack writes and 7 on the flush and reload.
+pub(crate) fn signed_divide_cycles(word: bool, dividend: i64, divisor: i64) -> u16 {
+    let signs = sign_correction(dividend < 0, divisor < 0, SignCost::Divide);
+    let width: u32 = if word { 16 } else { 8 };
+    /// Six stack writes, the queue flush and the reload at the handler, which
+    /// the pipeline spends itself on any path that faults.
+    const PIPELINE: i16 = 31;
+
+    let magnitude = dividend.unsigned_abs();
+    let divisor_magnitude = divisor.unsigned_abs();
+    if divisor == 0 || magnitude >> width >= divisor_magnitude {
+        return (89 + signs - PIPELINE) as u16;
+    }
+
+    let quotient = magnitude / divisor_magnitude;
+    let (compared, last_bit) = cord(magnitude as u32, divisor_magnitude as u32, width);
+    let base: i16 = if word { 165 } else { 101 };
+    // The late fault: the loop ran, and the quotient turned out not to fit the
+    // signed range the destination half holds.
+    let late = if quotient > (1u64 << (width - 1)) - 1 {
+        59 - PIPELINE
+    } else {
+        0
+    };
+    (base + compared as i16 + 2 * i16::from(last_bit) + signs + late) as u16
 }
 
 /// Clocks an unsigned divide spends, given its operands.
@@ -934,10 +1119,9 @@ pub(crate) fn is_modeled(opcode: u8, modrm: u8) -> bool {
         0xF0..=0xF4 => false,
         // CMC.
         0xF5 => true,
-        // The unary group. TEST, NOT and NEG come from the table, and MUL and
-        // DIV from their microcode loops. IMUL and IDIV do not: their sign
-        // conversion is data-dependent in a way that is not worked out.
-        0xF6 | 0xF7 => reg != 5 && reg != 7,
+        // The unary group. TEST, NOT and NEG come from the table, and the four
+        // multiplies and divides from their microcode loops.
+        0xF6 | 0xF7 => true,
         // The flag instructions.
         0xF8..=0xFD => true,
         0xFE => true,
@@ -1019,17 +1203,20 @@ mod tests {
         assert_eq!(eu_cycles(0x8D, 0b00_000_100), 2);
     }
 
-    /// IMUL, DIV and IDIV are deliberately unmodeled rather than approximated,
-    /// and say so through `is_modeled` rather than by returning a plausible
-    /// number. MUL is modeled, but through its own function.
+    /// The four multiplies and divides are modeled, but through their own
+    /// functions rather than through [`eu_cycles`], which knows nothing about
+    /// their operands and so returns zero for all four. Their `is_modeled` must
+    /// say so anyway: it is what stops the gate reporting them alongside the
+    /// opcodes that really are uncounted.
     #[test]
-    fn the_signed_multiply_and_divide_are_declared_unmodeled() {
-        for reg in [5u8, 7] {
+    fn the_multiplies_and_divides_are_modeled_outside_the_table() {
+        for reg in [4u8, 5, 6, 7] {
             let modrm = 0b11_000_000 | (reg << 3);
             assert_eq!(eu_cycles(0xF6, modrm), 0);
-            assert!(!is_modeled(0xF6, modrm), "reg={reg}");
+            assert!(is_modeled(0xF6, modrm), "reg={reg}");
+            assert!(is_modeled(0xF7, modrm), "reg={reg}");
         }
-        for reg in [0u8, 1, 2, 3, 4, 6] {
+        for reg in [0u8, 1, 2, 3] {
             assert!(is_modeled(0xF7, 0b11_000_000 | (reg << 3)), "reg={reg}");
         }
     }
@@ -1125,6 +1312,107 @@ mod tests {
         assert_eq!(multiply_cycles(true, 0xFFFF, false), 133);
     }
 
+    /// The four sign combinations, as they were measured, at both widths. The
+    /// point of pinning both is that the offsets between them are the same at
+    /// each: the byte form fixes three constants, and the word form's three
+    /// numbers are then predictions rather than measurements.
+    #[test]
+    fn the_signed_multiply_reproduces_its_measured_sign_combinations() {
+        // One set bit in the multiplier, and a product too wide to sign-extend,
+        // so what is printed is the base plus one.
+        for (word, base) in [(false, 79), (true, 127)] {
+            let (positive, negative) = if word {
+                (0x0100, -0x0100)
+            } else {
+                (0x10, -0x10)
+            };
+            let other = if word { 0x0FF0 } else { 0x7F };
+            assert_eq!(
+                signed_multiply_cycles(word, other, positive, false),
+                base + 1,
+                "neither negative, word={word}"
+            );
+            assert_eq!(
+                signed_multiply_cycles(word, -other, positive, false),
+                base + 1 + 11,
+                "multiplicand negative, word={word}"
+            );
+            assert_eq!(
+                signed_multiply_cycles(word, other, negative, false),
+                base + 1 + 14,
+                "multiplier negative, word={word}"
+            );
+            assert_eq!(
+                signed_multiply_cycles(word, -other, negative, false),
+                base + 1 + 1,
+                "both negative, word={word}"
+            );
+        }
+    }
+
+    /// `IMUL` costs exactly ten clocks more than `MUL` when nothing needs
+    /// negating, at both widths. Those ten are the two sign tests and the check
+    /// after the loop, all three falling through, and having them fall out of
+    /// two independently measured bases is what says the two rules describe the
+    /// same loop.
+    #[test]
+    fn the_signed_multiply_is_the_unsigned_one_plus_ten() {
+        for (word, multiplier) in [(false, 0x0F), (true, 0x0FFF)] {
+            assert_eq!(
+                signed_multiply_cycles(word, 1, multiplier, false),
+                multiply_cycles(word, multiplier as u16, false) + 10,
+                "word={word}"
+            );
+        }
+    }
+
+    /// `IDIV`'s three populations, at both widths. The early fault is one
+    /// number at both, because nothing width-dependent has run when `CORD`
+    /// leaves; the late fault is the ordinary path plus a constant 59, less the
+    /// 31 clocks the pipeline spends on the interrupt itself.
+    #[test]
+    fn the_signed_divide_reproduces_its_three_populations() {
+        for (word, base) in [(false, 101u16), (true, 165)] {
+            let (dividend, divisor) = if word { (0x4000, 0x1000) } else { (0x40, 0x10) };
+            // 0x40 / 0x10 is 4: an even quotient, so no last-pass term.
+            let plain = signed_divide_cycles(word, dividend, divisor);
+            assert!(plain >= base, "word={word} gave {plain}");
+            // Negating the dividend costs four and the divisor minus one, on
+            // every population.
+            assert_eq!(
+                signed_divide_cycles(word, -dividend, divisor),
+                plain + 4,
+                "word={word}"
+            );
+            assert_eq!(
+                signed_divide_cycles(word, dividend, -divisor),
+                plain - 1,
+                "word={word}"
+            );
+            assert_eq!(
+                signed_divide_cycles(word, -dividend, -divisor),
+                plain + 3,
+                "word={word}"
+            );
+            // A quotient that does not fit the signed range but does fit the
+            // unsigned one runs the loop and then faults, so its cost is the
+            // ordinary one plus 59, less the 31 the pipeline spends itself.
+            let late: i64 = if word { 0x9000 } else { 0x90 };
+            let width = if word { 16 } else { 8 };
+            let (compared, last_bit) = cord(late as u32, 1, width);
+            assert_eq!(
+                signed_divide_cycles(word, late, 1),
+                base + compared + 2 * u16::from(last_bit) + 59 - 31,
+                "word={word}"
+            );
+            // And CORD's own check, which leaves before the loop: 89 recorded,
+            // 31 of which the pipeline spends.
+            assert_eq!(signed_divide_cycles(word, dividend, 0), 89 - 31);
+            let huge = if word { 0x7FFF_FFFF } else { 0x7FFF };
+            assert_eq!(signed_divide_cycles(word, huge, 1), 89 - 31);
+        }
+    }
+
     /// A product that fits in the low half costs one clock more, because the
     /// microcode's path that leaves carry and overflow clear is the longer one.
     #[test]
@@ -1157,17 +1445,44 @@ mod tests {
     #[test]
     fn segment_pushes_and_pops_are_not_alu_operations() {
         for op in [0x06u8, 0x0E, 0x16, 0x1E] {
-            assert_eq!(eu_cycles(op, 0), 6, "{op:#04X} PUSH seg");
+            assert_eq!(eu_cycles(op, 0), 7, "{op:#04X} PUSH seg");
         }
         for op in [0x07u8, 0x0F, 0x17, 0x1F] {
             assert_eq!(eu_cycles(op, 0), 4, "{op:#04X} POP seg");
         }
-        // The register forms cost one clock more to push and the same to pop.
         assert_eq!(eu_cycles(0x50, 0), 7, "PUSH AX");
         assert_eq!(eu_cycles(0x58, 0), 4, "POP AX");
-        // PUSHF and POPF match the segment forms.
-        assert_eq!(eu_cycles(0x9C, 0), 6, "PUSHF");
+        assert_eq!(eu_cycles(0x9C, 0), 7, "PUSHF");
         assert_eq!(eu_cycles(0x9D, 0), 4, "POPF");
+    }
+
+    /// Every push costs the part the same, whatever it is pushing, and the pops
+    /// likewise. Table 1-16 says otherwise for four of the six: it gives the
+    /// segment pushes and `PUSHF` 10 clocks against `PUSH reg`'s 11. The
+    /// recording is uniform against all three, so the rows agree here and
+    /// disagree with the manual, which is the way round worth pinning.
+    #[test]
+    fn every_push_costs_the_same_whatever_it_pushes() {
+        let push = eu_cycles(0x50, 0);
+        for op in [0x06u8, 0x0E, 0x16, 0x1E, 0x9C] {
+            assert_eq!(eu_cycles(op, 0), push, "{op:#04X} against PUSH reg");
+        }
+        let pop = eu_cycles(0x58, 0);
+        for op in [0x07u8, 0x0F, 0x17, 0x1F, 0x9D] {
+            assert_eq!(eu_cycles(op, 0), pop, "{op:#04X} against POP reg");
+        }
+    }
+
+    /// The single-byte `INC`/`DEC` opcodes encode a *word* register and are
+    /// measured at 2, where the `0xFE` group's byte-register form is 3.
+    /// Charging both 3 is the error this caught, and it was worth 80,000
+    /// vectors.
+    #[test]
+    fn the_single_byte_increments_are_the_word_form() {
+        for op in 0x40u8..=0x4F {
+            assert_eq!(eu_cycles(op, 0), 2, "{op:#04X}");
+        }
+        assert_eq!(eu_cycles(0xFE, 0b11_000_000), 3, "INC reg8");
     }
 
     /// The BCD adjusts share the ALU block's opcode range and none of its

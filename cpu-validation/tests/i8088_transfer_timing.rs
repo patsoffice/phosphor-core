@@ -260,9 +260,12 @@ fn operand_start() {
 
 /// How far this core is from the recording on one opcode file, as a histogram
 /// of signed differences over the cases that begin with a full queue.
-fn residuals(stem: &str) {
-    let Some(tests) = load(stem) else { return };
+///
+/// Empty when the file holds no case that begins with a full queue and no
+/// prefix, which is the population every survey here restricts itself to.
+fn residual_histogram(stem: &str) -> BTreeMap<i64, usize> {
     let mut hist: BTreeMap<i64, usize> = BTreeMap::new();
+    let Some(tests) = load(stem) else { return hist };
     for tc in &tests {
         if tc.cycles.is_empty() || tc.initial.queue.len() != 4 {
             continue;
@@ -275,18 +278,29 @@ fn residuals(stem: &str) {
             .entry(ours as i64 - tc.cycles.len() as i64)
             .or_default() += 1;
     }
-    let total: usize = hist.values().sum();
-    let mut modes: Vec<(i64, usize)> = hist.into_iter().collect();
-    modes.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
-    let top: Vec<String> = modes
-        .iter()
-        .take(5)
-        .map(|(d, n)| format!("{d:+}:{n}"))
+    hist
+}
+
+/// Every opcode file the suite ships, by stem, in the order the directory
+/// lists them.
+fn every_opcode_file() -> Vec<String> {
+    let dir = phosphor_cpu_validation::vector_dir("8088/v2");
+    if !phosphor_cpu_validation::require_test_data(&dir, "vectors") {
+        return Vec::new();
+    }
+    let mut entries: Vec<_> = std::fs::read_dir(&dir)
+        .expect("read")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|x| x == "gz"))
         .collect();
-    eprintln!(
-        "  {stem}: {total} cases, ours minus hardware {}",
-        top.join(" ")
-    );
+    entries.sort_by_key(|e| e.file_name());
+    entries
+        .iter()
+        .map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            name.strip_suffix(".json.gz").unwrap_or(&name).to_string()
+        })
+        .collect()
 }
 
 /// The same residual, split by addressing mode, so that a memory-operand
@@ -382,6 +396,276 @@ fn interrupt_pins_and_acknowledge() {
     eprintln!("files with NMI asserted on any cycle:       {files_with_nmi:?}");
 }
 
+/// The signed multiply's operands, pulled out of one recorded case: the
+/// multiplicand from the ModR/M byte's `r/m` field and the multiplier from the
+/// accumulator, both sign-extended so the byte and word forms can share a
+/// survey.
+fn signed_multiply_operands(tc: &I8088TestCase, word: bool) -> Option<(i32, i32)> {
+    let modrm = *tc.bytes.get(1)?;
+    if modrm >> 6 != 3 {
+        return None;
+    }
+    let r = &tc.initial.regs;
+    let multiplicand = if word {
+        i32::from(match modrm & 7 {
+            0 => r.ax,
+            1 => r.cx,
+            2 => r.dx,
+            3 => r.bx,
+            4 => r.sp,
+            5 => r.bp,
+            6 => r.si,
+            _ => r.di,
+        } as i16)
+    } else {
+        let regs = [
+            r.ax as u8,
+            r.cx as u8,
+            r.dx as u8,
+            r.bx as u8,
+            (r.ax >> 8) as u8,
+            (r.cx >> 8) as u8,
+            (r.dx >> 8) as u8,
+            (r.bx >> 8) as u8,
+        ];
+        i32::from(regs[(modrm & 7) as usize] as i8)
+    };
+    let multiplier = if word {
+        i32::from(r.ax as i16)
+    } else {
+        i32::from(r.ax as u8 as i8)
+    };
+    Some((multiplicand, multiplier))
+}
+
+/// `IMUL`, grouped the way its microcode is shaped: the signs it has to correct
+/// for, and the set bits of the multiplier its loop walks.
+///
+/// The span has `popcount(|multiplier|)` subtracted off, so what is printed is
+/// the part of the cost the loop does not explain. A sign combination whose
+/// remainder is a single value is fully explained; one that splits has a term
+/// left in it, which is the shape `AAM` and `DIV` were in before the quotient's
+/// low bit was found.
+///
+/// `key` is the candidate for that term. Each is a guess at a branch the
+/// microcode takes, and a right one makes every group uniform.
+fn signed_multiply_shape_by(stem: &str, word: bool, label: &str, key: fn(i32, i32, bool) -> bool) {
+    let Some(tests) = load(stem) else { return };
+    let mut groups: BTreeMap<(bool, bool, bool), BTreeMap<i64, usize>> = BTreeMap::new();
+    for tc in &tests {
+        if tc.cycles.is_empty() || tc.initial.queue.len() != 4 {
+            continue;
+        }
+        if tc.bytes.first().is_some_and(|&b| is_prefix(b)) {
+            continue;
+        }
+        let Some((multiplicand, multiplier)) = signed_multiply_operands(tc, word) else {
+            continue;
+        };
+        let bits = multiplier.unsigned_abs().count_ones() as i64;
+        *groups
+            .entry((
+                multiplicand < 0,
+                multiplier < 0,
+                key(multiplicand, multiplier, word),
+            ))
+            .or_default()
+            .entry(tc.cycles.len() as i64 - bits)
+            .or_default() += 1;
+    }
+    eprintln!("\n{stem}: span less popcount(|multiplier|), by signs and {label}");
+    for ((mcand, mplier, k), hist) in &groups {
+        let mut modes: Vec<(i64, usize)> = hist.iter().map(|(a, b)| (*a, *b)).collect();
+        modes.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
+        let spread = modes.len() > 1;
+        let top: Vec<String> = modes
+            .iter()
+            .take(4)
+            .map(|(v, n)| format!("{v}:{n}"))
+            .collect();
+        eprintln!(
+            "  mcand{} mplier{} {k:5}: {}{}",
+            if *mcand { "-" } else { "+" },
+            if *mplier { "-" } else { "+" },
+            top.join(" "),
+            if spread { "   <-- SPREAD" } else { "" }
+        );
+    }
+}
+
+#[test]
+#[ignore = "survey, not a check: what shape IMUL's timing has"]
+fn signed_multiply_shape() {
+    for (stem, word) in [("F6.5", false), ("F7.5", true)] {
+        // Nothing: the four sign combinations on their own, which is where the
+        // previous pass stopped.
+        signed_multiply_shape_by(stem, word, "nothing", |_, _, _| false);
+        // `MUL`'s own extra term: the product's upper half is zero, which is
+        // the branch that sets carry and overflow.
+        signed_multiply_shape_by(
+            stem,
+            word,
+            "the product's upper half is zero",
+            |a, b, word| {
+                let shift = if word { 16 } else { 8 };
+                (a * b) >> shift == 0
+            },
+        );
+        // The signed form of the same test: the upper half is the sign
+        // extension of the lower, which is what `IMUL` sets its flags on.
+        signed_multiply_shape_by(
+            stem,
+            word,
+            "the product sign-extends into its upper half",
+            |a, b, word| {
+                let shift = if word { 16 } else { 8 };
+                let p = a * b;
+                (p >> shift) == (p << (32 - shift)) >> 31
+            },
+        );
+        // A multiplier of zero never enters the loop at all.
+        signed_multiply_shape_by(stem, word, "the multiplier is zero", |_, b, _| b == 0);
+    }
+}
+
+/// `IDIV`, asked the question `DIV` was asked: does the recorded span follow
+/// the `CORD` loop's compared subtracts and the quotient's low bit, once the
+/// operands are made positive the way `PREIDIV` makes them?
+///
+/// Printed as the span less those two terms, grouped by the two signs, so a
+/// group that is one value is fully explained and the four values are the
+/// sign-correction costs. The faulting cases are grouped separately: `CORD`
+/// leaves for `INT 0` before the loop, so nothing about the loop applies.
+fn signed_divide_shape(stem: &str, word: bool) {
+    let Some(tests) = load(stem) else { return };
+    let mut groups: BTreeMap<(bool, bool), BTreeMap<i64, Vec<String>>> = BTreeMap::new();
+    let mut late_faults: BTreeMap<(bool, bool), BTreeMap<i64, Vec<String>>> = BTreeMap::new();
+    let mut faults: BTreeMap<(bool, bool), BTreeMap<usize, usize>> = BTreeMap::new();
+    for tc in &tests {
+        if tc.cycles.is_empty() || tc.initial.queue.len() != 4 {
+            continue;
+        }
+        if tc.bytes.first().is_some_and(|&b| is_prefix(b)) {
+            continue;
+        }
+        let Some((divisor, _)) = signed_multiply_operands(tc, word) else {
+            continue;
+        };
+        let r = &tc.initial.regs;
+        let dividend = if word {
+            ((i64::from(r.dx) << 16) | i64::from(r.ax)) as i32 as i64
+        } else {
+            i64::from(r.ax as i16)
+        };
+        let divisor = i64::from(divisor);
+        // `CORD` checks before it loops, on the magnitudes `PREIDIV` leaves it,
+        // and leaves for `INT 0` at once when the quotient would not fit the
+        // *unsigned* width. That is the fault `DIV` has, and it costs the same
+        // whatever caused it.
+        let width = if word { 16 } else { 8 };
+        if divisor == 0 || dividend.unsigned_abs() >> width >= divisor.unsigned_abs() {
+            *faults
+                .entry((dividend < 0, divisor < 0))
+                .or_default()
+                .entry(tc.cycles.len())
+                .or_default() += 1;
+            continue;
+        }
+        // The loop runs on the magnitudes, which is what PREIDIV leaves it.
+        let compared = i64::from(cord_compared(
+            dividend.unsigned_abs() as u32,
+            divisor.unsigned_abs() as u32,
+            word,
+        ));
+        let magnitude = dividend.unsigned_abs() / divisor.unsigned_abs();
+        let odd = magnitude & 1 != 0;
+        let residual = tc.cycles.len() as i64 - compared - 2 * i64::from(odd);
+        // The signed range is narrower than the unsigned one by a bit, so a
+        // quotient between the two runs the whole loop and only then faults.
+        // Those are a second population, not outliers.
+        if magnitude > (1 << (width - 1)) - 1 {
+            late_faults
+                .entry((dividend < 0, divisor < 0))
+                .or_default()
+                .entry(residual)
+                .or_default()
+                .push(tc.name.clone());
+            continue;
+        }
+        groups
+            .entry((dividend < 0, divisor < 0))
+            .or_default()
+            .entry(residual)
+            .or_default()
+            .push(tc.name.clone());
+    }
+    eprintln!("\n{stem}: span less compared subtracts and the quotient's low bit, by signs");
+    for ((dividend, divisor), hist) in &groups {
+        let mut modes: Vec<(i64, usize)> = hist.iter().map(|(a, b)| (*a, b.len())).collect();
+        modes.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
+        let spread = modes.len() > 1;
+        let top: Vec<String> = modes
+            .iter()
+            .take(5)
+            .map(|(v, n)| format!("{v}:{n}"))
+            .collect();
+        eprintln!(
+            "  dividend{} divisor{}: {}{}",
+            if *dividend { "-" } else { "+" },
+            if *divisor { "-" } else { "+" },
+            top.join(" "),
+            if spread { "   <-- SPREAD" } else { "" }
+        );
+        // Name the cases in any group of one or two, which is what an outlier
+        // looks like here: the rule holds over hundreds and a handful sit well
+        // off it, and the only way to tell a broken rule from a miscategorized
+        // case is to read the case.
+        for (value, names) in hist.iter().filter(|(_, names)| names.len() <= 2) {
+            eprintln!("      {value}: {}", names.join(", "));
+        }
+    }
+    eprintln!("  and the quotients that fit unsigned but not signed:");
+    for ((dividend, divisor), hist) in &late_faults {
+        let mut modes: Vec<(i64, usize)> = hist.iter().map(|(a, b)| (*a, b.len())).collect();
+        modes.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
+        let spread = modes.len() > 1;
+        let top: Vec<String> = modes
+            .iter()
+            .take(5)
+            .map(|(v, n)| format!("{v}:{n}"))
+            .collect();
+        eprintln!(
+            "    dividend{} divisor{}: {}{}",
+            if *dividend { "-" } else { "+" },
+            if *divisor { "-" } else { "+" },
+            top.join(" "),
+            if spread { "   <-- SPREAD" } else { "" }
+        );
+    }
+    for ((dividend, divisor), hist) in &faults {
+        let mut modes: Vec<(usize, usize)> = hist.iter().map(|(a, b)| (*a, *b)).collect();
+        modes.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
+        let top: Vec<String> = modes
+            .iter()
+            .take(4)
+            .map(|(v, n)| format!("{v}:{n}"))
+            .collect();
+        eprintln!(
+            "  fault, dividend{} divisor{}: spans {}",
+            if *dividend { "-" } else { "+" },
+            if *divisor { "-" } else { "+" },
+            top.join(" ")
+        );
+    }
+}
+
+#[test]
+#[ignore = "survey, not a check: what shape IDIV's timing has"]
+fn signed_divide_shape_survey() {
+    signed_divide_shape("F6.7", false);
+    signed_divide_shape("F7.7", true);
+}
+
 /// The residual for the *repeated* string operations, which every other survey
 /// here filters out along with the rest of the prefixed cases.
 ///
@@ -431,19 +715,63 @@ fn rep_residuals() {
     }
 }
 
+/// Every row's residual, ranked by how many cases it gets wrong.
+///
+/// **This sweeps all 310 opcode files rather than a hand-kept list**, and that
+/// is the whole point of it. The list this replaced held 78 stems, which were
+/// the rows somebody had been working on when they added them, so "most of the
+/// rows I looked at read +0" said nothing at all about the 232 nobody had
+/// looked at. An aggregate with no per-row breakdown and a per-row breakdown
+/// with no coverage are the same mistake twice.
+///
+/// The population is the clean one: a full queue and no prefix, where the
+/// recorded span is the instruction's own clock count and nothing is waiting on
+/// a differently-scheduled fetch. So a row that is wrong here is a *timing row*
+/// that is wrong, and what this measures is how much of the gate's residual the
+/// table accounts for, as against the prefetcher's scheduling, which this
+/// population cannot see.
 #[test]
 #[ignore = "survey, not a check: how far each row is from the recording"]
 fn row_residuals() {
-    eprintln!("\nresiduals against the recording, full queue, no prefix");
-    for stem in [
-        "70", "E0", "E1", "E2", "E3", "E8", "E9", "EA", "EB", "9A", "C2", "C3", "CA", "CB", "CC",
-        "CD", "CE", "CF", "A0", "A1", "A2", "A3", "D7", "98", "99", "9E", "9F", "27", "37", "C4",
-        "C5", "F8", "FF.2", "FF.3", "FF.4", "FF.5", "8B", "01", "50", "58", "90", "D4", "D5", "E4",
-        "E5", "E6", "E7", "EC", "ED", "EE", "EF", "F6.6", "F7.6", "F6.4", "F7.4", "8D", "8A", "88",
-        "00", "02", "80.0", "81.0", "83.0", "C6", "C7", "FE.0", "FF.0", "D1.4", "F7.2", "A4", "A5",
-        "A6", "A7", "AA", "AB", "AC", "AD", "AE", "AF",
-    ] {
-        residuals(stem);
+    let mut rows: Vec<(String, usize, usize, Vec<(i64, usize)>)> = Vec::new();
+    for stem in every_opcode_file() {
+        let hist = residual_histogram(&stem);
+        let total: usize = hist.values().sum();
+        if total == 0 {
+            continue;
+        }
+        let exact = hist.get(&0).copied().unwrap_or(0);
+        let mut modes: Vec<(i64, usize)> = hist.into_iter().collect();
+        modes.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
+        rows.push((stem, total, total - exact, modes));
+    }
+
+    let cases: usize = rows.iter().map(|(_, total, _, _)| total).sum();
+    let wrong: usize = rows.iter().map(|(_, _, wrong, _)| wrong).sum();
+    let clean = rows.iter().filter(|(_, _, wrong, _)| *wrong == 0).count();
+
+    eprintln!("\nresiduals against the recording, full queue, no prefix, every file");
+    eprintln!("  {} files, {clean} of them +0 on every case", rows.len());
+    eprintln!(
+        "  {} of {cases} cases exact ({:.2}%)",
+        cases - wrong,
+        100.0 * (cases - wrong) as f64 / cases as f64
+    );
+    eprintln!("\n  worst first, by cases wrong:");
+    rows.sort_by_key(|(_, _, wrong, _)| std::cmp::Reverse(*wrong));
+    for (stem, total, wrong, modes) in &rows {
+        if *wrong == 0 {
+            break;
+        }
+        let top: Vec<String> = modes
+            .iter()
+            .take(5)
+            .map(|(d, n)| format!("{d:+}:{n}"))
+            .collect();
+        eprintln!(
+            "  {stem:6} {wrong:5} of {total:5} wrong   {}",
+            top.join(" ")
+        );
     }
 }
 

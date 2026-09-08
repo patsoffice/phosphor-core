@@ -558,6 +558,190 @@ of a mis-scheduled prefetcher turned a clean per-mode residual of 0 or -1 into
 noise from -1 to +2. It belongs after the loader reads its bytes when the part
 does, not before.
 
+## The signed multiply and divide, and the cost that had to be allowed to go negative
+
+**2026-09-05.** `IMUL` and `IDIV` were the last two families with no execution
+time at all, 40,000 vectors at zero, and they had already refuted the obvious
+model once. What closed them is one change of assumption, and it is the part
+worth keeping.
+
+**The refutation, restated.** Each of `IMUL`'s four sign combinations follows
+its own base plus `popcount(|multiplier|)`, and solving the four for
+independent per-negation costs gives **minus one clock for negating the
+multiplicand**. That was read as proof the model was wrong. It was proof the
+model was right and the *constraint* was wrong: these are not costs, they are
+the difference a conditional branch makes, and a microcode branch written as
+"jump over the negate when the operand is positive" charges the positive case
+for a taken short jump and the negative case for the `NEG`. Nothing says the
+two come out equal, and nothing says the negate path is the dearer one. Once
+the costs are allowed to be negative the four combinations decompose at both
+widths and both instructions.
+
+**What was measured.** Recorded spans, register operands, a full queue and no
+prefix, grouped by the two signs with the loop's own terms subtracted off.
+Every group is a single value.
+
+```text
+                        IMUL byte  IMUL word   IDIV byte  IDIV word
+  neither negative          79        127         101        165
+  left operand negative     90        138         105        169
+  right operand negative    93        141         100        164
+  both negative             80        128         104        168
+```
+
+**The offsets between those rows are identical at both widths**, on both
+instructions: the word loop runs twice as long and pays exactly the same sign
+correction. That is the check that makes this a measurement rather than a fit.
+The byte form has four numbers and four parameters, so it is exactly
+determined and predicts nothing; the word form then costs one new constant and
+its other three numbers are predictions, and they land.
+
+**Three further cross-checks, each from a population the rule was not read
+off.**
+
+- `IMUL` is `MUL` plus exactly ten clocks when nothing needs negating, at both
+  widths: 69 to 79 and 117 to 127. Those ten are the two sign tests and the
+  check after the loop, all three falling through.
+- `MUL` costs one clock more when the product's upper half is zero. `IMUL`
+  costs one clock more when the product's upper half is the **sign extension**
+  of its lower, which is the same microcode step asking the signed question.
+  Substituting the unsigned test leaves the groups split; the signed one closes
+  every one of them.
+- `IDIV`'s sign correction is `+4` for a negative dividend and `-1` for a
+  negative divisor, and those two hold on all three of its populations,
+  including the fault path that never reaches the loop.
+
+**`IDIV` has three populations, and the third is a real mechanism rather than
+an outlier.** `CORD` checks before it loops and its check is the *unsigned*
+one: it leaves for `INT 0` when the quotient would not fit the operand's full
+width. A signed quotient has one bit less of room, so a quotient between the
+two limits passes the check, runs the whole loop, and only then faults. That
+population costs the ordinary divide plus 59 clocks, the same 59 at both widths
+and in all four sign combinations. The early fault costs 89 at both widths,
+which is `DIV`'s own 79 plus the ten `PREIDIV` costs when neither operand needs
+negating.
+
+Two cases in the byte file sat 59 clocks off the rule before this split went
+in, and they are the reason it went in: they are quotients of exactly -128,
+which the part rejects and a plain range check accepts.
+
+**What this bought.** Cycle count 58.77% to 59.10% of all 3,007,000, with the
+modeled population growing by the 40,000 vectors that had no time at all. Mean
+signed error -2.50 to +1.05. The residual left on all four opcodes is the same
+one `MUL` and `DIV` already carried, and it is not theirs: it is the
+single-clock memory-operand tail below.
+
+## The one interrupt window inside an instruction
+
+**2026-09-05.** Interrupts are recognized between instructions, which is the
+only point the queue can be redirected without discarding a partial fetch.
+There is exactly one exception on this part, and this core did not have it: a
+repeated string operation checks between iterations.
+
+The consequence of not having it is not subtle. A `REP MOVSW` with CX at
+0xFFFF runs for about a million clocks, and until it finished nothing could
+interrupt it. Q\*bert takes a VBLANK NMI every frame.
+
+Two things had to be right, and only the first is obvious.
+
+- **The check goes where the microcode is between iterations**, at the end of a
+  string iteration's delay and before the next one begins, so no bus cycle and
+  no queue byte is in flight.
+- **IP goes back to the start of the instruction**, prefixes included, so the
+  handler's `IRET` resumes the repeat with CX part-way down rather than
+  returning to whatever follows it. `instr_pos` is the distance back: it
+  counted the bytes the microcode consumed, which for a string operation is the
+  prefixes and the opcode.
+
+**A deliberate divergence, stated rather than hidden.** The part restores less
+than the whole instruction: it remembers one prefix, so a `REP` with a segment
+override in front of it comes back without the override and finishes its copy
+through the wrong segment. That is a documented defect of the part, and
+reproducing it would make a board's interrupt rate decide where its string
+moves read from. This core restores every prefix. Nothing in the suite can see
+the difference either way, because no trace in the three million vectors
+records an interrupt at all, so the check on this is `core/src/cpu/i8088/mod.rs`
+and the ROM-gated suites.
+
+## The meter that had never been pointed at most of the instruction set
+
+**2026-09-05.** The per-cycle gate reported 59% on cycle count and had been
+creeping up a fraction of a point per session. The per-row residual meter
+reported `+0` on row after row, thousands of cases each. Both were true, and
+together they hid two wrong constants worth 102,437 vectors.
+
+**The meter took a hand-kept list of 78 opcode files. The gate runs 310.** The
+78 were whichever rows somebody had been working on when they added them, so
+"most of the rows I looked at read `+0`" licensed nothing at all about the 232
+nobody had looked at. The project had been applying its own rule, *never reason
+from an aggregate*, to individual rows and not to itself.
+
+`row_residuals` now enumerates the vector directory instead, and ranks every
+file by how many cases it gets wrong. The first run of it found:
+
+```text
+  40-4F  INC/DEC reg16   +1 on 5000 of 5000, x16 files = 80,000 cases
+  06/0E/16/1E PUSH seg   -1 on 5000 of 5000, x4  files = 20,000 cases
+  9C     PUSHF           -1 on 2437 of 2437
+```
+
+Three constants, 57% of every error in the clean population, none of them
+subtle: uniform on every case of every file. `INC`/`DEC` in the single-byte
+encoding is a *word* register and costs 2; the arm was charging the 3 that
+belongs to the byte-register form in the `0xFE` group, which these opcodes do
+not have. And every push form costs the part 11 clocks, where Table 1-16
+documents 11 for `PUSH reg` and 10 for the segment pushes and `PUSHF`; the
+recording is uniform against all three, so the rows agree with each other and
+disagree with the manual.
+
+Clean population, full queue and no prefix: **81.54% to 92.10%**, and 226 of
+323 files exact to 247.
+
+**The empty-queue half went down while the prefetched half went up seven
+points.** 45.92% to 44.43% against 72.28% to 79.27%. That is two errors
+cancelling, caught in the act: those rows were wrong *and* the fetch schedule is
+wrong on the same cases, and correcting one exposed the other. It also settles
+what the empty-queue rate measures. It is not a measurement of the timing table
+at all. It is a measurement of the prefetcher, and it cannot improve until the
+loader reads its bytes when the part does.
+
+**Two ways the instrumentation was hiding work, both worth fixing.**
+
+- **`is_modeled` is a hiding place.** An opcode declared unmodeled is excluded
+  from the gate's modeled denominator, so its wrong cases never appear as
+  failures. The coprocessor escapes and `SALC` are ~17,500 cases sitting behind
+  that flag. A row that is hard should be a visible failure, not a smaller
+  denominator.
+- **The gate has no floor.** It reports a percentage and nothing can fail on
+  it, which is why a number that had not moved much in several sessions never
+  read as a problem. Once the rows are done it needs a threshold that ratchets.
+
+**What is actually left, ranked, and none of it mysterious.** Every residual
+below is uniform or splits into two or three values, which is the signature of a
+wrong constant rather than of anything unknowable about the part.
+
+| remaining | cases | shape |
+|---|---|---|
+| `D8`-`DF` ESC | ~15,000 | `-11`/`-10`, no operand read modeled |
+| memory tail, ALU block and unary group | ~25,000 | `-1` read-only, `+1` read-modify-write |
+| `FF.2`-`FF.5` indirect transfers | ~8,700 | multi-valued |
+| `C6`/`C7` MOV mem, imm | ~3,400 | multi-valued |
+| `D6` SALC | 2,524 | `-3`/`-2`, undocumented, no row anywhere |
+| `81.7` CMP r/m16, imm16 | 2,496 | `-1` on register forms too, unlike `80.7`/`82.7`/`83.7` |
+| `8C` MOV r/m, sreg | 1,609 | `+2` on half |
+| `8F` POP r/m16 | 1,441 | spread |
+| `D2.x`/`D3.x` shift by CL | ~450 | `-3` on 2% |
+
+The memory tail is one mechanism rather than a row-by-row correction: within the
+`0xF6`/`0xF7` group the sign follows write-back, `+1` for `NOT` and `NEG` and
+`-1` for the four multiplies and divides, and the `CMP`-immediate rows, which
+also do not write back, are `-1` with them.
+
+**The target is exact.** The queue-operation gate is already at 100.00% on all
+3,007,000 and the state gate at 2,887,000 of 2,887,000, so the suite is
+matchable; there is no evidence of a floor below it, only an unfinished list and
+one structural cause behind the empty-queue half.
+
 ## Sequencing against the M68000
 
 `phosphor-emulator-cycle-accurate-i8088-nvrh` is currently sequenced *after* the

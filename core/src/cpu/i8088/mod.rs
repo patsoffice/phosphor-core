@@ -754,7 +754,7 @@ impl I8088 {
                 self.tick_biu(bus, master);
             }
             Eu::StringDelay(_) => {
-                self.tick_string_delay();
+                self.tick_string_delay(bus, master);
                 self.tick_biu(bus, master);
             }
             Eu::StringAccess { .. } => self.tick_string(bus, master),
@@ -1522,17 +1522,34 @@ impl I8088 {
                 _ => {}
             }
         }
-        // MUL and DIV take a time that is a function of their operands rather
-        // than of their encoding, so it is computed here, where the operand is
-        // in hand and the pipeline has already read it. IMUL and IDIV are not
-        // modeled: their sign conversion is data-dependent in a way that has
-        // not been worked out.
+        // The multiplies and divides take a time that is a function of their
+        // operands rather than of their encoding, so it is computed here, where
+        // the operand is in hand and the pipeline has already read it.
         if matches!(opcode, 0xF6 | 0xF7) {
             let word = opcode == 0xF7;
             let operand = if word {
                 u32::from(self.unary_operand16())
             } else {
                 u32::from(self.unary_operand8())
+            };
+            // The same operand read the other way, for the two signed forms.
+            // The multiplier and the dividend are the accumulator, one half
+            // wide for the byte form and two for the word form.
+            let shift = if word { 16 } else { 8 };
+            let (signed_operand, signed_accumulator) = if word {
+                (i32::from(operand as u16 as i16), i32::from(self.ax as i16))
+            } else {
+                (i32::from(operand as u8 as i8), i32::from(self.al() as i8))
+            };
+            let dividend = if word {
+                (u32::from(self.dx) << 16) | u32::from(self.ax)
+            } else {
+                u32::from(self.ax)
+            };
+            let signed_dividend = if word {
+                i64::from(dividend as i32)
+            } else {
+                i64::from(dividend as u16 as i16)
             };
             cycles += match (modrm >> 3) & 7 {
                 4 => {
@@ -1541,17 +1558,28 @@ impl I8088 {
                     } else {
                         u64::from(self.al()) * u64::from(operand)
                     };
-                    let high_zero = product >> if word { 16 } else { 8 } == 0;
+                    let high_zero = product >> shift == 0;
                     i32::from(timing::multiply_cycles(word, self.ax, high_zero))
                 }
-                6 => {
-                    let dividend = if word {
-                        (u32::from(self.dx) << 16) | u32::from(self.ax)
-                    } else {
-                        u32::from(self.ax)
-                    };
-                    i32::from(timing::divide_cycles(word, dividend, operand))
+                5 => {
+                    // The flag branch is the signed form of MUL's: the upper
+                    // half carries no information because it is the sign
+                    // extension of the lower.
+                    let product = signed_operand * signed_accumulator;
+                    let sign_extends = (product >> shift) == (product << (32 - shift)) >> 31;
+                    i32::from(timing::signed_multiply_cycles(
+                        word,
+                        signed_operand,
+                        signed_accumulator,
+                        sign_extends,
+                    ))
                 }
+                6 => i32::from(timing::divide_cycles(word, dividend, operand)),
+                7 => i32::from(timing::signed_divide_cycles(
+                    word,
+                    signed_dividend,
+                    i64::from(signed_operand),
+                )),
                 _ => 0,
             };
         }
@@ -1949,8 +1977,13 @@ impl I8088 {
     }
 
     /// One T-state of a string iteration's microcode time, and the decision at
-    /// the end of it: another iteration, or the end of the instruction.
-    fn tick_string_delay(&mut self) {
+    /// the end of it: another iteration, an interrupt, or the end of the
+    /// instruction.
+    fn tick_string_delay<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
         let Eu::StringDelay(remaining) = self.eu else {
             return;
         };
@@ -1959,6 +1992,23 @@ impl I8088 {
             return;
         }
         if self.string_repeats_again(self.opcode()) {
+            // The one interrupt window inside an instruction. Everywhere else
+            // the pipeline recognizes an interrupt between instructions, which
+            // is the only point the queue can be redirected without discarding
+            // a partial fetch; here the microcode is between iterations and has
+            // consumed nothing, so the part checks and this core has to as well.
+            //
+            // Without it a `REP MOVSW` of 0xFFFF holds off an interrupt for
+            // roughly a million clocks. Q*bert takes a VBLANK NMI every frame,
+            // and a board whose handler runs a frame late is a board that is
+            // wrong in a way no CPU vector can see: the suite records no
+            // interrupt anywhere.
+            if self.servicing.is_none() {
+                let ints = bus.check_interrupts(master);
+                if self.restart_for_interrupt(ints) {
+                    return;
+                }
+            }
             self.eu = self.begin_string_iteration();
             return;
         }
@@ -1968,6 +2018,41 @@ impl I8088 {
         self.instr_pos = self.instr_len;
         self.rep_prefix = None;
         self.finish_instruction();
+    }
+
+    /// Abandon the repeated string operation in progress and take an interrupt,
+    /// leaving IP where the instruction started so the handler's `IRET` resumes
+    /// the repeat rather than falling out of it.
+    ///
+    /// Returns false, changing nothing, when there was no interrupt to take.
+    ///
+    /// **What is restored is the whole instruction, prefixes included.** The
+    /// part restores less than that: it remembers one prefix, so a `REP` with a
+    /// segment override in front of it comes back without the override and
+    /// finishes the copy through the wrong segment. That is a documented defect
+    /// of the part rather than a property worth reproducing, and reproducing it
+    /// would mean a board's own interrupt rate deciding where its string moves
+    /// read from. The divergence is deliberate rather than an oversight, and
+    /// nothing in the suite can see it either way: no trace in the
+    /// three million vectors records an interrupt at all.
+    fn restart_for_interrupt(&mut self, ints: InterruptState) -> bool {
+        // IP has moved one byte per prefix and one for the opcode, and
+        // `instr_pos` counted them, so it is the distance back to the start.
+        let resumed = self.ip.wrapping_sub(u16::from(self.instr_pos));
+        let abandoned = self.ip;
+        self.ip = resumed;
+        if !self.begin_interrupt(ints) {
+            self.ip = abandoned;
+            return false;
+        }
+        // The instruction is gone: the loader starts again at `resumed` once
+        // the handler returns, and the queue behind it is flushed by the
+        // transfer to the handler.
+        self.instr_len = 0;
+        self.instr_pos = 0;
+        self.rep_prefix = None;
+        self.segment_override = None;
+        true
     }
 
     /// One T-state of an I/O access: a four-T-state IOR or IOW cycle per byte,
@@ -2991,6 +3076,69 @@ mod tests {
             let what = if nmi { "NMI" } else { "INTR" };
             assert_eq!(ticks, documented, "{what} should take {documented} clocks");
         }
+    }
+
+    /// A long `REP MOVSB` does not hold an interrupt off until it finishes.
+    ///
+    /// The part recognizes one between iterations, and the count here is what
+    /// says so with room to spare: 0x4000 iterations would be well over a
+    /// hundred thousand clocks, and the interrupt has to be taken inside a few
+    /// dozen. The pushed return address is the `REP` prefix, not the byte after
+    /// the opcode, so `IRET` resumes the copy rather than dropping out of it
+    /// with CX part-way down.
+    #[test]
+    fn a_repeated_string_operation_lets_an_interrupt_in_between_iterations() {
+        let mut cpu = I8088::new();
+        let mut bus = IrqBus::new();
+        cpu.cs = 0;
+        cpu.ip = 0x100;
+        cpu.ss = 0;
+        cpu.sp = 0x200;
+        cpu.ds = 0;
+        cpu.es = 0;
+        cpu.si = 0x1000;
+        cpu.di = 0x2000;
+        cpu.cx = 0x4000;
+        cpu.load_prefetch_queue(&[]);
+        // REP MOVSB at 0000:0100.
+        bus.mem[0x100] = 0xF3;
+        bus.mem[0x101] = 0xA4;
+        // Vector 2 at 0x008: handler at 7000:5678.
+        bus.mem[0x008] = 0x78;
+        bus.mem[0x009] = 0x56;
+        bus.mem[0x00A] = 0x00;
+        bus.mem[0x00B] = 0x70;
+
+        // Let a few iterations run before the pin goes high, so the interrupt
+        // is recognized in the middle of the repeat rather than in front of it.
+        for _ in 0..60 {
+            cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+        }
+        assert!(
+            cpu.cx < 0x4000 && cpu.cx > 0,
+            "mid-repeat: cx={:04X}",
+            cpu.cx
+        );
+        bus.nmi = true;
+
+        // `service_interrupt` gives up after 400 clocks, which is the whole
+        // assertion: the rest of this repeat is a quarter of a million.
+        let (_, ticks) = service_interrupt(&mut cpu, &mut bus);
+        assert_eq!(
+            (cpu.cs, cpu.ip),
+            (0x7000, 0x5678),
+            "the handler was never reached in {ticks} clocks"
+        );
+        assert!(
+            cpu.cx > 0,
+            "the repeat was abandoned part-way, not finished"
+        );
+        // Flags, CS and IP, pushed downwards from 0x200: IP is the last word.
+        let pushed_ip = u16::from_le_bytes([bus.mem[0x1FA], bus.mem[0x1FB]]);
+        assert_eq!(
+            pushed_ip, 0x100,
+            "IRET must come back to the prefix, not to the byte after the opcode"
+        );
     }
 
     #[test]
