@@ -264,9 +264,8 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
         // The flag instructions: CLC, STC, CLI, STI, CLD, STD and CMC, all 2.
         0xF5 | 0xF8..=0xFD => 2,
 
-        // LES and LDS, 16 clocks with two transfers: four bytes of far pointer
-        // read into a segment register and a general one.
-        0xC4 | 0xC5 => 16 - 8,
+        // LES and LDS have no rows: they run the transcribed routines at 0x0f0
+        // and 0x0f4, which read the segment half of the far pointer themselves.
 
         // TEST accumulator, immediate.
         0xA8 | 0xA9 => 4,
@@ -362,13 +361,25 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
                     11 - 4
                 }
             }
-            // The indirect far call and far jump, documented at 37+EA and
-            // 24+EA, with no register encoding at all. The near forms beside
-            // them, reg 2 and 4, have no row: they run transcribed routines,
-            // and these two go the same way once a step can drive the operand
-            // read that their microcode sits in front of.
-            3 => 16,
-            5 => 10,
+            // The indirect far call and far jump. The memory forms run
+            // transcribed routines at 0x068 and 0x0dc, which read the segment
+            // half of the far pointer themselves. The register forms are
+            // invalid encodings the suite does not record, and keep the rows
+            // the manual's 37+EA and 24+EA were measured into.
+            3 => {
+                if is_mem {
+                    0
+                } else {
+                    16
+                }
+            }
+            5 => {
+                if is_mem {
+                    0
+                } else {
+                    10
+                }
+            }
             _ => 0,
         },
 

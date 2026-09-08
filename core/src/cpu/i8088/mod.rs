@@ -2479,10 +2479,20 @@ impl I8088 {
     ) -> Eu {
         let acc = access::operand_access(self.opcode(), self.instr[self.opcode_at as usize + 1]);
         if acc.reads {
-            Eu::Reading {
-                byte: 0,
-                total: acc.width.bytes(),
-            }
+            // **A far pointer's first read is the offset word alone.** The
+            // address routine's operand load brings back one word whatever the
+            // instruction is going to do with it; the segment word two bytes
+            // above it belongs to the instruction's own microcode, which is why
+            // the routines for `LES`, `LDS` and the indirect far transfers all
+            // carry a [`microcode::Step::ReadPointerSegment`]. Reading all four
+            // bytes here leaves nowhere to put the clocks the part spends
+            // between the two words, and no gap for the code fetch that runs in
+            // them.
+            let total = match acc.width {
+                access::Width::FarPointer => 2,
+                width => width.bytes(),
+            };
+            Eu::Reading { byte: 0, total }
         } else {
             self.after_operand_access(bus, master)
         }
@@ -3129,7 +3139,17 @@ impl I8088 {
                     // line's clock. A taken `JO` has it on screen: the fetch it
                     // waits for reaches T4 on cycle 5 and `0D2` runs there, not
                     // on cycle 6.
-                    released = true;
+                    //
+                    // **Only the fetch it waited for hands a clock on.** There
+                    // are two ways to fall out of the branch above: a code fetch
+                    // has reached T4, which is the clock this releases, or there
+                    // was no code fetch to wait for at all, in which case `SUSP`
+                    // spent nothing and has nothing to give. Releasing either
+                    // way pays the step behind a clock the part never spent,
+                    // which `CALL FAR r/m` shows directly: its jump into FARCALL
+                    // is the pointer read's release clock, and a second release
+                    // here put its return-segment push on the bus a clock early.
+                    released |= self.bus_status_latch == BusStatus::Code;
                     self.ta = TaCycle::Td;
                     self.pl_status = BusStatus::Passive;
                 }
@@ -3183,6 +3203,13 @@ impl I8088 {
                     return Eu::ReadingVector {
                         byte: cursor.read * 2,
                     };
+                }
+                // The far pointer's second word, two bytes above the operand's
+                // address. The first two bytes are already in `operand_bytes`,
+                // put there by the address routine's operand load before this
+                // routine began.
+                microcode::Step::ReadPointerSegment => {
+                    return Eu::Reading { byte: 2, total: 4 };
                 }
                 microcode::Step::Push => {
                     return Eu::PushingStack {
@@ -3879,6 +3906,15 @@ impl I8088 {
             }
             self.operand_bytes[byte as usize] = self.transferred_byte();
             if byte + 1 == total {
+                // A read a routine asked for hands back to the routine, which
+                // has more of the instruction to place: the far transfers push
+                // and flush behind their pointer's segment word. The T-state it
+                // ends on is the transfer's release clock, spent by whatever
+                // step is behind it, exactly as a pop's is.
+                if self.mc.is_some() {
+                    self.eu = self.advance_microcode_after_transfer(bus, master);
+                    return;
+                }
                 // The operand is in hand. Next comes the immediate, if this
                 // instruction has one the loader was told to leave, and then
                 // the stack and the microcode.

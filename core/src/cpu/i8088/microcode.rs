@@ -50,6 +50,18 @@ pub(crate) enum Step {
     Flush,
     /// Read one word through the interrupt vector table, low byte first.
     ReadVectorWord,
+    /// Read the segment half of a far pointer, the word two bytes above the
+    /// operand's address.
+    ///
+    /// **A far pointer is two reads, not one, and the microcode runs between
+    /// them.** The address routine's operand load reads the offset word and
+    /// nothing else: `read_operand_farptr` in the reference takes the offset
+    /// from `ea_opr`, which the load already filled, and puts only the segment
+    /// word on the bus. Whatever the instruction spends in between is time the
+    /// bus is free, which is why `les cx, dword [ds:di]` gets a code fetch
+    /// between its two words and a core that runs four byte cycles back to back
+    /// cannot.
+    ReadPointerSegment,
     /// Put one staged word on the stack.
     ///
     /// The words are staged in the order the executor pushed them, so the
@@ -363,6 +375,24 @@ pub(crate) fn routine(opcode: u8, modrm: u8, branch: bool) -> Option<Routine> {
             Some(r.done())
         }
 
+        // `LES` at 0x0f0 and `LDS` at 0x0f4, the far-pointer loads. The address
+        // routine's operand load brought back the offset word and left through
+        // `1E2: OPR -> tmpb`, so the front is `RET` and the routine's own two
+        // lines, and the segment word goes out behind them. Nothing follows that
+        // read, so its T4 belongs to the boundary fetch.
+        //
+        // Those two clocks are the whole point of the split. The reference's
+        // prefetch decision at the offset word's T4 sees no request pending,
+        // because the segment word is not asked for until `0F1`, and starts a
+        // code fetch that lands between the two words.
+        0xC4 | 0xC5 => Some(
+            // `RET`, then 0x0f0 and 0x0f1, or 0x0f4 and 0x0f5.
+            mc().spend(3)
+                .then(Step::ReadPointerSegment)
+                .then(Step::Run)
+                .done(),
+        ),
+
         // `ALU accumulator, imm` at 0x018, and `MOV reg, imm` at 0x01c. Neither
         // touches memory, and the only clock either spends is the jump over the
         // immediate's second queue read, taken by the byte-sized forms.
@@ -598,12 +628,11 @@ pub(crate) fn routine(opcode: u8, modrm: u8, branch: bool) -> Option<Routine> {
         // The indirect calls and jumps live in the `FF` group, beside `INC`,
         // `DEC` and `PUSH`, which do not transfer and keep their rows.
         //
-        // **`FF /3` and `FF /5` are not here**, and the reason is structural
-        // rather than a gap in the reading. Both have microcode *in front of*
-        // their operand read: `FF /3` spends a clock at 0x068 before reading
-        // its far pointer, and `FF /5` suspends the prefetcher at 0x0dc before
-        // reading its. The pipeline reads the operand before a routine can
-        // start, so expressing either needs a step that drives the read itself.
+        // `FF /3` and `FF /5` reach their far pointer in two halves, with their
+        // own microcode in the middle: the address routine's load brings back
+        // the offset word, the routine spends its lines, and only then does the
+        // segment word go on the bus. [`Step::ReadPointerSegment`] is what lets
+        // a routine say that.
         // `INC r/m` and `DEC r/m` at 0x020, the reg 0 and 1 forms of the FE and
         // FF groups. One clock at 0x020 whichever the operand, and 0x021 as
         // well when it is in memory.
@@ -637,6 +666,33 @@ pub(crate) fn routine(opcode: u8, modrm: u8, branch: bool) -> Option<Routine> {
                     .then(Step::Push)
                     .done(),
             ),
+            // `CALL FAR r/m` at 0x068, which is FARCALL with the pointer read
+            // in front of it. `RET` and 0x068, the segment word, then the jump
+            // into FARCALL on that read's release clock.
+            //
+            // FARCALL itself is `SUSP`, 0x06b, 0x06c, CORR and 0x06d, the
+            // return segment, 0x06e and 0x06f, and then NEARCALL: the jump the
+            // flush sits on, 0x077, 0x078, 0x079 and the return offset. The tail
+            // from the flush down is `CALL rel16`'s, which is why the two agree
+            // clock for clock once the pointer is in hand.
+            3 if !register_form => Some(
+                mc().spend(2)
+                    .then(Step::ReadPointerSegment)
+                    .then(Step::Run)
+                    // MC_JUMP into FARCALL, which is the read's release clock.
+                    .spend(1)
+                    .then(Step::Susp)
+                    // 0x06b, 0x06c, CORR, 0x06d.
+                    .spend(4)
+                    .then(Step::Push)
+                    // 0x06e, 0x06f, then NEARCALL's jump.
+                    .spend(3)
+                    .then(Step::Flush)
+                    // 0x077, 0x078, 0x079.
+                    .spend(3)
+                    .then(Step::Push)
+                    .done(),
+            ),
             // `JMP r/m16` at 0x0d8. No pushes and one clock of microcode.
             4 => Some(
                 mc().then(Step::Run)
@@ -644,6 +700,19 @@ pub(crate) fn routine(opcode: u8, modrm: u8, branch: bool) -> Option<Routine> {
                     .then(Step::Susp)
                     // 0x0d8.
                     .spend(1)
+                    .then(Step::Flush)
+                    .done(),
+            ),
+            // `JMP FAR r/m` at 0x0dc. `RET` and 0x0dc, then the prefetcher
+            // stops, 0x0dd goes by, and the segment word goes out. The flush is
+            // behind the read, so it lands on that read's release clock.
+            5 if !register_form => Some(
+                mc().spend(2)
+                    .then(Step::Susp)
+                    // 0x0dd.
+                    .spend(1)
+                    .then(Step::ReadPointerSegment)
+                    .then(Step::Run)
                     .then(Step::Flush)
                     .done(),
             ),
