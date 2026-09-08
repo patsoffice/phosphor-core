@@ -12,6 +12,21 @@ use phosphor_cpu_validation::{I8088InitialState, I8088Metadata, I8088TestCase, T
 
 /// Returns true if the given opcode file should be skipped because the
 /// instruction isn't implemented yet.
+///
+/// Eighteen files came off this list on 2026-09-04, found by the per-cycle
+/// gate rather than by this one. Adding a loader that fetches an instruction
+/// before executing it made the executor's silence about them measurable: the
+/// loader knew how long each instruction was and the executor consumed fewer
+/// bytes, which is a disagreement this gate could never see because it only
+/// checks the state an instruction leaves behind.
+///
+/// - `60`-`6F`: the conditional jumps sixteen above them. The suite's own
+///   capture disassembles 0x60 as JO, 0x65 as JNZ, 0x6A as JP and 0x6F as
+///   JNLE, each with a rel8, so "hardware-dependent aliases" understated what
+///   was known about them.
+/// - `F6.1`, `F7.1`: TEST, the same instruction as `F6.0` and `F7.0`. The
+///   group's dispatch handled reg=0 and left reg=1 to do nothing, so its
+///   immediate was never consumed.
 fn should_skip(filename: &str) -> bool {
     // Strip .json.gz suffix to get the opcode identifier
     let stem = filename.strip_suffix(".json.gz").unwrap_or(filename);
@@ -28,13 +43,8 @@ fn should_skip(filename: &str) -> bool {
         | "D8" | "D9" | "DA" | "DB" | "DC" | "DD" | "DE" | "DF"
         // SALC / undocumented (0xD6)
         | "D6"
-        // F6.1 / F7.1 — undocumented TEST aliases (same encoding as F6.0/F7.0)
-        | "F6.1" | "F7.1"
         // D0.6/D1.6/D2.6/D3.6 — undocumented SETMO/SETMOC
         | "D0.6" | "D1.6" | "D2.6" | "D3.6"
-        // 0x60-0x6F aliases (8088 aliases for PUSH/POP/Jcc, hardware-dependent)
-        | "60" | "61" | "62" | "63" | "64" | "65" | "66" | "67"
-        | "68" | "69" | "6A" | "6B" | "6C" | "6D" | "6E" | "6F"
         // 0xC0, 0xC1 — aliases for RET
         | "C0" | "C1"
         // 0xC8, 0xC9 — aliases for RETF

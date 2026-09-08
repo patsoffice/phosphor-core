@@ -44,31 +44,25 @@ impl I8088 {
     /// For mod=11, returns `Operand::Register(rm)`.
     /// For mod=00/01/10, computes the effective address and returns
     /// `Operand::Memory { segment, offset }`.
-    pub(crate) fn resolve_modrm<B: Bus<Address = u32, Data = u8> + ?Sized>(
-        &mut self,
-        modrm: ModRM,
-        bus: &mut B,
-        master: BusMaster,
-    ) -> Operand {
+    pub(crate) fn resolve_modrm(&mut self, modrm: ModRM) -> Operand {
         if modrm.is_reg() {
             return Operand::Register(modrm.rm);
         }
 
         // Compute base effective address from R/M field
-        let (base_offset, default_seg) =
-            self.compute_ea_base(modrm.rm, modrm.mod_bits, bus, master);
+        let (base_offset, default_seg) = self.compute_ea_base(modrm.rm, modrm.mod_bits);
 
         // Add displacement
         let offset = match modrm.mod_bits {
             0 => base_offset,
             1 => {
                 // 8-bit signed displacement
-                let disp = self.fetch_byte(bus, master) as i8 as i16 as u16;
+                let disp = self.fetch_byte() as i8 as i16 as u16;
                 base_offset.wrapping_add(disp)
             }
             2 => {
                 // 16-bit displacement
-                let disp = self.fetch_word(bus, master);
+                let disp = self.fetch_word();
                 base_offset.wrapping_add(disp)
             }
             _ => unreachable!(),
@@ -83,13 +77,7 @@ impl I8088 {
     ///
     /// Special case: mod=00, rm=110 is direct addressing — the offset is a
     /// 16-bit immediate fetched from the instruction stream.
-    fn compute_ea_base<B: Bus<Address = u32, Data = u8> + ?Sized>(
-        &mut self,
-        rm: u8,
-        mod_bits: u8,
-        bus: &mut B,
-        master: BusMaster,
-    ) -> (u16, SegReg) {
+    fn compute_ea_base(&mut self, rm: u8, mod_bits: u8) -> (u16, SegReg) {
         match rm & 7 {
             0 => (self.bx.wrapping_add(self.si), SegReg::DS), // [BX+SI]
             1 => (self.bx.wrapping_add(self.di), SegReg::DS), // [BX+DI]
@@ -100,7 +88,7 @@ impl I8088 {
             6 => {
                 if mod_bits == 0 {
                     // Direct addressing: 16-bit offset from instruction stream
-                    let offset = self.fetch_word(bus, master);
+                    let offset = self.fetch_word();
                     (offset, SegReg::DS)
                 } else {
                     // [BP+disp] — displacement is added by caller
@@ -231,17 +219,30 @@ mod tests {
 
     const MASTER: BusMaster = BusMaster::Cpu(0);
 
+    /// Stage displacement bytes as though the loader had already fetched them.
+    ///
+    /// Address resolution no longer reads the instruction stream off the bus:
+    /// the loader in [`super::super`] fetches every byte of the instruction
+    /// over four T-states each, and `resolve_modrm` takes its displacement out
+    /// of that buffer. These tests call `resolve_modrm` on its own, so the
+    /// buffer holds the displacement alone with nothing consumed ahead of it.
+    fn stage(cpu: &mut I8088, bytes: &[u8]) {
+        cpu.instr[..bytes.len()].copy_from_slice(bytes);
+        cpu.instr_len = bytes.len() as u8;
+        cpu.instr_pos = 0;
+    }
+
     // -- mod=11 register mode --
 
     #[test]
     fn resolve_reg_mode() {
-        let (mut cpu, mut bus) = setup();
+        let (mut cpu, _bus) = setup();
         let modrm = ModRM {
             mod_bits: 3,
             reg: 0,
             rm: 5,
         };
-        let op = cpu.resolve_modrm(modrm, &mut bus, MASTER);
+        let op = cpu.resolve_modrm(modrm);
         assert_eq!(op, Operand::Register(5));
     }
 
@@ -249,7 +250,7 @@ mod tests {
 
     #[test]
     fn resolve_bx_si() {
-        let (mut cpu, mut bus) = setup();
+        let (mut cpu, _bus) = setup();
         cpu.bx = 0x0100;
         cpu.si = 0x0050;
         // mod=00 rm=000 → [BX+SI]
@@ -258,7 +259,7 @@ mod tests {
             reg: 0,
             rm: 0,
         };
-        let op = cpu.resolve_modrm(modrm, &mut bus, MASTER);
+        let op = cpu.resolve_modrm(modrm);
         assert_eq!(
             op,
             Operand::Memory {
@@ -270,7 +271,7 @@ mod tests {
 
     #[test]
     fn resolve_bx_di() {
-        let (mut cpu, mut bus) = setup();
+        let (mut cpu, _bus) = setup();
         cpu.bx = 0x0200;
         cpu.di = 0x0030;
         let modrm = ModRM {
@@ -278,7 +279,7 @@ mod tests {
             reg: 0,
             rm: 1,
         };
-        let op = cpu.resolve_modrm(modrm, &mut bus, MASTER);
+        let op = cpu.resolve_modrm(modrm);
         assert_eq!(
             op,
             Operand::Memory {
@@ -290,7 +291,7 @@ mod tests {
 
     #[test]
     fn resolve_bp_si_uses_ss() {
-        let (mut cpu, mut bus) = setup();
+        let (mut cpu, _bus) = setup();
         cpu.bp = 0x0100;
         cpu.si = 0x0010;
         // rm=010 → [BP+SI], default SS
@@ -299,7 +300,7 @@ mod tests {
             reg: 0,
             rm: 2,
         };
-        let op = cpu.resolve_modrm(modrm, &mut bus, MASTER);
+        let op = cpu.resolve_modrm(modrm);
         assert_eq!(
             op,
             Operand::Memory {
@@ -311,7 +312,7 @@ mod tests {
 
     #[test]
     fn resolve_bp_di_uses_ss() {
-        let (mut cpu, mut bus) = setup();
+        let (mut cpu, _bus) = setup();
         cpu.bp = 0x0200;
         cpu.di = 0x0020;
         let modrm = ModRM {
@@ -319,7 +320,7 @@ mod tests {
             reg: 0,
             rm: 3,
         };
-        let op = cpu.resolve_modrm(modrm, &mut bus, MASTER);
+        let op = cpu.resolve_modrm(modrm);
         assert_eq!(
             op,
             Operand::Memory {
@@ -331,14 +332,14 @@ mod tests {
 
     #[test]
     fn resolve_si() {
-        let (mut cpu, mut bus) = setup();
+        let (mut cpu, _bus) = setup();
         cpu.si = 0x0300;
         let modrm = ModRM {
             mod_bits: 0,
             reg: 0,
             rm: 4,
         };
-        let op = cpu.resolve_modrm(modrm, &mut bus, MASTER);
+        let op = cpu.resolve_modrm(modrm);
         assert_eq!(
             op,
             Operand::Memory {
@@ -350,14 +351,14 @@ mod tests {
 
     #[test]
     fn resolve_di() {
-        let (mut cpu, mut bus) = setup();
+        let (mut cpu, _bus) = setup();
         cpu.di = 0x0400;
         let modrm = ModRM {
             mod_bits: 0,
             reg: 0,
             rm: 5,
         };
-        let op = cpu.resolve_modrm(modrm, &mut bus, MASTER);
+        let op = cpu.resolve_modrm(modrm);
         assert_eq!(
             op,
             Operand::Memory {
@@ -369,19 +370,17 @@ mod tests {
 
     #[test]
     fn resolve_direct_addressing() {
-        let (mut cpu, mut bus) = setup();
-        // mod=00 rm=110 → direct address, fetch 16-bit from instruction stream
-        // Place address 0x1234 at CS:IP
-        let ip = cpu.ip;
-        bus.mem[ip as usize] = 0x34;
-        bus.mem[ip as usize + 1] = 0x12;
+        let (mut cpu, _bus) = setup();
+        // mod=00 rm=110 → direct address, a 16-bit offset in the instruction
+        // stream rather than a displacement.
+        stage(&mut cpu, &[0x34, 0x12]);
 
         let modrm = ModRM {
             mod_bits: 0,
             reg: 0,
             rm: 6,
         };
-        let op = cpu.resolve_modrm(modrm, &mut bus, MASTER);
+        let op = cpu.resolve_modrm(modrm);
         assert_eq!(
             op,
             Operand::Memory {
@@ -389,20 +388,22 @@ mod tests {
                 offset: 0x1234,
             }
         );
-        // IP should have advanced by 2
-        assert_eq!(cpu.ip, ip + 2);
+        // IP advances as the executor consumes the bytes, not as the loader
+        // fetches them, so it moves by two here.
+        assert_eq!(cpu.ip, 0x0102);
+        assert_eq!(cpu.instr_pos, 2, "both offset bytes were consumed");
     }
 
     #[test]
     fn resolve_bx() {
-        let (mut cpu, mut bus) = setup();
+        let (mut cpu, _bus) = setup();
         cpu.bx = 0x0500;
         let modrm = ModRM {
             mod_bits: 0,
             reg: 0,
             rm: 7,
         };
-        let op = cpu.resolve_modrm(modrm, &mut bus, MASTER);
+        let op = cpu.resolve_modrm(modrm);
         assert_eq!(
             op,
             Operand::Memory {
@@ -416,18 +417,17 @@ mod tests {
 
     #[test]
     fn resolve_bx_si_disp8() {
-        let (mut cpu, mut bus) = setup();
+        let (mut cpu, _bus) = setup();
         cpu.bx = 0x0100;
         cpu.si = 0x0050;
-        // Place signed displacement +0x10 at CS:IP
-        bus.mem[cpu.ip as usize] = 0x10;
+        stage(&mut cpu, &[0x10]); // signed displacement +0x10
 
         let modrm = ModRM {
             mod_bits: 1,
             reg: 0,
             rm: 0,
         };
-        let op = cpu.resolve_modrm(modrm, &mut bus, MASTER);
+        let op = cpu.resolve_modrm(modrm);
         assert_eq!(
             op,
             Operand::Memory {
@@ -439,17 +439,17 @@ mod tests {
 
     #[test]
     fn resolve_bp_disp8_uses_ss() {
-        let (mut cpu, mut bus) = setup();
+        let (mut cpu, _bus) = setup();
         cpu.bp = 0x0200;
         // mod=01 rm=110 → [BP+disp8], uses SS
-        bus.mem[cpu.ip as usize] = 0x04;
+        stage(&mut cpu, &[0x04]);
 
         let modrm = ModRM {
             mod_bits: 1,
             reg: 0,
             rm: 6,
         };
-        let op = cpu.resolve_modrm(modrm, &mut bus, MASTER);
+        let op = cpu.resolve_modrm(modrm);
         assert_eq!(
             op,
             Operand::Memory {
@@ -461,17 +461,17 @@ mod tests {
 
     #[test]
     fn resolve_disp8_negative() {
-        let (mut cpu, mut bus) = setup();
+        let (mut cpu, _bus) = setup();
         cpu.si = 0x0100;
         // Signed displacement -0x10 (= 0xF0 as i8)
-        bus.mem[cpu.ip as usize] = 0xF0;
+        stage(&mut cpu, &[0xF0]);
 
         let modrm = ModRM {
             mod_bits: 1,
             reg: 0,
             rm: 4, // [SI+disp8]
         };
-        let op = cpu.resolve_modrm(modrm, &mut bus, MASTER);
+        let op = cpu.resolve_modrm(modrm);
         assert_eq!(
             op,
             Operand::Memory {
@@ -485,19 +485,16 @@ mod tests {
 
     #[test]
     fn resolve_bx_disp16() {
-        let (mut cpu, mut bus) = setup();
+        let (mut cpu, _bus) = setup();
         cpu.bx = 0x0100;
-        // Place 16-bit displacement 0x1234 at CS:IP (little-endian)
-        let ip = cpu.ip;
-        bus.mem[ip as usize] = 0x34;
-        bus.mem[ip as usize + 1] = 0x12;
+        stage(&mut cpu, &[0x34, 0x12]); // 16-bit displacement, little-endian
 
         let modrm = ModRM {
             mod_bits: 2,
             reg: 0,
             rm: 7, // [BX+disp16]
         };
-        let op = cpu.resolve_modrm(modrm, &mut bus, MASTER);
+        let op = cpu.resolve_modrm(modrm);
         assert_eq!(
             op,
             Operand::Memory {
@@ -509,18 +506,16 @@ mod tests {
 
     #[test]
     fn resolve_bp_disp16_uses_ss() {
-        let (mut cpu, mut bus) = setup();
+        let (mut cpu, _bus) = setup();
         cpu.bp = 0x0500;
-        let ip = cpu.ip;
-        bus.mem[ip as usize] = 0x02;
-        bus.mem[ip as usize + 1] = 0x00;
+        stage(&mut cpu, &[0x02, 0x00]);
 
         let modrm = ModRM {
             mod_bits: 2,
             reg: 0,
             rm: 6, // [BP+disp16]
         };
-        let op = cpu.resolve_modrm(modrm, &mut bus, MASTER);
+        let op = cpu.resolve_modrm(modrm);
         assert_eq!(
             op,
             Operand::Memory {
@@ -534,7 +529,7 @@ mod tests {
 
     #[test]
     fn resolve_with_segment_override() {
-        let (mut cpu, mut bus) = setup();
+        let (mut cpu, _bus) = setup();
         cpu.bx = 0x0100;
         cpu.segment_override = Some(SegReg::ES);
 
@@ -543,7 +538,7 @@ mod tests {
             reg: 0,
             rm: 7, // [BX]
         };
-        let op = cpu.resolve_modrm(modrm, &mut bus, MASTER);
+        let op = cpu.resolve_modrm(modrm);
         // Should use ES (0x4000) instead of default DS (0x2000)
         assert_eq!(
             op,
@@ -556,7 +551,7 @@ mod tests {
 
     #[test]
     fn resolve_bp_with_cs_override() {
-        let (mut cpu, mut bus) = setup();
+        let (mut cpu, _bus) = setup();
         cpu.bp = 0x0100;
         cpu.si = 0x0010;
         cpu.cs = 0x5000;
@@ -568,7 +563,7 @@ mod tests {
             reg: 0,
             rm: 2,
         };
-        let op = cpu.resolve_modrm(modrm, &mut bus, MASTER);
+        let op = cpu.resolve_modrm(modrm);
         assert_eq!(
             op,
             Operand::Memory {
@@ -631,13 +626,17 @@ mod tests {
     }
 
     // -- Prefix consumption --
+    //
+    // Prefixes are part of the loaded instruction now: the loader fetches them
+    // off the bus along with the opcode, staying in its opcode stage for as
+    // long as prefixes keep arriving, and `consume_prefixes` reads them back
+    // out of the buffer. So these stage bytes rather than writing memory.
 
     #[test]
     fn consume_no_prefixes() {
-        let (mut cpu, mut bus) = setup();
-        // Place a NOP (0x90) at CS:IP
-        bus.mem[cpu.ip as usize] = 0x90;
-        let opcode = cpu.consume_prefixes(&mut bus, MASTER);
+        let (mut cpu, _bus) = setup();
+        stage(&mut cpu, &[0x90]); // NOP
+        let opcode = cpu.consume_prefixes();
         assert_eq!(opcode, 0x90);
         assert_eq!(cpu.segment_override, None);
         assert_eq!(cpu.rep_prefix, None);
@@ -645,35 +644,28 @@ mod tests {
 
     #[test]
     fn consume_segment_override_prefix() {
-        let (mut cpu, mut bus) = setup();
-        // ES: prefix (0x26) followed by NOP
-        bus.mem[cpu.ip as usize] = 0x26;
-        bus.mem[cpu.ip as usize + 1] = 0x90;
-        let opcode = cpu.consume_prefixes(&mut bus, MASTER);
+        let (mut cpu, _bus) = setup();
+        stage(&mut cpu, &[0x26, 0x90]); // ES: then NOP
+        let opcode = cpu.consume_prefixes();
         assert_eq!(opcode, 0x90);
         assert_eq!(cpu.segment_override, Some(SegReg::ES));
     }
 
     #[test]
     fn consume_rep_prefix() {
-        let (mut cpu, mut bus) = setup();
-        // REP (0xF3) followed by MOVSB (0xA4)
-        bus.mem[cpu.ip as usize] = 0xF3;
-        bus.mem[cpu.ip as usize + 1] = 0xA4;
-        let opcode = cpu.consume_prefixes(&mut bus, MASTER);
+        let (mut cpu, _bus) = setup();
+        stage(&mut cpu, &[0xF3, 0xA4]); // REP then MOVSB
+        let opcode = cpu.consume_prefixes();
         assert_eq!(opcode, 0xA4);
         assert_eq!(cpu.rep_prefix, Some(RepPrefix::Rep));
     }
 
     #[test]
     fn consume_multiple_prefixes() {
-        let (mut cpu, mut bus) = setup();
-        // LOCK + ES: + REPNZ + opcode
-        bus.mem[cpu.ip as usize] = 0xF0; // LOCK
-        bus.mem[cpu.ip as usize + 1] = 0x26; // ES:
-        bus.mem[cpu.ip as usize + 2] = 0xF2; // REPNZ
-        bus.mem[cpu.ip as usize + 3] = 0xA6; // CMPSB
-        let opcode = cpu.consume_prefixes(&mut bus, MASTER);
+        let (mut cpu, _bus) = setup();
+        // LOCK, ES:, REPNZ, then CMPSB.
+        stage(&mut cpu, &[0xF0, 0x26, 0xF2, 0xA6]);
+        let opcode = cpu.consume_prefixes();
         assert_eq!(opcode, 0xA6);
         assert_eq!(cpu.segment_override, Some(SegReg::ES));
         assert_eq!(cpu.rep_prefix, Some(RepPrefix::Repnz));
@@ -681,12 +673,10 @@ mod tests {
 
     #[test]
     fn consume_last_segment_override_wins() {
-        let (mut cpu, mut bus) = setup();
-        // ES: then SS: — last one wins
-        bus.mem[cpu.ip as usize] = 0x26; // ES:
-        bus.mem[cpu.ip as usize + 1] = 0x36; // SS:
-        bus.mem[cpu.ip as usize + 2] = 0x90; // NOP
-        let opcode = cpu.consume_prefixes(&mut bus, MASTER);
+        let (mut cpu, _bus) = setup();
+        // ES: then SS: then NOP. The last override is the one that takes.
+        stage(&mut cpu, &[0x26, 0x36, 0x90]);
+        let opcode = cpu.consume_prefixes();
         assert_eq!(opcode, 0x90);
         assert_eq!(cpu.segment_override, Some(SegReg::SS));
     }
@@ -717,7 +707,7 @@ mod tests {
 
     #[test]
     fn ea_offset_wraps_16bit() {
-        let (mut cpu, mut bus) = setup();
+        let (mut cpu, _bus) = setup();
         cpu.bx = 0xFFF0;
         cpu.si = 0x0020;
         // [BX+SI] = 0xFFF0 + 0x0020 = 0x10010 → wraps to 0x0010 (u16 wrapping)
@@ -726,7 +716,7 @@ mod tests {
             reg: 0,
             rm: 0,
         };
-        let op = cpu.resolve_modrm(modrm, &mut bus, MASTER);
+        let op = cpu.resolve_modrm(modrm);
         assert_eq!(
             op,
             Operand::Memory {
@@ -740,13 +730,25 @@ mod tests {
 
     #[test]
     fn fetch_word_little_endian() {
-        let (mut cpu, mut bus) = setup();
+        let (mut cpu, _bus) = setup();
         let ip = cpu.ip;
-        bus.mem[ip as usize] = 0x34;
-        bus.mem[ip as usize + 1] = 0x12;
-        let val = cpu.fetch_word(&mut bus, MASTER);
+        stage(&mut cpu, &[0x34, 0x12]);
+        let val = cpu.fetch_word();
         assert_eq!(val, 0x1234);
         assert_eq!(cpu.ip, ip + 2);
+    }
+
+    /// The executor cannot read past what the loader fetched. This is the guard
+    /// on [`super::super::format`] disagreeing with an instruction's
+    /// implementation about how long it is: without it, the executor would
+    /// quietly read whatever the previous instruction left in the buffer.
+    #[test]
+    #[should_panic(expected = "consumed more bytes than the loader fetched")]
+    fn fetching_past_the_loaded_instruction_panics() {
+        let (mut cpu, _bus) = setup();
+        stage(&mut cpu, &[0x34]);
+        let _ = cpu.fetch_byte();
+        let _ = cpu.fetch_byte();
     }
 
     #[test]

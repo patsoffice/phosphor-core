@@ -8,7 +8,7 @@ Instruction-level emulation of the Intel 8088 microprocessor, implementing 279 o
 |--------|-------|
 | Opcodes | 279 (documented + sub-opcode variants) |
 | Unit tests | 325 |
-| Cross-validation | 2,577,000/2,577,000 (100%) |
+| Cross-validation | 2,757,000/2,757,000 (100%) |
 | Timing | Instruction-level (not cycle-accurate) |
 
 ## Registers
@@ -158,7 +158,7 @@ core/src/cpu/i8088/
 
 ## Skipped Test Vectors
 
-44 opcode files are skipped in validation (279 pass out of 323 total):
+26 opcode files are skipped in validation (297 pass out of 323 total):
 
 | Opcodes | Reason |
 |---------|--------|
@@ -167,12 +167,30 @@ core/src/cpu/i8088/
 | 0xF4 | HLT: blocks forever in test harness (no interrupt source) |
 | 0xD8-0xDF | FPU ESC opcodes (no 8087 coprocessor) |
 | 0xD6 | SALC (undocumented) |
-| 0x60-0x6F | Hardware-dependent aliases |
 | 0xC0, 0xC1, 0xC8, 0xC9 | RET/RETF alias encodings |
 | 0x0F | POP CS (undocumented) |
 | 0xD0.6, 0xD1.6, 0xD2.6, 0xD3.6 | SETMO/SETMOC (undocumented) |
-| 0xF6.1, 0xF7.1 | TEST aliases (undocumented duplicate encodings) |
 | 0xFF.7 | Undefined sub-opcode |
+
+18 files came off this list on 2026-09-04, and none of them was found by this
+gate. Adding a loader that fetches an instruction before executing it made the
+executor's silence about them measurable: the loader knew each instruction's
+length and the executor consumed fewer bytes than that. The state gate could
+never see it, because it only checks the state an instruction leaves behind.
+
+- **0x60-0x6F** are the conditional jumps sixteen above them, not
+  "hardware-dependent aliases". The suite's hardware capture disassembles 0x60
+  as JO, 0x65 as JNZ, 0x6A as JP and 0x6F as JNLE, each with a rel8. Dispatch
+  now covers `0x60..=0x7F` and the low four bits select the condition either
+  way.
+- **0xF6.1 and 0xF7.1** are TEST, the same instruction as 0xF6.0 and 0xF7.0.
+  The group's dispatch handled reg=0 and left reg=1 doing nothing, so its
+  immediate was never consumed.
+
+An opcode with no implementation here still consumes its operand bytes now,
+which is what the part does: it fetches every byte of an instruction whether or
+not it acts on one. The remaining skipped opcodes are skipped for their
+semantics, not their length.
 
 ## Resources
 

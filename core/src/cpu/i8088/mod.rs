@@ -15,6 +15,7 @@ pub mod alu;
 pub mod decode;
 pub mod execute;
 pub mod flags;
+pub(crate) mod format;
 pub mod registers;
 
 pub use registers::SegReg;
@@ -26,18 +27,35 @@ use crate::cpu::Cpu;
 use crate::cpu::state::CpuStateTrait;
 use crate::prelude::Saveable;
 
-/// Execution state machine for multi-cycle instructions.
-#[derive(Clone, Debug)]
-#[allow(dead_code)] // Execute and Halted used starting in Step 1.3+
-pub(crate) enum ExecState {
-    /// Ready to fetch the next instruction.
-    Fetch,
-    /// Executing an instruction: (remaining_cycles).
-    /// The instruction has already been decoded and its effect applied on the
-    /// first cycle; remaining cycles are bus-idle wait states.
-    Execute(u16),
-    /// Halted (HLT instruction), waiting for interrupt.
-    Halted,
+/// The longest byte sequence the loader can be asked to hold.
+///
+/// A real instruction is at most six bytes (opcode, ModR/M, two displacement,
+/// two immediate, or the four-byte far pointer forms), and the 8088 accepts any
+/// number of prefixes ahead of that. Four is more prefixes than any encoding
+/// the test suite or any assembler produces, and the loader asserts rather than
+/// overruns if that is ever wrong.
+pub(crate) const MAX_INSTRUCTION: usize = 10;
+
+/// Which part of the instruction the loader's next fetched byte belongs to.
+///
+/// This is the shape of an 8088 instruction read left to right, and the loader
+/// walks it once per instruction. Only the opcode's position is known in
+/// advance: whether a ModR/M byte follows comes from the opcode, how long the
+/// displacement is comes from the ModR/M byte, and for two opcode groups
+/// whether there is an immediate at all comes from the ModR/M byte too. See
+/// [`format`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Stage {
+    /// The opcode, or one of the prefixes ahead of it. The loader stays here
+    /// for as long as the bytes arriving are prefixes.
+    #[default]
+    Opcode,
+    /// The ModR/M byte.
+    Modrm,
+    /// Displacement bytes, with the number still to fetch.
+    Displacement(u8),
+    /// Immediate bytes, with the number still to fetch.
+    Immediate(u8),
 }
 
 /// REP/REPZ/REPNZ prefix state.
@@ -94,16 +112,44 @@ pub struct I8088 {
     pub(crate) nmi_prev: bool,
     pub(crate) nmi_pending: bool,
 
-    // Internal state (not serialized)
-    #[save_skip(default = ExecState::Fetch)]
-    pub(crate) state: ExecState,
+    /// Halted by HLT, waiting for an interrupt.
+    #[save_skip(default)]
+    pub(crate) halted: bool,
+
+    // -- Loader state ------------------------------------------------------
+    //
+    // None of this is serialized, and it does not need to be, because the
+    // loader is restartable: IP does not move until the *executor* consumes a
+    // byte out of `instr`, so a partially loaded instruction can be thrown away
+    // and refetched from CS:IP with no observable difference except the cycles
+    // spent. That is what makes a save state taken mid-instruction safe here
+    // rather than merely tolerated.
+    /// Instruction bytes fetched so far, prefixes included.
+    #[save_skip(default = [0; MAX_INSTRUCTION])]
+    pub(crate) instr: [u8; MAX_INSTRUCTION],
+    /// How many bytes of `instr` the loader has fetched.
+    #[save_skip(default)]
+    pub(crate) instr_len: u8,
+    /// How many of those the executor has consumed.
+    #[save_skip(default)]
+    pub(crate) instr_pos: u8,
+    /// Where in `instr` the opcode byte sits, past any prefixes.
+    #[save_skip(default)]
+    pub(crate) opcode_at: u8,
+    /// Which part of the instruction the loader is fetching.
+    #[save_skip(default)]
+    pub(crate) stage: Stage,
+    /// T-state within the current fetch bus cycle, 1 through 4.
+    #[save_skip(default = 1)]
+    pub(crate) t: u8,
+
     #[save_skip(default)]
     pub(crate) segment_override: Option<SegReg>,
     #[save_skip(default)]
     pub(crate) rep_prefix: Option<RepPrefix>,
     #[save_skip(default)]
     pub(crate) irq_line: bool,
-    // Cycle counter (total bus cycles executed, not serialized, keeps current value)
+    /// Total T-states executed. Not serialized; keeps its current value.
     #[save_skip]
     pub(crate) clock: u64,
 }
@@ -132,7 +178,13 @@ impl I8088 {
             ss: 0,
             ip: 0,
             flags: flags::normalize(0),
-            state: ExecState::Fetch,
+            halted: false,
+            instr: [0; MAX_INSTRUCTION],
+            instr_len: 0,
+            instr_pos: 0,
+            opcode_at: 0,
+            stage: Stage::Opcode,
+            t: 1,
             segment_override: None,
             rep_prefix: None,
             nmi_pending: false,
@@ -142,17 +194,30 @@ impl I8088 {
         }
     }
 
-    /// Returns true when the CPU is at an instruction boundary (ready to fetch).
+    /// Returns true when the CPU is at an instruction boundary: nothing loaded,
+    /// and the next T-state will be the T1 of the next opcode fetch.
     pub fn at_instruction_boundary(&self) -> bool {
-        matches!(self.state, ExecState::Fetch)
+        !self.halted && self.instr_len == 0 && self.t == 1
     }
 
-    /// Total bus cycles executed since creation.
+    /// Total T-states executed since creation.
     pub fn clock(&self) -> u64 {
         self.clock
     }
 
-    /// Execute one bus cycle.
+    /// Execute one T-state.
+    ///
+    /// A T-state is one CPU clock, so a board clocking this at 5 MHz calls this
+    /// five million times per emulated second. An instruction-fetch bus cycle
+    /// is four of them: the address goes out on T1, the byte comes back on T3,
+    /// and T4 completes the transaction. Every byte of the instruction stream
+    /// costs one such cycle.
+    ///
+    /// What is *not* yet per-cycle: the instruction's own execution, including
+    /// its operand reads and writes, still happens atomically on the T4 of its
+    /// last fetched byte. That is the next step of the conversion, and until it
+    /// lands this core undercounts every instruction that touches memory. See
+    /// `docs/designs/cycle-accurate-i8088.md`.
     pub fn execute_cycle<B: Bus<Address = u32, Data = u8> + ?Sized>(
         &mut self,
         bus: &mut B,
@@ -160,44 +225,175 @@ impl I8088 {
     ) {
         self.clock += 1;
 
-        match self.state {
-            ExecState::Fetch => {
-                // Check for interrupts before fetching
-                let ints = bus.check_interrupts(master);
-                if self.handle_interrupts(ints, bus, master) {
-                    return;
-                }
-
-                // Consume any prefix bytes and fetch the opcode
-                let opcode = self.consume_prefixes(bus, master);
-
-                // Execute the instruction
-                self.execute(opcode, bus, master);
+        if self.halted {
+            // Check for an interrupt that can wake us.
+            let ints = bus.check_interrupts(master);
+            let nmi_edge = crate::cpu::flags::detect_rising_edge(ints.nmi, &mut self.nmi_prev);
+            if nmi_edge {
+                self.nmi_pending = true;
             }
-            ExecState::Execute(remaining) => {
-                if remaining <= 1 {
-                    self.state = ExecState::Fetch;
-                } else {
-                    self.state = ExecState::Execute(remaining - 1);
-                }
+            if self.nmi_pending {
+                self.nmi_pending = false;
+                self.halted = false;
+                self.interrupt(bus, master, 2);
+            } else if ints.irq && flags::get(self.flags, flags::Flag::IF) {
+                self.halted = false;
+                self.interrupt(bus, master, ints.irq_vector);
             }
-            ExecState::Halted => {
-                // Check for interrupts that can wake us
-                let ints = bus.check_interrupts(master);
-                let nmi_edge = crate::cpu::flags::detect_rising_edge(ints.nmi, &mut self.nmi_prev);
-                if nmi_edge {
-                    self.nmi_pending = true;
-                }
-                if self.nmi_pending {
-                    self.nmi_pending = false;
-                    self.state = ExecState::Fetch;
-                    self.interrupt(bus, master, 2);
-                } else if ints.irq && flags::get(self.flags, flags::Flag::IF) {
-                    self.state = ExecState::Fetch;
-                    self.interrupt(bus, master, ints.irq_vector);
+            return;
+        }
+
+        // Interrupts are recognized between instructions, which is the only
+        // point the loader can be redirected without discarding a partial
+        // fetch.
+        if self.at_instruction_boundary() {
+            let ints = bus.check_interrupts(master);
+            if self.handle_interrupts(ints, bus, master) {
+                return;
+            }
+        }
+
+        match self.t {
+            // T1 puts the address on the multiplexed bus and T2 turns it
+            // around for data. Neither is observable through a `Bus` that
+            // resolves an access in one call, but both are real clocks and the
+            // part cannot deliver a byte in fewer than four of them.
+            1 | 2 => self.t += 1,
+            // T3 is when the addressed device drives the byte back.
+            3 => {
+                let addr =
+                    Self::physical_addr(self.cs, self.ip.wrapping_add(self.instr_len.into()));
+                let byte = bus.read(master, addr);
+                assert!(
+                    (self.instr_len as usize) < MAX_INSTRUCTION,
+                    "instruction longer than {MAX_INSTRUCTION} bytes at {:04X}:{:04X}",
+                    self.cs,
+                    self.ip
+                );
+                self.instr[self.instr_len as usize] = byte;
+                self.instr_len += 1;
+                self.t = 4;
+            }
+            // T4 completes the transaction. If that was the instruction's last
+            // byte, it runs here.
+            _ => {
+                self.t = 1;
+                if self.advance_stage() {
+                    self.run_loaded_instruction(bus, master);
                 }
             }
         }
+    }
+
+    /// Decide what the loader fetches next, having just taken delivery of a
+    /// byte. Returns true when the instruction is complete.
+    fn advance_stage(&mut self) -> bool {
+        let just_fetched = self.instr[self.instr_len as usize - 1];
+
+        match self.stage {
+            Stage::Opcode => {
+                // A prefix is followed by another opcode, so the loader stays
+                // where it is. This is also why the opcode's position in the
+                // buffer has to be remembered rather than assumed to be zero.
+                if decode::decode_prefix(just_fetched).is_some() {
+                    return false;
+                }
+                self.opcode_at = self.instr_len - 1;
+                let f = format::format_of(just_fetched);
+                if f.modrm {
+                    self.stage = Stage::Modrm;
+                    false
+                } else {
+                    self.begin_immediate(f.imm, None)
+                }
+            }
+            Stage::Modrm => {
+                let disp = format::displacement_len(just_fetched);
+                if disp > 0 {
+                    self.stage = Stage::Displacement(disp);
+                    false
+                } else {
+                    let imm = format::format_of(self.opcode()).imm;
+                    self.begin_immediate(imm, Some(just_fetched))
+                }
+            }
+            Stage::Displacement(n) if n > 1 => {
+                self.stage = Stage::Displacement(n - 1);
+                false
+            }
+            Stage::Displacement(_) => {
+                let imm = format::format_of(self.opcode()).imm;
+                // The ModR/M byte sits immediately after the opcode, and the
+                // only immediates whose length depends on it belong to
+                // opcodes that have one.
+                let modrm = self.instr[self.opcode_at as usize + 1];
+                self.begin_immediate(imm, Some(modrm))
+            }
+            Stage::Immediate(n) if n > 1 => {
+                self.stage = Stage::Immediate(n - 1);
+                false
+            }
+            Stage::Immediate(_) => {
+                self.stage = Stage::Opcode;
+                true
+            }
+        }
+    }
+
+    /// Enter the immediate stage, or finish the instruction when there is no
+    /// immediate to fetch.
+    fn begin_immediate(&mut self, imm: format::Imm, modrm: Option<u8>) -> bool {
+        match imm.len(modrm) {
+            0 => {
+                self.stage = Stage::Opcode;
+                true
+            }
+            n => {
+                self.stage = Stage::Immediate(n);
+                false
+            }
+        }
+    }
+
+    /// The opcode byte of the instruction currently loaded.
+    #[inline]
+    fn opcode(&self) -> u8 {
+        self.instr[self.opcode_at as usize]
+    }
+
+    /// Run the instruction the loader has just finished fetching.
+    ///
+    /// Still atomic: every operand access an instruction makes happens inside
+    /// this one call, on a single T-state. The loader above it is per-cycle,
+    /// the executor below it is not yet.
+    fn run_loaded_instruction<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        self.instr_pos = 0;
+        let opcode = self.consume_prefixes();
+        self.execute(opcode, bus, master);
+
+        // The loader and the executor have to agree on how long the
+        // instruction was, or one of them is reading bytes the other never
+        // fetched. Consuming too few leaves IP short, which the 2,577,000-vector
+        // state gate reports as an IP mismatch on every affected case;
+        // consuming too many is impossible, because `fetch_byte` asserts. This
+        // catches the remaining case in a debug build, where the two agree on
+        // nothing in particular but the instruction happened to end at the
+        // right address anyway.
+        debug_assert_eq!(
+            self.instr_pos,
+            self.instr_len,
+            "opcode {:02X}: loader fetched {} bytes, executor consumed {}",
+            self.opcode(),
+            self.instr_len,
+            self.instr_pos,
+        );
+
+        self.instr_len = 0;
+        self.instr_pos = 0;
     }
 
     /// Check for pending interrupts. Returns true if an interrupt was taken.
@@ -263,7 +459,7 @@ impl BusMasterComponent for I8088 {
         master: BusMaster,
     ) -> bool {
         self.execute_cycle(bus, master);
-        matches!(self.state, ExecState::Fetch)
+        self.at_instruction_boundary()
     }
 }
 
@@ -287,7 +483,12 @@ impl Cpu for I8088 {
         self.ss = 0;
         self.ip = 0;
         self.flags = flags::normalize(0);
-        self.state = ExecState::Fetch;
+        self.halted = false;
+        self.instr_len = 0;
+        self.instr_pos = 0;
+        self.opcode_at = 0;
+        self.stage = Stage::Opcode;
+        self.t = 1;
         self.segment_override = None;
         self.rep_prefix = None;
         self.nmi_pending = false;
@@ -310,7 +511,7 @@ impl Cpu for I8088 {
     }
 
     fn is_sleeping(&self) -> bool {
-        matches!(self.state, ExecState::Halted)
+        self.halted
     }
 }
 
@@ -550,7 +751,124 @@ mod tests {
     fn is_sleeping_when_halted() {
         let mut cpu = I8088::new();
         assert!(!cpu.is_sleeping());
-        cpu.state = ExecState::Halted;
+        cpu.halted = true;
         assert!(cpu.is_sleeping());
+    }
+
+    // --- The loader ---------------------------------------------------------
+
+    /// Walk the loader by hand over the stages of one instruction, without a
+    /// bus, to check that the stage machine visits what the encoding says it
+    /// should. `advance_stage` reads the byte the loader just took delivery of,
+    /// so pushing bytes and calling it is the whole of the interface.
+    fn load(bytes: &[u8]) -> (I8088, Vec<Stage>) {
+        let mut cpu = I8088::new();
+        let mut seen = vec![cpu.stage];
+        for &b in bytes {
+            cpu.instr[cpu.instr_len as usize] = b;
+            cpu.instr_len += 1;
+            if cpu.advance_stage() {
+                break;
+            }
+            seen.push(cpu.stage);
+        }
+        (cpu, seen)
+    }
+
+    /// The sample instruction from the test suite's own README:
+    /// `add byte [ss:bp+di-64h], cl`, encoded 00 75 9C with an SS override.
+    /// Opcode, ModR/M, one displacement byte, no immediate.
+    #[test]
+    fn the_loader_walks_opcode_modrm_and_a_byte_displacement() {
+        let (cpu, seen) = load(&[0x00, 0x75, 0x9C]);
+        assert_eq!(
+            seen,
+            vec![Stage::Opcode, Stage::Modrm, Stage::Displacement(1)]
+        );
+        assert_eq!(cpu.instr_len, 3, "three bytes and no more");
+        assert_eq!(cpu.opcode_at, 0);
+    }
+
+    /// A prefix keeps the loader in the opcode stage and moves where the opcode
+    /// lands. Getting `opcode_at` wrong would look up the format of the prefix
+    /// byte instead of the instruction's.
+    #[test]
+    fn a_prefix_keeps_the_loader_in_the_opcode_stage() {
+        // 36 = SS: override, then ADD r/m8,r8 with a direct address.
+        let (cpu, seen) = load(&[0x36, 0x00, 0x06, 0x34, 0x12]);
+        assert_eq!(
+            seen,
+            vec![
+                Stage::Opcode,
+                Stage::Opcode,
+                Stage::Modrm,
+                // The displacement counts down as its bytes arrive, so a
+                // two-byte one is visible in both of its states.
+                Stage::Displacement(2),
+                Stage::Displacement(1),
+            ]
+        );
+        assert_eq!(cpu.opcode_at, 1, "the opcode is behind the prefix");
+        assert_eq!(cpu.instr_len, 5);
+    }
+
+    /// mod=00 rm=110 is a bare 16-bit address, so it takes two displacement
+    /// bytes where every other mod=00 form takes none.
+    #[test]
+    fn the_direct_address_form_takes_two_displacement_bytes() {
+        let (cpu, _) = load(&[0x8A, 0x06, 0x34, 0x12]);
+        assert_eq!(cpu.instr_len, 4, "MOV AL, [1234h] is four bytes");
+    }
+
+    /// An instruction carrying both a ModR/M byte and an immediate has to reach
+    /// the immediate stage after the displacement rather than instead of it.
+    #[test]
+    fn a_displacement_and_an_immediate_are_both_fetched() {
+        // 81 /0 with mod=10: ADD word [bx+1234h], 5678h.
+        let (cpu, seen) = load(&[0x81, 0x87, 0x34, 0x12, 0x78, 0x56]);
+        assert_eq!(
+            seen,
+            vec![
+                Stage::Opcode,
+                Stage::Modrm,
+                Stage::Displacement(2),
+                Stage::Displacement(1),
+                Stage::Immediate(2),
+                Stage::Immediate(1),
+            ]
+        );
+        assert_eq!(cpu.instr_len, 6);
+    }
+
+    /// The unary group's immediate depends on the ModR/M reg field, which is
+    /// the one place the loader has to look at a byte it already fetched to
+    /// decide how many more to take.
+    #[test]
+    fn the_unary_group_fetches_an_immediate_only_for_test() {
+        // F6 /0: TEST byte [bx], 42h. Opcode, ModR/M, immediate.
+        let (test, _) = load(&[0xF6, 0x07, 0x42]);
+        assert_eq!(test.instr_len, 3);
+
+        // F6 /2: NOT byte [bx]. Opcode and ModR/M, nothing more.
+        let (not, _) = load(&[0xF6, 0x17, 0x42]);
+        assert_eq!(not.instr_len, 2, "NOT takes no immediate");
+    }
+
+    /// A far pointer is four bytes of immediate, and the loader must not stop
+    /// after two.
+    #[test]
+    fn a_far_jump_fetches_all_four_pointer_bytes() {
+        let (cpu, _) = load(&[0xEA, 0x00, 0x10, 0x00, 0x20]);
+        assert_eq!(cpu.instr_len, 5);
+    }
+
+    /// A one-byte instruction completes on the first byte, without entering any
+    /// further stage.
+    #[test]
+    fn a_bare_opcode_is_complete_the_moment_it_arrives() {
+        let (cpu, seen) = load(&[0x90]);
+        assert_eq!(seen, vec![Stage::Opcode], "no stage after the opcode");
+        assert_eq!(cpu.instr_len, 1);
+        assert_eq!(cpu.stage, Stage::Opcode, "reset for the next instruction");
     }
 }

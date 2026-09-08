@@ -313,6 +313,68 @@ every commit rather than at the end:
    pipeline unchanged.
 4. Hand-convert the awkward set above, one family per commit.
 
+## M1 as built, and what the plan above got wrong
+
+**Landed 2026-09-04.** The loader is a T-state state machine; the executor is
+still atomic behind it. Steps 1 and 2 of the migration order were done as one
+change, because a pipeline with no opcode running through it compiles to
+nothing and cannot be reviewed against anything.
+
+**The numbers.**
+
+| Gate | Before | After |
+|---|---|---|
+| State, vectors | 2,577,000 across 279 files | **2,757,000 across 297 files**, 0 failed |
+| Per-cycle, count only | 0 of 3,007,000 | **576,568 of 3,007,000 (19.17%)** |
+| ... from an empty queue | 0 of 1,503,500 | 555,747 (36.96%) |
+| ... prefetched | 0 of 1,503,500 | 20,821 (1.38%) |
+| Q\*bert throughput | 5.62x realtime | 10.66x realtime |
+
+**The 36.96% against 1.38% split is the argument for M2**, and it is the shape
+the design predicted. A prefetched instruction costs the hardware nothing in
+bus cycles for its own bytes, while this core charges four T-states for each of
+them, so it overcounts badly there: `add dx, sp` takes 8 cycles here against the
+hardware's 3. Where memory operands are involved it still undercounts, because
+execution is atomic and pays nothing for them: `add byte [ss:bp+di-64h], cl`
+takes 12 here against 28. Mean signed error is -20.94 cycles over the 2,430,432
+that differ.
+
+**Throughput went up, not down**, which
+[Performance](#performance) said to expect and said how to read: the core now
+executes roughly a quarter of the instructions per emulated frame that it did,
+because each one occupies four T-states per byte instead of one T-state
+outright. That is not a win, it is the size of the work the hardware never did.
+Q\*bert's golden frame did not move: the main CPU's only interrupt is a VBLANK
+NMI asserted on scanlines 240 to 255 (`qbert.rs`, `check_interrupts`), so the
+attract sequence advances once per frame regardless of how many instructions
+the CPU gets through in between, as long as it keeps up. It still does.
+
+**What the plan got wrong, which is the part worth reading.**
+
+- **"A generic operand pipeline in `mod.rs`" was the wrong first move.** What
+  M1 actually needed was a *loader*: a state machine that walks opcode, ModR/M,
+  displacement and immediate, and hands the bytes to an unchanged executor.
+  That required no change to any of the 279 opcodes, because the executor's
+  byte-at-a-time interface (`fetch_byte`, `fetch_modrm`) was already the right
+  seam. The pipeline for operand *accesses* is still ahead, but it is a
+  separate thing from the fetch front end and the plan ran them together.
+- **The plan never mentioned needing a length table, and that is most of the
+  work.** A per-cycle core cannot run an instruction to find out how long it
+  is: it has to fetch each byte over four T-states first. `format.rs` exists
+  because of that, and it is the piece with the most ways to be quietly wrong.
+- **"231 suspension points" was the wrong count for this step.** It is the
+  right count for moving operand accesses per-cycle, which is still to come.
+  For the fetch front end the number of call sites that had to change was zero:
+  92 of them lost their `bus` arguments mechanically, and none changed meaning.
+- **The state gate was not the tightest check available.** M1 found three
+  defects the 2,577,000-vector gate could not see, because it only checks the
+  state an instruction leaves behind and all three were about instruction
+  *length*: 0x60-0x6F not consuming their `rel8`, 0xF6.1 and 0xF7.1 not
+  consuming their immediate, and unimplemented opcodes consuming nothing at
+  all. The loader knowing an instruction's length ahead of execution is what
+  made the executor's silence measurable. 18 files came off the skip list as a
+  result, which is a coverage gain the plan had assigned to M4.
+
 ## Sequencing against the M68000
 
 `phosphor-emulator-cycle-accurate-i8088-nvrh` is currently sequenced *after* the
@@ -346,6 +408,11 @@ rep reported:
 |---|---|---|---|---|---|---|---|
 | 1800 (attract mode) | 2.858 | 0.035 | 0.003 | 2.896 | 345.3 | **5.62x** | 0.5% |
 | 120 (self-test) | 2.868 | 0.035 | 0.010 | 2.913 | 343.3 | 5.59x | 1.1% |
+
+After M1, same command and warmup: 1.489 emul, 1.527 total, 655.0 fps,
+**10.66x** realtime, 1.2% spread. See
+[M1 as built](#m1-as-built-and-what-the-plan-above-got-wrong) for why that is
+not a win.
 
 ```text
 cargo run --release -p phosphor-bench -- --machine qbert --frames 600 --warmup 1800 --reps 5

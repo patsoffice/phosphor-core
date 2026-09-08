@@ -8,7 +8,7 @@ use super::addressing::Operand;
 use super::alu;
 use super::flags::{self, Flag};
 use super::registers::SegReg;
-use super::{ExecState, I8088, RepPrefix};
+use super::{I8088, RepPrefix};
 use crate::core::{Bus, BusMaster};
 
 impl I8088 {
@@ -196,11 +196,24 @@ impl I8088 {
             }
 
             // =============================================================
-            // Jcc — conditional jumps (0x70-0x7F)
-            // All take a signed 8-bit relative displacement.
+            // Jcc: conditional jumps (0x70-0x7F), and their aliases at
+            // 0x60-0x6F. All take a signed 8-bit relative displacement.
+            //
+            // The 8088's opcode decoder does not check bit 4 for this block,
+            // so 0x60-0x6F execute as the jump sixteen above them. That is not
+            // a guess: the hardware capture in the test suite disassembles
+            // 0x60 as JO, 0x65 as JNZ, 0x6A as JP and 0x6F as JNLE, each with
+            // a rel8, and metadata.json marks all sixteen "alias".
+            //
+            // These used to fall through to the do-nothing arm at the bottom
+            // of this match, which consumed no displacement byte. That was
+            // invisible while the executor also did its own fetching, because
+            // nothing but IP could tell; with a loader fetching the
+            // instruction ahead of execution, the two disagreed about how long
+            // the instruction was and the per-cycle gate said so.
             // =============================================================
-            0x70..=0x7F => {
-                let disp = self.fetch_byte(bus, master) as i8;
+            0x60..=0x7F => {
+                let disp = self.fetch_byte() as i8;
                 if self.test_condition(opcode & 0x0F) {
                     self.ip = self.ip.wrapping_add(disp as u16);
                 }
@@ -214,9 +227,9 @@ impl I8088 {
             //   0x83: ALU r/m16, imm8 (sign-extended to 16-bit)
             // =============================================================
             0x80 | 0x82 => {
-                let modrm = self.fetch_modrm(bus, master);
-                let operand = self.resolve_modrm(modrm, bus, master);
-                let imm = self.fetch_byte(bus, master);
+                let modrm = self.fetch_modrm();
+                let operand = self.resolve_modrm(modrm);
+                let imm = self.fetch_byte();
                 let val = self.read_operand8(operand, bus, master);
                 let result = self.alu_op8(modrm.reg, val, imm);
                 // CMP (7) and TEST are compare-only — don't store result
@@ -225,9 +238,9 @@ impl I8088 {
                 }
             }
             0x81 => {
-                let modrm = self.fetch_modrm(bus, master);
-                let operand = self.resolve_modrm(modrm, bus, master);
-                let imm = self.fetch_word(bus, master);
+                let modrm = self.fetch_modrm();
+                let operand = self.resolve_modrm(modrm);
+                let imm = self.fetch_word();
                 let val = self.read_operand16(operand, bus, master);
                 let result = self.alu_op16(modrm.reg, val, imm);
                 if modrm.reg != 7 {
@@ -235,10 +248,10 @@ impl I8088 {
                 }
             }
             0x83 => {
-                let modrm = self.fetch_modrm(bus, master);
-                let operand = self.resolve_modrm(modrm, bus, master);
+                let modrm = self.fetch_modrm();
+                let operand = self.resolve_modrm(modrm);
                 // Sign-extend imm8 to 16-bit
-                let imm = self.fetch_byte(bus, master) as i8 as u16;
+                let imm = self.fetch_byte() as i8 as u16;
                 let val = self.read_operand16(operand, bus, master);
                 let result = self.alu_op16(modrm.reg, val, imm);
                 if modrm.reg != 7 {
@@ -250,15 +263,15 @@ impl I8088 {
             // TEST r/m8, reg8 (0x84) | TEST r/m16, reg16 (0x85)
             // =============================================================
             0x84 => {
-                let modrm = self.fetch_modrm(bus, master);
-                let operand = self.resolve_modrm(modrm, bus, master);
+                let modrm = self.fetch_modrm();
+                let operand = self.resolve_modrm(modrm);
                 let a = self.read_operand8(operand, bus, master);
                 let b = self.get_reg8(modrm.reg);
                 alu::and8(&mut self.flags, a, b);
             }
             0x85 => {
-                let modrm = self.fetch_modrm(bus, master);
-                let operand = self.resolve_modrm(modrm, bus, master);
+                let modrm = self.fetch_modrm();
+                let operand = self.resolve_modrm(modrm);
                 let a = self.read_operand16(operand, bus, master);
                 let b = self.get_reg16(modrm.reg);
                 alu::and16(&mut self.flags, a, b);
@@ -268,16 +281,16 @@ impl I8088 {
             // XCHG r/m8, reg8 (0x86) | XCHG r/m16, reg16 (0x87)
             // =============================================================
             0x86 => {
-                let modrm = self.fetch_modrm(bus, master);
-                let operand = self.resolve_modrm(modrm, bus, master);
+                let modrm = self.fetch_modrm();
+                let operand = self.resolve_modrm(modrm);
                 let a = self.get_reg8(modrm.reg);
                 let b = self.read_operand8(operand, bus, master);
                 self.set_reg8(modrm.reg, b);
                 self.write_operand8(operand, bus, master, a);
             }
             0x87 => {
-                let modrm = self.fetch_modrm(bus, master);
-                let operand = self.resolve_modrm(modrm, bus, master);
+                let modrm = self.fetch_modrm();
+                let operand = self.resolve_modrm(modrm);
                 let a = self.get_reg16(modrm.reg);
                 let b = self.read_operand16(operand, bus, master);
                 self.set_reg16(modrm.reg, b);
@@ -292,8 +305,8 @@ impl I8088 {
             0x88..=0x8B => {
                 let w = opcode & 1 != 0;
                 let d = opcode & 2 != 0;
-                let modrm = self.fetch_modrm(bus, master);
-                let operand = self.resolve_modrm(modrm, bus, master);
+                let modrm = self.fetch_modrm();
+                let operand = self.resolve_modrm(modrm);
                 if w {
                     if d {
                         let val = self.read_operand16(operand, bus, master);
@@ -315,8 +328,8 @@ impl I8088 {
             // MOV r/m16, segreg (0x8C)
             // =============================================================
             0x8C => {
-                let modrm = self.fetch_modrm(bus, master);
-                let operand = self.resolve_modrm(modrm, bus, master);
+                let modrm = self.fetch_modrm();
+                let operand = self.resolve_modrm(modrm);
                 let seg = I8088::decode_seg(modrm.reg & 3);
                 let val = self.get_seg(seg);
                 self.write_operand16(operand, bus, master, val);
@@ -326,8 +339,8 @@ impl I8088 {
             // LEA reg16, mem (0x8D)
             // =============================================================
             0x8D => {
-                let modrm = self.fetch_modrm(bus, master);
-                let operand = self.resolve_modrm(modrm, bus, master);
+                let modrm = self.fetch_modrm();
+                let operand = self.resolve_modrm(modrm);
                 if let Operand::Memory { offset, .. } = operand {
                     self.set_reg16(modrm.reg, offset);
                 }
@@ -338,8 +351,8 @@ impl I8088 {
             // MOV segreg, r/m16 (0x8E)
             // =============================================================
             0x8E => {
-                let modrm = self.fetch_modrm(bus, master);
-                let operand = self.resolve_modrm(modrm, bus, master);
+                let modrm = self.fetch_modrm();
+                let operand = self.resolve_modrm(modrm);
                 let val = self.read_operand16(operand, bus, master);
                 let seg = I8088::decode_seg(modrm.reg & 3);
                 self.set_seg(seg, val);
@@ -351,8 +364,8 @@ impl I8088 {
             // POP r/m16 (0x8F /0)
             // =============================================================
             0x8F => {
-                let modrm = self.fetch_modrm(bus, master);
-                let operand = self.resolve_modrm(modrm, bus, master);
+                let modrm = self.fetch_modrm();
+                let operand = self.resolve_modrm(modrm);
                 if modrm.reg == 0 {
                     let val = self.pop16(bus, master);
                     self.write_operand16(operand, bus, master, val);
@@ -388,8 +401,8 @@ impl I8088 {
             // CALL far (0x9A): push CS, push IP, load new CS:IP
             // =============================================================
             0x9A => {
-                let offset = self.fetch_word(bus, master);
-                let segment = self.fetch_word(bus, master);
+                let offset = self.fetch_word();
+                let segment = self.fetch_word();
                 self.push16(bus, master, self.cs);
                 self.push16(bus, master, self.ip);
                 self.cs = segment;
@@ -429,24 +442,24 @@ impl I8088 {
             // MOV [moffs], AL/AX (0xA2-0xA3)
             // =============================================================
             0xA0 => {
-                let offset = self.fetch_word(bus, master);
+                let offset = self.fetch_word();
                 let seg = self.effective_segment(SegReg::DS);
                 let val = self.read_byte(bus, master, seg, offset);
                 self.set_al(val);
             }
             0xA1 => {
-                let offset = self.fetch_word(bus, master);
+                let offset = self.fetch_word();
                 let seg = self.effective_segment(SegReg::DS);
                 let val = self.read_word(bus, master, seg, offset);
                 self.ax = val;
             }
             0xA2 => {
-                let offset = self.fetch_word(bus, master);
+                let offset = self.fetch_word();
                 let seg = self.effective_segment(SegReg::DS);
                 self.write_byte(bus, master, seg, offset, self.al());
             }
             0xA3 => {
-                let offset = self.fetch_word(bus, master);
+                let offset = self.fetch_word();
                 let seg = self.effective_segment(SegReg::DS);
                 self.write_word(bus, master, seg, offset, self.ax);
             }
@@ -474,12 +487,12 @@ impl I8088 {
             // TEST AL, imm8 (0xA8) | TEST AX, imm16 (0xA9)
             // =============================================================
             0xA8 => {
-                let imm = self.fetch_byte(bus, master);
+                let imm = self.fetch_byte();
                 let al = self.al();
                 alu::and8(&mut self.flags, al, imm);
             }
             0xA9 => {
-                let imm = self.fetch_word(bus, master);
+                let imm = self.fetch_word();
                 let ax = self.ax;
                 alu::and16(&mut self.flags, ax, imm);
             }
@@ -489,7 +502,7 @@ impl I8088 {
             // =============================================================
             0xB0..=0xB7 => {
                 let reg = opcode & 7;
-                let imm = self.fetch_byte(bus, master);
+                let imm = self.fetch_byte();
                 self.set_reg8(reg, imm);
             }
 
@@ -498,7 +511,7 @@ impl I8088 {
             // =============================================================
             0xB8..=0xBF => {
                 let reg = opcode & 7;
-                let imm = self.fetch_word(bus, master);
+                let imm = self.fetch_word();
                 self.set_reg16(reg, imm);
             }
 
@@ -507,7 +520,7 @@ impl I8088 {
             // RET near (0xC3): pop IP
             // =============================================================
             0xC2 => {
-                let imm = self.fetch_word(bus, master);
+                let imm = self.fetch_word();
                 self.ip = self.pop16(bus, master);
                 self.sp = self.sp.wrapping_add(imm);
             }
@@ -520,7 +533,7 @@ impl I8088 {
             // RETF (0xCB): pop IP, pop CS
             // =============================================================
             0xCA => {
-                let imm = self.fetch_word(bus, master);
+                let imm = self.fetch_word();
                 self.ip = self.pop16(bus, master);
                 self.cs = self.pop16(bus, master);
                 self.sp = self.sp.wrapping_add(imm);
@@ -535,8 +548,8 @@ impl I8088 {
             // LDS reg16, mem32 (0xC5): load far pointer into DS:reg
             // =============================================================
             0xC4 | 0xC5 => {
-                let modrm = self.fetch_modrm(bus, master);
-                let operand = self.resolve_modrm(modrm, bus, master);
+                let modrm = self.fetch_modrm();
+                let operand = self.resolve_modrm(modrm);
                 if let Operand::Memory { segment, offset } = operand {
                     let new_offset = self.read_word(bus, master, segment, offset);
                     let new_seg = self.read_word(bus, master, segment, offset.wrapping_add(2));
@@ -553,9 +566,9 @@ impl I8088 {
             // MOV r/m8, imm8 (0xC6) — reg field ignored on 8088
             // =============================================================
             0xC6 => {
-                let modrm = self.fetch_modrm(bus, master);
-                let operand = self.resolve_modrm(modrm, bus, master);
-                let imm = self.fetch_byte(bus, master);
+                let modrm = self.fetch_modrm();
+                let operand = self.resolve_modrm(modrm);
+                let imm = self.fetch_byte();
                 self.write_operand8(operand, bus, master, imm);
             }
 
@@ -563,9 +576,9 @@ impl I8088 {
             // MOV r/m16, imm16 (0xC7) — reg field ignored on 8088
             // =============================================================
             0xC7 => {
-                let modrm = self.fetch_modrm(bus, master);
-                let operand = self.resolve_modrm(modrm, bus, master);
-                let imm = self.fetch_word(bus, master);
+                let modrm = self.fetch_modrm();
+                let operand = self.resolve_modrm(modrm);
+                let imm = self.fetch_word();
                 self.write_operand16(operand, bus, master, imm);
             }
 
@@ -576,7 +589,7 @@ impl I8088 {
                 self.interrupt(bus, master, 3);
             }
             0xCD => {
-                let vector = self.fetch_byte(bus, master);
+                let vector = self.fetch_byte();
                 self.interrupt(bus, master, vector);
             }
             // INTO: interrupt if OF is set (vector 4); no-op when OF is clear
@@ -596,30 +609,30 @@ impl I8088 {
             //   0xD2: r/m8, CL   0xD3: r/m16, CL
             // =============================================================
             0xD0 => {
-                let modrm = self.fetch_modrm(bus, master);
-                let operand = self.resolve_modrm(modrm, bus, master);
+                let modrm = self.fetch_modrm();
+                let operand = self.resolve_modrm(modrm);
                 let val = self.read_operand8(operand, bus, master);
                 let result = alu::shift_rotate8(&mut self.flags, val, 1, modrm.reg);
                 self.write_operand8(operand, bus, master, result);
             }
             0xD1 => {
-                let modrm = self.fetch_modrm(bus, master);
-                let operand = self.resolve_modrm(modrm, bus, master);
+                let modrm = self.fetch_modrm();
+                let operand = self.resolve_modrm(modrm);
                 let val = self.read_operand16(operand, bus, master);
                 let result = alu::shift_rotate16(&mut self.flags, val, 1, modrm.reg);
                 self.write_operand16(operand, bus, master, result);
             }
             0xD2 => {
-                let modrm = self.fetch_modrm(bus, master);
-                let operand = self.resolve_modrm(modrm, bus, master);
+                let modrm = self.fetch_modrm();
+                let operand = self.resolve_modrm(modrm);
                 let val = self.read_operand8(operand, bus, master);
                 let cl = self.cl();
                 let result = alu::shift_rotate8(&mut self.flags, val, cl, modrm.reg);
                 self.write_operand8(operand, bus, master, result);
             }
             0xD3 => {
-                let modrm = self.fetch_modrm(bus, master);
-                let operand = self.resolve_modrm(modrm, bus, master);
+                let modrm = self.fetch_modrm();
+                let operand = self.resolve_modrm(modrm);
                 let val = self.read_operand16(operand, bus, master);
                 let cl = self.cl();
                 let result = alu::shift_rotate16(&mut self.flags, val, cl, modrm.reg);
@@ -631,7 +644,7 @@ impl I8088 {
             // AAD (0xD5): AL = AH * imm8 + AL, AH = 0
             // =============================================================
             0xD4 => {
-                let base = self.fetch_byte(bus, master);
+                let base = self.fetch_byte();
                 let al = self.al();
                 if let Some(quotient) = al.checked_div(base) {
                     self.set_ah(quotient);
@@ -646,7 +659,7 @@ impl I8088 {
                 }
             }
             0xD5 => {
-                let base = self.fetch_byte(bus, master);
+                let base = self.fetch_byte();
                 let result = self.ah().wrapping_mul(base).wrapping_add(self.al());
                 self.set_al(result);
                 self.set_ah(0);
@@ -668,7 +681,7 @@ impl I8088 {
             // =============================================================
             0xE0 => {
                 // LOOPNZ/LOOPNE: CX -= 1; jump if CX != 0 AND ZF == 0
-                let disp = self.fetch_byte(bus, master) as i8;
+                let disp = self.fetch_byte() as i8;
                 self.cx = self.cx.wrapping_sub(1);
                 if self.cx != 0 && !flags::get(self.flags, Flag::ZF) {
                     self.ip = self.ip.wrapping_add(disp as u16);
@@ -676,7 +689,7 @@ impl I8088 {
             }
             0xE1 => {
                 // LOOPZ/LOOPE: CX -= 1; jump if CX != 0 AND ZF == 1
-                let disp = self.fetch_byte(bus, master) as i8;
+                let disp = self.fetch_byte() as i8;
                 self.cx = self.cx.wrapping_sub(1);
                 if self.cx != 0 && flags::get(self.flags, Flag::ZF) {
                     self.ip = self.ip.wrapping_add(disp as u16);
@@ -684,7 +697,7 @@ impl I8088 {
             }
             0xE2 => {
                 // LOOP: CX -= 1; jump if CX != 0
-                let disp = self.fetch_byte(bus, master) as i8;
+                let disp = self.fetch_byte() as i8;
                 self.cx = self.cx.wrapping_sub(1);
                 if self.cx != 0 {
                     self.ip = self.ip.wrapping_add(disp as u16);
@@ -692,7 +705,7 @@ impl I8088 {
             }
             0xE3 => {
                 // JCXZ: jump if CX == 0
-                let disp = self.fetch_byte(bus, master) as i8;
+                let disp = self.fetch_byte() as i8;
                 if self.cx == 0 {
                     self.ip = self.ip.wrapping_add(disp as u16);
                 }
@@ -703,23 +716,23 @@ impl I8088 {
             // =============================================================
             0xE4 => {
                 // IN AL, imm8
-                let port = self.fetch_byte(bus, master) as u32;
+                let port = self.fetch_byte() as u32;
                 self.set_al(bus.io_read(master, port));
             }
             0xE5 => {
                 // IN AX, imm8
-                let port = self.fetch_byte(bus, master) as u32;
+                let port = self.fetch_byte() as u32;
                 self.set_al(bus.io_read(master, port));
                 self.set_ah(bus.io_read(master, port.wrapping_add(1)));
             }
             0xE6 => {
                 // OUT imm8, AL
-                let port = self.fetch_byte(bus, master) as u32;
+                let port = self.fetch_byte() as u32;
                 bus.io_write(master, port, self.al());
             }
             0xE7 => {
                 // OUT imm8, AX
-                let port = self.fetch_byte(bus, master) as u32;
+                let port = self.fetch_byte() as u32;
                 bus.io_write(master, port, self.al());
                 bus.io_write(master, port.wrapping_add(1), self.ah());
             }
@@ -728,7 +741,7 @@ impl I8088 {
             // CALL near (0xE8): push IP, IP += disp16
             // =============================================================
             0xE8 => {
-                let disp = self.fetch_word(bus, master);
+                let disp = self.fetch_word();
                 self.push16(bus, master, self.ip);
                 self.ip = self.ip.wrapping_add(disp);
             }
@@ -737,7 +750,7 @@ impl I8088 {
             // JMP near (0xE9): IP += disp16
             // =============================================================
             0xE9 => {
-                let disp = self.fetch_word(bus, master);
+                let disp = self.fetch_word();
                 self.ip = self.ip.wrapping_add(disp);
             }
 
@@ -745,8 +758,8 @@ impl I8088 {
             // JMP far (0xEA): IP = offset, CS = segment
             // =============================================================
             0xEA => {
-                let offset = self.fetch_word(bus, master);
-                let segment = self.fetch_word(bus, master);
+                let offset = self.fetch_word();
+                let segment = self.fetch_word();
                 self.ip = offset;
                 self.cs = segment;
             }
@@ -755,7 +768,7 @@ impl I8088 {
             // JMP short (0xEB): IP += sign-extended disp8
             // =============================================================
             0xEB => {
-                let disp = self.fetch_byte(bus, master) as i8;
+                let disp = self.fetch_byte() as i8;
                 self.ip = self.ip.wrapping_add(disp as u16);
             }
 
@@ -790,7 +803,7 @@ impl I8088 {
             // CMC (0xF5): complement carry flag
             // =============================================================
             0xF4 => {
-                self.state = ExecState::Halted;
+                self.halted = true;
             }
             0xF5 => {
                 let cf = flags::get(self.flags, Flag::CF);
@@ -801,12 +814,18 @@ impl I8088 {
             // Unary group 0xF6 (byte)
             // =============================================================
             0xF6 => {
-                let modrm = self.fetch_modrm(bus, master);
-                let operand = self.resolve_modrm(modrm, bus, master);
+                let modrm = self.fetch_modrm();
+                let operand = self.resolve_modrm(modrm);
                 match modrm.reg {
-                    0 => {
-                        // TEST r/m8, imm8
-                        let imm = self.fetch_byte(bus, master);
+                    // TEST r/m8, imm8. Two of the group's eight reg encodings
+                    // reach it: the decoder does not distinguish them, so
+                    // reg=1 is an undocumented second spelling of reg=0 and
+                    // takes the same immediate. Leaving reg=1 unimplemented
+                    // meant its immediate was never consumed, which the
+                    // per-cycle gate reported as the loader and the executor
+                    // disagreeing about the instruction's length.
+                    0 | 1 => {
+                        let imm = self.fetch_byte();
                         let val = self.read_operand8(operand, bus, master);
                         alu::and8(&mut self.flags, val, imm);
                     }
@@ -884,12 +903,13 @@ impl I8088 {
             // Unary group 0xF7 (word)
             // =============================================================
             0xF7 => {
-                let modrm = self.fetch_modrm(bus, master);
-                let operand = self.resolve_modrm(modrm, bus, master);
+                let modrm = self.fetch_modrm();
+                let operand = self.resolve_modrm(modrm);
                 match modrm.reg {
-                    0 => {
-                        // TEST r/m16, imm16
-                        let imm = self.fetch_word(bus, master);
+                    // TEST r/m16, imm16. reg=1 is the same instruction, for
+                    // the reason given on the byte-wide group above.
+                    0 | 1 => {
+                        let imm = self.fetch_word();
                         let val = self.read_operand16(operand, bus, master);
                         alu::and16(&mut self.flags, val, imm);
                     }
@@ -969,8 +989,8 @@ impl I8088 {
             // 0xFE group (byte): /0=INC r/m8, /1=DEC r/m8
             // =============================================================
             0xFE => {
-                let modrm = self.fetch_modrm(bus, master);
-                let operand = self.resolve_modrm(modrm, bus, master);
+                let modrm = self.fetch_modrm();
+                let operand = self.resolve_modrm(modrm);
                 match modrm.reg {
                     0 => {
                         let val = self.read_operand8(operand, bus, master);
@@ -992,8 +1012,8 @@ impl I8088 {
             // /5=JMP far indirect, /6=PUSH r/m16
             // =============================================================
             0xFF => {
-                let modrm = self.fetch_modrm(bus, master);
-                let operand = self.resolve_modrm(modrm, bus, master);
+                let modrm = self.fetch_modrm();
+                let operand = self.resolve_modrm(modrm);
                 match modrm.reg {
                     0 => {
                         let val = self.read_operand16(operand, bus, master);
@@ -1064,9 +1084,23 @@ impl I8088 {
             0xFD => flags::set(&mut self.flags, Flag::DF, true),  // STD
 
             // =============================================================
-            // Unimplemented opcode — silently skip
+            // Opcodes with no implementation here: the FPU escapes
+            // (0xD8-0xDF), SALC (0xD6), POP CS (0x0F), the RET aliases
+            // (0xC0, 0xC1, 0xC8, 0xC9) and the undefined FF.7.
+            //
+            // Doing nothing is not the same as consuming nothing. The part
+            // fetches every byte of an instruction whether or not it acts on
+            // one, so IP has to land on the next opcode rather than in the
+            // middle of this one. Skipping the operand bytes used to be
+            // invisible because the executor did its own fetching and only IP
+            // could tell; with a loader ahead of it, the two disagree about
+            // the instruction's length and the per-cycle gate reports it.
             // =============================================================
-            _ => {}
+            _ => {
+                while self.instr_pos < self.instr_len {
+                    let _ = self.fetch_byte();
+                }
+            }
         }
     }
 
@@ -1122,8 +1156,8 @@ impl I8088 {
         match sub {
             // r/m8, reg8
             0 => {
-                let modrm = self.fetch_modrm(bus, master);
-                let operand = self.resolve_modrm(modrm, bus, master);
+                let modrm = self.fetch_modrm();
+                let operand = self.resolve_modrm(modrm);
                 let a = self.read_operand8(operand, bus, master);
                 let b = self.get_reg8(modrm.reg);
                 let result = self.alu_op8(op, a, b);
@@ -1134,8 +1168,8 @@ impl I8088 {
             }
             // r/m16, reg16
             1 => {
-                let modrm = self.fetch_modrm(bus, master);
-                let operand = self.resolve_modrm(modrm, bus, master);
+                let modrm = self.fetch_modrm();
+                let operand = self.resolve_modrm(modrm);
                 let a = self.read_operand16(operand, bus, master);
                 let b = self.get_reg16(modrm.reg);
                 let result = self.alu_op16(op, a, b);
@@ -1145,8 +1179,8 @@ impl I8088 {
             }
             // reg8, r/m8
             2 => {
-                let modrm = self.fetch_modrm(bus, master);
-                let operand = self.resolve_modrm(modrm, bus, master);
+                let modrm = self.fetch_modrm();
+                let operand = self.resolve_modrm(modrm);
                 let a = self.get_reg8(modrm.reg);
                 let b = self.read_operand8(operand, bus, master);
                 let result = self.alu_op8(op, a, b);
@@ -1156,8 +1190,8 @@ impl I8088 {
             }
             // reg16, r/m16
             3 => {
-                let modrm = self.fetch_modrm(bus, master);
-                let operand = self.resolve_modrm(modrm, bus, master);
+                let modrm = self.fetch_modrm();
+                let operand = self.resolve_modrm(modrm);
                 let a = self.get_reg16(modrm.reg);
                 let b = self.read_operand16(operand, bus, master);
                 let result = self.alu_op16(op, a, b);
@@ -1167,7 +1201,7 @@ impl I8088 {
             }
             // AL, imm8
             4 => {
-                let imm = self.fetch_byte(bus, master);
+                let imm = self.fetch_byte();
                 let result = self.alu_op8(op, self.al(), imm);
                 if op != 7 {
                     self.set_al(result);
@@ -1175,7 +1209,7 @@ impl I8088 {
             }
             // AX, imm16
             5 => {
-                let imm = self.fetch_word(bus, master);
+                let imm = self.fetch_word();
                 let result = self.alu_op16(op, self.ax, imm);
                 if op != 7 {
                     self.ax = result;
@@ -1661,6 +1695,34 @@ mod tests {
         (cpu, TestBus::new())
     }
 
+    /// Execute one instruction whose operand bytes are staged in the test bus
+    /// at CS:IP, which is where every test below puts them.
+    ///
+    /// The executor no longer reads the instruction stream off the bus. The
+    /// loader fetches it, four T-states a byte, into a buffer that
+    /// `fetch_byte` hands out. These tests are about what an instruction
+    /// *does*, not how long it takes, so rather than run the loader they fill
+    /// that buffer straight from the same memory the tests were already
+    /// writing.
+    ///
+    /// The buffer is filled to capacity rather than to the instruction's real
+    /// length, so this deliberately does not check that
+    /// [`crate::cpu::i8088::format`] agrees with the executor about that
+    /// length. Three other things do: the loader tests in
+    /// [`crate::cpu::i8088`], the panic in `fetch_byte` when the two disagree
+    /// in the running core, and the 2,577,000-vector state gate, which reports
+    /// a short read as an IP mismatch.
+    fn exec(cpu: &mut I8088, bus: &mut TestBus, opcode: u8) {
+        use crate::cpu::i8088::MAX_INSTRUCTION;
+        let base = I8088::physical_addr(cpu.cs, cpu.ip) as usize;
+        for i in 0..MAX_INSTRUCTION {
+            cpu.instr[i] = bus.mem[(base + i) & 0xF_FFFF];
+        }
+        cpu.instr_len = MAX_INSTRUCTION as u8;
+        cpu.instr_pos = 0;
+        cpu.execute(opcode, bus, M);
+    }
+
     // =====================================================================
     // MOV reg8, imm8 (0xB0-0xB7)
     // =====================================================================
@@ -1669,7 +1731,7 @@ mod tests {
     fn mov_al_imm8() {
         let (mut cpu, mut bus) = setup();
         bus.mem[0x100] = 0x42; // imm8
-        cpu.execute(0xB0, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0xB0);
         assert_eq!(cpu.al(), 0x42);
         assert_eq!(cpu.ip, 0x101);
     }
@@ -1681,7 +1743,7 @@ mod tests {
         for reg in 0..8u8 {
             cpu.ip = 0x100;
             bus.mem[0x100] = 0x10 + reg; // distinct value per register
-            cpu.execute(0xB0 + reg, &mut bus, M);
+            exec(&mut cpu, &mut bus, 0xB0 + reg);
             assert_eq!(cpu.get_reg8(reg), 0x10 + reg);
         }
     }
@@ -1695,7 +1757,7 @@ mod tests {
         let (mut cpu, mut bus) = setup();
         bus.mem[0x100] = 0x34; // low byte
         bus.mem[0x101] = 0x12; // high byte
-        cpu.execute(0xB8, &mut bus, M); // MOV AX, 0x1234
+        exec(&mut cpu, &mut bus, 0xB8); // MOV AX, 0x1234
         assert_eq!(cpu.ax, 0x1234);
         assert_eq!(cpu.ip, 0x102);
     }
@@ -1708,7 +1770,7 @@ mod tests {
             let val = 0x1000 + reg as u16;
             bus.mem[0x100] = val as u8;
             bus.mem[0x101] = (val >> 8) as u8;
-            cpu.execute(0xB8 + reg, &mut bus, M);
+            exec(&mut cpu, &mut bus, 0xB8 + reg);
             assert_eq!(cpu.get_reg16(reg), val);
         }
     }
@@ -1724,7 +1786,7 @@ mod tests {
         cpu.bx = 0x0050;
         // ModR/M: mod=00 reg=000(AL) rm=111([BX]) = 0x07
         bus.mem[0x100] = 0x07;
-        cpu.execute(0x88, &mut bus, M); // MOV [BX], AL
+        exec(&mut cpu, &mut bus, 0x88); // MOV [BX], AL
         // DS:BX = 0x20000 + 0x50 = 0x20050
         assert_eq!(bus.mem[0x20050], 0xAB);
     }
@@ -1736,7 +1798,7 @@ mod tests {
         bus.mem[0x20050] = 0xCD; // value at DS:BX
         // ModR/M: mod=00 reg=001(CL) rm=111([BX]) = 0x0F
         bus.mem[0x100] = 0x0F;
-        cpu.execute(0x8A, &mut bus, M); // MOV CL, [BX]
+        exec(&mut cpu, &mut bus, 0x8A); // MOV CL, [BX]
         assert_eq!(cpu.cl(), 0xCD);
     }
 
@@ -1747,7 +1809,7 @@ mod tests {
         cpu.si = 0x0080;
         // ModR/M: mod=00 reg=000(AX) rm=100([SI]) = 0x04
         bus.mem[0x100] = 0x04;
-        cpu.execute(0x89, &mut bus, M); // MOV [SI], AX
+        exec(&mut cpu, &mut bus, 0x89); // MOV [SI], AX
         // DS:SI = 0x20080
         assert_eq!(bus.mem[0x20080], 0x34);
         assert_eq!(bus.mem[0x20081], 0x12);
@@ -1761,7 +1823,7 @@ mod tests {
         bus.mem[0x20061] = 0x56;
         // ModR/M: mod=00 reg=011(BX) rm=101([DI]) = 0x1D
         bus.mem[0x100] = 0x1D;
-        cpu.execute(0x8B, &mut bus, M); // MOV BX, [DI]
+        exec(&mut cpu, &mut bus, 0x8B); // MOV BX, [DI]
         assert_eq!(cpu.bx, 0x5678);
     }
 
@@ -1771,7 +1833,7 @@ mod tests {
         cpu.ax = 0xAABB;
         // MOV CX, AX: 0x89 ModR/M=0xC1 (mod=11 reg=000(AX) rm=001(CX))
         bus.mem[0x100] = 0xC1;
-        cpu.execute(0x89, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0x89);
         assert_eq!(cpu.cx, 0xAABB);
     }
 
@@ -1785,7 +1847,7 @@ mod tests {
         cpu.ds = 0x1234;
         // ModR/M: mod=11 reg=011(DS) rm=000(AX) = 0xD8
         bus.mem[0x100] = 0xD8;
-        cpu.execute(0x8C, &mut bus, M); // MOV AX, DS
+        exec(&mut cpu, &mut bus, 0x8C); // MOV AX, DS
         assert_eq!(cpu.ax, 0x1234);
     }
 
@@ -1795,7 +1857,7 @@ mod tests {
         cpu.ax = 0x5000;
         // ModR/M: mod=11 reg=000(ES) rm=000(AX) = 0xC0
         bus.mem[0x100] = 0xC0;
-        cpu.execute(0x8E, &mut bus, M); // MOV ES, AX
+        exec(&mut cpu, &mut bus, 0x8E); // MOV ES, AX
         assert_eq!(cpu.es, 0x5000);
     }
 
@@ -1812,7 +1874,7 @@ mod tests {
         bus.mem[0x101] = 0x00;
         // Value at DS:0x0050 = 0x20050
         bus.mem[0x20050] = 0xEF;
-        cpu.execute(0xA0, &mut bus, M); // MOV AL, [0x0050]
+        exec(&mut cpu, &mut bus, 0xA0); // MOV AL, [0x0050]
         assert_eq!(cpu.al(), 0xEF);
     }
 
@@ -1823,7 +1885,7 @@ mod tests {
         bus.mem[0x101] = 0x00;
         bus.mem[0x20060] = 0x34;
         bus.mem[0x20061] = 0x12;
-        cpu.execute(0xA1, &mut bus, M); // MOV AX, [0x0060]
+        exec(&mut cpu, &mut bus, 0xA1); // MOV AX, [0x0060]
         assert_eq!(cpu.ax, 0x1234);
     }
 
@@ -1833,7 +1895,7 @@ mod tests {
         cpu.set_al(0x42);
         bus.mem[0x100] = 0x70;
         bus.mem[0x101] = 0x00;
-        cpu.execute(0xA2, &mut bus, M); // MOV [0x0070], AL
+        exec(&mut cpu, &mut bus, 0xA2); // MOV [0x0070], AL
         assert_eq!(bus.mem[0x20070], 0x42);
     }
 
@@ -1843,7 +1905,7 @@ mod tests {
         cpu.ax = 0xABCD;
         bus.mem[0x100] = 0x80;
         bus.mem[0x101] = 0x00;
-        cpu.execute(0xA3, &mut bus, M); // MOV [0x0080], AX
+        exec(&mut cpu, &mut bus, 0xA3); // MOV [0x0080], AX
         assert_eq!(bus.mem[0x20080], 0xCD);
         assert_eq!(bus.mem[0x20081], 0xAB);
     }
@@ -1859,7 +1921,7 @@ mod tests {
         // ModR/M: mod=00 reg=000 rm=111([BX]) = 0x07
         bus.mem[0x100] = 0x07;
         bus.mem[0x101] = 0xFF; // imm8
-        cpu.execute(0xC6, &mut bus, M); // MOV BYTE [BX], 0xFF
+        exec(&mut cpu, &mut bus, 0xC6); // MOV BYTE [BX], 0xFF
         assert_eq!(bus.mem[0x20040], 0xFF);
     }
 
@@ -1871,7 +1933,7 @@ mod tests {
         bus.mem[0x100] = 0x04;
         bus.mem[0x101] = 0x34; // imm16 low
         bus.mem[0x102] = 0x12; // imm16 high
-        cpu.execute(0xC7, &mut bus, M); // MOV WORD [SI], 0x1234
+        exec(&mut cpu, &mut bus, 0xC7); // MOV WORD [SI], 0x1234
         assert_eq!(bus.mem[0x20040], 0x34);
         assert_eq!(bus.mem[0x20041], 0x12);
     }
@@ -1886,16 +1948,16 @@ mod tests {
         cpu.ax = 0x1234;
         cpu.bx = 0x5678;
 
-        cpu.execute(0x50, &mut bus, M); // PUSH AX
+        exec(&mut cpu, &mut bus, 0x50); // PUSH AX
         assert_eq!(cpu.sp, 0x01FE);
-        cpu.execute(0x53, &mut bus, M); // PUSH BX
+        exec(&mut cpu, &mut bus, 0x53); // PUSH BX
         assert_eq!(cpu.sp, 0x01FC);
 
         // Pop in reverse order (LIFO)
-        cpu.execute(0x59, &mut bus, M); // POP CX
+        exec(&mut cpu, &mut bus, 0x59); // POP CX
         assert_eq!(cpu.cx, 0x5678);
         assert_eq!(cpu.sp, 0x01FE);
-        cpu.execute(0x5A, &mut bus, M); // POP DX
+        exec(&mut cpu, &mut bus, 0x5A); // POP DX
         assert_eq!(cpu.dx, 0x1234);
         assert_eq!(cpu.sp, 0x0200);
     }
@@ -1905,7 +1967,7 @@ mod tests {
         let (mut cpu, mut bus) = setup();
         // 8088 quirk: PUSH SP pushes the already-decremented SP value
         let old_sp = cpu.sp;
-        cpu.execute(0x54, &mut bus, M); // PUSH SP
+        exec(&mut cpu, &mut bus, 0x54); // PUSH SP
         let pushed_val = cpu.read_word(&mut bus, M, cpu.ss, cpu.sp);
         assert_eq!(cpu.sp, old_sp.wrapping_sub(2));
         assert_eq!(pushed_val, cpu.sp);
@@ -1919,9 +1981,9 @@ mod tests {
     fn push_pop_es() {
         let (mut cpu, mut bus) = setup();
         cpu.es = 0xABCD;
-        cpu.execute(0x06, &mut bus, M); // PUSH ES
+        exec(&mut cpu, &mut bus, 0x06); // PUSH ES
         cpu.es = 0x0000; // Clear it
-        cpu.execute(0x07, &mut bus, M); // POP ES
+        exec(&mut cpu, &mut bus, 0x07); // POP ES
         assert_eq!(cpu.es, 0xABCD);
     }
 
@@ -1929,9 +1991,9 @@ mod tests {
     fn push_pop_ds() {
         let (mut cpu, mut bus) = setup();
         cpu.ds = 0x1234;
-        cpu.execute(0x1E, &mut bus, M); // PUSH DS
+        exec(&mut cpu, &mut bus, 0x1E); // PUSH DS
         cpu.ds = 0x0000;
-        cpu.execute(0x1F, &mut bus, M); // POP DS
+        exec(&mut cpu, &mut bus, 0x1F); // POP DS
         assert_eq!(cpu.ds, 0x1234);
     }
 
@@ -1939,7 +2001,7 @@ mod tests {
     fn push_cs() {
         let (mut cpu, mut bus) = setup();
         cpu.cs = 0xF000;
-        cpu.execute(0x0E, &mut bus, M); // PUSH CS
+        exec(&mut cpu, &mut bus, 0x0E); // PUSH CS
         let val = cpu.read_word(&mut bus, M, cpu.ss, cpu.sp);
         assert_eq!(val, 0xF000);
     }
@@ -1957,7 +2019,7 @@ mod tests {
         bus.mem[0x20021] = 0xBE;
         // ModR/M: mod=00 reg=110(/6) rm=111([BX]) = 0x37
         bus.mem[0x100] = 0x37;
-        cpu.execute(0xFF, &mut bus, M); // PUSH WORD [BX]
+        exec(&mut cpu, &mut bus, 0xFF); // PUSH WORD [BX]
         let val = cpu.read_word(&mut bus, M, cpu.ss, cpu.sp);
         assert_eq!(val, 0xBEEF);
     }
@@ -1970,7 +2032,7 @@ mod tests {
         cpu.bx = 0x0030;
         // ModR/M: mod=00 reg=000(/0) rm=111([BX]) = 0x07
         bus.mem[0x100] = 0x07;
-        cpu.execute(0x8F, &mut bus, M); // POP WORD [BX]
+        exec(&mut cpu, &mut bus, 0x8F); // POP WORD [BX]
         assert_eq!(bus.mem[0x20030], 0xAD);
         assert_eq!(bus.mem[0x20031], 0xDE);
     }
@@ -1984,7 +2046,7 @@ mod tests {
         let (mut cpu, mut bus) = setup();
         cpu.ax = 0x1234;
         let old_ip = cpu.ip;
-        cpu.execute(0x90, &mut bus, M); // NOP = XCHG AX, AX
+        exec(&mut cpu, &mut bus, 0x90); // NOP = XCHG AX, AX
         assert_eq!(cpu.ax, 0x1234);
         assert_eq!(cpu.ip, old_ip); // No operand bytes consumed
     }
@@ -1994,7 +2056,7 @@ mod tests {
         let (mut cpu, mut bus) = setup();
         cpu.ax = 0x1111;
         cpu.cx = 0x2222;
-        cpu.execute(0x91, &mut bus, M); // XCHG AX, CX
+        exec(&mut cpu, &mut bus, 0x91); // XCHG AX, CX
         assert_eq!(cpu.ax, 0x2222);
         assert_eq!(cpu.cx, 0x1111);
     }
@@ -2010,7 +2072,7 @@ mod tests {
         cpu.set_bl(0xBB);
         // ModR/M: mod=11 reg=000(AL) rm=011(BL) = 0xC3
         bus.mem[0x100] = 0xC3;
-        cpu.execute(0x86, &mut bus, M); // XCHG AL, BL
+        exec(&mut cpu, &mut bus, 0x86); // XCHG AL, BL
         assert_eq!(cpu.al(), 0xBB);
         assert_eq!(cpu.bl(), 0xAA);
     }
@@ -2024,7 +2086,7 @@ mod tests {
         bus.mem[0x20051] = 0x56;
         // ModR/M: mod=00 reg=000(AX) rm=111([BX]) = 0x07
         bus.mem[0x100] = 0x07;
-        cpu.execute(0x87, &mut bus, M); // XCHG AX, [BX]
+        exec(&mut cpu, &mut bus, 0x87); // XCHG AX, [BX]
         assert_eq!(cpu.ax, 0x5678);
         assert_eq!(bus.mem[0x20050], 0x34);
         assert_eq!(bus.mem[0x20051], 0x12);
@@ -2041,7 +2103,7 @@ mod tests {
         cpu.si = 0x0234;
         // ModR/M: mod=00 reg=001(CX) rm=000([BX+SI]) = 0x08
         bus.mem[0x100] = 0x08;
-        cpu.execute(0x8D, &mut bus, M); // LEA CX, [BX+SI]
+        exec(&mut cpu, &mut bus, 0x8D); // LEA CX, [BX+SI]
         assert_eq!(cpu.cx, 0x1234);
     }
 
@@ -2052,7 +2114,7 @@ mod tests {
         // ModR/M: mod=01 reg=010(DX) rm=110([BP+disp8]) = 0x56
         bus.mem[0x100] = 0x56;
         bus.mem[0x101] = 0x10; // disp8 = +16
-        cpu.execute(0x8D, &mut bus, M); // LEA DX, [BP+16]
+        exec(&mut cpu, &mut bus, 0x8D); // LEA DX, [BP+16]
         assert_eq!(cpu.dx, 0x0110);
     }
 
@@ -2063,7 +2125,7 @@ mod tests {
         bus.mem[0x100] = 0x06;
         bus.mem[0x101] = 0x00; // disp16 low
         bus.mem[0x102] = 0x80; // disp16 high = 0x8000
-        cpu.execute(0x8D, &mut bus, M); // LEA AX, [0x8000]
+        exec(&mut cpu, &mut bus, 0x8D); // LEA AX, [0x8000]
         assert_eq!(cpu.ax, 0x8000);
     }
 
@@ -2082,7 +2144,7 @@ mod tests {
         bus.mem[0x20043] = 0x50;
         // ModR/M: mod=00 reg=001(CX) rm=111([BX]) = 0x0F
         bus.mem[0x100] = 0x0F;
-        cpu.execute(0xC4, &mut bus, M); // LES CX, [BX]
+        exec(&mut cpu, &mut bus, 0xC4); // LES CX, [BX]
         assert_eq!(cpu.cx, 0x1234);
         assert_eq!(cpu.es, 0x5000);
     }
@@ -2098,7 +2160,7 @@ mod tests {
         bus.mem[0x20063] = 0x60;
         // ModR/M: mod=00 reg=010(DX) rm=100([SI]) = 0x14
         bus.mem[0x100] = 0x14;
-        cpu.execute(0xC5, &mut bus, M); // LDS DX, [SI]
+        exec(&mut cpu, &mut bus, 0xC5); // LDS DX, [SI]
         assert_eq!(cpu.dx, 0xABCD);
         assert_eq!(cpu.ds, 0x6000);
     }
@@ -2113,7 +2175,7 @@ mod tests {
         use super::super::flags::{self, Flag};
         // Set AH with CF=1, PF=1, ZF=1, SF=1 (bits 0,2,6,7 = 0xC5)
         cpu.set_ah(0xC5);
-        cpu.execute(0x9E, &mut bus, M); // SAHF
+        exec(&mut cpu, &mut bus, 0x9E); // SAHF
         assert!(flags::get(cpu.flags, Flag::CF));
         assert!(flags::get(cpu.flags, Flag::PF));
         assert!(flags::get(cpu.flags, Flag::ZF));
@@ -2129,7 +2191,7 @@ mod tests {
         use super::super::flags::{self, Flag};
         flags::set(&mut cpu.flags, Flag::CF, true);
         flags::set(&mut cpu.flags, Flag::ZF, true);
-        cpu.execute(0x9F, &mut bus, M); // LAHF
+        exec(&mut cpu, &mut bus, 0x9F); // LAHF
         let ah = cpu.ah();
         assert_ne!(ah & 0x01, 0); // CF
         assert_ne!(ah & 0x40, 0); // ZF
@@ -2146,7 +2208,7 @@ mod tests {
         cpu.set_al(0x05);
         // Translation table at DS:BX = 0x20100
         bus.mem[0x20105] = 0x42; // table[5] = 0x42
-        cpu.execute(0xD7, &mut bus, M); // XLAT
+        exec(&mut cpu, &mut bus, 0xD7); // XLAT
         assert_eq!(cpu.al(), 0x42);
     }
 
@@ -2163,7 +2225,7 @@ mod tests {
         bus.mem[0x50010] = 0xAB; // Value at ES:BX
         // ModR/M: mod=00 reg=000(AL) rm=111([BX]) = 0x07
         bus.mem[0x100] = 0x07;
-        cpu.execute(0x8A, &mut bus, M); // MOV AL, ES:[BX]
+        exec(&mut cpu, &mut bus, 0x8A); // MOV AL, ES:[BX]
         assert_eq!(cpu.al(), 0xAB);
     }
 
@@ -2180,7 +2242,7 @@ mod tests {
         // ModR/M: mod=01 reg=000(AL) rm=111([BX+disp8]) = 0x47
         bus.mem[0x100] = 0x47;
         bus.mem[0x101] = 0x10; // disp8
-        cpu.execute(0x8A, &mut bus, M); // MOV AL, [BX+0x10]
+        exec(&mut cpu, &mut bus, 0x8A); // MOV AL, [BX+0x10]
         assert_eq!(cpu.al(), 0x99);
     }
 
@@ -2194,7 +2256,7 @@ mod tests {
         bus.mem[0x100] = 0x8F;
         bus.mem[0x101] = 0x00; // disp16 low
         bus.mem[0x102] = 0x10; // disp16 high = 0x1000
-        cpu.execute(0x8A, &mut bus, M); // MOV CL, [BX+0x1000]
+        exec(&mut cpu, &mut bus, 0x8A); // MOV CL, [BX+0x1000]
         assert_eq!(cpu.cl(), 0x77);
     }
 
@@ -2207,7 +2269,7 @@ mod tests {
         bus.mem[0x102] = 0x00; // address high = 0x0050
         bus.mem[0x103] = 0xEF; // imm16 low
         bus.mem[0x104] = 0xBE; // imm16 high = 0xBEEF
-        cpu.execute(0xC7, &mut bus, M); // MOV WORD [0x0050], 0xBEEF
+        exec(&mut cpu, &mut bus, 0xC7); // MOV WORD [0x0050], 0xBEEF
         assert_eq!(bus.mem[0x20050], 0xEF);
         assert_eq!(bus.mem[0x20051], 0xBE);
     }
@@ -2224,7 +2286,7 @@ mod tests {
         cpu.set_bl(0x20);
         // ModR/M: mod=11 reg=000(AL) rm=011(BL) = 0xC3
         bus.mem[0x100] = 0xC3;
-        cpu.execute(0x00, &mut bus, M); // ADD BL, AL
+        exec(&mut cpu, &mut bus, 0x00); // ADD BL, AL
         assert_eq!(cpu.bl(), 0x30);
         assert!(!fl::get(cpu.flags, Flag::CF));
         assert!(!fl::get(cpu.flags, Flag::OF));
@@ -2238,7 +2300,7 @@ mod tests {
         cpu.set_cl(0x01);
         // ModR/M: mod=11 reg=000(AL) rm=001(CL) = 0xC1
         bus.mem[0x100] = 0xC1;
-        cpu.execute(0x02, &mut bus, M); // ADD AL, CL
+        exec(&mut cpu, &mut bus, 0x02); // ADD AL, CL
         assert_eq!(cpu.al(), 0x00);
         assert!(fl::get(cpu.flags, Flag::CF));
         assert!(fl::get(cpu.flags, Flag::ZF));
@@ -2259,7 +2321,7 @@ mod tests {
         // ModR/M: mod=00 reg=010(DX) rm=111([BX]) = 0x17; actually we use AX
         // ModR/M: mod=00 reg=000(AX) rm=111([BX]) = 0x07
         bus.mem[0x100] = 0x07;
-        cpu.execute(0x01, &mut bus, M); // ADD [BX], AX
+        exec(&mut cpu, &mut bus, 0x01); // ADD [BX], AX
         assert_eq!(bus.mem[0x20050], 0x34); // 0x1234 + 0x1000 = 0x2234
         // Read back the result
         let lo = bus.mem[0x20050] as u16;
@@ -2277,7 +2339,7 @@ mod tests {
         use super::super::flags::{self as fl, Flag};
         cpu.set_al(0x40);
         bus.mem[0x100] = 0x02; // imm8
-        cpu.execute(0x04, &mut bus, M); // ADD AL, 0x02
+        exec(&mut cpu, &mut bus, 0x04); // ADD AL, 0x02
         assert_eq!(cpu.al(), 0x42);
         assert!(!fl::get(cpu.flags, Flag::CF));
     }
@@ -2288,7 +2350,7 @@ mod tests {
         cpu.ax = 0x1000;
         bus.mem[0x100] = 0x34;
         bus.mem[0x101] = 0x02;
-        cpu.execute(0x05, &mut bus, M); // ADD AX, 0x0234
+        exec(&mut cpu, &mut bus, 0x05); // ADD AX, 0x0234
         assert_eq!(cpu.ax, 0x1234);
     }
 
@@ -2303,7 +2365,7 @@ mod tests {
         fl::set(&mut cpu.flags, Flag::CF, true);
         cpu.set_al(0x10);
         bus.mem[0x100] = 0x20;
-        cpu.execute(0x14, &mut bus, M); // ADC AL, 0x20
+        exec(&mut cpu, &mut bus, 0x14); // ADC AL, 0x20
         assert_eq!(cpu.al(), 0x31); // 0x10 + 0x20 + CF(1) = 0x31
     }
 
@@ -2317,7 +2379,7 @@ mod tests {
         use super::super::flags::{self as fl, Flag};
         cpu.set_al(0x30);
         bus.mem[0x100] = 0x10;
-        cpu.execute(0x2C, &mut bus, M); // SUB AL, 0x10
+        exec(&mut cpu, &mut bus, 0x2C); // SUB AL, 0x10
         assert_eq!(cpu.al(), 0x20);
         assert!(!fl::get(cpu.flags, Flag::CF));
     }
@@ -2328,7 +2390,7 @@ mod tests {
         use super::super::flags::{self as fl, Flag};
         cpu.set_al(0x00);
         bus.mem[0x100] = 0x01;
-        cpu.execute(0x2C, &mut bus, M); // SUB AL, 0x01
+        exec(&mut cpu, &mut bus, 0x2C); // SUB AL, 0x01
         assert_eq!(cpu.al(), 0xFF);
         assert!(fl::get(cpu.flags, Flag::CF));
         assert!(fl::get(cpu.flags, Flag::SF));
@@ -2345,7 +2407,7 @@ mod tests {
         fl::set(&mut cpu.flags, Flag::CF, true);
         cpu.set_al(0x30);
         bus.mem[0x100] = 0x10;
-        cpu.execute(0x1C, &mut bus, M); // SBB AL, 0x10
+        exec(&mut cpu, &mut bus, 0x1C); // SBB AL, 0x10
         assert_eq!(cpu.al(), 0x1F); // 0x30 - 0x10 - CF(1) = 0x1F
     }
 
@@ -2359,7 +2421,7 @@ mod tests {
         use super::super::flags::{self as fl, Flag};
         cpu.set_al(0x42);
         bus.mem[0x100] = 0x42;
-        cpu.execute(0x3C, &mut bus, M); // CMP AL, 0x42
+        exec(&mut cpu, &mut bus, 0x3C); // CMP AL, 0x42
         assert!(fl::get(cpu.flags, Flag::ZF));
         assert!(!fl::get(cpu.flags, Flag::CF));
         assert_eq!(cpu.al(), 0x42); // AL unchanged
@@ -2371,7 +2433,7 @@ mod tests {
         use super::super::flags::{self as fl, Flag};
         cpu.set_al(0x10);
         bus.mem[0x100] = 0x20;
-        cpu.execute(0x3C, &mut bus, M); // CMP AL, 0x20
+        exec(&mut cpu, &mut bus, 0x3C); // CMP AL, 0x20
         assert!(!fl::get(cpu.flags, Flag::ZF));
         assert!(fl::get(cpu.flags, Flag::CF)); // borrow
         assert_eq!(cpu.al(), 0x10); // unchanged
@@ -2384,7 +2446,7 @@ mod tests {
         cpu.ax = 0x1234;
         bus.mem[0x100] = 0x34;
         bus.mem[0x101] = 0x12;
-        cpu.execute(0x3D, &mut bus, M); // CMP AX, 0x1234
+        exec(&mut cpu, &mut bus, 0x3D); // CMP AX, 0x1234
         assert!(fl::get(cpu.flags, Flag::ZF));
         assert_eq!(cpu.ax, 0x1234);
     }
@@ -2399,7 +2461,7 @@ mod tests {
         use super::super::flags::{self as fl, Flag};
         cpu.set_al(0xFF);
         bus.mem[0x100] = 0x0F;
-        cpu.execute(0x24, &mut bus, M); // AND AL, 0x0F
+        exec(&mut cpu, &mut bus, 0x24); // AND AL, 0x0F
         assert_eq!(cpu.al(), 0x0F);
         assert!(!fl::get(cpu.flags, Flag::CF));
         assert!(!fl::get(cpu.flags, Flag::OF));
@@ -2414,7 +2476,7 @@ mod tests {
         let (mut cpu, mut bus) = setup();
         cpu.set_al(0xF0);
         bus.mem[0x100] = 0x0F;
-        cpu.execute(0x0C, &mut bus, M); // OR AL, 0x0F
+        exec(&mut cpu, &mut bus, 0x0C); // OR AL, 0x0F
         assert_eq!(cpu.al(), 0xFF);
     }
 
@@ -2428,7 +2490,7 @@ mod tests {
         use super::super::flags::{self as fl, Flag};
         cpu.set_al(0xFF);
         bus.mem[0x100] = 0xFF;
-        cpu.execute(0x34, &mut bus, M); // XOR AL, 0xFF
+        exec(&mut cpu, &mut bus, 0x34); // XOR AL, 0xFF
         assert_eq!(cpu.al(), 0x00);
         assert!(fl::get(cpu.flags, Flag::ZF));
     }
@@ -2442,7 +2504,7 @@ mod tests {
         let (mut cpu, mut bus) = setup();
         use super::super::flags::{self as fl, Flag};
         cpu.ax = 0x00FF;
-        cpu.execute(0x40, &mut bus, M); // INC AX
+        exec(&mut cpu, &mut bus, 0x40); // INC AX
         assert_eq!(cpu.ax, 0x0100);
         assert!(!fl::get(cpu.flags, Flag::ZF));
     }
@@ -2452,7 +2514,7 @@ mod tests {
         let (mut cpu, mut bus) = setup();
         use super::super::flags::{self as fl, Flag};
         cpu.ax = 0x7FFF;
-        cpu.execute(0x40, &mut bus, M); // INC AX
+        exec(&mut cpu, &mut bus, 0x40); // INC AX
         assert_eq!(cpu.ax, 0x8000);
         assert!(fl::get(cpu.flags, Flag::OF));
         assert!(fl::get(cpu.flags, Flag::SF));
@@ -2464,7 +2526,7 @@ mod tests {
         use super::super::flags::{self as fl, Flag};
         fl::set(&mut cpu.flags, Flag::CF, true);
         cpu.ax = 0x0001;
-        cpu.execute(0x40, &mut bus, M); // INC AX
+        exec(&mut cpu, &mut bus, 0x40); // INC AX
         assert_eq!(cpu.ax, 0x0002);
         assert!(fl::get(cpu.flags, Flag::CF)); // CF preserved
     }
@@ -2474,7 +2536,7 @@ mod tests {
         let (mut cpu, mut bus) = setup();
         use super::super::flags::{self as fl, Flag};
         cpu.cx = 0x0001;
-        cpu.execute(0x49, &mut bus, M); // DEC CX
+        exec(&mut cpu, &mut bus, 0x49); // DEC CX
         assert_eq!(cpu.cx, 0x0000);
         assert!(fl::get(cpu.flags, Flag::ZF));
     }
@@ -2484,7 +2546,7 @@ mod tests {
         let (mut cpu, mut bus) = setup();
         for reg in 0..8u8 {
             cpu.set_reg16(reg, 0x1000);
-            cpu.execute(0x48 + reg, &mut bus, M);
+            exec(&mut cpu, &mut bus, 0x48 + reg);
             assert_eq!(cpu.get_reg16(reg), 0x0FFF);
         }
     }
@@ -2500,7 +2562,7 @@ mod tests {
         // ModR/M: mod=11 reg=000(/0=ADD) rm=000(AL) = 0xC0
         bus.mem[0x100] = 0xC0;
         bus.mem[0x101] = 0x20; // imm8
-        cpu.execute(0x80, &mut bus, M); // ADD AL, 0x20
+        exec(&mut cpu, &mut bus, 0x80); // ADD AL, 0x20
         assert_eq!(cpu.al(), 0x30);
     }
 
@@ -2512,7 +2574,7 @@ mod tests {
         bus.mem[0x100] = 0xE8;
         bus.mem[0x101] = 0x34;
         bus.mem[0x102] = 0x02; // imm16 = 0x0234
-        cpu.execute(0x81, &mut bus, M); // SUB AX, 0x0234
+        exec(&mut cpu, &mut bus, 0x81); // SUB AX, 0x0234
         assert_eq!(cpu.ax, 0x1000);
     }
 
@@ -2524,7 +2586,7 @@ mod tests {
         // ModR/M: mod=11 reg=111(/7=CMP) rm=011(BL) = 0xFB
         bus.mem[0x100] = 0xFB;
         bus.mem[0x101] = 0x42; // imm8
-        cpu.execute(0x80, &mut bus, M); // CMP BL, 0x42
+        exec(&mut cpu, &mut bus, 0x80); // CMP BL, 0x42
         assert!(fl::get(cpu.flags, Flag::ZF));
         assert_eq!(cpu.bl(), 0x42); // unchanged
     }
@@ -2536,7 +2598,7 @@ mod tests {
         // ModR/M: mod=11 reg=000(/0=ADD) rm=000(AX) = 0xC0
         bus.mem[0x100] = 0xC0;
         bus.mem[0x101] = 0xFE; // imm8 = -2 sign-extended = 0xFFFE
-        cpu.execute(0x83, &mut bus, M); // ADD AX, -2
+        exec(&mut cpu, &mut bus, 0x83); // ADD AX, -2
         assert_eq!(cpu.ax, 0x00FE);
     }
 
@@ -2547,7 +2609,7 @@ mod tests {
         // ModR/M: mod=11 reg=101(/5=SUB) rm=000(AX) = 0xE8
         bus.mem[0x100] = 0xE8;
         bus.mem[0x101] = 0x02; // imm8 = +2 sign-extended = 0x0002
-        cpu.execute(0x83, &mut bus, M); // SUB AX, 2
+        exec(&mut cpu, &mut bus, 0x83); // SUB AX, 2
         assert_eq!(cpu.ax, 0x00FE);
     }
 
@@ -2561,7 +2623,7 @@ mod tests {
         use super::super::flags::{self as fl, Flag};
         cpu.set_al(0xF0);
         bus.mem[0x100] = 0x0F;
-        cpu.execute(0xA8, &mut bus, M); // TEST AL, 0x0F
+        exec(&mut cpu, &mut bus, 0xA8); // TEST AL, 0x0F
         assert!(fl::get(cpu.flags, Flag::ZF)); // 0xF0 & 0x0F = 0
         assert!(!fl::get(cpu.flags, Flag::CF));
         assert_eq!(cpu.al(), 0xF0); // unchanged
@@ -2574,7 +2636,7 @@ mod tests {
         cpu.ax = 0xFF00;
         bus.mem[0x100] = 0x00;
         bus.mem[0x101] = 0xFF;
-        cpu.execute(0xA9, &mut bus, M); // TEST AX, 0xFF00
+        exec(&mut cpu, &mut bus, 0xA9); // TEST AX, 0xFF00
         assert!(!fl::get(cpu.flags, Flag::ZF)); // 0xFF00 & 0xFF00 != 0
         assert!(fl::get(cpu.flags, Flag::SF));
         assert_eq!(cpu.ax, 0xFF00); // unchanged
@@ -2592,7 +2654,7 @@ mod tests {
         // ModR/M: mod=11 reg=000(/0=TEST) rm=000(AL) = 0xC0
         bus.mem[0x100] = 0xC0;
         bus.mem[0x101] = 0x55; // imm8
-        cpu.execute(0xF6, &mut bus, M); // TEST AL, 0x55
+        exec(&mut cpu, &mut bus, 0xF6); // TEST AL, 0x55
         assert!(fl::get(cpu.flags, Flag::ZF)); // 0xAA & 0x55 = 0
         assert_eq!(cpu.al(), 0xAA); // unchanged
     }
@@ -2607,7 +2669,7 @@ mod tests {
         cpu.set_al(0xA5);
         // ModR/M: mod=11 reg=010(/2=NOT) rm=000(AL) = 0xD0
         bus.mem[0x100] = 0xD0;
-        cpu.execute(0xF6, &mut bus, M); // NOT AL
+        exec(&mut cpu, &mut bus, 0xF6); // NOT AL
         assert_eq!(cpu.al(), 0x5A);
     }
 
@@ -2617,7 +2679,7 @@ mod tests {
         cpu.ax = 0xFF00;
         // ModR/M: mod=11 reg=010(/2=NOT) rm=000(AX) = 0xD0
         bus.mem[0x100] = 0xD0;
-        cpu.execute(0xF7, &mut bus, M); // NOT AX
+        exec(&mut cpu, &mut bus, 0xF7); // NOT AX
         assert_eq!(cpu.ax, 0x00FF);
     }
 
@@ -2632,7 +2694,7 @@ mod tests {
         cpu.set_al(0x01);
         // ModR/M: mod=11 reg=011(/3=NEG) rm=000(AL) = 0xD8
         bus.mem[0x100] = 0xD8;
-        cpu.execute(0xF6, &mut bus, M); // NEG AL
+        exec(&mut cpu, &mut bus, 0xF6); // NEG AL
         assert_eq!(cpu.al(), 0xFF);
         assert!(fl::get(cpu.flags, Flag::CF));
         assert!(fl::get(cpu.flags, Flag::SF));
@@ -2644,7 +2706,7 @@ mod tests {
         use super::super::flags::{self as fl, Flag};
         cpu.set_al(0x00);
         bus.mem[0x100] = 0xD8;
-        cpu.execute(0xF6, &mut bus, M); // NEG AL
+        exec(&mut cpu, &mut bus, 0xF6); // NEG AL
         assert_eq!(cpu.al(), 0x00);
         assert!(!fl::get(cpu.flags, Flag::CF));
         assert!(fl::get(cpu.flags, Flag::ZF));
@@ -2656,7 +2718,7 @@ mod tests {
         use super::super::flags::{self as fl, Flag};
         cpu.ax = 0x0001;
         bus.mem[0x100] = 0xD8;
-        cpu.execute(0xF7, &mut bus, M); // NEG AX
+        exec(&mut cpu, &mut bus, 0xF7); // NEG AX
         assert_eq!(cpu.ax, 0xFFFF);
         assert!(fl::get(cpu.flags, Flag::CF));
     }
@@ -2671,7 +2733,7 @@ mod tests {
         cpu.set_al(0x7F);
         // ModR/M: mod=11 reg=000(/0=INC) rm=000(AL) = 0xC0
         bus.mem[0x100] = 0xC0;
-        cpu.execute(0xFE, &mut bus, M); // INC AL
+        exec(&mut cpu, &mut bus, 0xFE); // INC AL
         assert_eq!(cpu.al(), 0x80);
     }
 
@@ -2681,7 +2743,7 @@ mod tests {
         cpu.set_al(0x01);
         // ModR/M: mod=11 reg=001(/1=DEC) rm=000(AL) = 0xC8
         bus.mem[0x100] = 0xC8;
-        cpu.execute(0xFE, &mut bus, M); // DEC AL
+        exec(&mut cpu, &mut bus, 0xFE); // DEC AL
         assert_eq!(cpu.al(), 0x00);
     }
 
@@ -2697,7 +2759,7 @@ mod tests {
         bus.mem[0x20051] = 0x00; // [BX] = 0x00FF
         // ModR/M: mod=00 reg=000(/0=INC) rm=111([BX]) = 0x07
         bus.mem[0x100] = 0x07;
-        cpu.execute(0xFF, &mut bus, M); // INC WORD [BX]
+        exec(&mut cpu, &mut bus, 0xFF); // INC WORD [BX]
         assert_eq!(bus.mem[0x20050], 0x00);
         assert_eq!(bus.mem[0x20051], 0x01); // 0x00FF → 0x0100
     }
@@ -2708,7 +2770,7 @@ mod tests {
         cpu.ax = 0x0100;
         // ModR/M: mod=11 reg=001(/1=DEC) rm=000(AX) = 0xC8
         bus.mem[0x100] = 0xC8;
-        cpu.execute(0xFF, &mut bus, M); // DEC AX
+        exec(&mut cpu, &mut bus, 0xFF); // DEC AX
         assert_eq!(cpu.ax, 0x00FF);
     }
 
@@ -2720,7 +2782,7 @@ mod tests {
     fn jmp_short_forward() {
         let (mut cpu, mut bus) = setup();
         bus.mem[0x100] = 0x10; // disp8 = +16
-        cpu.execute(0xEB, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0xEB);
         // IP was 0x100, fetch consumed 1 byte → IP=0x101, then +16 = 0x111
         assert_eq!(cpu.ip, 0x0111);
     }
@@ -2729,7 +2791,7 @@ mod tests {
     fn jmp_short_backward() {
         let (mut cpu, mut bus) = setup();
         bus.mem[0x100] = 0xFE_u8; // disp8 = -2 (signed)
-        cpu.execute(0xEB, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0xEB);
         // IP was 0x100, fetch consumed 1 byte → IP=0x101, then -2 = 0xFF
         assert_eq!(cpu.ip, 0x00FF);
     }
@@ -2743,7 +2805,7 @@ mod tests {
         let (mut cpu, mut bus) = setup();
         bus.mem[0x100] = 0x00; // disp16 low
         bus.mem[0x101] = 0x10; // disp16 high = 0x1000
-        cpu.execute(0xE9, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0xE9);
         // IP=0x100, fetch word consumed 2 → IP=0x102, then +0x1000 = 0x1102
         assert_eq!(cpu.ip, 0x1102);
     }
@@ -2754,7 +2816,7 @@ mod tests {
         // disp16 = -0x0050 = 0xFFB0
         bus.mem[0x100] = 0xB0;
         bus.mem[0x101] = 0xFF;
-        cpu.execute(0xE9, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0xE9);
         // IP=0x102 + 0xFFB0 = 0x00B2 (wrapping 16-bit)
         assert_eq!(cpu.ip, 0x00B2);
     }
@@ -2770,7 +2832,7 @@ mod tests {
         bus.mem[0x101] = 0x01; // offset high = 0x0100
         bus.mem[0x102] = 0x00; // segment low
         bus.mem[0x103] = 0xF0; // segment high = 0xF000
-        cpu.execute(0xEA, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0xEA);
         assert_eq!(cpu.ip, 0x0100);
         assert_eq!(cpu.cs, 0xF000);
     }
@@ -2785,7 +2847,7 @@ mod tests {
         cpu.ax = 0x5678;
         // ModR/M: mod=11 reg=100(/4=JMP near) rm=000(AX) = 0xE0
         bus.mem[0x100] = 0xE0;
-        cpu.execute(0xFF, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0xFF);
         assert_eq!(cpu.ip, 0x5678);
     }
 
@@ -2798,7 +2860,7 @@ mod tests {
         bus.mem[0x20051] = 0x12; // target = 0x1234
         // ModR/M: mod=00 reg=100(/4) rm=111([BX]) = 0x27
         bus.mem[0x100] = 0x27;
-        cpu.execute(0xFF, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0xFF);
         assert_eq!(cpu.ip, 0x1234);
     }
 
@@ -2813,7 +2875,7 @@ mod tests {
         bus.mem[0x20063] = 0xA0; // segment high = 0xA000
         // ModR/M: mod=00 reg=101(/5) rm=111([BX]) = 0x2F
         bus.mem[0x100] = 0x2F;
-        cpu.execute(0xFF, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0xFF);
         assert_eq!(cpu.ip, 0x0200);
         assert_eq!(cpu.cs, 0xA000);
     }
@@ -2828,7 +2890,7 @@ mod tests {
         let old_sp = cpu.sp;
         bus.mem[0x100] = 0x00; // disp16 low
         bus.mem[0x101] = 0x05; // disp16 high = 0x0500
-        cpu.execute(0xE8, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0xE8);
         // IP=0x100, fetch word → IP=0x102, push 0x102, then IP = 0x102 + 0x0500 = 0x0602
         assert_eq!(cpu.ip, 0x0602);
         assert_eq!(cpu.sp, old_sp.wrapping_sub(2));
@@ -2850,7 +2912,7 @@ mod tests {
         bus.mem[0x101] = 0x02; // offset high = 0x0200
         bus.mem[0x102] = 0x00; // segment low
         bus.mem[0x103] = 0xB0; // segment high = 0xB000
-        cpu.execute(0x9A, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0x9A);
         assert_eq!(cpu.ip, 0x0200);
         assert_eq!(cpu.cs, 0xB000);
         assert_eq!(cpu.sp, old_sp.wrapping_sub(4));
@@ -2871,7 +2933,7 @@ mod tests {
         cpu.ax = 0x4000;
         // ModR/M: mod=11 reg=010(/2=CALL near) rm=000(AX) = 0xD0
         bus.mem[0x100] = 0xD0;
-        cpu.execute(0xFF, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0xFF);
         assert_eq!(cpu.ip, 0x4000);
         // Return address pushed
         let ret_addr = cpu.read_word(&mut bus, M, cpu.ss, cpu.sp);
@@ -2890,7 +2952,7 @@ mod tests {
         bus.mem[0x20073] = 0xC0; // new CS = 0xC000
         // ModR/M: mod=00 reg=011(/3=CALL far) rm=111([BX]) = 0x1F
         bus.mem[0x100] = 0x1F;
-        cpu.execute(0xFF, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0xFF);
         assert_eq!(cpu.ip, 0x0300);
         assert_eq!(cpu.cs, 0xC000);
         // Verify stacked CS:IP
@@ -2909,7 +2971,7 @@ mod tests {
         let (mut cpu, mut bus) = setup();
         // Simulate a CALL: push return address
         cpu.push16(&mut bus, M, 0x0200);
-        cpu.execute(0xC3, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0xC3);
         assert_eq!(cpu.ip, 0x0200);
     }
 
@@ -2920,7 +2982,7 @@ mod tests {
         cpu.push16(&mut bus, M, 0x0300);
         bus.mem[0x100] = 0x04; // imm16 low
         bus.mem[0x101] = 0x00; // imm16 high = 4
-        cpu.execute(0xC2, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0xC2);
         assert_eq!(cpu.ip, 0x0300);
         // SP = old_sp (pushed 2, popped 2) + 4 = old_sp + 4
         assert_eq!(cpu.sp, old_sp.wrapping_add(4));
@@ -2936,7 +2998,7 @@ mod tests {
         // Simulate a far CALL: push CS then IP
         cpu.push16(&mut bus, M, 0xF000); // CS
         cpu.push16(&mut bus, M, 0x1234); // IP
-        cpu.execute(0xCB, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0xCB);
         assert_eq!(cpu.ip, 0x1234);
         assert_eq!(cpu.cs, 0xF000);
     }
@@ -2949,7 +3011,7 @@ mod tests {
         cpu.push16(&mut bus, M, 0x5678); // IP
         bus.mem[0x100] = 0x06; // imm16 low
         bus.mem[0x101] = 0x00; // imm16 high = 6
-        cpu.execute(0xCA, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0xCA);
         assert_eq!(cpu.ip, 0x5678);
         assert_eq!(cpu.cs, 0xA000);
         // SP: pushed 4, popped 4, then +6
@@ -2967,10 +3029,10 @@ mod tests {
         // CALL near: disp = 0x0100
         bus.mem[0x100] = 0x00;
         bus.mem[0x101] = 0x01;
-        cpu.execute(0xE8, &mut bus, M); // CALL 0x0100
+        exec(&mut cpu, &mut bus, 0xE8); // CALL 0x0100
         assert_eq!(cpu.ip, 0x0202); // 0x102 + 0x100
         // Now RET
-        cpu.execute(0xC3, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0xC3);
         assert_eq!(cpu.ip, 0x0102); // return address
         assert_eq!(cpu.sp, old_sp);
     }
@@ -2985,11 +3047,11 @@ mod tests {
         bus.mem[0x101] = 0x03;
         bus.mem[0x102] = 0x00;
         bus.mem[0x103] = 0xD0;
-        cpu.execute(0x9A, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0x9A);
         assert_eq!(cpu.ip, 0x0300);
         assert_eq!(cpu.cs, 0xD000);
         // Now RETF
-        cpu.execute(0xCB, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0xCB);
         assert_eq!(cpu.ip, 0x0104);
         assert_eq!(cpu.cs, old_cs);
         assert_eq!(cpu.sp, old_sp);
@@ -3005,7 +3067,7 @@ mod tests {
         use super::super::flags::{self as fl, Flag};
         fl::set(&mut cpu.flags, Flag::OF, true);
         bus.mem[0x100] = 0x10; // disp8 = +16
-        cpu.execute(0x70, &mut bus, M); // JO
+        exec(&mut cpu, &mut bus, 0x70); // JO
         assert_eq!(cpu.ip, 0x0111);
     }
 
@@ -3015,7 +3077,7 @@ mod tests {
         use super::super::flags::{self as fl, Flag};
         fl::set(&mut cpu.flags, Flag::OF, false);
         bus.mem[0x100] = 0x10;
-        cpu.execute(0x70, &mut bus, M); // JO
+        exec(&mut cpu, &mut bus, 0x70); // JO
         assert_eq!(cpu.ip, 0x0101); // only the disp byte consumed
     }
 
@@ -3025,7 +3087,7 @@ mod tests {
         use super::super::flags::{self as fl, Flag};
         fl::set(&mut cpu.flags, Flag::OF, false);
         bus.mem[0x100] = 0x10;
-        cpu.execute(0x71, &mut bus, M); // JNO
+        exec(&mut cpu, &mut bus, 0x71); // JNO
         assert_eq!(cpu.ip, 0x0111);
     }
 
@@ -3035,7 +3097,7 @@ mod tests {
         use super::super::flags::{self as fl, Flag};
         fl::set(&mut cpu.flags, Flag::CF, true);
         bus.mem[0x100] = 0x20;
-        cpu.execute(0x72, &mut bus, M); // JB/JC
+        exec(&mut cpu, &mut bus, 0x72); // JB/JC
         assert_eq!(cpu.ip, 0x0121);
     }
 
@@ -3045,7 +3107,7 @@ mod tests {
         use super::super::flags::{self as fl, Flag};
         fl::set(&mut cpu.flags, Flag::CF, false);
         bus.mem[0x100] = 0x20;
-        cpu.execute(0x73, &mut bus, M); // JNB/JNC
+        exec(&mut cpu, &mut bus, 0x73); // JNB/JNC
         assert_eq!(cpu.ip, 0x0121);
     }
 
@@ -3055,7 +3117,7 @@ mod tests {
         use super::super::flags::{self as fl, Flag};
         fl::set(&mut cpu.flags, Flag::ZF, true);
         bus.mem[0x100] = 0x05;
-        cpu.execute(0x74, &mut bus, M); // JZ/JE
+        exec(&mut cpu, &mut bus, 0x74); // JZ/JE
         assert_eq!(cpu.ip, 0x0106);
     }
 
@@ -3065,7 +3127,7 @@ mod tests {
         use super::super::flags::{self as fl, Flag};
         fl::set(&mut cpu.flags, Flag::ZF, false);
         bus.mem[0x100] = 0x05;
-        cpu.execute(0x75, &mut bus, M); // JNZ/JNE
+        exec(&mut cpu, &mut bus, 0x75); // JNZ/JNE
         assert_eq!(cpu.ip, 0x0106);
     }
 
@@ -3075,7 +3137,7 @@ mod tests {
         use super::super::flags::{self as fl, Flag};
         fl::set(&mut cpu.flags, Flag::ZF, true);
         bus.mem[0x100] = 0x05;
-        cpu.execute(0x76, &mut bus, M); // JBE
+        exec(&mut cpu, &mut bus, 0x76); // JBE
         assert_eq!(cpu.ip, 0x0106);
     }
 
@@ -3085,7 +3147,7 @@ mod tests {
         use super::super::flags::{self as fl, Flag};
         fl::set(&mut cpu.flags, Flag::CF, true);
         bus.mem[0x100] = 0x05;
-        cpu.execute(0x76, &mut bus, M); // JBE
+        exec(&mut cpu, &mut bus, 0x76); // JBE
         assert_eq!(cpu.ip, 0x0106);
     }
 
@@ -3096,7 +3158,7 @@ mod tests {
         fl::set(&mut cpu.flags, Flag::CF, false);
         fl::set(&mut cpu.flags, Flag::ZF, false);
         bus.mem[0x100] = 0x05;
-        cpu.execute(0x77, &mut bus, M); // JA/JNBE
+        exec(&mut cpu, &mut bus, 0x77); // JA/JNBE
         assert_eq!(cpu.ip, 0x0106);
     }
 
@@ -3107,7 +3169,7 @@ mod tests {
         fl::set(&mut cpu.flags, Flag::CF, true);
         fl::set(&mut cpu.flags, Flag::ZF, false);
         bus.mem[0x100] = 0x05;
-        cpu.execute(0x77, &mut bus, M); // JA not taken (CF=1)
+        exec(&mut cpu, &mut bus, 0x77); // JA not taken (CF=1)
         assert_eq!(cpu.ip, 0x0101);
     }
 
@@ -3117,7 +3179,7 @@ mod tests {
         use super::super::flags::{self as fl, Flag};
         fl::set(&mut cpu.flags, Flag::SF, true);
         bus.mem[0x100] = 0x05;
-        cpu.execute(0x78, &mut bus, M); // JS
+        exec(&mut cpu, &mut bus, 0x78); // JS
         assert_eq!(cpu.ip, 0x0106);
     }
 
@@ -3127,7 +3189,7 @@ mod tests {
         use super::super::flags::{self as fl, Flag};
         fl::set(&mut cpu.flags, Flag::SF, false);
         bus.mem[0x100] = 0x05;
-        cpu.execute(0x79, &mut bus, M); // JNS
+        exec(&mut cpu, &mut bus, 0x79); // JNS
         assert_eq!(cpu.ip, 0x0106);
     }
 
@@ -3137,7 +3199,7 @@ mod tests {
         use super::super::flags::{self as fl, Flag};
         fl::set(&mut cpu.flags, Flag::PF, true);
         bus.mem[0x100] = 0x05;
-        cpu.execute(0x7A, &mut bus, M); // JP/JPE
+        exec(&mut cpu, &mut bus, 0x7A); // JP/JPE
         assert_eq!(cpu.ip, 0x0106);
     }
 
@@ -3147,7 +3209,7 @@ mod tests {
         use super::super::flags::{self as fl, Flag};
         fl::set(&mut cpu.flags, Flag::PF, false);
         bus.mem[0x100] = 0x05;
-        cpu.execute(0x7B, &mut bus, M); // JNP/JPO
+        exec(&mut cpu, &mut bus, 0x7B); // JNP/JPO
         assert_eq!(cpu.ip, 0x0106);
     }
 
@@ -3159,7 +3221,7 @@ mod tests {
         fl::set(&mut cpu.flags, Flag::SF, true);
         fl::set(&mut cpu.flags, Flag::OF, false);
         bus.mem[0x100] = 0x05;
-        cpu.execute(0x7C, &mut bus, M); // JL
+        exec(&mut cpu, &mut bus, 0x7C); // JL
         assert_eq!(cpu.ip, 0x0106);
     }
 
@@ -3171,7 +3233,7 @@ mod tests {
         fl::set(&mut cpu.flags, Flag::SF, true);
         fl::set(&mut cpu.flags, Flag::OF, true);
         bus.mem[0x100] = 0x05;
-        cpu.execute(0x7C, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0x7C);
         assert_eq!(cpu.ip, 0x0101);
     }
 
@@ -3183,7 +3245,7 @@ mod tests {
         fl::set(&mut cpu.flags, Flag::SF, false);
         fl::set(&mut cpu.flags, Flag::OF, false);
         bus.mem[0x100] = 0x05;
-        cpu.execute(0x7D, &mut bus, M); // JGE
+        exec(&mut cpu, &mut bus, 0x7D); // JGE
         assert_eq!(cpu.ip, 0x0106);
     }
 
@@ -3193,7 +3255,7 @@ mod tests {
         use super::super::flags::{self as fl, Flag};
         fl::set(&mut cpu.flags, Flag::ZF, true);
         bus.mem[0x100] = 0x05;
-        cpu.execute(0x7E, &mut bus, M); // JLE
+        exec(&mut cpu, &mut bus, 0x7E); // JLE
         assert_eq!(cpu.ip, 0x0106);
     }
 
@@ -3205,7 +3267,7 @@ mod tests {
         fl::set(&mut cpu.flags, Flag::OF, false);
         fl::set(&mut cpu.flags, Flag::ZF, false);
         bus.mem[0x100] = 0x05;
-        cpu.execute(0x7E, &mut bus, M); // JLE
+        exec(&mut cpu, &mut bus, 0x7E); // JLE
         assert_eq!(cpu.ip, 0x0106);
     }
 
@@ -3218,7 +3280,7 @@ mod tests {
         fl::set(&mut cpu.flags, Flag::SF, false);
         fl::set(&mut cpu.flags, Flag::OF, false);
         bus.mem[0x100] = 0x05;
-        cpu.execute(0x7F, &mut bus, M); // JG
+        exec(&mut cpu, &mut bus, 0x7F); // JG
         assert_eq!(cpu.ip, 0x0106);
     }
 
@@ -3231,7 +3293,7 @@ mod tests {
         fl::set(&mut cpu.flags, Flag::SF, false);
         fl::set(&mut cpu.flags, Flag::OF, false);
         bus.mem[0x100] = 0x05;
-        cpu.execute(0x7F, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0x7F);
         assert_eq!(cpu.ip, 0x0101);
     }
 
@@ -3244,7 +3306,7 @@ mod tests {
         let (mut cpu, mut bus) = setup();
         cpu.cx = 3;
         bus.mem[0x100] = 0xFE_u8; // disp8 = -2
-        cpu.execute(0xE2, &mut bus, M); // LOOP
+        exec(&mut cpu, &mut bus, 0xE2); // LOOP
         assert_eq!(cpu.cx, 2);
         assert_eq!(cpu.ip, 0x00FF); // 0x101 - 2
     }
@@ -3254,7 +3316,7 @@ mod tests {
         let (mut cpu, mut bus) = setup();
         cpu.cx = 1; // will decrement to 0
         bus.mem[0x100] = 0xFE_u8;
-        cpu.execute(0xE2, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0xE2);
         assert_eq!(cpu.cx, 0);
         assert_eq!(cpu.ip, 0x0101); // no jump
     }
@@ -3266,7 +3328,7 @@ mod tests {
         cpu.cx = 5;
         fl::set(&mut cpu.flags, Flag::ZF, true);
         bus.mem[0x100] = 0x10;
-        cpu.execute(0xE1, &mut bus, M); // LOOPZ
+        exec(&mut cpu, &mut bus, 0xE1); // LOOPZ
         assert_eq!(cpu.cx, 4);
         assert_eq!(cpu.ip, 0x0111);
     }
@@ -3278,7 +3340,7 @@ mod tests {
         cpu.cx = 5;
         fl::set(&mut cpu.flags, Flag::ZF, false);
         bus.mem[0x100] = 0x10;
-        cpu.execute(0xE1, &mut bus, M); // LOOPZ
+        exec(&mut cpu, &mut bus, 0xE1); // LOOPZ
         assert_eq!(cpu.cx, 4);
         assert_eq!(cpu.ip, 0x0101); // no jump
     }
@@ -3290,7 +3352,7 @@ mod tests {
         cpu.cx = 5;
         fl::set(&mut cpu.flags, Flag::ZF, false);
         bus.mem[0x100] = 0x10;
-        cpu.execute(0xE0, &mut bus, M); // LOOPNZ
+        exec(&mut cpu, &mut bus, 0xE0); // LOOPNZ
         assert_eq!(cpu.cx, 4);
         assert_eq!(cpu.ip, 0x0111);
     }
@@ -3302,7 +3364,7 @@ mod tests {
         cpu.cx = 5;
         fl::set(&mut cpu.flags, Flag::ZF, true);
         bus.mem[0x100] = 0x10;
-        cpu.execute(0xE0, &mut bus, M); // LOOPNZ
+        exec(&mut cpu, &mut bus, 0xE0); // LOOPNZ
         assert_eq!(cpu.cx, 4);
         assert_eq!(cpu.ip, 0x0101); // no jump
     }
@@ -3312,7 +3374,7 @@ mod tests {
         let (mut cpu, mut bus) = setup();
         cpu.cx = 0;
         bus.mem[0x100] = 0x10;
-        cpu.execute(0xE3, &mut bus, M); // JCXZ
+        exec(&mut cpu, &mut bus, 0xE3); // JCXZ
         assert_eq!(cpu.ip, 0x0111);
         assert_eq!(cpu.cx, 0); // unchanged
     }
@@ -3322,7 +3384,7 @@ mod tests {
         let (mut cpu, mut bus) = setup();
         cpu.cx = 1;
         bus.mem[0x100] = 0x10;
-        cpu.execute(0xE3, &mut bus, M); // JCXZ
+        exec(&mut cpu, &mut bus, 0xE3); // JCXZ
         assert_eq!(cpu.ip, 0x0101); // no jump
         assert_eq!(cpu.cx, 1); // unchanged
     }
@@ -3339,7 +3401,7 @@ mod tests {
         bus.mem[0x20050] = 0x20; // [DS:BX] = 0x20
         // ModR/M: mod=00 reg=000(AL) rm=111([BX]) = 0x07
         bus.mem[0x100] = 0x07;
-        cpu.execute(0x00, &mut bus, M); // ADD [BX], AL
+        exec(&mut cpu, &mut bus, 0x00); // ADD [BX], AL
         assert_eq!(bus.mem[0x20050], 0x30);
     }
 
@@ -3353,7 +3415,7 @@ mod tests {
         bus.mem[0x20061] = 0x50; // [BX] = 0x5000
         // ModR/M: mod=00 reg=000(AX) rm=111([BX]) = 0x07
         bus.mem[0x100] = 0x07;
-        cpu.execute(0x3B, &mut bus, M); // CMP AX, [BX]
+        exec(&mut cpu, &mut bus, 0x3B); // CMP AX, [BX]
         assert!(fl::get(cpu.flags, Flag::ZF));
         assert_eq!(cpu.ax, 0x5000); // unchanged
     }
@@ -3369,7 +3431,7 @@ mod tests {
         // 0x7F + 0x01 = 0x80 (127 + 1 = -128 in signed)
         cpu.set_al(0x7F);
         bus.mem[0x100] = 0x01;
-        cpu.execute(0x04, &mut bus, M); // ADD AL, 0x01
+        exec(&mut cpu, &mut bus, 0x04); // ADD AL, 0x01
         assert_eq!(cpu.al(), 0x80);
         assert!(fl::get(cpu.flags, Flag::OF));
         assert!(fl::get(cpu.flags, Flag::SF));
@@ -3383,7 +3445,7 @@ mod tests {
         // 0x80 - 0x01 = 0x7F (-128 - 1 = 127 in signed)
         cpu.set_al(0x80);
         bus.mem[0x100] = 0x01;
-        cpu.execute(0x2C, &mut bus, M); // SUB AL, 0x01
+        exec(&mut cpu, &mut bus, 0x2C); // SUB AL, 0x01
         assert_eq!(cpu.al(), 0x7F);
         assert!(fl::get(cpu.flags, Flag::OF));
         assert!(fl::get(cpu.flags, Flag::AF));
@@ -3400,7 +3462,7 @@ mod tests {
         cpu.set_al(0x80);
         // ModR/M: mod=11 reg=100(/4=SHL) rm=000(AL) = 0xE0
         bus.mem[0x100] = 0xE0;
-        cpu.execute(0xD0, &mut bus, M); // SHL AL, 1
+        exec(&mut cpu, &mut bus, 0xD0); // SHL AL, 1
         assert_eq!(cpu.al(), 0x00);
         assert!(fl::get(cpu.flags, Flag::CF));
         assert!(fl::get(cpu.flags, Flag::ZF));
@@ -3412,7 +3474,7 @@ mod tests {
         cpu.set_al(0x01);
         cpu.set_cl(4);
         bus.mem[0x100] = 0xE0;
-        cpu.execute(0xD2, &mut bus, M); // SHL AL, CL
+        exec(&mut cpu, &mut bus, 0xD2); // SHL AL, CL
         assert_eq!(cpu.al(), 0x10);
     }
 
@@ -3427,7 +3489,7 @@ mod tests {
         cpu.set_al(0x03);
         // ModR/M: mod=11 reg=101(/5=SHR) rm=000(AL) = 0xE8
         bus.mem[0x100] = 0xE8;
-        cpu.execute(0xD0, &mut bus, M); // SHR AL, 1
+        exec(&mut cpu, &mut bus, 0xD0); // SHR AL, 1
         assert_eq!(cpu.al(), 0x01);
         assert!(fl::get(cpu.flags, Flag::CF)); // bit 0 was 1
     }
@@ -3443,7 +3505,7 @@ mod tests {
         cpu.set_al(0x80); // -128
         // ModR/M: mod=11 reg=111(/7=SAR) rm=000(AL) = 0xF8
         bus.mem[0x100] = 0xF8;
-        cpu.execute(0xD0, &mut bus, M); // SAR AL, 1
+        exec(&mut cpu, &mut bus, 0xD0); // SAR AL, 1
         assert_eq!(cpu.al(), 0xC0); // -64, sign preserved
         assert!(!fl::get(cpu.flags, Flag::CF));
         assert!(!fl::get(cpu.flags, Flag::OF));
@@ -3461,7 +3523,7 @@ mod tests {
         cpu.set_al(0x80);
         // ModR/M: mod=11 reg=000(/0=ROL) rm=000(AL) = 0xC0
         bus.mem[0x100] = 0xC0;
-        cpu.execute(0xD0, &mut bus, M); // ROL AL, 1
+        exec(&mut cpu, &mut bus, 0xD0); // ROL AL, 1
         assert_eq!(cpu.al(), 0x01);
         assert!(fl::get(cpu.flags, Flag::CF));
     }
@@ -3477,7 +3539,7 @@ mod tests {
         cpu.set_al(0x01);
         // ModR/M: mod=11 reg=001(/1=ROR) rm=000(AL) = 0xC8
         bus.mem[0x100] = 0xC8;
-        cpu.execute(0xD0, &mut bus, M); // ROR AL, 1
+        exec(&mut cpu, &mut bus, 0xD0); // ROR AL, 1
         assert_eq!(cpu.al(), 0x80);
         assert!(fl::get(cpu.flags, Flag::CF));
     }
@@ -3494,7 +3556,7 @@ mod tests {
         cpu.set_al(0x00);
         // ModR/M: mod=11 reg=010(/2=RCL) rm=000(AL) = 0xD0
         bus.mem[0x100] = 0xD0;
-        cpu.execute(0xD0, &mut bus, M); // RCL AL, 1
+        exec(&mut cpu, &mut bus, 0xD0); // RCL AL, 1
         assert_eq!(cpu.al(), 0x01); // CF rotated in
         assert!(!fl::get(cpu.flags, Flag::CF)); // old bit 7 (0) → CF
     }
@@ -3511,7 +3573,7 @@ mod tests {
         cpu.set_al(0x00);
         // ModR/M: mod=11 reg=011(/3=RCR) rm=000(AL) = 0xD8
         bus.mem[0x100] = 0xD8;
-        cpu.execute(0xD0, &mut bus, M); // RCR AL, 1
+        exec(&mut cpu, &mut bus, 0xD0); // RCR AL, 1
         assert_eq!(cpu.al(), 0x80); // CF rotated into MSB
         assert!(!fl::get(cpu.flags, Flag::CF)); // old bit 0 (0) → CF
     }
@@ -3527,7 +3589,7 @@ mod tests {
         cpu.ax = 0x8000;
         // ModR/M: mod=11 reg=100(/4=SHL) rm=000(AX) = 0xE0
         bus.mem[0x100] = 0xE0;
-        cpu.execute(0xD1, &mut bus, M); // SHL AX, 1
+        exec(&mut cpu, &mut bus, 0xD1); // SHL AX, 1
         assert_eq!(cpu.ax, 0x0000);
         assert!(fl::get(cpu.flags, Flag::CF));
     }
@@ -3538,7 +3600,7 @@ mod tests {
         cpu.ax = 0xFF00;
         cpu.set_cl(8);
         bus.mem[0x100] = 0xE8; // mod=11 reg=101(/5=SHR) rm=000(AX)
-        cpu.execute(0xD3, &mut bus, M); // SHR AX, CL
+        exec(&mut cpu, &mut bus, 0xD3); // SHR AX, CL
         assert_eq!(cpu.ax, 0x00FF);
     }
 
@@ -3554,7 +3616,7 @@ mod tests {
         cpu.set_bl(0x10);
         // ModR/M: mod=11 reg=100(/4=MUL) rm=011(BL) = 0xE3
         bus.mem[0x100] = 0xE3;
-        cpu.execute(0xF6, &mut bus, M); // MUL BL
+        exec(&mut cpu, &mut bus, 0xF6); // MUL BL
         assert_eq!(cpu.ax, 0x0100); // 16 * 16 = 256
         assert!(fl::get(cpu.flags, Flag::CF)); // AH != 0
         assert!(fl::get(cpu.flags, Flag::OF));
@@ -3567,7 +3629,7 @@ mod tests {
         cpu.set_al(0x03);
         cpu.set_bl(0x04);
         bus.mem[0x100] = 0xE3;
-        cpu.execute(0xF6, &mut bus, M); // MUL BL
+        exec(&mut cpu, &mut bus, 0xF6); // MUL BL
         assert_eq!(cpu.ax, 0x000C); // 3 * 4 = 12
         assert!(!fl::get(cpu.flags, Flag::CF)); // AH == 0
     }
@@ -3584,7 +3646,7 @@ mod tests {
         cpu.set_bl(0x02); // +2
         // ModR/M: mod=11 reg=101(/5=IMUL) rm=011(BL) = 0xEB
         bus.mem[0x100] = 0xEB;
-        cpu.execute(0xF6, &mut bus, M); // IMUL BL
+        exec(&mut cpu, &mut bus, 0xF6); // IMUL BL
         assert_eq!(cpu.ax, 0xFFFE); // -2 as u16
         assert!(!fl::get(cpu.flags, Flag::CF)); // fits in 8-bit signed
     }
@@ -3596,7 +3658,7 @@ mod tests {
         cpu.set_al(0x40); // +64
         cpu.set_bl(0x04); // +4
         bus.mem[0x100] = 0xEB;
-        cpu.execute(0xF6, &mut bus, M); // IMUL BL
+        exec(&mut cpu, &mut bus, 0xF6); // IMUL BL
         assert_eq!(cpu.ax, 0x0100); // 64*4 = 256, doesn't fit in i8
         assert!(fl::get(cpu.flags, Flag::CF));
         assert!(fl::get(cpu.flags, Flag::OF));
@@ -3614,7 +3676,7 @@ mod tests {
         cpu.bx = 0x0100;
         // ModR/M: mod=11 reg=100(/4=MUL) rm=011(BX) = 0xE3
         bus.mem[0x100] = 0xE3;
-        cpu.execute(0xF7, &mut bus, M); // MUL BX
+        exec(&mut cpu, &mut bus, 0xF7); // MUL BX
         assert_eq!(cpu.ax, 0x0000);
         assert_eq!(cpu.dx, 0x0001); // 256 * 256 = 65536
         assert!(fl::get(cpu.flags, Flag::CF));
@@ -3632,7 +3694,7 @@ mod tests {
         cpu.set_bl(0x0A); // 10
         // ModR/M: mod=11 reg=110(/6=DIV) rm=011(BL) = 0xF3
         bus.mem[0x100] = 0xF3;
-        cpu.execute(0xF6, &mut bus, M); // DIV BL
+        exec(&mut cpu, &mut bus, 0xF6); // DIV BL
         assert_eq!(cpu.al(), 0x0A); // 100 / 10 = 10
         assert_eq!(cpu.ah(), 0x00); // 100 % 10 = 0
     }
@@ -3643,7 +3705,7 @@ mod tests {
         cpu.ax = 0x000B; // 11
         cpu.set_bl(0x03); // 3
         bus.mem[0x100] = 0xF3;
-        cpu.execute(0xF6, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0xF6);
         assert_eq!(cpu.al(), 0x03); // 11 / 3 = 3
         assert_eq!(cpu.ah(), 0x02); // 11 % 3 = 2
     }
@@ -3659,7 +3721,7 @@ mod tests {
         cpu.set_bl(0x03); // +3
         // ModR/M: mod=11 reg=111(/7=IDIV) rm=011(BL) = 0xFB
         bus.mem[0x100] = 0xFB;
-        cpu.execute(0xF6, &mut bus, M); // IDIV BL
+        exec(&mut cpu, &mut bus, 0xF6); // IDIV BL
         assert_eq!(cpu.al() as i8, -3); // -10 / 3 = -3
         assert_eq!(cpu.ah() as i8, -1); // -10 % 3 = -1
     }
@@ -3676,7 +3738,7 @@ mod tests {
         cpu.bx = 0x000A; // 10
         // ModR/M: mod=11 reg=110(/6=DIV) rm=011(BX) = 0xF3
         bus.mem[0x100] = 0xF3;
-        cpu.execute(0xF7, &mut bus, M); // DIV BX
+        exec(&mut cpu, &mut bus, 0xF7); // DIV BX
         assert_eq!(cpu.ax, 0x0064); // 1000 / 10 = 100
         assert_eq!(cpu.dx, 0x0000); // 1000 % 10 = 0
     }
@@ -3688,7 +3750,7 @@ mod tests {
         cpu.ax = 0x0000; // DX:AX = 0x10000 = 65536
         cpu.bx = 0x0100; // 256
         bus.mem[0x100] = 0xF3;
-        cpu.execute(0xF7, &mut bus, M); // DIV BX
+        exec(&mut cpu, &mut bus, 0xF7); // DIV BX
         assert_eq!(cpu.ax, 0x0100); // 65536 / 256 = 256
         assert_eq!(cpu.dx, 0x0000);
     }
@@ -3704,7 +3766,7 @@ mod tests {
         cpu.ax = 0xFFFF; // -1 signed
         cpu.bx = 0x0002; // +2
         bus.mem[0x100] = 0xEB; // mod=11 reg=101(/5=IMUL) rm=011(BX)
-        cpu.execute(0xF7, &mut bus, M); // IMUL BX
+        exec(&mut cpu, &mut bus, 0xF7); // IMUL BX
         // -1 * 2 = -2 → DX:AX = 0xFFFF:0xFFFE
         assert_eq!(cpu.ax, 0xFFFE);
         assert_eq!(cpu.dx, 0xFFFF);
@@ -3719,7 +3781,7 @@ mod tests {
     fn cbw_positive() {
         let (mut cpu, mut bus) = setup();
         cpu.ax = 0xFF42; // AL = 0x42 (positive)
-        cpu.execute(0x98, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0x98);
         assert_eq!(cpu.ax, 0x0042); // AH = 0x00
     }
 
@@ -3727,7 +3789,7 @@ mod tests {
     fn cbw_negative() {
         let (mut cpu, mut bus) = setup();
         cpu.ax = 0x0080; // AL = 0x80 (-128)
-        cpu.execute(0x98, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0x98);
         assert_eq!(cpu.ax, 0xFF80); // AH = 0xFF
     }
 
@@ -3736,7 +3798,7 @@ mod tests {
         let (mut cpu, mut bus) = setup();
         cpu.ax = 0x1234;
         cpu.dx = 0xFFFF; // should be cleared
-        cpu.execute(0x99, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0x99);
         assert_eq!(cpu.dx, 0x0000);
     }
 
@@ -3745,7 +3807,7 @@ mod tests {
         let (mut cpu, mut bus) = setup();
         cpu.ax = 0x8000;
         cpu.dx = 0x0000; // should be set
-        cpu.execute(0x99, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0x99);
         assert_eq!(cpu.dx, 0xFFFF);
     }
 
@@ -3760,9 +3822,9 @@ mod tests {
         // 0x15 + 0x27 = 0x3C → DAA → 0x42 (BCD 15 + 27 = 42)
         cpu.set_al(0x15);
         bus.mem[0x100] = 0x27; // imm8 for ADD AL
-        cpu.execute(0x04, &mut bus, M); // ADD AL, 0x27
+        exec(&mut cpu, &mut bus, 0x04); // ADD AL, 0x27
         assert_eq!(cpu.al(), 0x3C);
-        cpu.execute(0x27, &mut bus, M); // DAA
+        exec(&mut cpu, &mut bus, 0x27); // DAA
         assert_eq!(cpu.al(), 0x42);
         assert!(!fl::get(cpu.flags, Flag::CF));
     }
@@ -3773,7 +3835,7 @@ mod tests {
         use super::super::flags::{self as fl, Flag};
         // BCD 99 + 1 = 100: 0x99 + 0x01 = 0x9A → DAA → 0x00, CF=1
         cpu.set_al(0x9A);
-        cpu.execute(0x27, &mut bus, M); // DAA
+        exec(&mut cpu, &mut bus, 0x27); // DAA
         assert_eq!(cpu.al(), 0x00);
         assert!(fl::get(cpu.flags, Flag::CF));
     }
@@ -3787,7 +3849,7 @@ mod tests {
         let (mut cpu, mut bus) = setup();
         // BCD 42 - 15 = 27: 0x42 - 0x15 = 0x2D → DAS → 0x27
         cpu.set_al(0x2D);
-        cpu.execute(0x2F, &mut bus, M); // DAS
+        exec(&mut cpu, &mut bus, 0x2F); // DAS
         assert_eq!(cpu.al(), 0x27);
     }
 
@@ -3802,7 +3864,7 @@ mod tests {
         // 9 + 5 = 14 = 0x0E → AAA → AH+=1, AL=4
         cpu.set_al(0x0E);
         cpu.set_ah(0x00);
-        cpu.execute(0x37, &mut bus, M); // AAA
+        exec(&mut cpu, &mut bus, 0x37); // AAA
         assert_eq!(cpu.al(), 0x04);
         assert_eq!(cpu.ah(), 0x01);
         assert!(fl::get(cpu.flags, Flag::CF));
@@ -3815,7 +3877,7 @@ mod tests {
         use super::super::flags::{self as fl, Flag};
         cpu.set_al(0x05);
         cpu.set_ah(0x00);
-        cpu.execute(0x37, &mut bus, M); // AAA
+        exec(&mut cpu, &mut bus, 0x37); // AAA
         assert_eq!(cpu.al(), 0x05);
         assert_eq!(cpu.ah(), 0x00);
         assert!(!fl::get(cpu.flags, Flag::CF));
@@ -3834,7 +3896,7 @@ mod tests {
         // For AAS: AL & 0x0F = 0x0D > 9 → adjust
         cpu.set_al(0xFD);
         cpu.set_ah(0x02);
-        cpu.execute(0x3F, &mut bus, M); // AAS
+        exec(&mut cpu, &mut bus, 0x3F); // AAS
         assert_eq!(cpu.al(), 0x07); // 0xFD - 6 = 0xF7, & 0x0F = 0x07
         assert_eq!(cpu.ah(), 0x01); // 2 - 1 = 1
         assert!(fl::get(cpu.flags, Flag::CF));
@@ -3849,7 +3911,7 @@ mod tests {
         let (mut cpu, mut bus) = setup();
         cpu.set_al(0x2A); // 42 decimal
         bus.mem[0x100] = 0x0A; // base 10
-        cpu.execute(0xD4, &mut bus, M); // AAM
+        exec(&mut cpu, &mut bus, 0xD4); // AAM
         assert_eq!(cpu.ah(), 0x04); // 42 / 10 = 4
         assert_eq!(cpu.al(), 0x02); // 42 % 10 = 2
     }
@@ -3864,7 +3926,7 @@ mod tests {
         cpu.set_ah(0x04);
         cpu.set_al(0x02);
         bus.mem[0x100] = 0x0A; // base 10
-        cpu.execute(0xD5, &mut bus, M); // AAD
+        exec(&mut cpu, &mut bus, 0xD5); // AAD
         assert_eq!(cpu.al(), 0x2A); // 4*10 + 2 = 42
         assert_eq!(cpu.ah(), 0x00);
     }
@@ -3880,7 +3942,7 @@ mod tests {
         bus.mem[0x20050] = 0x42;
         // ModR/M: mod=00 reg=100(/4=SHL) rm=111([BX]) = 0x27
         bus.mem[0x100] = 0x27;
-        cpu.execute(0xD0, &mut bus, M); // SHL BYTE [BX], 1
+        exec(&mut cpu, &mut bus, 0xD0); // SHL BYTE [BX], 1
         assert_eq!(bus.mem[0x20050], 0x84);
     }
 
@@ -3892,7 +3954,7 @@ mod tests {
         cpu.set_al(0xFF);
         cpu.set_cl(0); // count = 0 → no change
         bus.mem[0x100] = 0xE0;
-        cpu.execute(0xD2, &mut bus, M); // SHL AL, CL
+        exec(&mut cpu, &mut bus, 0xD2); // SHL AL, CL
         assert_eq!(cpu.al(), 0xFF);
         assert!(fl::get(cpu.flags, Flag::CF)); // unchanged
     }
@@ -3909,7 +3971,7 @@ mod tests {
         cpu.si = 0x0010;
         cpu.di = 0x0020;
         bus.mem[0x20010] = 0xAB;
-        cpu.execute(0xA4, &mut bus, M); // MOVSB
+        exec(&mut cpu, &mut bus, 0xA4); // MOVSB
         assert_eq!(bus.mem[0x40020], 0xAB);
         assert_eq!(cpu.si, 0x0011); // incremented
         assert_eq!(cpu.di, 0x0021); // incremented
@@ -3923,7 +3985,7 @@ mod tests {
         cpu.si = 0x0010;
         cpu.di = 0x0020;
         bus.mem[0x20010] = 0xCD;
-        cpu.execute(0xA4, &mut bus, M); // MOVSB
+        exec(&mut cpu, &mut bus, 0xA4); // MOVSB
         assert_eq!(bus.mem[0x40020], 0xCD);
         assert_eq!(cpu.si, 0x000F); // decremented
         assert_eq!(cpu.di, 0x001F); // decremented
@@ -3936,7 +3998,7 @@ mod tests {
         cpu.di = 0x0020;
         bus.mem[0x20010] = 0x34; // low byte
         bus.mem[0x20011] = 0x12; // high byte
-        cpu.execute(0xA5, &mut bus, M); // MOVSW
+        exec(&mut cpu, &mut bus, 0xA5); // MOVSW
         assert_eq!(bus.mem[0x40020], 0x34);
         assert_eq!(bus.mem[0x40021], 0x12);
         assert_eq!(cpu.si, 0x0012); // +2
@@ -3952,7 +4014,7 @@ mod tests {
         cpu.di = 0x0020;
         bus.mem[0x20010] = 0x34;
         bus.mem[0x20011] = 0x12;
-        cpu.execute(0xA5, &mut bus, M); // MOVSW
+        exec(&mut cpu, &mut bus, 0xA5); // MOVSW
         assert_eq!(bus.mem[0x40020], 0x34);
         assert_eq!(bus.mem[0x40021], 0x12);
         assert_eq!(cpu.si, 0x000E); // -2
@@ -3974,7 +4036,7 @@ mod tests {
         for i in 0..5u8 {
             bus.mem[0x20000 + i as usize] = 0x10 + i;
         }
-        cpu.execute(0xA4, &mut bus, M); // REP MOVSB
+        exec(&mut cpu, &mut bus, 0xA4); // REP MOVSB
         // Check destination at ES:0 = phys 0x40000
         for i in 0..5u8 {
             assert_eq!(bus.mem[0x40000 + i as usize], 0x10 + i);
@@ -3992,7 +4054,7 @@ mod tests {
         cpu.cx = 0; // should do nothing
         cpu.rep_prefix = Some(super::RepPrefix::Rep);
         bus.mem[0x20010] = 0xFF;
-        cpu.execute(0xA4, &mut bus, M); // REP MOVSB
+        exec(&mut cpu, &mut bus, 0xA4); // REP MOVSB
         assert_eq!(bus.mem[0x40020], 0x00); // unchanged
         assert_eq!(cpu.si, 0x0010); // unchanged
         assert_eq!(cpu.di, 0x0020); // unchanged
@@ -4011,7 +4073,7 @@ mod tests {
             bus.mem[base] = (0x1000 + i) as u8;
             bus.mem[base + 1] = ((0x1000 + i) >> 8) as u8;
         }
-        cpu.execute(0xA5, &mut bus, M); // REP MOVSW
+        exec(&mut cpu, &mut bus, 0xA5); // REP MOVSW
         for i in 0..3u16 {
             let base = 0x40000 + (i as usize) * 2;
             let val = bus.mem[base] as u16 | ((bus.mem[base + 1] as u16) << 8);
@@ -4034,7 +4096,7 @@ mod tests {
         for i in 0..5u8 {
             bus.mem[0x20000 + i as usize] = 0xA0 + i;
         }
-        cpu.execute(0xA4, &mut bus, M); // REP MOVSB backward
+        exec(&mut cpu, &mut bus, 0xA4); // REP MOVSB backward
         for i in 0..5u8 {
             assert_eq!(bus.mem[0x40000 + i as usize], 0xA0 + i);
         }
@@ -4055,7 +4117,7 @@ mod tests {
         cpu.di = 0x0020;
         bus.mem[0x20010] = 0x42;
         bus.mem[0x40020] = 0x42;
-        cpu.execute(0xA6, &mut bus, M); // CMPSB
+        exec(&mut cpu, &mut bus, 0xA6); // CMPSB
         assert!(fl::get(cpu.flags, Flag::ZF)); // equal
         assert_eq!(cpu.si, 0x0011);
         assert_eq!(cpu.di, 0x0021);
@@ -4069,7 +4131,7 @@ mod tests {
         cpu.di = 0x0020;
         bus.mem[0x20010] = 0x50;
         bus.mem[0x40020] = 0x30;
-        cpu.execute(0xA6, &mut bus, M); // CMPSB
+        exec(&mut cpu, &mut bus, 0xA6); // CMPSB
         assert!(!fl::get(cpu.flags, Flag::ZF)); // not equal
         assert!(!fl::get(cpu.flags, Flag::CF)); // 0x50 > 0x30, no borrow
     }
@@ -4086,7 +4148,7 @@ mod tests {
         // Write 0x1234 at ES:DI
         bus.mem[0x40020] = 0x34;
         bus.mem[0x40021] = 0x12;
-        cpu.execute(0xA7, &mut bus, M); // CMPSW
+        exec(&mut cpu, &mut bus, 0xA7); // CMPSW
         assert!(fl::get(cpu.flags, Flag::ZF));
         assert_eq!(cpu.si, 0x0012);
         assert_eq!(cpu.di, 0x0022);
@@ -4109,7 +4171,7 @@ mod tests {
             bus.mem[0x20000 + i as usize] = 0x41 + i;
             bus.mem[0x40000 + i as usize] = 0x41 + i;
         }
-        cpu.execute(0xA6, &mut bus, M); // REPZ CMPSB
+        exec(&mut cpu, &mut bus, 0xA6); // REPZ CMPSB
         assert_eq!(cpu.cx, 0); // exhausted all
         assert!(fl::get(cpu.flags, Flag::ZF)); // last compare was equal
     }
@@ -4127,7 +4189,7 @@ mod tests {
             bus.mem[0x40000 + i as usize] = 0x41 + i;
         }
         bus.mem[0x40002] = 0xFF; // mismatch at index 2
-        cpu.execute(0xA6, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0xA6);
         assert_eq!(cpu.cx, 2); // stopped after 3 iterations (5-3=2)
         assert!(!fl::get(cpu.flags, Flag::ZF)); // mismatch
         assert_eq!(cpu.si, 3);
@@ -4147,7 +4209,7 @@ mod tests {
             bus.mem[0x40000 + i as usize] = i + 1; // all different from 0
         }
         bus.mem[0x40003] = 0x00; // match at index 3
-        cpu.execute(0xA6, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0xA6);
         assert_eq!(cpu.cx, 1); // stopped after 4 iterations (5-4=1)
         assert!(fl::get(cpu.flags, Flag::ZF)); // match found
     }
@@ -4161,7 +4223,7 @@ mod tests {
         let (mut cpu, mut bus) = setup();
         cpu.set_al(0xEE);
         cpu.di = 0x0050;
-        cpu.execute(0xAA, &mut bus, M); // STOSB
+        exec(&mut cpu, &mut bus, 0xAA); // STOSB
         assert_eq!(bus.mem[0x40050], 0xEE);
         assert_eq!(cpu.di, 0x0051);
     }
@@ -4171,7 +4233,7 @@ mod tests {
         let (mut cpu, mut bus) = setup();
         cpu.ax = 0xBEEF;
         cpu.di = 0x0050;
-        cpu.execute(0xAB, &mut bus, M); // STOSW
+        exec(&mut cpu, &mut bus, 0xAB); // STOSW
         assert_eq!(bus.mem[0x40050], 0xEF); // low byte
         assert_eq!(bus.mem[0x40051], 0xBE); // high byte
         assert_eq!(cpu.di, 0x0052);
@@ -4184,7 +4246,7 @@ mod tests {
         cpu.di = 0x0000;
         cpu.cx = 8;
         cpu.rep_prefix = Some(super::RepPrefix::Rep);
-        cpu.execute(0xAA, &mut bus, M); // REP STOSB
+        exec(&mut cpu, &mut bus, 0xAA); // REP STOSB
         for i in 0..8 {
             assert_eq!(bus.mem[0x40000 + i], 0xFF);
         }
@@ -4200,7 +4262,7 @@ mod tests {
         cpu.di = 0x0000;
         cpu.cx = 4;
         cpu.rep_prefix = Some(super::RepPrefix::Rep);
-        cpu.execute(0xAB, &mut bus, M); // REP STOSW
+        exec(&mut cpu, &mut bus, 0xAB); // REP STOSW
         for i in 0..4 {
             let base = 0x40000 + i * 2;
             assert_eq!(bus.mem[base], 0x34);
@@ -4219,7 +4281,7 @@ mod tests {
         let (mut cpu, mut bus) = setup();
         cpu.si = 0x0030;
         bus.mem[0x20030] = 0x99;
-        cpu.execute(0xAC, &mut bus, M); // LODSB
+        exec(&mut cpu, &mut bus, 0xAC); // LODSB
         assert_eq!(cpu.al(), 0x99);
         assert_eq!(cpu.si, 0x0031);
     }
@@ -4230,7 +4292,7 @@ mod tests {
         cpu.si = 0x0030;
         bus.mem[0x20030] = 0xCD;
         bus.mem[0x20031] = 0xAB;
-        cpu.execute(0xAD, &mut bus, M); // LODSW
+        exec(&mut cpu, &mut bus, 0xAD); // LODSW
         assert_eq!(cpu.ax, 0xABCD);
         assert_eq!(cpu.si, 0x0032);
     }
@@ -4242,7 +4304,7 @@ mod tests {
         fl::set(&mut cpu.flags, Flag::DF, true);
         cpu.si = 0x0030;
         bus.mem[0x20030] = 0x77;
-        cpu.execute(0xAC, &mut bus, M); // LODSB
+        exec(&mut cpu, &mut bus, 0xAC); // LODSB
         assert_eq!(cpu.al(), 0x77);
         assert_eq!(cpu.si, 0x002F);
     }
@@ -4256,7 +4318,7 @@ mod tests {
         bus.mem[0x20000] = 0x11;
         bus.mem[0x20001] = 0x22;
         bus.mem[0x20002] = 0x33;
-        cpu.execute(0xAC, &mut bus, M); // REP LODSB
+        exec(&mut cpu, &mut bus, 0xAC); // REP LODSB
         assert_eq!(cpu.al(), 0x33); // last loaded value
         assert_eq!(cpu.cx, 0);
         assert_eq!(cpu.si, 3);
@@ -4273,7 +4335,7 @@ mod tests {
         cpu.set_al(0x42);
         cpu.di = 0x0010;
         bus.mem[0x40010] = 0x42;
-        cpu.execute(0xAE, &mut bus, M); // SCASB
+        exec(&mut cpu, &mut bus, 0xAE); // SCASB
         assert!(fl::get(cpu.flags, Flag::ZF)); // match
         assert_eq!(cpu.di, 0x0011);
     }
@@ -4285,7 +4347,7 @@ mod tests {
         cpu.set_al(0x42);
         cpu.di = 0x0010;
         bus.mem[0x40010] = 0x99;
-        cpu.execute(0xAE, &mut bus, M); // SCASB
+        exec(&mut cpu, &mut bus, 0xAE); // SCASB
         assert!(!fl::get(cpu.flags, Flag::ZF)); // mismatch
     }
 
@@ -4297,7 +4359,7 @@ mod tests {
         cpu.di = 0x0010;
         bus.mem[0x40010] = 0x34;
         bus.mem[0x40011] = 0x12;
-        cpu.execute(0xAF, &mut bus, M); // SCASW
+        exec(&mut cpu, &mut bus, 0xAF); // SCASW
         assert!(fl::get(cpu.flags, Flag::ZF));
         assert_eq!(cpu.di, 0x0012);
     }
@@ -4317,7 +4379,7 @@ mod tests {
         for i in 0..4 {
             bus.mem[0x40000 + i] = 0xAA;
         }
-        cpu.execute(0xAE, &mut bus, M); // REPZ SCASB
+        exec(&mut cpu, &mut bus, 0xAE); // REPZ SCASB
         assert_eq!(cpu.cx, 0);
         assert!(fl::get(cpu.flags, Flag::ZF));
     }
@@ -4334,7 +4396,7 @@ mod tests {
             bus.mem[0x40000 + i] = 0xAA;
         }
         bus.mem[0x40003] = 0xBB; // mismatch at index 3
-        cpu.execute(0xAE, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0xAE);
         assert_eq!(cpu.cx, 2); // 6 - 4 iterations = 2
         assert!(!fl::get(cpu.flags, Flag::ZF));
         assert_eq!(cpu.di, 4);
@@ -4357,7 +4419,7 @@ mod tests {
         for (i, &b) in data.iter().enumerate() {
             bus.mem[0x40000 + i] = b;
         }
-        cpu.execute(0xAE, &mut bus, M); // REPNZ SCASB
+        exec(&mut cpu, &mut bus, 0xAE); // REPNZ SCASB
         assert!(fl::get(cpu.flags, Flag::ZF)); // found the null
         assert_eq!(cpu.cx, 4); // 10 - 6 iterations = 4
         assert_eq!(cpu.di, 6); // points past the null
@@ -4374,7 +4436,7 @@ mod tests {
         bus.mem[0x40000] = 0x41;
         bus.mem[0x40001] = 0x42;
         bus.mem[0x40002] = 0x43;
-        cpu.execute(0xAE, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0xAE);
         assert_eq!(cpu.cx, 0); // exhausted
         assert!(!fl::get(cpu.flags, Flag::ZF)); // not found
     }
@@ -4397,7 +4459,7 @@ mod tests {
             bus.mem[0x40000 + i * 2] = w as u8;
             bus.mem[0x40000 + i * 2 + 1] = (w >> 8) as u8;
         }
-        cpu.execute(0xAF, &mut bus, M); // REPNZ SCASW
+        exec(&mut cpu, &mut bus, 0xAF); // REPNZ SCASW
         assert!(fl::get(cpu.flags, Flag::ZF));
         assert_eq!(cpu.cx, 1); // found at 3rd word
         assert_eq!(cpu.di, 6); // past the match
@@ -4422,7 +4484,7 @@ mod tests {
             bus.mem[0x40000 + i * 2] = w as u8;
             bus.mem[0x40000 + i * 2 + 1] = (w >> 8) as u8;
         }
-        cpu.execute(0xA7, &mut bus, M); // REPZ CMPSW
+        exec(&mut cpu, &mut bus, 0xA7); // REPZ CMPSW
         assert_eq!(cpu.cx, 0);
         assert!(fl::get(cpu.flags, Flag::ZF));
         assert_eq!(cpu.si, 6);
@@ -4442,7 +4504,7 @@ mod tests {
         cpu.di = 0x0020;
         // Source at ES:SI = 0x4000:0x0010 = phys 0x40010
         bus.mem[0x40010] = 0xBB;
-        cpu.execute(0xA4, &mut bus, M); // MOVSB
+        exec(&mut cpu, &mut bus, 0xA4); // MOVSB
         // Dest at ES:DI = phys 0x40020
         assert_eq!(bus.mem[0x40020], 0xBB);
     }
@@ -4454,7 +4516,7 @@ mod tests {
         cpu.si = 0x0010;
         // Source at SS:SI = 0x3000:0x0010 = phys 0x30010
         bus.mem[0x30010] = 0x77;
-        cpu.execute(0xAC, &mut bus, M); // LODSB
+        exec(&mut cpu, &mut bus, 0xAC); // LODSB
         assert_eq!(cpu.al(), 0x77);
     }
 
@@ -4469,7 +4531,7 @@ mod tests {
         cpu.di = 0x0000;
         cpu.cx = 0;
         cpu.rep_prefix = Some(super::RepPrefix::Rep);
-        cpu.execute(0xAA, &mut bus, M); // REP STOSB
+        exec(&mut cpu, &mut bus, 0xAA); // REP STOSB
         assert_eq!(bus.mem[0x40000], 0x00); // untouched
         assert_eq!(cpu.di, 0x0000); // unchanged
     }
@@ -4484,7 +4546,7 @@ mod tests {
         cpu.rep_prefix = Some(super::RepPrefix::Rep);
         // Should not compare anything
         fl::set(&mut cpu.flags, Flag::ZF, false);
-        cpu.execute(0xAE, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0xAE);
         assert_eq!(cpu.cx, 0);
         assert_eq!(cpu.di, 0x0010);
         // ZF should be unmodified (no comparison performed)
@@ -4504,7 +4566,7 @@ mod tests {
         cpu.di = 0x0003;
         cpu.cx = 4;
         cpu.rep_prefix = Some(super::RepPrefix::Rep);
-        cpu.execute(0xAA, &mut bus, M); // REP STOSB backward
+        exec(&mut cpu, &mut bus, 0xAA); // REP STOSB backward
         for i in 0..4 {
             assert_eq!(bus.mem[0x40000 + i], 0xCC);
         }
@@ -4524,7 +4586,7 @@ mod tests {
         cpu.set_al(0x55);
         cpu.di = 0x0010;
         bus.mem[0x40010] = 0x55;
-        cpu.execute(0xAE, &mut bus, M); // SCASB
+        exec(&mut cpu, &mut bus, 0xAE); // SCASB
         assert!(fl::get(cpu.flags, Flag::ZF));
         assert_eq!(cpu.di, 0x000F); // decremented
     }
@@ -4539,15 +4601,15 @@ mod tests {
         use super::super::flags::{self as fl, Flag};
 
         fl::set(&mut cpu.flags, Flag::CF, true);
-        cpu.execute(0xF8, &mut bus, M); // CLC
+        exec(&mut cpu, &mut bus, 0xF8); // CLC
         assert!(!fl::get(cpu.flags, Flag::CF));
 
-        cpu.execute(0xF9, &mut bus, M); // STC
+        exec(&mut cpu, &mut bus, 0xF9); // STC
         assert!(fl::get(cpu.flags, Flag::CF));
 
-        cpu.execute(0xF5, &mut bus, M); // CMC
+        exec(&mut cpu, &mut bus, 0xF5); // CMC
         assert!(!fl::get(cpu.flags, Flag::CF));
-        cpu.execute(0xF5, &mut bus, M); // CMC again
+        exec(&mut cpu, &mut bus, 0xF5); // CMC again
         assert!(fl::get(cpu.flags, Flag::CF));
     }
 
@@ -4557,10 +4619,10 @@ mod tests {
         use super::super::flags::{self as fl, Flag};
 
         fl::set(&mut cpu.flags, Flag::IF, true);
-        cpu.execute(0xFA, &mut bus, M); // CLI
+        exec(&mut cpu, &mut bus, 0xFA); // CLI
         assert!(!fl::get(cpu.flags, Flag::IF));
 
-        cpu.execute(0xFB, &mut bus, M); // STI
+        exec(&mut cpu, &mut bus, 0xFB); // STI
         assert!(fl::get(cpu.flags, Flag::IF));
     }
 
@@ -4570,10 +4632,10 @@ mod tests {
         use super::super::flags::{self as fl, Flag};
 
         fl::set(&mut cpu.flags, Flag::DF, true);
-        cpu.execute(0xFC, &mut bus, M); // CLD
+        exec(&mut cpu, &mut bus, 0xFC); // CLD
         assert!(!fl::get(cpu.flags, Flag::DF));
 
-        cpu.execute(0xFD, &mut bus, M); // STD
+        exec(&mut cpu, &mut bus, 0xFD); // STD
         assert!(fl::get(cpu.flags, Flag::DF));
     }
 
@@ -4593,7 +4655,7 @@ mod tests {
         fl::set(&mut cpu.flags, Flag::IF, true);
         let saved_flags = cpu.flags;
 
-        cpu.execute(0x9C, &mut bus, M); // PUSHF
+        exec(&mut cpu, &mut bus, 0x9C); // PUSHF
 
         // Clear the flags
         fl::set(&mut cpu.flags, Flag::CF, false);
@@ -4601,7 +4663,7 @@ mod tests {
         fl::set(&mut cpu.flags, Flag::SF, false);
         fl::set(&mut cpu.flags, Flag::IF, false);
 
-        cpu.execute(0x9D, &mut bus, M); // POPF
+        exec(&mut cpu, &mut bus, 0x9D); // POPF
         assert_eq!(cpu.flags, saved_flags);
     }
 
@@ -4627,7 +4689,7 @@ mod tests {
 
         // INT 0x21
         bus.mem[0x100] = 0x21; // vector number
-        cpu.execute(0xCD, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0xCD);
 
         // CS:IP should be loaded from IVT
         assert_eq!(cpu.ip, 0x1000);
@@ -4657,7 +4719,7 @@ mod tests {
         bus.mem[0x000E] = 0x00;
         bus.mem[0x000F] = 0x80; // CS = 0x8000
 
-        cpu.execute(0xCC, &mut bus, M); // INT 3
+        exec(&mut cpu, &mut bus, 0xCC); // INT 3
         assert_eq!(cpu.ip, 0x0050);
         assert_eq!(cpu.cs, 0x8000);
     }
@@ -4673,7 +4735,7 @@ mod tests {
         cpu.push16(&mut bus, M, 0xABCD); // CS
         cpu.push16(&mut bus, M, 0x1234); // IP
 
-        cpu.execute(0xCF, &mut bus, M); // IRET
+        exec(&mut cpu, &mut bus, 0xCF); // IRET
         assert_eq!(cpu.ip, 0x1234);
         assert_eq!(cpu.cs, 0xABCD);
         assert_eq!(cpu.flags, fl::normalize(orig_flags));
@@ -4692,12 +4754,12 @@ mod tests {
 
         // INTO with OF clear — should NOT fire
         fl::set(&mut cpu.flags, Flag::OF, false);
-        cpu.execute(0xCE, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0xCE);
         assert_eq!(cpu.cs, 0x0000); // unchanged
 
         // INTO with OF set — should fire
         fl::set(&mut cpu.flags, Flag::OF, true);
-        cpu.execute(0xCE, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0xCE);
         assert_eq!(cpu.ip, 0x2000);
         assert_eq!(cpu.cs, 0x5000);
     }
@@ -4712,7 +4774,7 @@ mod tests {
         // io_read defaults to memory read, so set up a value at addr 0x42
         bus.mem[0x42] = 0xAB;
         bus.mem[0x100] = 0x42; // port number
-        cpu.execute(0xE4, &mut bus, M); // IN AL, 0x42
+        exec(&mut cpu, &mut bus, 0xE4); // IN AL, 0x42
         assert_eq!(cpu.al(), 0xAB);
     }
 
@@ -4721,7 +4783,7 @@ mod tests {
         let (mut cpu, mut bus) = setup();
         cpu.set_al(0xCD);
         bus.mem[0x100] = 0x80; // port number
-        cpu.execute(0xE6, &mut bus, M); // OUT 0x80, AL
+        exec(&mut cpu, &mut bus, 0xE6); // OUT 0x80, AL
         // io_write defaults to memory write
         assert_eq!(bus.mem[0x80], 0xCD);
     }
@@ -4731,7 +4793,7 @@ mod tests {
         let (mut cpu, mut bus) = setup();
         cpu.dx = 0x0060;
         bus.mem[0x60] = 0x77;
-        cpu.execute(0xEC, &mut bus, M); // IN AL, DX
+        exec(&mut cpu, &mut bus, 0xEC); // IN AL, DX
         assert_eq!(cpu.al(), 0x77);
     }
 
@@ -4740,7 +4802,7 @@ mod tests {
         let (mut cpu, mut bus) = setup();
         cpu.dx = 0x0061;
         cpu.set_al(0xEE);
-        cpu.execute(0xEE, &mut bus, M); // OUT DX, AL
+        exec(&mut cpu, &mut bus, 0xEE); // OUT DX, AL
         assert_eq!(bus.mem[0x61], 0xEE);
     }
 
@@ -4763,7 +4825,7 @@ mod tests {
         bus.mem[0x101] = 0x00; // address low
         bus.mem[0x102] = 0x50; // address high = 0x5000
         // Memory at DS:0x5000 = 0 (default) -> divide by zero
-        cpu.execute(0xF6, &mut bus, M);
+        exec(&mut cpu, &mut bus, 0xF6);
 
         // Should have vectored to INT 0 handler
         assert_eq!(cpu.ip, 0x3000);
@@ -4779,7 +4841,7 @@ mod tests {
     #[test]
     fn hlt_enters_halted_state() {
         let (mut cpu, mut bus) = setup();
-        cpu.execute(0xF4, &mut bus, M); // HLT
-        assert!(matches!(cpu.state, super::ExecState::Halted));
+        exec(&mut cpu, &mut bus, 0xF4); // HLT
+        assert!(cpu.halted);
     }
 }

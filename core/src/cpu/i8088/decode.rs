@@ -73,55 +73,56 @@ impl ModRM {
 // ---------------------------------------------------------------------------
 
 impl I8088 {
-    /// Fetch the next byte at CS:IP and advance IP.
+    /// Take the next byte of the instruction and advance IP.
+    ///
+    /// This no longer touches the bus. The loader in [`super`] has already
+    /// fetched every byte of the instruction over four T-states each, and this
+    /// hands them to the executor in order. IP moves here rather than in the
+    /// loader, which is what makes a partly loaded instruction safe to throw
+    /// away and refetch.
+    ///
+    /// Panics if the executor asks for a byte the loader did not fetch, which
+    /// means [`super::format`] disagrees with this instruction's implementation
+    /// about how long it is. That is a bug in the table, and a loud one is much
+    /// better than reading whatever was left in the buffer from the previous
+    /// instruction.
     #[inline]
-    pub(crate) fn fetch_byte<B: Bus<Address = u32, Data = u8> + ?Sized>(
-        &mut self,
-        bus: &mut B,
-        master: BusMaster,
-    ) -> u8 {
-        let addr = Self::physical_addr(self.cs, self.ip);
-        let byte = bus.read(master, addr);
+    pub(crate) fn fetch_byte(&mut self) -> u8 {
+        assert!(
+            self.instr_pos < self.instr_len,
+            "opcode {:02X} consumed more bytes than the loader fetched ({})",
+            self.instr[self.opcode_at as usize],
+            self.instr_len,
+        );
+        let byte = self.instr[self.instr_pos as usize];
+        self.instr_pos += 1;
         self.ip = self.ip.wrapping_add(1);
         byte
     }
 
-    /// Fetch the next 16-bit word at CS:IP (little-endian) and advance IP by 2.
+    /// Take the next 16-bit word of the instruction (little-endian).
     #[inline]
-    pub(crate) fn fetch_word<B: Bus<Address = u32, Data = u8> + ?Sized>(
-        &mut self,
-        bus: &mut B,
-        master: BusMaster,
-    ) -> u16 {
-        let lo = self.fetch_byte(bus, master) as u16;
-        let hi = self.fetch_byte(bus, master) as u16;
+    pub(crate) fn fetch_word(&mut self) -> u16 {
+        let lo = self.fetch_byte() as u16;
+        let hi = self.fetch_byte() as u16;
         (hi << 8) | lo
     }
 
-    /// Fetch and decode a ModR/M byte from the instruction stream.
+    /// Take and decode the ModR/M byte.
     #[inline]
-    pub(crate) fn fetch_modrm<B: Bus<Address = u32, Data = u8> + ?Sized>(
-        &mut self,
-        bus: &mut B,
-        master: BusMaster,
-    ) -> ModRM {
-        let byte = self.fetch_byte(bus, master);
-        ModRM::decode(byte)
+    pub(crate) fn fetch_modrm(&mut self) -> ModRM {
+        ModRM::decode(self.fetch_byte())
     }
 
-    /// Consume all prefix bytes from the instruction stream, updating
+    /// Consume all prefix bytes from the loaded instruction, updating
     /// `segment_override` and `rep_prefix`. Returns the first non-prefix
     /// opcode byte.
-    pub(crate) fn consume_prefixes<B: Bus<Address = u32, Data = u8> + ?Sized>(
-        &mut self,
-        bus: &mut B,
-        master: BusMaster,
-    ) -> u8 {
+    pub(crate) fn consume_prefixes(&mut self) -> u8 {
         self.segment_override = None;
         self.rep_prefix = None;
 
         loop {
-            let byte = self.fetch_byte(bus, master);
+            let byte = self.fetch_byte();
             match decode_prefix(byte) {
                 Some(Prefix::SegmentOverride(seg)) => {
                     self.segment_override = Some(seg);
