@@ -487,6 +487,10 @@ fn is_prefetched(tc: &I8088TestCase) -> bool {
 struct FileOutcome {
     filename: String,
     /// Cases whose count matched, by population.
+    /// Cases whose cycle count matched, restricted to instructions whose
+    /// execution time this core models at all.
+    matched_modeled: usize,
+    total_modeled: usize,
     matched_empty: usize,
     matched_prefetched: usize,
     /// Cases compared, by population.
@@ -578,8 +582,18 @@ fn i8088_cycle_counts_against_the_hardware_trace() {
                 } else {
                     out.total_empty += 1;
                 }
+                // Split out the instructions whose microcode time this core
+                // models. The others are short by all of it, so averaging them
+                // together describes neither population.
+                let modeled = I8088::models_execution_time(&tc.bytes);
+                if modeled {
+                    out.total_modeled += 1;
+                }
 
                 if ours == theirs {
+                    if modeled {
+                        out.matched_modeled += 1;
+                    }
                     if prefetched {
                         out.matched_prefetched += 1;
                     } else {
@@ -640,6 +654,8 @@ fn i8088_cycle_counts_against_the_hardware_trace() {
         .collect();
 
     let mut files = 0usize;
+    let mut matched_modeled = 0usize;
+    let mut total_modeled = 0usize;
     let mut matched_empty = 0usize;
     let mut matched_prefetched = 0usize;
     let mut total_empty = 0usize;
@@ -661,6 +677,8 @@ fn i8088_cycle_counts_against_the_hardware_trace() {
 
     for o in &outcomes {
         files += 1;
+        matched_modeled += o.matched_modeled;
+        total_modeled += o.total_modeled;
         matched_empty += o.matched_empty;
         matched_prefetched += o.matched_prefetched;
         total_empty += o.total_empty;
@@ -734,6 +752,11 @@ fn i8088_cycle_counts_against_the_hardware_trace() {
     eprintln!(
         "    prefetched:   {matched_prefetched} of {total_prefetched} ({:.2}%)",
         pct(matched_prefetched, total_prefetched)
+    );
+    eprintln!(
+        "    of the {total_modeled} whose execution time is modeled at all: \
+         {matched_modeled} ({:.2}%)",
+        pct(matched_modeled, total_modeled)
     );
     if compared > matched {
         eprintln!(

@@ -18,6 +18,7 @@ pub mod execute;
 pub mod flags;
 pub(crate) mod format;
 pub mod registers;
+pub(crate) mod timing;
 
 pub use registers::SegReg;
 
@@ -185,6 +186,12 @@ pub(crate) enum Eu {
         /// T-state within the current bus cycle.
         t: u8,
     },
+    /// Running the instruction's microcode, with the clocks still to go.
+    ///
+    /// The bus is free throughout, so the BIU prefetches through it. That is
+    /// what the recorded traces show the hardware doing between an operand read
+    /// and its write-back, and it is why this phase sits where it does.
+    Executing(u8),
     /// Writing the memory operand back after the instruction has run.
     Writing { byte: u8, total: u8, t: u8 },
 }
@@ -536,9 +543,23 @@ impl I8088 {
                     self.begin_operand_phase()
                 };
                 self.tick_biu(bus, master);
+                // An instruction that neither reads its operand nor has any
+                // modeled execution time runs here. Dropping this made the
+                // pipeline fall back to Loading without ever executing, so the
+                // loader started a fresh instruction on top of the old one.
                 if self.eu == Eu::Loading {
-                    // No read to do: the instruction runs here, once the BIU
-                    // has had its cycle.
+                    self.run_execute_step(bus, master);
+                }
+            }
+            // Nor does microcode. This is the phase the hardware traces show
+            // the BIU prefetching through.
+            Eu::Executing(remaining) => {
+                if remaining > 1 {
+                    self.eu = Eu::Executing(remaining - 1);
+                    self.tick_biu(bus, master);
+                } else {
+                    self.eu = Eu::Loading;
+                    self.tick_biu(bus, master);
                     self.run_execute_step(bus, master);
                 }
             }
@@ -760,6 +781,24 @@ impl I8088 {
         &self.queue[..self.queue_len as usize]
     }
 
+    /// Whether this core models the execution time of the instruction made of
+    /// `bytes`, which begin at its opcode.
+    ///
+    /// The per-cycle gate uses this to report the modeled and unmodeled
+    /// populations apart. Mixing them produces a number that describes neither:
+    /// an instruction whose microcode time is not modeled is short by all of
+    /// it, and averaging that in hides how close the modeled ones are.
+    pub fn models_execution_time(bytes: &[u8]) -> bool {
+        let mut i = 0;
+        while i < bytes.len() && decode::decode_prefix(bytes[i]).is_some() {
+            i += 1;
+        }
+        match bytes.get(i) {
+            Some(&opcode) => timing::is_modeled(opcode, bytes.get(i + 1).copied().unwrap_or(0)),
+            None => false,
+        }
+    }
+
     /// Throw the queue away and restart prefetching at CS:IP.
     ///
     /// Every control transfer does this: the bytes behind the jump were fetched
@@ -916,11 +955,14 @@ impl I8088 {
         }
 
         let _ = operand_access;
-        self.run_execute_step(bus, master);
+        self.eu = self.begin_execute_phase();
+        if self.eu == Eu::Loading {
+            self.run_execute_step(bus, master);
+        }
     }
 
     /// Leave the address-calculation phase for whatever the instruction does
-    /// with the operand next: a read, or straight to execution.
+    /// with the operand next: a read, or straight to its microcode.
     fn begin_operand_phase(&mut self) -> Eu {
         let acc = access::operand_access(self.opcode(), self.instr[self.opcode_at as usize + 1]);
         if acc.reads {
@@ -930,7 +972,40 @@ impl I8088 {
                 t: 1,
             }
         } else {
-            Eu::Loading
+            self.begin_execute_phase()
+        }
+    }
+
+    /// Enter the microcode phase, or go straight to running the instruction
+    /// when nothing is left to spend.
+    ///
+    /// [`timing::eu_cycles`] is the manual's clock count with the *bus* time
+    /// taken out. The instruction's own bytes have to come out too: the EU
+    /// spends a cycle pulling each one from the queue, this core already spends
+    /// those in [`Self::tick_eu`], and the manual's number includes them. Leave
+    /// them in and every instruction runs long by its own length, which is what
+    /// the first version of this did: `ADD DX, SP` took five cycles against the
+    /// hardware's three, over exactly its two bytes.
+    ///
+    /// Prefix bytes are not subtracted, because the manual's counts do not
+    /// include them. A segment override's cost is the two extra clocks
+    /// [`access::ea_cycles`] already adds.
+    ///
+    /// A shift or rotate by CL adds four clocks a bit on top of its base. That
+    /// is the one form whose cost depends on a register rather than on the
+    /// encoding, so it is added here, where CL is in hand.
+    fn begin_execute_phase(&mut self) -> Eu {
+        let opcode = self.opcode();
+        let modrm = self.instr[self.opcode_at as usize + 1];
+        let mut cycles = i32::from(timing::eu_cycles(opcode, modrm));
+        if matches!(opcode, 0xD2 | 0xD3) {
+            cycles += i32::from(timing::shift_count_cycles(self.cl()));
+        }
+        cycles -= i32::from(self.instr_len - self.opcode_at);
+
+        match cycles.clamp(0, i32::from(u8::MAX)) as u8 {
+            0 => Eu::Loading,
+            n => Eu::Executing(n),
         }
     }
 
@@ -1069,8 +1144,11 @@ impl I8088 {
                         t: 1,
                     };
                 } else {
-                    self.eu = Eu::Loading;
-                    self.run_execute_step(bus, master);
+                    // The operand is in hand; the microcode runs next.
+                    self.eu = self.begin_execute_phase();
+                    if self.eu == Eu::Loading {
+                        self.run_execute_step(bus, master);
+                    }
                 }
             }
         }
