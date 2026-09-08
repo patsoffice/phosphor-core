@@ -946,6 +946,103 @@ defect independently**, by running a game that executes an escape, which is the
 standing lesson of this epic: the vector harnesses all start from a clean CPU
 and the boards do not.
 
+## The empty-queue deficit has a mechanism, and it is the BIU yielding
+
+**2026-09-05.** The empty-queue half of the cycle count sits at 44.92% against
+the prefetched half's 84.55%, about 828,000 vectors, and it had never been
+looked at cycle by cycle. The one attempt compared our span index against the
+recording's raw trace index, which are different origins for a case that starts
+with an empty queue, and produced a confident and meaningless answer.
+
+`side_by_side` does not have that problem: both columns begin on the cycle the
+opening First Byte is read, which is where the recorded trace starts and where
+this replay starts measuring. Pointed at `MOV AX, [BP+DI+4]` from an empty
+queue, ours 30 cycles against the part's 27:
+
+```text
+          OURS                          HARDWARE
+    11    Code T4              len=1     CODE T1 EE051
+    12    Code T1 EE051        len=1     CODE T2
+    15    Code T4              len=2     PASV Ti      <- the BIU stops
+    16    Code T1 EE052        len=2     PASV Ti      <- and stays stopped
+    17    Code T2              len=2     MEMR T1 E863F
+    20    MemRead T1 E863F     len=3     PASV T4
+```
+
+**The part runs four code fetches before the operand read and this core runs
+five.** The part is not idle for lack of work: it has one byte in its queue and
+room for three. It declines to start a fetch because the EU's operand access is
+about to need the bus. This core starts one, and that pushes the operand read
+back a full bus cycle. Three cycles of delay on a three-cycle discrepancy: this
+one case is explained exactly.
+
+**This is not the bus contention that was tried and rejected**, and the
+distinction is the whole point. That was *the EU waiting for an in-flight code
+fetch*, and it made the counts worse because the prefetcher's fetches were not
+where the part's are. This is *the BIU declining to begin a fetch while the EU
+has a request pending*, which is the opposite direction, and it is testable now
+because the fetch schedule is independently confirmed: on a full queue the first
+code fetch lands on the same cycle and the same address as the part's, on every
+case of every file tried.
+
+**And the population count half-refuted it**, which is why it came before the
+implementation. Over all 323 files, empty queue and no prefix:
+
+```text
+  touches no memory:  385,487 of 517,697 exact (74.46%)
+  touches memory:      81,447 of 453,736 exact (17.95%)
+
+  code fetches before the first data cycle, ours minus the part's:
+    -2: 1.7%   -1: 4.6%   +0: 42.5%   +1: 32.2%   +2: 19.0%
+```
+
+**The over-fetching is real and it is not one rule.** Only 51% run extra
+fetches; 42.5% already agree with the part exactly; and 6.3% run *fewer*. A
+blanket "the BIU does not begin a fetch while the EU has a request pending"
+would make that 6.3% worse and put the 42.5% at risk, for a partial gain that
+would then hide whatever is really going on. That is the shape of the previous
+contention attempt's failure, arrived at from the other direction.
+
+**And there is definitely a second cause.** A quarter of the empty-queue cases
+that touch no memory at all are wrong, 88,000 of them at exactly `+2`. Nothing
+about EU and BIU arbitration over an operand access can reach an instruction
+that makes no operand access.
+
+**The single biggest concentration of error in the corpus** is now located:
+memory-touching empty-queue cases at 17.95%, about 372,000 vectors.
+
+**And the gap is deterministic.** Grouped by addressing mode over four opcodes,
+all 96 groups are uniform, with no spread anywhere:
+
+```text
+  8B (reads)    mod=0: +1, except the EA=5 modes which are +0
+                mod=1: +1 on all
+                mod=2: +2 on all
+  89 (writes)   mod=0: +0 on all
+                mod=1: +1 on all
+                mod=2: +1 at EA=9, +2 at EA=11 and 12
+  01, 81.0      the same shape as 8B
+```
+
+Three things that rule out the easy answers:
+
+- **It is not the effective address alone.** `mod=1` and `mod=2` carry the same
+  EA costs, 9, 11 and 12, and differ by one everywhere.
+- **It is not the displacement length alone.** Within `mod=0` a read splits at
+  EA 5 against EA 6 and above; within `mod=2` a write splits at EA 9 against
+  EA 11 and 12.
+- **The operand's direction matters.** `89`, which writes, sits exactly one
+  step behind `8B`, which reads, in every mode.
+
+So the excess is a function of how long the address phase runs *and* which way
+the operand goes: this core prefetches through the whole phase where the part
+stops at some point inside it, and the longer the phase the more extra fetches
+this core fits. Uniform groups mean a rule exists. Deriving it is the next piece
+of work, and it is worth doing carefully rather than quickly: this is 372,000
+vectors, the largest single prize left in the epic, and the two previous
+attempts at the prefetcher's arbitration both failed by generalizing from too
+little.
+
 ## Sequencing against the M68000
 
 `phosphor-emulator-cycle-accurate-i8088-nvrh` is currently sequenced *after* the

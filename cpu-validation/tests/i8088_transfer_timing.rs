@@ -390,10 +390,10 @@ fn code_start_by_queue_length(stem: &str) {
 /// are very different bugs and the transaction list cannot separate them.
 ///
 /// `want_mem` picks a memory-operand form, which is where the differences are.
-fn dump_side_by_side(stem: &str, want_mem: bool) {
+fn dump_side_by_side(stem: &str, want_mem: bool, queued: usize) {
     let Some(tests) = load(stem) else { return };
     for tc in &tests {
-        if tc.cycles.is_empty() || tc.initial.queue.len() != 4 {
+        if tc.cycles.is_empty() || tc.initial.queue.len() != queued {
             continue;
         }
         if tc.bytes.first().is_some_and(|&b| is_prefix(b)) {
@@ -503,9 +503,247 @@ fn dump_side_by_side(stem: &str, want_mem: bool) {
 fn side_by_side() {
     // The read-modify-write form that runs a clock long and still fits one
     // fewer prefetch than the part, which additive time cannot explain.
-    dump_side_by_side("F7.3", true);
+    dump_side_by_side("F7.3", true, 4);
     // And a read-only memory form, which runs a clock short.
-    dump_side_by_side("F7.4", true);
+    dump_side_by_side("F7.4", true, 4);
+}
+
+/// The same instrument pointed at the **empty-queue** half, which is the
+/// largest unexplained population in the epic: 44.92% on cycle count against
+/// the prefetched half's 84.55%, about 828,000 vectors.
+///
+/// It has never been looked at cycle by cycle. The one attempt compared our
+/// span index against the recording's raw trace index, which are different
+/// origins for a case that starts with an empty queue, and produced a confident
+/// and meaningless answer. This does not have that problem: both columns start
+/// on the cycle the opening First Byte is read, because that is where the
+/// recorded trace begins and where this replay starts measuring.
+///
+/// A one-byte opcode first, so nothing but the queue can be responsible, then
+/// forms with an immediate and a memory operand.
+/// Replay a case and count the code fetches this core starts before its first
+/// data bus cycle, over the gate's span.
+fn replay_fetches_before_data(tc: &I8088TestCase) -> Option<usize> {
+    let mut cpu = I8088::new();
+    let mut bus = TracingBus20::new();
+    bus.memory.fill(0x90);
+    let r = &tc.initial.regs;
+    cpu.ax = r.ax;
+    cpu.bx = r.bx;
+    cpu.cx = r.cx;
+    cpu.dx = r.dx;
+    cpu.cs = r.cs;
+    cpu.ss = r.ss;
+    cpu.ds = r.ds;
+    cpu.es = r.es;
+    cpu.sp = r.sp;
+    cpu.bp = r.bp;
+    cpu.si = r.si;
+    cpu.di = r.di;
+    cpu.ip = r.ip;
+    cpu.flags = r.flags;
+    for &(addr, val) in &tc.initial.ram {
+        bus.memory[(addr & 0xF_FFFF) as usize] = val;
+    }
+    cpu.load_prefetch_queue(&tc.initial.queue);
+
+    let mut ticks = 0usize;
+    let mut measuring = false;
+    let mut retired = false;
+    let mut fetches = 0usize;
+    loop {
+        ticks += 1;
+        if ticks > 4000 {
+            return None;
+        }
+        let was_retired = retired;
+        retired |= cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+        let next = matches!(cpu.queue_status, Some((QueueStatus::First, _))) && was_retired;
+        if !measuring {
+            if cpu.queue_status.is_some() {
+                measuring = true;
+            } else {
+                continue;
+            }
+        } else if next {
+            return None;
+        }
+        if cpu.bus.address.is_some() {
+            match cpu.bus.status {
+                phosphor_core::cpu::i8088::BusStatus::Code => fetches += 1,
+                phosphor_core::cpu::i8088::BusStatus::MemRead
+                | phosphor_core::cpu::i8088::BusStatus::MemWrite => return Some(fetches),
+                _ => {}
+            }
+        }
+    }
+}
+
+/// The same count out of the recording, with the allowance the gate makes: a
+/// case that begins with an empty queue opens on the T2 of a fetch already in
+/// flight, whose T1 and therefore whose address is outside the trace, so the
+/// recording cannot show it and one has to be added back.
+fn recorded_fetches_before_data(tc: &I8088TestCase) -> Option<usize> {
+    use phosphor_cpu_validation::{BusStatus, TState};
+    let opens_mid_fetch = tc
+        .cycles
+        .first()
+        .is_some_and(|c| c.t_state() != TState::T1 && c.status() == BusStatus::CODE);
+    let mut fetches = usize::from(opens_mid_fetch);
+    for c in &tc.cycles {
+        if c.address().is_none() {
+            continue;
+        }
+        match c.status() {
+            BusStatus::CODE => fetches += 1,
+            BusStatus::MEMR | BusStatus::MEMW => return Some(fetches),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Does the BIU-yields hypothesis hold over the population, or only over the
+/// one trace it came from?
+///
+/// Two questions at once, because the second is what says whether the first is
+/// the whole story:
+///
+/// 1. **How many empty-queue cases start one more code fetch before their first
+///    data cycle than the part does?** That is the hypothesis stated as a
+///    countable thing.
+/// 2. **What is the residual on empty-queue cases that touch no memory at
+///    all?** Those cannot be affected by an arbitration rule between the EU and
+///    the BIU, so whatever is wrong with them is a second cause, and the
+///    empty-queue half is more than half wrong.
+#[test]
+#[ignore = "survey, not a check: does the BIU-yields hypothesis hold at scale"]
+fn empty_queue_population() {
+    let mut gap: BTreeMap<i64, usize> = BTreeMap::new();
+    let mut residual_by_kind: BTreeMap<bool, BTreeMap<i64, usize>> = BTreeMap::new();
+    let mut files = 0usize;
+    for stem in every_opcode_file() {
+        let Some(tests) = load(&stem) else { continue };
+        files += 1;
+        for tc in &tests {
+            if tc.cycles.is_empty() || !tc.initial.queue.is_empty() {
+                continue;
+            }
+            if tc.bytes.first().is_some_and(|&b| is_prefix(b)) {
+                continue;
+            }
+            let Some(ours) = replay(tc) else { continue };
+            let touches_memory = recorded_fetches_before_data(tc).is_some();
+            *residual_by_kind
+                .entry(touches_memory)
+                .or_default()
+                .entry(ours as i64 - tc.cycles.len() as i64)
+                .or_default() += 1;
+            if let (Some(a), Some(b)) = (
+                replay_fetches_before_data(tc),
+                recorded_fetches_before_data(tc),
+            ) {
+                *gap.entry(a as i64 - b as i64).or_default() += 1;
+            }
+        }
+    }
+
+    eprintln!("\nempty queue, no prefix, over {files} files");
+    for (touches, hist) in &residual_by_kind {
+        let total: usize = hist.values().sum();
+        let exact = hist.get(&0).copied().unwrap_or(0);
+        let mut modes: Vec<(i64, usize)> = hist.iter().map(|(a, b)| (*a, *b)).collect();
+        modes.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
+        let top: Vec<String> = modes
+            .iter()
+            .take(6)
+            .map(|(d, n)| format!("{d:+}:{n}"))
+            .collect();
+        eprintln!(
+            "  {}: {exact} of {total} exact ({:.2}%)  {}",
+            if *touches {
+                "touches memory   "
+            } else {
+                "touches no memory"
+            },
+            100.0 * exact as f64 / total as f64,
+            top.join(" ")
+        );
+    }
+    let total: usize = gap.values().sum();
+    eprintln!("\n  code fetches before the first data cycle, ours minus the part's:");
+    for (d, n) in &gap {
+        eprintln!("    {d:+}: {n}  ({:.1}%)", 100.0 * *n as f64 / total as f64);
+    }
+}
+
+/// The gap grouped by what plausibly decides it: how long the address phase
+/// runs, and how many bytes the instruction is.
+///
+/// The population count says the over-fetching is real for half the cases,
+/// absent for 42.5% and reversed for 6.3%, which is not one rule. If what
+/// separates them is the size of the window the address phase leaves for
+/// fetching, then the effective address's own cost and the instruction's length
+/// are the keys, and each group here is uniform.
+#[test]
+#[ignore = "survey, not a check: what separates the over-fetching cases"]
+fn empty_queue_fetch_gap_by_shape() {
+    // A load, a store, a read-modify-write and one with an immediate, so the
+    // operand's direction and the instruction's length both vary.
+    for stem in ["8B", "89", "01", "81.0"] {
+        let Some(tests) = load(stem) else { continue };
+        let mut groups: BTreeMap<(u8, u8), BTreeMap<i64, usize>> = BTreeMap::new();
+        for tc in &tests {
+            if tc.cycles.is_empty() || !tc.initial.queue.is_empty() {
+                continue;
+            }
+            if tc.bytes.first().is_some_and(|&b| is_prefix(b)) {
+                continue;
+            }
+            let Some(&modrm) = tc.bytes.get(1) else {
+                continue;
+            };
+            if modrm >> 6 == 3 {
+                continue;
+            }
+            let (Some(a), Some(b)) = (
+                replay_fetches_before_data(tc),
+                recorded_fetches_before_data(tc),
+            ) else {
+                continue;
+            };
+            *groups
+                .entry((modrm >> 6, modrm & 7))
+                .or_default()
+                .entry(a as i64 - b as i64)
+                .or_default() += 1;
+        }
+        eprintln!("\n{stem}: fetches before the first data cycle, ours minus the part's, by mode");
+        for ((m, rm), hist) in &groups {
+            let mut modes: Vec<(i64, usize)> = hist.iter().map(|(a, b)| (*a, *b)).collect();
+            modes.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
+            let spread = modes.len() > 1;
+            let top: Vec<String> = modes
+                .iter()
+                .take(3)
+                .map(|(d, n)| format!("{d:+}:{n}"))
+                .collect();
+            eprintln!(
+                "  mod={m} rm={rm}  ea={:2}  {}{}",
+                ea_cycles(m << 6 | rm, false),
+                top.join(" "),
+                if spread { "   <-- SPREAD" } else { "" }
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "survey, not a check: where an empty-queue case diverges"]
+fn side_by_side_from_an_empty_queue() {
+    dump_side_by_side("90", false, 0);
+    dump_side_by_side("40", false, 0);
+    dump_side_by_side("8B", true, 0);
 }
 
 #[test]
