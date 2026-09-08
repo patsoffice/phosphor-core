@@ -994,8 +994,19 @@ impl I8088 {
         // a cycle that is not carrying one.
         self.bus = BusPins::default();
 
-        // A branch taken on the previous T-state flushes here, on its own
-        // cycle, and only then has the instruction retired.
+        // A branch taken on the previous T-state flushes at the head of this
+        // one. **The flush itself costs nothing.** The published
+        // `biu_queue_flush` spends no clock of its own; the `Emptied` status it
+        // raises is reported by the next cycle that runs, which is this one, and
+        // that cycle also runs whatever microcode line is behind the flush. So
+        // this falls through to the execution unit rather than returning: a
+        // sequencer that gave the flush a T-state of its own ran every routine
+        // that flushes one clock long, which was the whole of `RET near`'s
+        // shortfall.
+        //
+        // The reload is requested here too, so the bus below runs on this same
+        // clock: `Tr` is spent now, `Ts` and `T0` on the two after it, and the
+        // reload's T1 lands three clocks past the flush.
         if self.pending_flush {
             self.pending_flush = false;
             self.flush_queue();
@@ -1006,12 +1017,6 @@ impl I8088 {
             if self.mc.is_none() {
                 self.retired = true;
             }
-            // The request for the reload is made on the flush clock itself, so
-            // the bus still runs here: `Tr` is spent now, `Ts` and `T0` on the
-            // two after it, and the reload's T1 lands three clocks past the
-            // flush.
-            self.tick_bus(bus, master);
-            return;
         }
 
         if self.halted && self.servicing.is_none() {
@@ -1184,6 +1189,19 @@ impl I8088 {
             // Starved. The EU idles until the BIU delivers, which is the cost
             // the prefetch queue exists to avoid and the reason a jump is
             // expensive.
+            //
+            // **A first byte out of an empty queue does not cost a clock more
+            // than a subsequent one, measured.** The published boundary fetch
+            // waits for the byte, preloads it and then spends a clock of its own
+            // (`biu.rs:329`) where a mid-instruction read pops with nothing
+            // behind it (`biu.rs:222`), which reads like a clock this core is
+            // missing. It is not: the clock this pop is taken on is that clock,
+            // and the preload only moves where the status is reported, which the
+            // gate measures first-byte to first-byte and so cancels. Charging it
+            // here is a uniform +1 on every instruction that ends starved: 41
+            // files to exact and 37 off it, 72.57% to 64.06%, because the
+            // population it fixes and the population it breaks are the same
+            // population measured against two different second errors.
             self.loader_starved = self.loader_starved.saturating_add(1);
             return;
         }
@@ -1397,13 +1415,6 @@ impl I8088 {
             self.t_cycle = TCycle::T1;
         }
 
-        // The fetch delay counts down on every T-state that is not a wait.
-        if let FetchState::Delayed(n) = self.fetch
-            && self.t_cycle != TCycle::Tw
-        {
-            self.fetch = FetchState::Delayed(n.saturating_sub(1));
-        }
-
         // -- operate the T-state the bus is in ------------------------------
         match self.bus_status_latch {
             // Nothing is running. The two states that lift themselves ask here
@@ -1418,6 +1429,19 @@ impl I8088 {
                 _ => {}
             },
             status => self.operate_bus_t_state(bus, master, status),
+        }
+
+        // The fetch delay counts down on every T-state that is not a wait.
+        //
+        // **After the T-state is operated, not before.** The decision that
+        // stands the prefetcher down happens inside that operate, at the end of
+        // T2, so the clock which sets the delay is also the first to spend it.
+        // Counting first left every delay a clock long, and `PUSH r16` paid it:
+        // its write reached the bus one T-state after the part's.
+        if let FetchState::Delayed(n) = self.fetch
+            && self.t_cycle != TCycle::Tw
+        {
+            self.fetch = FetchState::Delayed(n.saturating_sub(1));
         }
 
         // -- advance the address cycle --------------------------------------
@@ -1796,7 +1820,15 @@ impl I8088 {
                             true
                         }
                         FetchState::Delayed(n) => {
-                            req.stage = RequestStage::Delaying(n);
+                            // **This clock is the first of the stand-down, not
+                            // the one before it.** The published wait spends
+                            // exactly the clocks the delay has left and sets
+                            // the abort state without a cycle between them, so
+                            // entering the stage has to consume one of them.
+                            // Counting the entry separately cost `PUSH r16` two
+                            // clocks: one for the entry and one more for the
+                            // hand-off to the abort.
+                            req.stage = self.spend_a_delay_clock(n);
                             self.bus_req = Some(req);
                             return;
                         }
@@ -1820,16 +1852,7 @@ impl I8088 {
                     req.stage = RequestStage::HandingOver;
                 }
                 RequestStage::Delaying(n) => {
-                    // The stand-down runs out here rather than through the
-                    // prefetcher's own countdown, and leaves `Ta` behind it so
-                    // the address cycle that follows skips its `Tr`.
-                    req.stage = if n > 1 {
-                        RequestStage::Delaying(n - 1)
-                    } else {
-                        self.fetch = FetchState::Normal;
-                        self.ta = TaCycle::Ta;
-                        RequestStage::Aborting
-                    };
+                    req.stage = self.spend_a_delay_clock(n);
                     self.bus_req = Some(req);
                     return;
                 }
@@ -1852,6 +1875,22 @@ impl I8088 {
             }
         }
         self.bus_req = Some(req);
+    }
+
+    /// Spend one clock of a prefetch stand-down, and say what the request does
+    /// next.
+    ///
+    /// `n` is what the delay had left when this clock began, so the clock being
+    /// spent is one of them. When it is the last, the stand-down ends here and
+    /// leaves `Ta` behind it: the address cycle that replaces it skips its `Tr`,
+    /// because the delay's own end served as the request.
+    fn spend_a_delay_clock(&mut self, n: u8) -> RequestStage {
+        if n > 1 {
+            return RequestStage::Delaying(n - 1);
+        }
+        self.fetch = FetchState::Normal;
+        self.ta = TaCycle::Ta;
+        RequestStage::Aborting
     }
 
     /// Put the execution unit's cycle on the bus.
@@ -2903,13 +2942,44 @@ impl I8088 {
     /// the loader, which is the sequencer's version of retiring.
     ///
     /// `Flush` is the one step handled by setting a flag rather than by
-    /// returning a phase, because the flush clock is already a phase of its
-    /// own: [`I8088::pending_flush`] spends it and starts the reload, and the
-    /// sequencer picks up again on the T-state after.
+    /// returning a phase, because it costs nothing: [`I8088::pending_flush`]
+    /// throws the queue away at the head of the next T-state and starts the
+    /// reload, and that same T-state runs the step behind it.
     fn advance_microcode<B: Bus<Address = u32, Data = u8> + ?Sized>(
         &mut self,
         bus: &mut B,
         master: BusMaster,
+    ) -> Eu {
+        self.advance_microcode_from(bus, master, false)
+    }
+
+    /// The same, entered from the T-state a transfer released on.
+    ///
+    /// **That T-state is the first clock of whatever microcode follows.** The
+    /// published wait for a read exits *at* T4 without spending it, so the next
+    /// microcode line is what cycles it; a sequencer that treats the release as
+    /// a clock of its own and starts the microcode on the one after charges
+    /// every such seam twice.
+    ///
+    /// `RET far` measures it against `RET near`, which has no such seam and is
+    /// exact: the far form runs one clock long on every case of all four of its
+    /// files, and the clock is between its two pops. `INT n` has four of these
+    /// seams and runs five long.
+    fn advance_microcode_after_transfer<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+    ) -> Eu {
+        self.advance_microcode_from(bus, master, true)
+    }
+
+    /// `released` says the caller is already spending this clock, so the first
+    /// clock of the next `Spend` is that one rather than the next.
+    fn advance_microcode_from<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+        mut released: bool,
     ) -> Eu {
         loop {
             let Some(mut cursor) = self.mc else {
@@ -2935,7 +3005,17 @@ impl I8088 {
             self.mc = Some(cursor);
 
             match step {
-                microcode::Step::Spend(n) => return Eu::McSpend(n),
+                microcode::Step::Spend(n) => {
+                    if !released {
+                        return Eu::McSpend(n);
+                    }
+                    // The transfer's release clock is the first of these.
+                    released = false;
+                    if n > 1 {
+                        return Eu::McSpend(n - 1);
+                    }
+                    // A single clock, and it was that one.
+                }
                 // **`SUSP` is not free while the bus is busy.** It stops the
                 // prefetcher, and a fetch already in flight is not abandoned:
                 // the execution unit waits for it, and stops when that fetch
@@ -2972,11 +3052,25 @@ impl I8088 {
                     self.ta = TaCycle::Td;
                     self.pl_status = BusStatus::Passive;
                 }
-                // Costs one clock, and that clock is `pending_flush`'s own
-                // cycle rather than a spend: it fires on the next T-state,
-                // throws the queue away and starts the reload, and the step
-                // after this one runs on the T-state after that. Returning a
-                // phase here as well would charge the flush twice.
+                // Free. The published `biu_queue_flush` spends no clock, so the
+                // loop continues to the step behind this one and that step's
+                // first clock is the one the flush is reported on.
+                //
+                // **Not the clock the step list reaches it on, though.** The
+                // published flush sets its queue operation between cycles; the
+                // operation is rolled into `last_queue_op` at the end of the
+                // next cycle that runs and recorded by the one after
+                // (`cycle.rs:367`, `mod.rs:1167`), so the recording lags every
+                // queue line by exactly one T-state. This core reports on the
+                // event's own clock instead, and the two conventions line up
+                // column for column, which is why the queue reads in a
+                // `side_by_side` trace sit on the same index in both.
+                //
+                // Flushing on a transfer's release clock rather than the one
+                // after it was measured against that frame and is wrong: it
+                // moves `RET far`'s `Emptied` from the recording's cycle 27 to
+                // 26 and starts the reload a clock early. `pending_flush` is the
+                // right clock.
                 //
                 // The transfer is discharged with it. `finish_instruction`
                 // flushes for any instruction that redirected the stream, and
@@ -3586,7 +3680,7 @@ impl I8088 {
             // runs its body behind the read and an `OUT` retires behind the
             // write.
             if self.mc.is_some() {
-                self.eu = self.advance_microcode(bus, master);
+                self.eu = self.advance_microcode_after_transfer(bus, master);
             } else if reading {
                 // The port's bytes are in hand, so the instruction can run.
                 self.eu = Eu::Loading;
@@ -3656,7 +3750,7 @@ impl I8088 {
                 if cursor.read == 2 {
                     self.vector_staged = true;
                 }
-                self.eu = self.advance_microcode(bus, master);
+                self.eu = self.advance_microcode_after_transfer(bus, master);
                 return;
             }
             if byte + 1 == 4 {
@@ -3783,7 +3877,7 @@ impl I8088 {
                 if let Some(mut cursor) = self.mc {
                     cursor.popped += 1;
                     self.mc = Some(cursor);
-                    self.eu = self.advance_microcode(bus, master);
+                    self.eu = self.advance_microcode_after_transfer(bus, master);
                     return;
                 }
                 // Everything the instruction will pop is in hand.
@@ -3799,7 +3893,7 @@ impl I8088 {
             if let Some(mut cursor) = self.mc {
                 cursor.pushed += 1;
                 self.mc = Some(cursor);
-                self.eu = self.advance_microcode(bus, master);
+                self.eu = self.advance_microcode_after_transfer(bus, master);
             } else {
                 self.finish_or_write_operand();
             }
@@ -3837,7 +3931,7 @@ impl I8088 {
                 // A write inside a step list hands back instead: the routine is
                 // what decides whether anything follows it.
                 if self.mc.is_some() {
-                    self.eu = self.advance_microcode(bus, master);
+                    self.eu = self.advance_microcode_after_transfer(bus, master);
                 } else {
                     self.finish_instruction();
                 }

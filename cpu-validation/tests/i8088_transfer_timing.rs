@@ -554,12 +554,25 @@ fn side_by_side() {
     // its microcode was transcribed; `PUSH` is the one that still runs short.
     dump_side_by_side("58", false, 4);
     dump_side_by_side("50", false, 4);
-    // `MOV r/m, imm`, both directions of the operand. Its routine writes but
-    // never reads, so it is the one transcribed group whose address is
-    // computed and not loaded, and the only one whose immediate the loader
-    // defers without a read to defer it behind.
-    dump_side_by_side("C7", false, 4);
-    dump_side_by_side("C7", true, 4);
+    // The far return, whose routine matches FARRET line for line and which
+    // runs one clock long on every case, against the near return through the
+    // same routine, which is exact. Whatever separates them is the far arm.
+    dump_side_by_side("CB", false, 4);
+    dump_side_by_side("C3", false, 4);
+    // `IRET`, the one routine with real work behind its flush: the flags come
+    // off the stack after the queue has been thrown away. It is the only file
+    // in the corpus that moved when the flush stopped owning a T-state, so
+    // whatever the flush clock was compensating for is in this trace.
+    dump_side_by_side("CF", false, 4);
+    // The discriminator for the returns' shortfall. `JMP rel16` ends exactly as
+    // they do, flushing into an empty queue and waiting out the reload, and it
+    // is exact where they are one clock short. Whatever separates them is in
+    // front of the flush, not behind it.
+    dump_side_by_side("E9", false, 4);
+    // And `LEA`, the one instruction that computes an effective address and
+    // runs no bus cycle at all, so its span is the address calculation and
+    // nothing else.
+    dump_side_by_side("8D", true, 4);
 }
 
 /// Replay a case and count the code fetches this core starts before its first
