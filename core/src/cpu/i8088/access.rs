@@ -204,6 +204,52 @@ pub(crate) fn ea_cycles(modrm: u8) -> u8 {
     }
 }
 
+/// Clocks the pipeline spends in its address phase, which is not the same as
+/// the effective address costing something different.
+///
+/// Two corrections to [`ea_cycles`], both measured, and both about *this*
+/// pipeline rather than about the part.
+///
+/// **The displacement is fetched during the address calculation, not before
+/// it.** The recording is unambiguous: `MOV reg, [BX+SI+disp8]` and `MOV reg,
+/// [BX+SI+disp16]` start their operand bus cycle on exactly the same cycle,
+/// though one is a byte longer. This core's loader has already pulled every
+/// displacement byte out of the queue by the time the address phase begins, a
+/// clock apiece, so those clocks come off here. Without this an instruction
+/// with a 16-bit displacement starts its operand read two cycles late and every
+/// `LEA` with a displacement runs long.
+///
+/// **A bus cycle starts on an even clock.** An instruction that goes on to
+/// read or write memory starts that cycle at the ModR/M byte plus the effective
+/// address *rounded up to even*: over both `MOV` directions, every one of the
+/// twenty-four addressing modes lands on that rule exactly, with the recorded
+/// start uniform within each mode. `LEA` is the control, and it does not round:
+/// it computes the same addresses and lands on the datasheet's odd values, 5, 7,
+/// 9 and 11 included. So the rounding belongs to the bus request rather than to
+/// the address, which is why it is `reaches_memory` and not part of the table.
+pub(crate) fn address_phase_cycles(modrm: u8, reaches_memory: bool) -> u8 {
+    let ea = ea_cycles(modrm);
+    let aligned = if reaches_memory {
+        ea.next_multiple_of(2)
+    } else {
+        ea
+    };
+    aligned.saturating_sub(displacement_len(modrm))
+}
+
+/// How many displacement bytes the ModR/M byte says follow it. A duplicate of
+/// what [`super::format::displacement_len`] computes, kept here rather than
+/// called across because that one takes the byte as the loader sees it and this
+/// is about the same byte's addressing mode.
+fn displacement_len(modrm: u8) -> u8 {
+    match (modrm >> 6) & 3 {
+        0 if modrm & 7 == 6 => 2,
+        1 => 1,
+        2 => 2,
+        _ => 0,
+    }
+}
+
 /// The ModR/M `reg` field, which selects the operation inside a group opcode.
 #[inline]
 fn reg_of(modrm: u8) -> u8 {

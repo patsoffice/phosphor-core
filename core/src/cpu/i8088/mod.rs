@@ -1051,7 +1051,19 @@ impl I8088 {
         if self.operand_at.is_some() {
             if format::format_of(opcode).modrm {
                 let modrm = self.instr[self.opcode_at as usize + 1];
-                self.eu = Eu::AddressCalc(access::ea_cycles(modrm));
+                let acc = access::operand_access(opcode, modrm);
+                let cycles = access::address_phase_cycles(modrm, acc.reads || acc.writes);
+                self.eu = if cycles > 0 {
+                    Eu::AddressCalc(cycles)
+                } else {
+                    // A short address under a long displacement can leave
+                    // nothing to spend, and an `AddressCalc(0)` would burn a
+                    // T-state doing nothing.
+                    self.begin_operand_phase()
+                };
+                if self.eu == Eu::Loading {
+                    self.run_execute_step(bus, master);
+                }
                 return;
             }
             // The operands with no ModR/M byte have no address to compute: the
@@ -1228,6 +1240,16 @@ impl I8088 {
     /// the first version of this did: `ADD DX, SP` took five cycles against the
     /// hardware's three, over exactly its two bytes.
     ///
+    /// **Every byte except the displacement**, and that exception is the
+    /// manual's own. Table 1-16 quotes a memory form as `base + EA`, and the
+    /// displacement's fetch is inside the `EA` half rather than the base: the
+    /// recording shows the same instruction taking the same total with a
+    /// one-byte displacement and a two-byte one, and starting its operand bus
+    /// cycle on the same clock in both. So the displacement's pulls are already
+    /// paid for by [`access::address_phase_cycles`], and subtracting them here
+    /// as well charged them twice, which left every `mod=01` form a clock short
+    /// and every `mod=10` form two.
+    ///
     /// A prefix costs two clocks, of which the loader already spent one pulling
     /// the byte, so each one adds a clock here. The manual gives the segment
     /// override, `LOCK` and `REP` two clocks apiece, and the recording agrees
@@ -1298,7 +1320,12 @@ impl I8088 {
                 _ => 0,
             };
         }
-        cycles -= i32::from(self.instr_len - self.opcode_at);
+        let displacement = if format::format_of(opcode).modrm {
+            format::displacement_len(modrm)
+        } else {
+            0
+        };
+        cycles -= i32::from(self.instr_len - self.opcode_at - displacement);
         cycles += i32::from(self.opcode_at);
 
         match cycles.clamp(0, i32::from(u8::MAX)) as u8 {
