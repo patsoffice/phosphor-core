@@ -9,7 +9,7 @@ use super::I8088;
 
 /// Segment register selector.
 #[repr(u8)]
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum SegReg {
     ES = 0,
     CS = 1,

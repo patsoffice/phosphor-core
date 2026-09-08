@@ -11,19 +11,28 @@
 //! what keeps a failure legible: one all-or-nothing comparison against eleven
 //! fields fails for one reason and gets read as failing for another.
 //!
-//! Two comparisons are live here:
+//! Three comparisons are live here, and only one of them is asserted.
 //!
-//! - **Cycle count**, reported and not asserted. Execution is still atomic, so
-//!   the core charges nothing for effective-address calculation or for operand
-//!   bus cycles, and the count is a floor rather than an answer.
-//! - **Queue operations in order**, asserted exactly. Which bytes the EU took
+//! - **Queue operations in order**, ASSERTED exactly. Which bytes the EU took
 //!   out of the prefetch queue, whether each was a First or a Subsequent byte,
 //!   and where the queue was flushed. This is most of what the doc calls step 4
 //!   of the ladder: what is missing from it is the *position* of each operation
 //!   in the cycle stream, which cannot be checked until the cycle counts are
 //!   right, and which the hardware reports one cycle late in any case.
+//! - **Cycle count**, reported. Execution is still atomic, so the core charges
+//!   nothing for effective-address calculation or for operand bus cycles, and
+//!   the count is a floor rather than an answer.
+//! - **Instruction fetches in order**, reported, and **not yet an independent
+//!   check**. The address and byte of each CODE bus cycle are compared, which
+//!   is real, but how *many* fetches fall inside the measured span is decided
+//!   by how long the span is, and the span is short for the same reason the
+//!   cycle count is low. Until execution takes its cycles this number tracks
+//!   the count rather than saying anything the count does not. It is here
+//!   because it becomes an independent check the moment that changes, and
+//!   because a number that moves for a known reason is worth watching.
 //!
-//! Bus status, T-state, address and data are still unread.
+//! Operand reads and writes do not reach the bus as MEMR and MEMW cycles yet,
+//! so bus status is only ever CODE or passive.
 //!
 //! The vectors are a fixed, external, hardware-recorded standard. Nothing in
 //! here may adjust them, and no tolerance may be widened to make a milestone
@@ -42,8 +51,10 @@ use std::io::Read;
 use rayon::prelude::*;
 
 use phosphor_core::core::{BusMaster, BusMasterComponent};
-use phosphor_core::cpu::i8088::{I8088, QueueStatus};
-use phosphor_cpu_validation::{I8088InitialState, I8088TestCase, QueueOp, TracingBus20};
+use phosphor_core::cpu::i8088::{BusStatus as CoreBusStatus, I8088, QueueStatus};
+use phosphor_cpu_validation::{
+    BusStatus, I8088InitialState, I8088TestCase, QueueOp, TState, TracingBus20,
+};
 
 /// Opcodes the suite ships no file for at all, which is why this gate needs no
 /// skip list of its own.
@@ -72,8 +83,84 @@ struct Verdict {
     /// The queue operations we performed against the ones recorded, compared
     /// as ordered sequences. `None` when there was no trace to compare.
     queue: Option<Result<(), String>>,
+    /// The instruction fetches the BIU ran against the ones recorded, compared
+    /// as ordered sequences of address and byte.
+    fetches: Option<Result<(), String>>,
     /// Our core never reached an instruction boundary.
     hung: bool,
+}
+
+/// One completed instruction fetch: where the BIU read, and what came back.
+///
+/// The address is taken from T1, the only cycle it is on the multiplexed pins,
+/// and the byte from T3. Pairing them is what makes a fetch comparable at all:
+/// neither field alone identifies the transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Fetch {
+    address: u32,
+    byte: u8,
+}
+
+impl std::fmt::Display for Fetch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:05X}:{:02X}", self.address, self.byte)
+    }
+}
+
+/// The instruction fetches the hardware recorded, in order.
+///
+/// A `CODE` bus cycle spans four rows of the trace. The address is on the row
+/// whose ALE pin is asserted and the data on the row where the memory read
+/// status line is active, which is T3. Walking the rows and pairing them is
+/// exactly what an external address latch does.
+fn recorded_fetches(tc: &I8088TestCase) -> Vec<Fetch> {
+    let mut out = Vec::new();
+    let mut pending: Option<u32> = None;
+    for c in &tc.cycles {
+        if let Some(addr) = c.address()
+            && c.status() == BusStatus::CODE
+        {
+            pending = Some(addr);
+        }
+        // The data bus is valid on T3, which is also where MRDC is asserted for
+        // a read. Using the status line rather than the T-state name means this
+        // would still find the byte if a wait state moved it.
+        if c.t_state() == TState::T3
+            && c.3.read()
+            && let Some(address) = pending.take()
+        {
+            out.push(Fetch { address, byte: c.6 });
+        }
+    }
+    out
+}
+
+fn compare_fetches(ours: &[Fetch], theirs: &[Fetch]) -> Result<(), String> {
+    let render = |f: &[Fetch]| {
+        f.iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    if ours.len() != theirs.len() {
+        return Err(format!(
+            "{} instruction fetches, hardware ran {}: got [{}] want [{}]",
+            ours.len(),
+            theirs.len(),
+            render(ours),
+            render(theirs),
+        ));
+    }
+    for (i, (a, b)) in ours.iter().zip(theirs).enumerate() {
+        if a != b {
+            return Err(format!(
+                "fetch {i} is {a}, hardware had {b}: got [{}] want [{}]",
+                render(ours),
+                render(theirs),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// One queue operation: what the EU did, and the byte it read.
@@ -153,6 +240,15 @@ fn compare_queue_events(ours: &[QueueEvent], theirs: &[QueueEvent]) -> Result<()
 }
 
 fn load_initial_state(cpu: &mut I8088, bus: &mut TracingBus20, state: &I8088InitialState) {
+    // The recording rig filled memory the test does not name with NOP: "All
+    // bytes fetched after the initial instruction bytes are set to 0x90".
+    // Leaving it zero here means the BIU prefetches 0x00 where the hardware
+    // prefetched 0x90, so every fetch past the end of the instruction compares
+    // unequal for a reason that is about this harness rather than about the
+    // core. The state gate does not need this, because the suite names every
+    // location an instruction actually touches.
+    bus.memory.fill(0x90);
+
     cpu.ax = state.regs.ax;
     cpu.bx = state.regs.bx;
     cpu.cx = state.regs.cx;
@@ -197,11 +293,78 @@ fn run_test_case(tc: &I8088TestCase) -> Verdict {
 
     load_initial_state(&mut cpu, &mut bus, &tc.initial);
 
-    let mut ticks = 0usize;
+    // The span being measured is the suite's, not this replay's.
+    //
+    // "Instruction cycles begin from the cycle in which the CPU's queue status
+    // lines indicate that an instruction First Byte has been fetched", and end
+    // when the next instruction's First Byte is read. That is not the same
+    // span as "from when this harness started the CPU until the instruction
+    // retired", and comparing the two was wrong at both ends:
+    //
+    // - At the start, a case beginning from an empty queue has to fetch its
+    //   opcode before it can read it, and the hardware did that *before* its
+    //   trace began. Counting those cycles charged this core four T-states the
+    //   recording never showed, on exactly half the suite.
+    // - At the end, the hardware kept prefetching until the next instruction's
+    //   first byte came out of the queue, which is several cycles past where
+    //   this replay stopped.
+    //
+    // So: run to the first queue read, start measuring there, and stop on the
+    // next First Byte.
     let mut ours: Vec<QueueEvent> = Vec::new();
+    let mut fetches: Vec<Fetch> = Vec::new();
+    let mut pending: Option<u32> = None;
+    let mut ticks = 0usize;
+    let mut measuring = false;
+    let mut retired = false;
+    let mut elapsed = 0usize;
+    let hung = |_: ()| Verdict {
+        counts: None,
+        queue: None,
+        fetches: None,
+        hung: true,
+    };
+
     loop {
         ticks += 1;
-        let retired = cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+        // Generous: the longest recorded traces in the suite are the REP string
+        // operations, and a word IDIV runs past 200 cycles on its own.
+        if ticks > 4000 {
+            return hung(());
+        }
+        // Retirement as of *before* this tick. A one-byte instruction retires
+        // on the very cycle its opcode is read, and that read is a First Byte
+        // belonging to the instruction being measured rather than to the next
+        // one. Testing the flag after the tick closed the span an instruction
+        // early on every single-byte opcode.
+        let was_retired = retired;
+        retired |= cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+
+        // A First Byte does not by itself mean a new instruction. A prefix
+        // reads as one and so does the opcode behind it, which is the README's
+        // "multiple First Byte statuses until the first byte that is a
+        // non-prefixed opcode byte is read". So the span closes on the first
+        // First Byte *after* this instruction has retired, which is the only
+        // reading of "the next instruction" the CPU can actually supply.
+        let next_instruction =
+            matches!(cpu.queue_status, Some((QueueStatus::First, _))) && was_retired;
+
+        if !measuring {
+            // Still before the span. The opcode's own fetch happens here for a
+            // case starting from an empty queue, and is not part of the trace.
+            if cpu.queue_status.is_some() {
+                measuring = true;
+            } else {
+                continue;
+            }
+        } else if next_instruction {
+            // The span is over, and this cycle belongs to the next instruction
+            // rather than to this one.
+            break;
+        } else {
+            elapsed += 1;
+        }
+
         // Sample the QS lines every cycle, exactly as the recording rig did.
         if let Some((status, byte)) = cpu.queue_status {
             ours.push(match status {
@@ -210,17 +373,17 @@ fn run_test_case(tc: &I8088TestCase) -> Verdict {
                 QueueStatus::Emptied => QueueEvent::Flush,
             });
         }
-        if retired {
-            break;
-        }
-        // Generous: the longest recorded traces in the suite are the REP string
-        // operations, and a word IDIV runs past 200 cycles on its own.
-        if ticks > 2000 {
-            return Verdict {
-                counts: None,
-                queue: None,
-                hung: true,
-            };
+        // And latch the address off T1 and the byte off T3, the same way the
+        // external latch on the board does.
+        if cpu.bus.status == CoreBusStatus::Code {
+            if let Some(addr) = cpu.bus.address {
+                pending = Some(addr);
+            }
+            if let Some(byte) = cpu.bus.data
+                && let Some(address) = pending.take()
+            {
+                fetches.push(Fetch { address, byte });
+            }
         }
     }
 
@@ -228,13 +391,17 @@ fn run_test_case(tc: &I8088TestCase) -> Verdict {
         return Verdict {
             counts: None,
             queue: None,
+            fetches: None,
             hung: false,
         };
     }
 
+    // `elapsed` counts the cycles after the opening First Byte; the cycle
+    // carrying it is the trace's first row, so add it back.
     Verdict {
-        counts: Some((ticks, tc.cycles.len())),
+        counts: Some((elapsed + 1, tc.cycles.len())),
         queue: Some(compare_queue_events(&ours, &recorded_queue_events(tc))),
+        fetches: Some(compare_fetches(&fetches, &recorded_fetches(tc))),
         hung: false,
     }
 }
@@ -269,9 +436,13 @@ struct FileOutcome {
     /// Cases whose queue-operation sequence matched the recording.
     queue_matched: usize,
     queue_total: usize,
+    /// Cases whose instruction-fetch sequence matched the recording.
+    fetch_matched: usize,
+    fetch_total: usize,
     /// The first differing case of each kind, kept for the report.
     first_difference: Option<String>,
     first_queue_difference: Option<String>,
+    first_fetch_difference: Option<String>,
 }
 
 #[test]
@@ -362,6 +533,18 @@ fn i8088_cycle_counts_against_the_hardware_trace() {
                         }
                     }
                 }
+
+                if let Some(f) = verdict.fetches {
+                    out.fetch_total += 1;
+                    match f {
+                        Ok(()) => out.fetch_matched += 1,
+                        Err(why) => {
+                            if out.first_fetch_difference.is_none() {
+                                out.first_fetch_difference = Some(format!("{}: {why}", tc.name));
+                            }
+                        }
+                    }
+                }
             }
 
             out
@@ -378,8 +561,11 @@ fn i8088_cycle_counts_against_the_hardware_trace() {
     let mut error_sum = 0i64;
     let mut queue_matched = 0usize;
     let mut queue_total = 0usize;
+    let mut fetch_matched = 0usize;
+    let mut fetch_total = 0usize;
     let mut examples: Vec<String> = Vec::new();
     let mut queue_examples: Vec<String> = Vec::new();
+    let mut fetch_examples: Vec<String> = Vec::new();
 
     for o in &outcomes {
         files += 1;
@@ -392,6 +578,13 @@ fn i8088_cycle_counts_against_the_hardware_trace() {
         error_sum += o.error_sum;
         queue_matched += o.queue_matched;
         queue_total += o.queue_total;
+        fetch_matched += o.fetch_matched;
+        fetch_total += o.fetch_total;
+        if let Some(d) = &o.first_fetch_difference
+            && fetch_examples.len() < 20
+        {
+            fetch_examples.push(format!("{}  {}", o.filename, d));
+        }
         if let Some(d) = &o.first_difference
             && examples.len() < 20
         {
@@ -422,6 +615,11 @@ fn i8088_cycle_counts_against_the_hardware_trace() {
         pct(queue_matched, queue_total)
     );
     eprintln!(
+        "  {fetch_matched} of {fetch_total} vectors match on the instruction-fetch \
+         sequence ({:.2}%)",
+        pct(fetch_matched, fetch_total)
+    );
+    eprintln!(
         "  {matched} of {compared} vectors match on cycle count ({:.2}%)",
         pct(matched, compared)
     );
@@ -445,6 +643,15 @@ fn i8088_cycle_counts_against_the_hardware_trace() {
     }
     if hung > 0 {
         eprintln!("  {hung} vectors never reached an instruction boundary");
+    }
+    if !fetch_examples.is_empty() {
+        eprintln!(
+            "\nFirst instruction-fetch difference per file (first {}):",
+            fetch_examples.len()
+        );
+        for e in &fetch_examples {
+            eprintln!("  {e}");
+        }
     }
     if !queue_examples.is_empty() {
         eprintln!(

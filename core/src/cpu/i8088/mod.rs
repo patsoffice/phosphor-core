@@ -54,6 +54,71 @@ pub(crate) const QUEUE_LEN: usize = 4;
 /// idle cycle between, which the same trace shows at cycles 5 and 6.
 const PREFETCH_RESTART_CYCLES: u8 = 2;
 
+/// S0-S2: what kind of bus cycle the CPU is running.
+///
+/// The 8288 bus controller decodes these into the memory and I/O command lines.
+/// `Inta`, `IoRead`, `IoWrite` and `Halt` are declared here because they are
+/// what the pins can say; the EU does not drive them yet.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BusStatus {
+    /// Interrupt acknowledge.
+    Inta,
+    /// I/O read.
+    IoRead,
+    /// I/O write.
+    IoWrite,
+    /// Memory read of data, as opposed to of an instruction.
+    MemRead,
+    /// Memory write.
+    MemWrite,
+    /// Halt acknowledge.
+    Halt,
+    /// Instruction fetch: a queue refill.
+    Code,
+    /// Passive. No bus cycle is in progress.
+    #[default]
+    Passive,
+}
+
+/// Which T-state of a bus cycle this is.
+///
+/// A bus cycle is T1 through T4, with wait states inserted between T3 and T4
+/// when a device is not ready. `Idle` is the 8088's Ti: no bus cycle at all.
+/// Nothing on the Gottlieb board inserts wait states and the test suite records
+/// none, so `Wait` is declared for completeness and never produced.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TState {
+    T1,
+    T2,
+    T3,
+    T4,
+    Wait,
+    #[default]
+    Idle,
+}
+
+/// What the CPU's bus pins are doing this T-state.
+///
+/// The address and the data share the same twenty pins, which is why each is an
+/// `Option` here rather than a value that is sometimes stale. The address is
+/// only on the pins during T1, while ALE is asserted for the external latch to
+/// capture it, and the data only on T3. A caller that reads either on any other
+/// cycle is reading pins that are mid-turnaround, and comparing that against a
+/// recording produces failures that mean nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BusPins {
+    /// S0-S2.
+    pub status: BusStatus,
+    /// Which T-state of the bus cycle.
+    pub t_state: TState,
+    /// The 20-bit physical address, latched on T1 with ALE asserted.
+    pub address: Option<u32>,
+    /// The byte on the data pins, valid on T3.
+    pub data: Option<u8>,
+    /// S3/S4: which segment register computed the address.
+    pub segment: Option<SegReg>,
+}
+
 /// What the EU did to the queue on a given cycle: the QS0/QS1 status lines.
 ///
 /// The part reports these one cycle after the operation they describe. This
@@ -233,6 +298,11 @@ pub struct I8088 {
     /// instruction ends and the next begins.
     #[save_skip(default)]
     pub queue_status: Option<(QueueStatus, u8)>,
+    /// What the bus pins are doing this T-state, rewritten at the start of each
+    /// one. This is the other half of what an outside observer can see, and the
+    /// half the recorded vectors devote eight of their eleven fields to.
+    #[save_skip(default)]
+    pub bus: BusPins,
 
     #[save_skip(default)]
     pub(crate) segment_override: Option<SegReg>,
@@ -283,6 +353,7 @@ impl I8088 {
             prefetch_ip: 0,
             biu: Biu::Idle,
             queue_status: None,
+            bus: BusPins::default(),
             segment_override: None,
             rep_prefix: None,
             nmi_pending: false,
@@ -336,6 +407,11 @@ impl I8088 {
         self.clock += 1;
         self.queue_status = None;
         self.retired = false;
+        // Pins default to passive and idle every cycle, so a cycle that drives
+        // nothing reads as Ti rather than as whatever the last bus cycle left
+        // behind. Holding stale values here is how an address gets compared on
+        // a cycle that is not carrying one.
+        self.bus = BusPins::default();
 
         // A branch taken on the previous T-state flushes here, on its own
         // cycle, and only then has the instruction retired.
@@ -430,47 +506,83 @@ impl I8088 {
         bus: &mut B,
         master: BusMaster,
     ) {
+        // `Biu::Fetching { t }` is the T-state driven on *this* cycle, and
+        // `Restarting(0)` means "drive T1 next time you are ticked". Written
+        // any other way a state transition eats a clock: the first version of
+        // this spent a cycle moving from `Restarting(0)` into the fetch before
+        // driving T1, which made every queue refill five cycles long instead of
+        // four. Nothing caught it, because M2 compared the order of queue
+        // operations and not their position.
         match self.biu {
             Biu::Idle => {
+                // Ti. Start counting the moment there is somewhere to put a
+                // byte.
                 if self.queue_has_room() {
                     self.biu = Biu::Restarting(PREFETCH_RESTART_CYCLES - 1);
                 }
             }
-            Biu::Restarting(0) => {
-                self.biu = Biu::Fetching {
-                    t: 1,
-                    addr: Self::physical_addr(self.cs, self.prefetch_ip),
-                };
+            // Ti, waiting out the restart delay.
+            Biu::Restarting(n) if n > 0 => self.biu = Biu::Restarting(n - 1),
+            // The delay is spent: drive T1 now.
+            Biu::Restarting(_) => {
+                let addr = Self::physical_addr(self.cs, self.prefetch_ip);
+                self.begin_bus_cycle(BusStatus::Code, addr, SegReg::CS);
+                self.biu = Biu::Fetching { t: 2, addr };
             }
-            Biu::Restarting(n) => self.biu = Biu::Restarting(n - 1),
-            // T1 latches the address, T2 turns the multiplexed pins around for
-            // data. Neither is observable through a `Bus` that resolves an
-            // access in one call, but both are real clocks and the part cannot
-            // deliver a byte in fewer than four of them.
-            Biu::Fetching { t: t @ 1..=2, addr } => {
-                self.biu = Biu::Fetching { t: t + 1, addr };
+            // T2 turns the multiplexed pins around for data. The address is off
+            // them by now, which is what the external latch exists for.
+            Biu::Fetching { t: 2, addr } => {
+                self.drive_bus_cycle(BusStatus::Code, TState::T2, SegReg::CS);
+                self.biu = Biu::Fetching { t: 3, addr };
             }
-            // T3 is when the addressed device drives the byte back.
+            // T3: the addressed device drives the byte back.
             Biu::Fetching { t: 3, addr } => {
+                self.drive_bus_cycle(BusStatus::Code, TState::T3, SegReg::CS);
                 let byte = bus.read(master, addr);
+                self.bus.data = Some(byte);
                 self.push_queue(byte);
                 self.prefetch_ip = self.prefetch_ip.wrapping_add(1);
                 self.biu = Biu::Fetching { t: 4, addr };
             }
             // T4 completes the transaction. A fetch that ends with room left in
             // the queue runs straight into the next T1, back to back, with no
-            // idle cycle in between.
+            // idle cycle between: `Restarting(0)` drives T1 on the very next
+            // tick.
             Biu::Fetching { .. } => {
+                self.drive_bus_cycle(BusStatus::Code, TState::T4, SegReg::CS);
                 self.biu = if self.queue_has_room() {
-                    Biu::Fetching {
-                        t: 1,
-                        addr: Self::physical_addr(self.cs, self.prefetch_ip),
-                    }
+                    Biu::Restarting(0)
                 } else {
                     Biu::Idle
                 };
             }
         }
+    }
+
+    /// Drive one of the T-states after T1, where the address is no longer on
+    /// the pins.
+    #[inline]
+    fn drive_bus_cycle(&mut self, status: BusStatus, t_state: TState, segment: SegReg) {
+        self.bus = BusPins {
+            status,
+            t_state,
+            address: None,
+            data: None,
+            segment: Some(segment),
+        };
+    }
+
+    /// Drive T1 of a bus cycle: put the address on the multiplexed pins with
+    /// ALE asserted, and say what kind of cycle this is.
+    #[inline]
+    fn begin_bus_cycle(&mut self, status: BusStatus, addr: u32, segment: SegReg) {
+        self.bus = BusPins {
+            status,
+            t_state: TState::T1,
+            address: Some(addr),
+            data: None,
+            segment: Some(segment),
+        };
     }
 
     /// Whether the BIU may start another fetch. The 8088 prefetches whenever
