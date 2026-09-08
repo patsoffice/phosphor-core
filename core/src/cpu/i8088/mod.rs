@@ -3078,27 +3078,27 @@ impl I8088 {
                 // the fetch's T3 and abandoned it. Three clocks, on every
                 // register-form case of the file.
                 microcode::Step::Susp => {
-                    // **This is a faithful transcription and its residual is not
-                    // in the condition.** `biu_fetch_suspend` is five lines:
-                    // set `Suspended`, wait for the bus if `bus_status_latch ==
-                    // CodeFetch`, and reset `ta_cycle` and `pl_status`
-                    // unconditionally. `biu_bus_wait_finish` cycles until
-                    // `t_cycle == T4`, stopping at it. That is what is written
-                    // below, line for line, `T0` special cases included by
-                    // being absent.
+                    // **The condition below is a faithful transcription; what
+                    // was wrong was when it got asked.** `biu_fetch_suspend` is
+                    // five lines: set `Suspended`, wait for the bus if
+                    // `bus_status_latch == CodeFetch`, and reset `ta_cycle` and
+                    // `pl_status` unconditionally. `biu_bus_wait_finish` cycles
+                    // until `t_cycle == T4`, stopping at it. That is what is
+                    // written below, line for line, `T0` special cases included
+                    // by being absent.
                     //
-                    // What differs is *when* the two are asked. The published
-                    // suspend is called between one `cycle()` and the next, so
-                    // it reads the bus as of the end of a clock; this runs
-                    // inside `execute_cycle` before `tick_bus`, so it reads the
-                    // bus as of the end of the clock *before*. Everything left
-                    // on this line follows from that one T-state, and it is a
-                    // structural difference, not a term to add.
+                    // The published suspend is called between one `cycle_i` and
+                    // the next. `cycle_i`'s tail latches a waiting address cycle
+                    // (`cycle.rs:264`) and then promotes `Tinit` to `T1`
+                    // (`cycle.rs:300`) before it returns, so the suspend reads a
+                    // bus on which this clock's fetch is already running. This
+                    // sequencer runs inside `execute_cycle`, before `tick_bus`,
+                    // and reads the bus as of the end of the clock *before*.
                     //
-                    // **Two attempts to patch it by hand are refuted, with
-                    // numbers.** Both treated an address cycle at `T0` as
+                    // **Two attempts to patch that by predicting it are refuted,
+                    // with numbers.** Both treated an address cycle at `T0` as
                     // already latched, which is what the ordering argument
-                    // implies:
+                    // implies and which cannot be told from stale inputs:
                     //
                     // - Waiting there deadlocks, because the suspension set
                     //   below is itself what stops `advance_address_cycle` ever
@@ -3108,12 +3108,45 @@ impl I8088 {
                     //   latches it and the wait below takes over next clock,
                     //   keeps the state gate whole and still loses: the
                     //   unprefixed population went 97.52% to 96.50%, 66 cases,
-                    //   against 4 gained on the prefixed one.
+                    //   against 4 gained on the prefixed one. The prediction is
+                    //   made from `t_cycle` and the queue as they were a clock
+                    //   ago, which is the very thing being corrected for.
                     //
-                    // `retn` is why. Its fetch starts at cycle 9 and the part
-                    // cancels it at cycle 11; `jl` under a prefix and `jmp bp`
-                    // have theirs kept and driven to T4. Both look identical to
-                    // a `T0` test from in here.
+                    // `retn` is why neither works. Its fetch starts at cycle 9
+                    // and the part cancels it at cycle 11; `jl` under a prefix
+                    // and `jmp bp` have theirs kept and driven to T4. All three
+                    // look identical to a `T0` test from in here.
+                    //
+                    // **So the question is asked at the boundary instead.** The
+                    // first time the sequencer reaches this step it hands the
+                    // clock back and returns, and the step runs again on the
+                    // next one, which is the instant `biu_fetch_suspend` runs
+                    // in the reference: after `cycle_i` has latched a waiting
+                    // address cycle and promoted it to `T1`. Nothing is
+                    // predicted and nothing is latched by hand; the bus does its
+                    // own tick in between and the answer is read off it.
+                    //
+                    // **Only when the clock it was reached on is already spent.**
+                    // A `SUSP` behind a microcode line runs at the end of that
+                    // line's clock, which is the next one from in here, and
+                    // handing it back costs nothing: the step behind the suspend
+                    // began on that next clock either way. A `SUSP` behind a
+                    // *transfer* is different, because the release clock is the
+                    // one it runs on: `INT n` reaches it straight off its second
+                    // vector read and 0x1a3 spends that read's T4. Deferring
+                    // there would push the whole routine out by a clock.
+                    //
+                    // `released` is exactly that distinction, so it is the test.
+                    if !released && !cursor.suspend_deferred {
+                        cursor.suspend_deferred = true;
+                        cursor.rewind_to_wait();
+                        self.mc = Some(cursor);
+                        return Eu::McSpend(1);
+                    }
+                    // The handed-back clock is this one and nothing else has
+                    // spent it, so the step behind the suspend starts here, as
+                    // it did before the hand-back existed.
+                    released |= cursor.suspend_deferred;
                     self.fetch = FetchState::Suspended;
                     // `SUSP` does two different things, and which one applies
                     // turns on whether the fetch has reached the bus:
@@ -3152,6 +3185,10 @@ impl I8088 {
                     released |= self.bus_status_latch == BusStatus::Code;
                     self.ta = TaCycle::Td;
                     self.pl_status = BusStatus::Passive;
+                    // The suspend is done, so a later one in the same routine
+                    // asks its own question rather than inheriting this answer.
+                    cursor.suspend_deferred = false;
+                    self.mc = Some(cursor);
                 }
                 // Free. The published `biu_queue_flush` spends no clock, so the
                 // loop continues to the step behind this one and that step's

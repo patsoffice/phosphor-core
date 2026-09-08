@@ -804,6 +804,16 @@ pub(crate) struct Cursor {
     /// again on its way through. Without this the instruction retires still
     /// owing a transfer and flushes a second time.
     pub(crate) flushed: bool,
+    /// Whether [`Step::Susp`] has handed back the clock it was reached on so
+    /// that it can be asked again on the next one.
+    ///
+    /// **The published suspend runs at a clock boundary and this sequencer runs
+    /// inside one.** `biu_fetch_suspend` is called between two `cycle_i` calls,
+    /// and `cycle_i`'s tail latches a waiting address cycle and promotes it to
+    /// `T1` before it returns, so the suspend sees a fetch that this core's
+    /// execution unit, running before `tick_bus`, does not. Handing the clock
+    /// back puts the question at the boundary the part asks it on.
+    pub(crate) suspend_deferred: bool,
 }
 
 impl Cursor {
@@ -834,6 +844,7 @@ impl Cursor {
             popped: 0,
             read: 0,
             flushed: false,
+            suspend_deferred: false,
         }
     }
 
