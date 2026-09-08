@@ -251,6 +251,11 @@ fn operand_start_by_mode(stem: &str) {
 fn operand_start() {
     operand_start_by_mode("8B");
     operand_start_by_mode("89");
+    // And the forms that carry an immediate as well as a displacement, where
+    // the part fetches the immediate after the operand read and this core
+    // fetches it before.
+    operand_start_by_mode("81.0");
+    operand_start_by_mode("C7");
 }
 
 /// How far this core is from the recording on one opcode file, as a histogram

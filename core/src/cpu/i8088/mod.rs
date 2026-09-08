@@ -351,6 +351,22 @@ pub struct I8088 {
     /// Where in `stack_words` the executor's next pop or push lands.
     #[save_skip(default)]
     pub(crate) stack_pos: u8,
+    /// An immediate that belongs to an instruction with a memory operand, and
+    /// which the loader has therefore not fetched yet.
+    ///
+    /// The part does not fetch it before the operand access. `ADD [BX+SI], imm`
+    /// starts its operand read on exactly the cycle `MOV reg, [BX+SI]` does,
+    /// though it is two bytes longer, and the recording shows the immediate
+    /// arriving in the queue afterwards. Fetching it early cost this core those
+    /// two clocks before every such read, and a queue stall on top wherever the
+    /// instruction ran past the four bytes the queue holds.
+    ///
+    /// `deferred` is set when the loader stops short of the immediate;
+    /// `resuming` while it goes back for it once the operand access is done.
+    #[save_skip(default)]
+    pub(crate) immediate_deferred: bool,
+    #[save_skip(default)]
+    pub(crate) immediate_resuming: bool,
     /// The interrupt vector the pipeline read for this instruction, offset then
     /// segment, and whether it read one at all.
     ///
@@ -486,6 +502,8 @@ impl I8088 {
             operand_written: false,
             stack_words: [0; 3],
             stack_pos: 0,
+            immediate_deferred: false,
+            immediate_resuming: false,
             vector_words: (0, 0),
             vector_staged: false,
             stack_staged: false,
@@ -616,9 +634,7 @@ impl I8088 {
                 // modeled execution time runs here. Dropping this made the
                 // pipeline fall back to Loading without ever executing, so the
                 // loader started a fresh instruction on top of the old one.
-                if self.eu == Eu::Loading {
-                    self.run_execute_step(bus, master);
-                }
+                self.execute_if_ready(bus, master);
             }
             // Nor does microcode. This is the phase the hardware traces show
             // the BIU prefetching through.
@@ -684,7 +700,17 @@ impl I8088 {
         self.instr_len += 1;
 
         if self.advance_stage() {
-            self.run_loaded_instruction(bus, master);
+            if self.immediate_resuming {
+                // The loader has just gone back for the immediate of an
+                // instruction whose operand access is already done, so the
+                // pipeline picks up where it left off rather than starting the
+                // instruction again.
+                self.immediate_resuming = false;
+                self.eu = self.begin_pre_execute_phase();
+                self.execute_if_ready(bus, master);
+            } else {
+                self.run_loaded_instruction(bus, master);
+            }
         }
     }
 
@@ -915,6 +941,11 @@ impl I8088 {
         self.operand_written = false;
         self.stack_staged = false;
         self.stack_pos = 0;
+        // A deferred immediate belongs to the instruction being thrown away.
+        // Left set, the loader would take the next instruction's opcode for it
+        // and hand a half-loaded instruction to the pipeline.
+        self.immediate_deferred = false;
+        self.immediate_resuming = false;
         self.queue_status = Some((QueueStatus::Emptied, 0));
     }
 
@@ -975,6 +1006,12 @@ impl I8088 {
 
     /// Enter the immediate stage, or finish the instruction when there is no
     /// immediate to fetch.
+    ///
+    /// An immediate belonging to an instruction with a *memory* operand is not
+    /// fetched here at all. The loader stops, the pipeline computes the address
+    /// and runs the operand access, and the loader is sent back for the
+    /// immediate afterwards, which is the order the recording shows. See
+    /// [`I8088::immediate_deferred`].
     fn begin_immediate(&mut self, imm: format::Imm, modrm: Option<u8>) -> bool {
         match imm.len(modrm) {
             0 => {
@@ -983,6 +1020,12 @@ impl I8088 {
             }
             n => {
                 self.stage = Stage::Immediate(n);
+                if modrm.is_some_and(|m| m >> 6 != 3) {
+                    self.immediate_deferred = true;
+                    // Complete enough for the address phase, which is what the
+                    // caller does with a `true` here.
+                    return true;
+                }
                 false
             }
         }
@@ -1061,9 +1104,7 @@ impl I8088 {
                     // T-state doing nothing.
                     self.begin_operand_phase()
                 };
-                if self.eu == Eu::Loading {
-                    self.run_execute_step(bus, master);
-                }
+                self.execute_if_ready(bus, master);
                 return;
             }
             // The operands with no ModR/M byte have no address to compute: the
@@ -1071,17 +1112,13 @@ impl I8088 {
             // addition, which the manual folds into its clock count rather than
             // quoting as an EA. So they go straight to the bus.
             self.eu = self.begin_operand_phase();
-            if self.eu == Eu::Loading {
-                self.run_execute_step(bus, master);
-            }
+            self.execute_if_ready(bus, master);
             return;
         }
 
         let _ = operand_access;
         self.eu = self.begin_pre_execute_phase();
-        if self.eu == Eu::Loading {
-            self.run_execute_step(bus, master);
-        }
+        self.execute_if_ready(bus, master);
     }
 
     /// Where an instruction with no ModR/M byte keeps its memory operand.
@@ -1123,8 +1160,38 @@ impl I8088 {
                 t: 1,
             }
         } else {
-            self.begin_pre_execute_phase()
+            self.after_operand_access()
         }
+    }
+
+    /// Run the instruction now, if the pipeline has nothing left to do before
+    /// its microcode.
+    ///
+    /// `Eu::Loading` means two different things and the difference matters:
+    /// either every phase the instruction needed before its microcode is done,
+    /// or the loader has been sent back for a deferred immediate and the
+    /// instruction is not complete yet. Executing in the second case runs an
+    /// instruction whose immediate has not arrived, which the executor
+    /// reports as consuming more bytes than the loader fetched.
+    fn execute_if_ready<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        if self.eu == Eu::Loading && !self.immediate_resuming {
+            self.run_execute_step(bus, master);
+        }
+    }
+
+    /// What follows an operand access: the deferred immediate if there is one,
+    /// and otherwise the stack or the microcode.
+    fn after_operand_access(&mut self) -> Eu {
+        if self.immediate_deferred {
+            self.immediate_deferred = false;
+            self.immediate_resuming = true;
+            return Eu::Loading;
+        }
+        self.begin_pre_execute_phase()
     }
 
     /// Everything an instruction reads between its operand and its microcode:
@@ -1570,9 +1637,7 @@ impl I8088 {
                 } else {
                     self.vector_staged = true;
                     self.eu = self.begin_execute_phase();
-                    if self.eu == Eu::Loading {
-                        self.run_execute_step(bus, master);
-                    }
+                    self.execute_if_ready(bus, master);
                 }
             }
         }
@@ -1616,12 +1681,11 @@ impl I8088 {
                         t: 1,
                     };
                 } else {
-                    // The operand is in hand; the stack comes next, then the
-                    // microcode.
-                    self.eu = self.begin_pre_execute_phase();
-                    if self.eu == Eu::Loading {
-                        self.run_execute_step(bus, master);
-                    }
+                    // The operand is in hand. Next comes the immediate, if this
+                    // instruction has one the loader was told to leave, and
+                    // then the stack and the microcode.
+                    self.eu = self.after_operand_access();
+                    self.execute_if_ready(bus, master);
                 }
             }
         }
@@ -1739,9 +1803,7 @@ impl I8088 {
                     // Everything the instruction will pop is in hand.
                     self.stack_pos = 0;
                     self.eu = self.begin_execute_phase();
-                    if self.eu == Eu::Loading {
-                        self.run_execute_step(bus, master);
-                    }
+                    self.execute_if_ready(bus, master);
                 } else {
                     // Nothing in this instruction set both pushes and writes a
                     // memory operand, but the write-back is checked rather than
@@ -2179,6 +2241,14 @@ mod tests {
             cpu.instr[cpu.instr_len as usize] = b;
             cpu.instr_len += 1;
             if cpu.advance_stage() {
+                // A memory operand's immediate is deferred rather than
+                // finished: the pipeline runs the operand access and sends the
+                // loader back for it, which this stands in for.
+                if cpu.immediate_deferred {
+                    cpu.immediate_deferred = false;
+                    seen.push(cpu.stage);
+                    continue;
+                }
                 break;
             }
             seen.push(cpu.stage);
@@ -2249,6 +2319,33 @@ mod tests {
             ]
         );
         assert_eq!(cpu.instr_len, 6);
+    }
+
+    /// A memory operand's immediate is left for after the operand access, and
+    /// the loader says so by stopping with the stage still set to it. An
+    /// immediate belonging to a *register* operand is fetched straight through,
+    /// because there is no operand access to wait for.
+    #[test]
+    fn a_memory_operands_immediate_is_deferred_and_a_registers_is_not() {
+        let mut cpu = I8088::new();
+        for &b in &[0x81u8, 0x87, 0x34, 0x12] {
+            cpu.instr[cpu.instr_len as usize] = b;
+            cpu.instr_len += 1;
+            cpu.advance_stage();
+        }
+        assert!(cpu.immediate_deferred, "ADD word [bx+1234h], imm16");
+        assert_eq!(cpu.stage, Stage::Immediate(2), "and it is still owed");
+        assert_eq!(cpu.instr_len, 4, "the loader stopped before it");
+
+        // The same opcode with mod=11: ADD BX, imm16, which has no operand
+        // access and so nothing to wait for.
+        let mut reg = I8088::new();
+        for &b in &[0x81u8, 0xC3] {
+            reg.instr[reg.instr_len as usize] = b;
+            reg.instr_len += 1;
+            reg.advance_stage();
+        }
+        assert!(!reg.immediate_deferred, "ADD BX, imm16");
     }
 
     /// The unary group's immediate depends on the ModR/M reg field, which is

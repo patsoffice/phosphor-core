@@ -520,6 +520,44 @@ opcode file through the core and prints the histogram of ours-minus-hardware,
 so a row is either "+0 on all 5000 cases" or it is not, and a spread is
 immediately distinguishable from an offset. Every control transfer now reads +0.
 
+## The residual that was not a timing row
+
+**2026-09-04.** Every memory-operand instruction was a clock or two out, in
+both directions depending on the instruction, and it looked like a table
+problem. It was not: it was the *shape* of the pipeline around the operand, and
+the recording says what the shape is because it carries the cycle each bus cycle
+starts on. Asking that question per addressing mode, rather than asking what the
+totals came to, is what turned a diffuse residual into two exact statements.
+
+- **The part starts an operand read at the opcode and ModR/M byte plus the
+  effective address rounded up to even.** Across both directions of `MOV`, all
+  twenty-four memory modes, each uniform within itself.
+- **The displacement is fetched during the address calculation.** A `disp8` form
+  and a `disp16` form start their operand cycle on the same clock and take the
+  same total. So the manual's `base + EA` splits where it looks like it does,
+  and this core was subtracting the displacement's fetch from the base as well
+  as paying for it in the address phase.
+- **The immediate is fetched after the operand access.** `ADD [BX+SI], imm16`
+  starts its read on the cycle `MOV reg, [BX+SI]` does. The loader now stops
+  before a memory form's immediate and is sent back for it once the operand
+  access is done.
+- **`LEA` does not round.** It computes the same addresses and lands on the
+  datasheet's odd values, so the rounding belongs to the bus request rather
+  than to the address. Without that control the correction would have gone into
+  the EA table, where it would have been wrong for the one instruction that
+  measures the EA directly.
+
+Together those took the cycle count from 48.84% to 56.81% and the bus-cycle
+order from 30.63% to 33.44%.
+
+**And one rejected, which is worth as much.** Bus contention, the EU waiting for
+a code fetch already in flight before driving T1 of its own cycle, is a real
+property of a part with one bus. Modeled here it made the counts *worse*: our
+BIU's fetches are not yet scheduled where the part's are, and contention on top
+of a mis-scheduled prefetcher turned a clean per-mode residual of 0 or -1 into
+noise from -1 to +2. It belongs after the loader reads its bytes when the part
+does, not before.
+
 ## Sequencing against the M68000
 
 `phosphor-emulator-cycle-accurate-i8088-nvrh` is currently sequenced *after* the
