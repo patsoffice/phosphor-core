@@ -139,25 +139,14 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
         // one transfer and four clocks less.
         // -------------------------------------------------------------------
         0x00..=0x3F => {
-            let is_cmp = (opcode >> 3) & 7 == 7;
             match opcode & 7 {
-                // ALU r/m, reg: 3 for registers. In memory, 16 clocks and two
-                // transfers for the read-modify-write, or 9 and one for CMP.
-                0 | 1 => match (is_mem, is_cmp) {
-                    (false, _) => 3,
-                    (true, false) => 16 - 8,
-                    (true, true) => 9 - 4,
-                },
-                // ALU reg, r/m: 3, or 9 clocks and one transfer from memory.
-                2 | 3 => {
-                    if is_mem {
-                        9 - 4
-                    } else {
-                        3
-                    }
-                }
-                // ALU accumulator, immediate: 4, no operand at all.
-                4 | 5 => 4,
+                // The ModR/M forms, `ALU r/m, reg` and `ALU reg, r/m`, have no
+                // rows: they run the transcribed routine at 0x008.
+                0..=3 => 0,
+                // `ALU accumulator, immediate` has no row either: it runs the
+                // routine at 0x018, whose only clock is the jump over the
+                // immediate's second queue read.
+                4 | 5 => 0,
                 // What is left in this range with a low three bits of 6 or 7,
                 // now that the segment pushes and pops are handled above, is
                 // the segment override prefixes (which never reach here as an
@@ -166,27 +155,16 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
             }
         }
 
-        // -------------------------------------------------------------------
-        // The immediate-to-r/m group. 17 clocks and two transfers in memory,
-        // again 10 and one for CMP.
-        // -------------------------------------------------------------------
-        // **`CMP` in memory is 7, not the table's `10 - 4`**, measured: all four
-        // of `0x80` through `0x83` read -1 on all 24 memory modes.
+        // The immediate-to-r/m group has no rows: it runs the routine at 0x00c.
         //
-        // The register forms stay at the table's 4, and one of them is known
-        // wrong: `0x81`, the only one of the four carrying a *16-bit*
-        // immediate, reads -1 on all eight register modes for both `ADD` and
-        // `CMP` where `0x80`, `0x82` and `0x83` read +0. Putting 5 here does not
-        // fix it. The span does not move at all, on either opcode, so the
-        // pipeline is not spending this row for that form and the missing clock
-        // is somewhere between here and the span. A constant that changes no
-        // output is not a measurement, so it is not here; the finding is on the
-        // issue instead.
-        0x80..=0x83 => match (is_mem, reg == 7) {
-            (false, _) => 4,
-            (true, false) => 17 - 8,
-            (true, true) => 7,
-        },
+        // Its old rows carried a puzzle the routine answers. `0x81`, the only
+        // one of the four with a real sixteen-bit immediate, read -1 on all
+        // eight register modes where `0x80`, `0x82` and `0x83` read +0, and
+        // raising its row did not move the span at all. The reason is that the
+        // clock is not the row's: the other three jump over the immediate's
+        // second queue read and `0x81` does not, so the difference belongs to
+        // the microcode rather than to a number fitted to it. `0x83` takes that
+        // jump too, being a word-sized instruction with a byte-sized immediate.
 
         // TEST r/m, reg: non-destructive, so one transfer.
         0x84 | 0x85 => {
@@ -207,22 +185,12 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
             }
         }
 
-        // MOV r/m, reg is 9 clocks and one transfer; MOV reg, r/m is 8. The
-        // asymmetry is real: a store costs the EU one clock more than a load.
-        0x88 | 0x89 => {
-            if is_mem {
-                9 - 4
-            } else {
-                2
-            }
-        }
-        0x8A | 0x8B => {
-            if is_mem {
-                8 - 4
-            } else {
-                2
-            }
-        }
+        // `MOV r/m, reg` and `MOV reg, r/m` have no rows: they run the
+        // transcribed routine at 0x000. The store direction costs one clock
+        // more than the load, and the routine says why rather than asserting
+        // it: 0x000 and 0x001 sit in front of the write back and there is
+        // nothing in front of a register destination.
+
         // MOV r/m16, sreg and MOV sreg, r/m16, same two numbers.
         0x8C => {
             if is_mem {
@@ -303,17 +271,7 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
         // TEST accumulator, immediate.
         0xA8 | 0xA9 => 4,
 
-        // MOV reg, immediate.
-        0xB0..=0xBF => 4,
-
-        // MOV r/m, immediate: 10 clocks and one transfer in memory.
-        0xC6 | 0xC7 => {
-            if is_mem {
-                10 - 4
-            } else {
-                4
-            }
-        }
+        // `MOV reg, imm` at 0x01c and `MOV r/m, imm` at 0x014 have no rows.
 
         // The shifts and rotates. By one, 2 clocks in a register or 15 with two
         // transfers in memory. By CL the table quotes 8+4/bit and 20+4/bit, and
@@ -387,21 +345,13 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
         // charged one number, and nothing caught it because the per-row meter
         // had never been pointed at this range.
         0x40..=0x4F => 2,
-        0xFE => {
-            if is_mem {
-                15 - 8
-            } else {
-                3
-            }
-        }
+        // `INC r/m` and `DEC r/m`, the reg 0 and 1 forms of the two groups,
+        // have no rows: they run the transcribed routine at 0x020. `FE`'s other
+        // reg fields are invalid encodings that the group's decoder treats as
+        // the `FF` forms, so they fall through to the arm below.
+        0xFE => 0,
         0xFF => match reg {
-            0 | 1 => {
-                if is_mem {
-                    15 - 8
-                } else {
-                    3
-                }
-            }
+            0 | 1 => 0,
             // PUSH r/m16: 16 clocks and two transfers, the operand read and
             // the stack write. reg=7 is the same instruction: the group's
             // decoder does not check the top bit of the reg field.
@@ -1340,31 +1290,59 @@ mod tests {
     fn byte_and_word_forms_cost_the_eu_the_same() {
         let mem = 0b00_000_100; // mod=00, a memory operand
         let reg = 0b11_000_001; // mod=11, a register operand
-        for (byte_op, word_op) in [
-            (0x00u8, 0x01u8), // ADD r/m, reg
-            (0x02, 0x03),     // ADD reg, r/m
-            (0x38, 0x39),     // CMP r/m, reg
-            (0x3A, 0x3B),     // CMP reg, r/m
-            (0x84, 0x85),     // TEST
-            (0x86, 0x87),     // XCHG
-            (0x88, 0x89),     // MOV r/m, reg
-            (0x8A, 0x8B),     // MOV reg, r/m
-            (0xC6, 0xC7),     // MOV r/m, imm
-            (0xD0, 0xD1),     // shift by 1
-            (0xD2, 0xD3),     // shift by CL
-            (0xF6, 0xF7),     // the unary group
-            (0xFE, 0xFF),     // INC/DEC
+        for (byte_op, word_op, carries_immediate) in [
+            (0x00u8, 0x01u8, false), // ADD r/m, reg
+            (0x02, 0x03, false),     // ADD reg, r/m
+            (0x38, 0x39, false),     // CMP r/m, reg
+            (0x3A, 0x3B, false),     // CMP reg, r/m
+            (0x84, 0x85, false),     // TEST
+            (0x86, 0x87, false),     // XCHG
+            (0x88, 0x89, false),     // MOV r/m, reg
+            (0x8A, 0x8B, false),     // MOV reg, r/m
+            (0xC6, 0xC7, true),      // MOV r/m, imm
+            (0xD0, 0xD1, false),     // shift by 1
+            (0xD2, 0xD3, false),     // shift by CL
+            (0xF6, 0xF7, false),     // the unary group
+            (0xFE, 0xFF, false),     // INC/DEC
         ] {
-            assert_eq!(
-                eu_cycles(byte_op, mem),
-                eu_cycles(word_op, mem),
-                "{byte_op:#04X} and {word_op:#04X} disagree on a memory operand"
-            );
-            assert_eq!(
-                eu_cycles(byte_op, reg),
-                eu_cycles(word_op, reg),
-                "{byte_op:#04X} and {word_op:#04X} disagree on a register operand"
-            );
+            for modrm in [mem, reg] {
+                let what = if modrm == mem { "memory" } else { "register" };
+                assert_eq!(
+                    eu_cycles(byte_op, modrm),
+                    eu_cycles(word_op, modrm),
+                    "{byte_op:#04X} and {word_op:#04X} disagree on a {what} operand"
+                );
+                // The same property, asked of the routine for a pair that has
+                // been transcribed. Without this the assertion above goes
+                // quietly vacuous as each row is deleted, which is exactly when
+                // it stops protecting anything.
+                //
+                // **The one lawful difference is the immediate.** A byte-sized
+                // form with an immediate spends a jump over the second queue
+                // read that its word-sized twin does not, so the two routines
+                // differ by exactly one clock and nothing else. That is a
+                // property of the microcode rather than of the operand's width,
+                // which is why the rule above still holds for everything else.
+                let by = super::super::microcode::routine(byte_op, modrm);
+                let wo = super::super::microcode::routine(word_op, modrm);
+                if carries_immediate {
+                    let (Some(by), Some(wo)) = (by, wo) else {
+                        continue;
+                    };
+                    assert_eq!(
+                        by.clocks(),
+                        wo.clocks() + 1,
+                        "{byte_op:#04X} and {word_op:#04X} differ by other than \
+                         the immediate's jump on a {what} operand"
+                    );
+                } else {
+                    assert_eq!(
+                        by, wo,
+                        "{byte_op:#04X} and {word_op:#04X} run different \
+                         routines on a {what} operand"
+                    );
+                }
+            }
         }
     }
 
@@ -1379,13 +1357,20 @@ mod tests {
     #[test]
     fn cmp_costs_less_than_the_alu_operations_it_resembles() {
         let mem = 0b00_000_100;
-        assert_eq!(eu_cycles(0x00, mem), 8, "ADD r/m8, reg8 in memory");
-        assert_eq!(eu_cycles(0x38, mem), 5, "CMP r/m8, reg8 in memory");
+        // The ModR/M forms are the microcode module's now, and there the
+        // property is structural rather than arithmetic: `CMP` has no write
+        // back, so it has neither the write step nor the two clocks the part
+        // spends in front of one.
+        let add = super::super::microcode::routine(0x00, mem).expect("ADD r/m8, reg8");
+        let cmp = super::super::microcode::routine(0x38, mem).expect("CMP r/m8, reg8");
+        assert_ne!(add, cmp, "CMP must not run the writing routine");
         // And in the immediate group, where the reg field picks the operation.
-        assert_eq!(eu_cycles(0x80, 0b00_000_100), 9, "ADD r/m8, imm8");
-        assert_eq!(eu_cycles(0x80, 0b00_111_100), 7, "CMP r/m8, imm8");
+        use super::super::microcode::Step;
+        let add_imm = super::super::microcode::routine(0x80, 0b00_000_100).expect("ADD r/m8, imm8");
+        let cmp_imm = super::super::microcode::routine(0x80, 0b00_111_100).expect("CMP r/m8, imm8");
+        assert!(add_imm.contains(Step::WriteOperand), "ADD writes back");
         assert!(
-            eu_cycles(0x80, 0b00_111_100) < eu_cycles(0x80, 0b00_000_100),
+            !cmp_imm.contains(Step::WriteOperand),
             "CMP must stay cheaper than the operations that write back"
         );
     }
@@ -1403,13 +1388,24 @@ mod tests {
         }
     }
 
-    /// A store costs the EU one clock more than a load. The two numbers are
-    /// adjacent rows in the table and easy to transpose.
+    /// A store costs the EU more than a load, and the routines say why rather
+    /// than asserting it: the store spends 0x000 and 0x001 in front of its
+    /// write back, and a register destination has nothing in front of it.
+    ///
+    /// The direction bit is easy to read backwards, and the two forms are
+    /// adjacent encodings, so this pins which way round it goes.
     #[test]
-    fn a_mov_store_costs_one_more_than_a_load() {
+    fn a_mov_store_does_more_than_a_load() {
+        use super::super::microcode::{self, Step};
         let mem = 0b00_000_100;
-        assert_eq!(eu_cycles(0x88, mem), 5, "MOV r/m8, reg8");
-        assert_eq!(eu_cycles(0x8A, mem), 4, "MOV reg8, r/m8");
+        let store = microcode::routine(0x88, mem).expect("MOV r/m8, reg8");
+        let load = microcode::routine(0x8A, mem).expect("MOV reg8, r/m8");
+        assert!(store.contains(Step::WriteOperand), "a store writes back");
+        assert!(
+            !load.contains(Step::WriteOperand),
+            "a load's destination is a register"
+        );
+        assert_ne!(store, load);
     }
 
     /// LEA runs no bus cycle, so all of its 2 clocks are EU time and none of
@@ -1690,15 +1686,35 @@ mod tests {
     }
 
     /// The single-byte `INC`/`DEC` opcodes encode a *word* register and are
-    /// measured at 2, where the `0xFE` group's byte-register form is 3.
-    /// Charging both 3 is the error this caught, and it was worth 80,000
-    /// vectors.
+    /// measured at 2. Charging them what the `0xFE` group's byte-register form
+    /// costs is the error this caught, and it was worth 80,000 vectors.
+    ///
+    /// The group form is the microcode module's now, and its one clock at
+    /// 0x020 plus the ModR/M byte the single-byte forms do not carry is what
+    /// makes the difference. These two are priced by different models, which is
+    /// exactly the confusion the original error came from, so the separation is
+    /// worth keeping pinned.
     #[test]
     fn the_single_byte_increments_are_the_word_form() {
         for op in 0x40u8..=0x4F {
             assert_eq!(eu_cycles(op, 0), 2, "{op:#04X}");
+            assert!(
+                super::super::microcode::routine(op, 0).is_none(),
+                "{op:#04X} is a row, not a routine"
+            );
         }
-        assert_eq!(eu_cycles(0xFE, 0b11_000_000), 3, "INC reg8");
+        assert_eq!(
+            eu_cycles(0xFE, 0b11_000_000),
+            0,
+            "the group form has no row"
+        );
+        assert_eq!(
+            super::super::microcode::routine(0xFE, 0b11_000_000)
+                .expect("INC reg8 runs a routine")
+                .clocks(),
+            1,
+            "INC reg8 spends 0x020 and nothing else"
+        );
     }
 
     /// The BCD adjusts share the ALU block's opcode range and none of its

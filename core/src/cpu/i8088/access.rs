@@ -151,60 +151,6 @@ pub(crate) fn stack_access(opcode: u8, modrm: u8) -> StackAccess {
     }
 }
 
-/// Clocks the EU spends computing an effective address, by addressing mode.
-///
-/// From the 8088 datasheet's EA calculation table, and it is a table of
-/// *additions* rather than an arbitrary cost per mode: one component costs 5,
-/// a bare displacement 6, two components 7 or 8, three 9, 11 or 12. The two
-/// base-plus-index pairings differ by one clock, which is a real asymmetry in
-/// the part and not a transcription error: `BX+SI` and `BP+DI` take 7 where
-/// `BX+DI` and `BP+SI` take 8.
-///
-/// **The hardware recording confirms every one of these numbers**, through
-/// `LEA`. `LEA` is the one instruction that computes an effective address and
-/// runs no bus cycle at all, so its recorded span is its own two clocks plus
-/// the EA and nothing else, and it separates the address calculation from
-/// everything that happens on the way to memory. Over the whole `8D` file, at a
-/// full queue and with no prefix, every addressing mode is uniform and every
-/// one of them lands on `2 + EA` for the values above, asymmetric pairings
-/// included. Nothing else in this core is confirmed that directly.
-///
-/// The segment override's clocks are **not** here. The recording puts them at
-/// two, on the register forms as much as the memory ones, which makes them a
-/// property of the prefix rather than of the address calculation; the pipeline
-/// charges them in [`super::I8088::begin_execute_phase`], where a prefix on an
-/// instruction with no memory operand can be charged too.
-///
-/// Deliberately **not** applied: the datasheet's further "add 4 for word
-/// operands at odd addresses". That is an 8086 penalty, where a misaligned word
-/// costs a second bus cycle on a 16-bit bus. The 8088's bus is one byte wide,
-/// so every word operand is already two bus cycles whatever its alignment, and
-/// the pipeline issues both. Adding it here would charge that twice.
-pub(crate) fn ea_cycles(modrm: u8) -> u8 {
-    let mod_bits = (modrm >> 6) & 3;
-    let rm = modrm & 7;
-
-    match (mod_bits, rm) {
-        // mod=00 rm=110 is a bare 16-bit address, the one mode with a
-        // displacement and nothing to add it to.
-        (0, 6) => 6,
-        // One register: [SI], [DI], [BX].
-        (0, 4 | 5 | 7) => 5,
-        // Two registers. The pairing decides which of the two costs it takes.
-        (0, 0 | 3) => 7,
-        (0, 1 | 2) => 8,
-        // With a displacement, mod=01 or mod=10. One register plus it, where
-        // rm=110 is [BP] rather than the direct-address escape.
-        (1 | 2, 4..=7) => 9,
-        // Two registers plus a displacement, in the same two pairings.
-        (1 | 2, 0 | 3) => 11,
-        (1 | 2, 1 | 2) => 12,
-        // mod=11 is a register operand with no address to compute, and the
-        // caller does not ask.
-        _ => 0,
-    }
-}
-
 /// What one iteration of a string operation touches.
 ///
 /// The fourth way an instruction reaches memory, and the one the ModR/M operand
@@ -272,50 +218,67 @@ pub(crate) fn port_access(opcode: u8) -> Option<Access> {
     }
 }
 
-/// Clocks the pipeline spends in its address phase, which is not the same as
-/// the effective address costing something different.
+/// Clocks the effective-address microcode spends **after** the displacement has
+/// been read.
 ///
-/// Two corrections to [`ea_cycles`], both measured, and both about *this*
-/// pipeline rather than about the part.
+/// The part's address calculation is in two halves with the displacement fetch
+/// between them, because how long that fetch takes depends on the queue and
+/// cannot be known in advance. The first half is the address arithmetic on the
+/// register components, and this core already spends it: it is
+/// [`super::timing::loader_stall`]'s `BeforeDisplacement`, whose per-mode values
+/// are the published `pre_disp_cost` plus the jump into the routine, mode for
+/// mode. This is the second half.
 ///
-/// **The displacement is fetched during the address calculation, not before
-/// it.** The recording is unambiguous: `MOV reg, [BX+SI+disp8]` and `MOV reg,
-/// [BX+SI+disp16]` start their operand bus cycle on exactly the same cycle,
-/// though one is a byte longer. This core's loader has already pulled every
-/// displacement byte out of the queue by the time the address phase begins, a
-/// clock apiece, so those clocks come off here. Without this an instruction
-/// with a 16-bit displacement starts its operand read two cycles late and every
-/// `LEA` with a displacement runs long.
+/// The values are the published table's, and its oddity is real: **an eight-bit
+/// displacement costs one more to finish than a sixteen-bit one**, because of an
+/// extra jump at microcode line 0x1de on that path.
 ///
-/// **A bus cycle starts on an even clock.** An instruction that goes on to
-/// read or write memory starts that cycle at the ModR/M byte plus the effective
-/// address *rounded up to even*: over both `MOV` directions, every one of the
-/// twenty-four addressing modes lands on that rule exactly, with the recorded
-/// start uniform within each mode. `LEA` is the control, and it does not round:
-/// it computes the same addresses and lands on the datasheet's odd values, 5, 7,
-/// 9 and 11 included. So the rounding belongs to the bus request rather than to
-/// the address, which is why it is `reaches_memory` and not part of the table.
-pub(crate) fn address_phase_cycles(modrm: u8, reaches_memory: bool) -> u8 {
-    let ea = ea_cycles(modrm);
-    let aligned = if reaches_memory {
-        ea.next_multiple_of(2)
-    } else {
-        ea
-    };
-    aligned.saturating_sub(displacement_len(modrm))
+/// What this replaces was fitted rather than read. It took Table 1-16's `+EA`,
+/// rounded it up to an even number of clocks for any operand that reached
+/// memory, and subtracted the displacement's length. The rounding in particular
+/// has no counterpart in the part: it was a rule inferred from where recorded
+/// bus cycles started, and it fitted the commonest modes by construction.
+pub(crate) fn ea_post_disp_cycles(modrm: u8) -> u8 {
+    match (modrm >> 6) & 3 {
+        // A register operand has no effective address at all.
+        3 => 0,
+        // The direct form, `mod=00 rm=110`, whose whole cost is here: one clock
+        // at 0x1dc, with nothing before the displacement.
+        0 if modrm & 7 == 6 => 1,
+        // No displacement, so the address was finished by the arithmetic.
+        0 => 0,
+        1 => 3,
+        _ => 2,
+    }
 }
 
-/// How many displacement bytes the ModR/M byte says follow it. A duplicate of
-/// what [`super::format::displacement_len`] computes, kept here rather than
-/// called across because that one takes the byte as the loader sees it and this
-/// is about the same byte's addressing mode.
-fn displacement_len(modrm: u8) -> u8 {
-    match (modrm >> 6) & 3 {
-        0 if modrm & 7 == 6 => 2,
-        1 => 1,
-        2 => 2,
-        _ => 0,
-    }
+/// The first half: the jump into the address routine plus the arithmetic on
+/// the register components.
+///
+/// **The part spends this for every memory mode, displacement or not.** The
+/// loader spends it in front of the displacement, which is where the recording
+/// puts it, but a mode with no displacement has nothing to put it in front of
+/// and the clocks are owed all the same. `MOV word [DS:DI], imm16` is the case
+/// that showed it: the part reads the immediate five clocks after the ModR/M
+/// byte and this core read it on the very next one.
+///
+/// So the address phase asks for this when the loader had no displacement to
+/// spend it against, and for [`ea_post_disp_cycles`] alone when it did.
+pub(crate) fn ea_pre_disp_cycles(modrm: u8) -> u8 {
+    let pre = match (modrm >> 6) & 3 {
+        3 => return 0,
+        // The direct form computes nothing: its address is the displacement.
+        0 if modrm & 7 == 6 => 0,
+        _ => match modrm & 7 {
+            // Two registers, in the published table's asymmetric pairings.
+            0 | 3 => 4,
+            1 | 2 => 5,
+            // One register.
+            _ => 2,
+        },
+    };
+    // Plus the jump into the routine.
+    1 + pre
 }
 
 /// The ModR/M `reg` field, which selects the operation inside a group opcode.
@@ -537,42 +500,100 @@ mod tests {
 
     // --- Effective address timing ---
 
-    /// The cost tracks the number of components the EU has to add, which is
-    /// what makes this a structure rather than a list.
+    /// **An eight-bit displacement costs one more to finish than a sixteen-bit
+    /// one.** That reads like a transcription error and is not: there is an
+    /// extra jump at microcode line 0x1de on the byte path. It is exactly the
+    /// sort of thing someone tidying the table would flatten, so it is pinned.
     #[test]
-    fn ea_cost_rises_with_the_number_of_components() {
-        // One register.
-        assert_eq!(ea_cycles(0b00_000_100), 5, "[SI]");
-        assert_eq!(ea_cycles(0b00_000_111), 5, "[BX]");
-        // A bare displacement, which costs one more than a register.
-        assert_eq!(ea_cycles(0b00_000_110), 6, "[disp16]");
-        // Two registers.
-        assert_eq!(ea_cycles(0b00_000_000), 7, "[BX+SI]");
-        assert_eq!(ea_cycles(0b00_000_011), 7, "[BP+DI]");
-        // One register and a displacement.
-        assert_eq!(ea_cycles(0b01_000_111), 9, "[BX+d8]");
-        assert_eq!(ea_cycles(0b10_000_110), 9, "[BP+d16]");
-        // Three components.
-        assert_eq!(ea_cycles(0b01_000_000), 11, "[BX+SI+d8]");
-        assert_eq!(ea_cycles(0b10_000_001), 12, "[BX+DI+d16]");
+    fn a_byte_displacement_finishes_slower_than_a_word_one() {
+        assert_eq!(ea_post_disp_cycles(0b01_000_111), 3, "[BX+d8]");
+        assert_eq!(ea_post_disp_cycles(0b10_000_111), 2, "[BX+d16]");
     }
 
-    /// The two base-plus-index pairings differ by a clock. This is a real
-    /// asymmetry in the part, and the sort of detail that gets flattened by
-    /// someone tidying the table.
+    /// The modes with no displacement have nothing left to do once the address
+    /// arithmetic is done, and the direct form is the other way round: all of
+    /// its cost is here and none of it is in the arithmetic.
     #[test]
-    fn the_two_base_plus_index_pairings_cost_differently() {
-        assert_eq!(ea_cycles(0b00_000_000), 7, "[BX+SI]");
-        assert_eq!(ea_cycles(0b00_000_011), 7, "[BP+DI]");
-        assert_eq!(ea_cycles(0b00_000_001), 8, "[BX+DI]");
-        assert_eq!(ea_cycles(0b00_000_010), 8, "[BP+SI]");
+    fn the_halves_of_the_address_split_by_whether_there_is_a_displacement() {
+        for rm in [0u8, 1, 2, 3, 4, 5, 7] {
+            assert_eq!(ea_post_disp_cycles(rm), 0, "mod=00 rm={rm}");
+        }
+        assert_eq!(ea_post_disp_cycles(0b00_000_110), 1, "[disp16]");
     }
 
     /// A register operand has no address to compute.
     #[test]
     fn a_register_operand_costs_nothing_to_address() {
         for rm in 0..8u8 {
-            assert_eq!(ea_cycles(0b11_000_000 | rm), 0, "rm={rm}");
+            assert_eq!(ea_post_disp_cycles(0b11_000_000 | rm), 0, "rm={rm}");
+        }
+    }
+
+    /// The two halves of the address calculation live in different modules, and
+    /// they have to agree with the published per-mode table between them.
+    ///
+    /// The first half is the loader's pause before the displacement, which is
+    /// the published `pre_disp_cost` plus the one clock of the jump into the
+    /// routine. The second is [`ea_post_disp_cycles`]. Nothing else checks that
+    /// the two were transcribed from the same table, and the asymmetric pairing
+    /// (`BX+DI` and `BP+SI` costing a clock more than `BX+SI` and `BP+DI`) is
+    /// the part of it most likely to be quietly flattened.
+    #[test]
+    fn the_two_halves_match_the_published_per_mode_table() {
+        use super::super::timing::{self, LoaderStall};
+
+        // (mod, rm) => (pre_disp_cost, post_disp_cost), read off the published
+        // ModR/M table.
+        let published: &[(u8, u8, u8, u8)] = &[
+            (0, 0, 4, 0),
+            (0, 1, 5, 0),
+            (0, 2, 5, 0),
+            (0, 3, 4, 0),
+            (0, 4, 2, 0),
+            (0, 5, 2, 0),
+            (0, 6, 0, 1),
+            (0, 7, 2, 0),
+            (1, 0, 4, 3),
+            (1, 1, 5, 3),
+            (1, 2, 5, 3),
+            (1, 3, 4, 3),
+            (1, 4, 2, 3),
+            (1, 5, 2, 3),
+            (1, 6, 2, 3),
+            (1, 7, 2, 3),
+            (2, 0, 4, 2),
+            (2, 1, 5, 2),
+            (2, 2, 5, 2),
+            (2, 3, 4, 2),
+            (2, 4, 2, 2),
+            (2, 5, 2, 2),
+            (2, 6, 2, 2),
+            (2, 7, 2, 2),
+        ];
+
+        for &(mod_bits, rm, pre, post) in published {
+            let modrm = (mod_bits << 6) | rm;
+            assert_eq!(
+                ea_post_disp_cycles(modrm),
+                post,
+                "mod={mod_bits} rm={rm}: after the displacement"
+            );
+            // `8B`, MOV r16, r/m16, is a plain ModR/M opcode with no immediate,
+            // so its stall is the addressing mode's and nothing else.
+            let want = match timing::loader_stall(0x8B, modrm) {
+                LoaderStall::BeforeDisplacement(n) => n,
+                _ => 0,
+            };
+            let expected = if mod_bits == 0 && rm != 6 {
+                // No displacement to pause in front of.
+                0
+            } else {
+                1 + pre
+            };
+            assert_eq!(
+                want, expected,
+                "mod={mod_bits} rm={rm}: before the displacement"
+            );
         }
     }
 }

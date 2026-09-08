@@ -67,6 +67,12 @@ pub(crate) enum Step {
     ReadPort,
     /// Write it, behind [`Step::Run`], which is what decides the byte.
     WritePort,
+    /// Write the instruction's memory operand back, behind [`Step::Run`].
+    ///
+    /// Only for an operand that resolved to an address. A register destination
+    /// is written by the body itself and costs no bus cycle, so a routine's
+    /// register form simply has no `WriteOperand` in it.
+    WriteOperand,
     /// Run the instruction body, which is what decides the values the pushes
     /// carry and where control goes.
     ///
@@ -119,6 +125,25 @@ impl Routine {
     #[cfg(test)]
     fn steps(&self) -> &[Step] {
         &self.steps[..self.len as usize]
+    }
+
+    /// Whether it contains `step`, for cross-checks in neighboring modules.
+    #[cfg(test)]
+    pub(crate) fn contains(&self, step: Step) -> bool {
+        self.steps[..self.len as usize].contains(&step)
+    }
+
+    /// The clocks its `Spend`s add up to, which is its microcode time and not
+    /// its span: the bus steps around them cost whatever the bus unit spends.
+    #[cfg(test)]
+    pub(crate) fn clocks(&self) -> u8 {
+        self.steps[..self.len as usize]
+            .iter()
+            .map(|s| match s {
+                Step::Spend(n) => *n,
+                _ => 0,
+            })
+            .sum()
     }
 }
 
@@ -187,6 +212,113 @@ fn mc() -> Build {
 pub(crate) fn routine(opcode: u8, modrm: u8) -> Option<Routine> {
     let register_form = modrm >> 6 == 3;
     match opcode {
+        // -------------------------------------------------------------------
+        // The ModR/M groups. These begin *after* the pipeline's operand read,
+        // because that read is the published `load_operand`, which runs between
+        // decode and the routine.
+        //
+        // The two clocks every memory form spends at the front are its return
+        // delay: 0x1e2 and the return when the address was loaded, 0x1e3 and
+        // the return when it was computed and not loaded. A register form has
+        // no address and spends neither.
+        // -------------------------------------------------------------------
+
+        // `MOV r/m, reg` and `MOV reg, r/m` at 0x000, opcodes 88 through 8B.
+        // The store direction spends 0x000 and 0x001 before the write; the load
+        // direction, whose destination is a register, spends nothing at all.
+        // A register-to-register `MOV` runs no microcode: its two clocks are
+        // the opcode and the ModR/M byte.
+        0x88..=0x8B => {
+            let stores = opcode & 0x02 == 0;
+            let mut r = mc();
+            if !register_form {
+                r = r.spend(2);
+                if stores {
+                    r = r.spend(2);
+                }
+            }
+            r = r.then(Step::Run);
+            if !register_form && stores {
+                r = r.then(Step::WriteOperand);
+            }
+            Some(r.done())
+        }
+
+        // The ALU block's register forms at 0x008: `ADD`, `OR`, `ADC`, `SBB`,
+        // `AND`, `SUB`, `XOR` and `CMP` against a ModR/M operand, opcodes
+        // 00 through 3B with the low two bits selecting the direction.
+        //
+        // One clock at 0x008 whichever way it goes, then 0x009 and 0x00a before
+        // a write back to memory. `CMP` writes nothing and spends neither.
+        0x00..=0x3B if opcode & 0xC4 == 0 && opcode & 0x07 < 4 => {
+            let stores = opcode & 0x02 == 0;
+            let compares = (opcode >> 3) & 7 == 7;
+            let mut r = mc();
+            if !register_form {
+                r = r.spend(2);
+            }
+            // 0x008.
+            r = r.spend(1).then(Step::Run);
+            if !register_form && stores && !compares {
+                // 0x009, 0x00a.
+                r = r.spend(2).then(Step::WriteOperand);
+            }
+            Some(r.done())
+        }
+
+        // `ALU r/m, imm` at 0x00c, opcodes 80 through 83. The jump over the
+        // immediate's second queue read is spent by every form that has only
+        // one byte to read, and `83` is the odd one out: a word-sized
+        // instruction with a byte-sized immediate, which takes the jump anyway.
+        // `81`, the only one carrying a real word immediate, does not.
+        0x80..=0x83 => {
+            let compares = (modrm >> 3) & 7 == 7;
+            let one_immediate_byte = opcode != 0x81;
+            let mut r = mc();
+            if !register_form {
+                r = r.spend(2);
+            }
+            r = r.spend(u8::from(one_immediate_byte)).then(Step::Run);
+            if !register_form {
+                // 0x00e.
+                r = r.spend(1);
+                if !compares {
+                    r = r.then(Step::WriteOperand);
+                }
+            }
+            Some(r.done())
+        }
+
+        // `MOV r/m, imm` at 0x014, opcodes C6 and C7. Write-only, so its
+        // address is computed and not loaded, and the clock at 0x016 is an
+        // end-of-instruction for a register destination and a real one for a
+        // memory destination.
+        0xC6 | 0xC7 => {
+            let mut r = mc();
+            if !register_form {
+                r = r.spend(2);
+            }
+            r = r.spend(u8::from(opcode == 0xC6)).then(Step::Run);
+            if !register_form {
+                // 0x016.
+                r = r.spend(1).then(Step::WriteOperand);
+            }
+            Some(r.done())
+        }
+
+        // `ALU accumulator, imm` at 0x018, and `MOV reg, imm` at 0x01c. Neither
+        // touches memory, and the only clock either spends is the jump over the
+        // immediate's second queue read, taken by the byte-sized forms.
+        0x04 | 0x05 | 0x0C | 0x0D | 0x14 | 0x15 | 0x1C | 0x1D | 0x24 | 0x25 | 0x2C | 0x2D
+        | 0x34 | 0x35 | 0x3C | 0x3D => {
+            Some(mc().spend(u8::from(opcode & 1 == 0)).then(Step::Run).done())
+        }
+        0xB0..=0xBF => Some(
+            mc().spend(u8::from(opcode & 0x08 == 0))
+                .then(Step::Run)
+                .done(),
+        ),
+
         // -------------------------------------------------------------------
         // The stack. Three clocks in front of a push and none at all in front
         // of a pop, which is the whole asymmetry between the two families.
@@ -411,6 +543,23 @@ pub(crate) fn routine(opcode: u8, modrm: u8) -> Option<Routine> {
         // its far pointer, and `FF /5` suspends the prefetcher at 0x0dc before
         // reading its. The pipeline reads the operand before a routine can
         // start, so expressing either needs a step that drives the read itself.
+        // `INC r/m` and `DEC r/m` at 0x020, the reg 0 and 1 forms of the FE and
+        // FF groups. One clock at 0x020 whichever the operand, and 0x021 as
+        // well when it is in memory.
+        0xFE | 0xFF if (modrm >> 3) & 7 < 2 => {
+            let mut r = mc();
+            if !register_form {
+                r = r.spend(2);
+            }
+            // 0x020.
+            r = r.then(Step::Run).spend(1);
+            if !register_form {
+                // 0x021.
+                r = r.spend(1).then(Step::WriteOperand);
+            }
+            Some(r.done())
+        }
+
         0xFF => match (modrm >> 3) & 7 {
             // `CALL r/m16` at 0x074. The register form spends a clock the
             // memory form does not; everything after is `CALL rel16`'s routine.

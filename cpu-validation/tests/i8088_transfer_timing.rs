@@ -554,15 +554,12 @@ fn side_by_side() {
     // its microcode was transcribed; `PUSH` is the one that still runs short.
     dump_side_by_side("58", false, 4);
     dump_side_by_side("50", false, 4);
-    // The port family, whose four encodings differ only in how many clocks sit
-    // in front of the transfer and which way it goes. `EC` reads through DX
-    // with no microcode at all and is exact; `E4` reads with one clock in front
-    // and runs long; `EE` writes with one clock in front and runs short. Same
-    // step list, opposite errors, which is the discriminator between the
-    // transfer's position and the point the instruction retires.
-    dump_side_by_side("EC", false, 4);
-    dump_side_by_side("E4", false, 4);
-    dump_side_by_side("EE", false, 4);
+    // `MOV r/m, imm`, both directions of the operand. Its routine writes but
+    // never reads, so it is the one transcribed group whose address is
+    // computed and not loaded, and the only one whose immediate the loader
+    // defers without a read to defer it behind.
+    dump_side_by_side("C7", false, 4);
+    dump_side_by_side("C7", true, 4);
 }
 
 /// Replay a case and count the code fetches this core starts before its first

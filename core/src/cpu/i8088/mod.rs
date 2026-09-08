@@ -2333,18 +2333,21 @@ impl I8088 {
         if self.operand_at.is_some() {
             if format::format_of(opcode).modrm {
                 let modrm = self.instr[self.opcode_at as usize + 1];
-                let acc = access::operand_access(opcode, modrm);
-                // The pause the loader took before the displacement is spent
-                // inside the effective address, so it comes off here rather
-                // than out of the microcode. Table 1-16 folds the
-                // displacement's fetch into `+EA`, which is why
-                // `address_phase_cycles` already takes its read time out; this
-                // is the rest of the same decomposition.
-                let cycles = access::address_phase_cycles(modrm, acc.reads || acc.writes)
-                    .saturating_sub(match timing::loader_stall(opcode, modrm) {
-                        timing::LoaderStall::BeforeDisplacement(n) => n,
-                        _ => 0,
-                    });
+                // The effective-address microcode the loader has not already
+                // spent. Its first half goes in front of the displacement, so a
+                // mode that carries one has had it; a mode that does not has
+                // nowhere to put it and owes it here, along with the second
+                // half. See [`access::ea_pre_disp_cycles`].
+                let in_the_loader = matches!(
+                    timing::loader_stall(opcode, modrm),
+                    timing::LoaderStall::BeforeDisplacement(_)
+                );
+                let cycles = access::ea_post_disp_cycles(modrm)
+                    + if in_the_loader {
+                        0
+                    } else {
+                        access::ea_pre_disp_cycles(modrm)
+                    };
                 self.eu = if cycles > 0 {
                     Eu::AddressCalc(cycles)
                 } else {
@@ -2430,12 +2433,20 @@ impl I8088 {
     /// instruction is not complete yet. Executing in the second case runs an
     /// instruction whose immediate has not arrived, which the executor
     /// reports as consuming more bytes than the loader fetched.
+    ///
+    /// **And a third: the instruction is already over.** A routine short enough
+    /// to run out inside the call that started it retires there, leaving the
+    /// loader ready for the next instruction rather than this one waiting to
+    /// run. `MOV reg, reg` is the case, whose whole routine is one `Run`: its
+    /// caller would execute it a second time, against a loaded length of zero.
+    /// The length is what tells the two apart, because retiring is what clears
+    /// it.
     fn execute_if_ready<B: Bus<Address = u32, Data = u8> + ?Sized>(
         &mut self,
         bus: &mut B,
         master: BusMaster,
     ) {
-        if self.eu == Eu::Loading && !self.immediate_resuming {
+        if self.eu == Eu::Loading && !self.immediate_resuming && self.instr_len > 0 {
             self.run_execute_step(bus, master);
         }
     }
@@ -3012,6 +3023,17 @@ impl I8088 {
                     return Eu::PortReading {
                         byte: 0,
                         total: acc.width.bytes(),
+                    };
+                }
+                microcode::Step::WriteOperand => {
+                    let width = access::operand_access(
+                        self.opcode(),
+                        self.instr[self.opcode_at as usize + 1],
+                    )
+                    .width;
+                    return Eu::Writing {
+                        byte: 0,
+                        total: width.bytes(),
                     };
                 }
                 microcode::Step::WritePort => {
@@ -3788,8 +3810,8 @@ impl I8088 {
     /// One T-state of the operand write-back phase: a MEMW bus cycle per byte.
     fn tick_operand_write<B: Bus<Address = u32, Data = u8> + ?Sized>(
         &mut self,
-        _bus: &mut B,
-        _master: BusMaster,
+        bus: &mut B,
+        master: BusMaster,
     ) {
         loop {
             let Eu::Writing { byte, total } = self.eu else {
@@ -3811,7 +3833,14 @@ impl I8088 {
                 // The write is released at T3, with its data on the pins and
                 // its T4 still to go. The instruction retires on that T-state
                 // and the next one's first byte comes out of the queue there.
-                self.finish_instruction();
+                //
+                // A write inside a step list hands back instead: the routine is
+                // what decides whether anything follows it.
+                if self.mc.is_some() {
+                    self.eu = self.advance_microcode(bus, master);
+                } else {
+                    self.finish_instruction();
+                }
                 return;
             }
             self.eu = Eu::Writing {
