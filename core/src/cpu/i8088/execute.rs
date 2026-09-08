@@ -176,14 +176,17 @@ impl I8088 {
             // =============================================================
             0x50..=0x57 => {
                 let reg = opcode & 7;
-                if reg == 4 {
-                    // PUSH SP: decrement first, then write the new SP
-                    self.sp = self.sp.wrapping_sub(2);
-                    self.write_word(bus, master, self.ss, self.sp, self.sp);
+                // PUSH SP stores the decremented value, which is what pushing
+                // `SP - 2` amounts to: `push16` decrements and then writes, so
+                // the value written equals the new SP. Going through `push16`
+                // rather than open-coding the store keeps it visible to the
+                // stack-access cross-check.
+                let val = if reg == 4 {
+                    self.sp.wrapping_sub(2)
                 } else {
-                    let val = self.get_reg16(reg);
-                    self.push16(bus, master, val);
-                }
+                    self.get_reg16(reg)
+                };
+                self.push16(bus, master, val);
             }
 
             // =============================================================
@@ -1069,15 +1072,19 @@ impl I8088 {
                         }
                     }
                     6 => {
-                        // PUSH r/m16
-                        // 8088 quirk: if operand is SP, push the decremented value
-                        if operand == Operand::Register(4) {
-                            self.sp = self.sp.wrapping_sub(2);
-                            self.write_word(bus, master, self.ss, self.sp, self.sp);
+                        // PUSH r/m16. The 8088 quirk is that pushing SP stores
+                        // the *decremented* value, which is what pushing
+                        // `SP - 2` comes to: `push16` decrements first and then
+                        // writes, so the value lands equal to the new SP.
+                        // Spelling it that way rather than open-coding the
+                        // store keeps the push visible to the stack-access
+                        // cross-check, which is how this was found.
+                        let val = if operand == Operand::Register(4) {
+                            self.sp.wrapping_sub(2)
                         } else {
-                            let val = self.read_operand16(operand, bus, master);
-                            self.push16(bus, master, val);
-                        }
+                            self.read_operand16(operand, bus, master)
+                        };
+                        self.push16(bus, master, val);
                     }
                     _ => {}
                 }

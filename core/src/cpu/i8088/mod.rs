@@ -326,6 +326,11 @@ pub struct I8088 {
     /// too, because a pair of counter bumps is cheaper than two code paths.
     #[save_skip(default)]
     pub(crate) operand_ops: (u8, u8),
+    /// What the executor actually did to the stack while running the current
+    /// instruction, as (pops, pushes). Keeps [`access::stack_access`] honest
+    /// the same way `operand_ops` keeps the operand table honest.
+    #[save_skip(default)]
+    pub(crate) stack_ops: (u8, u8),
     /// Set for the one T-state on which an instruction retires.
     #[save_skip(default)]
     pub(crate) retired: bool,
@@ -423,6 +428,7 @@ impl I8088 {
             operand_bytes: [0; 4],
             operand_written: false,
             operand_ops: (0, 0),
+            stack_ops: (0, 0),
             retired: false,
             transferred: false,
             pending_flush: false,
@@ -1018,8 +1024,32 @@ impl I8088 {
     ) {
         self.instr_pos = 0;
         self.operand_ops = (0, 0);
+        self.stack_ops = (0, 0);
         let opcode = self.consume_prefixes();
         self.execute(opcode, bus, master);
+
+        // Cross-check the stack table the same way, and before anything depends
+        // on it. A count fixed by the opcode cannot describe the instructions
+        // whose stack use is conditional, so those declare nothing and are
+        // exempt: INTO pushes only on overflow, and DIV, IDIV and AAM push only
+        // when they fault.
+        #[cfg(debug_assertions)]
+        {
+            let want = access::stack_access(opcode, self.instr[self.opcode_at as usize + 1]);
+            let conditional = matches!(opcode, 0xCE | 0xD4 | 0xF6 | 0xF7);
+            if !conditional {
+                debug_assert_eq!(
+                    self.stack_ops,
+                    (want.pops, want.pushes),
+                    "opcode {opcode:02X}: the stack table says {} pops and {} pushes, \
+                     the executor did {} and {}",
+                    want.pops,
+                    want.pushes,
+                    self.stack_ops.0,
+                    self.stack_ops.1,
+                );
+            }
+        }
 
         // Cross-check the operand-access table against what the executor
         // actually did, before anything depends on the table.

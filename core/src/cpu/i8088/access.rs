@@ -76,6 +76,80 @@ const RMW_B: Access = Access::new(true, true, Width::Byte);
 const RMW_W: Access = Access::new(true, true, Width::Word);
 const READ_FAR: Access = Access::new(true, false, Width::FarPointer);
 
+/// How many words an instruction takes off the stack before it runs, and how
+/// many it puts back after.
+///
+/// The stack is the other way an instruction reaches memory, and it does not
+/// fit the ModR/M operand's shape at all: an interrupt pushes three words, a
+/// far return pops two, and neither is addressed by a ModR/M byte. But the
+/// counts are fixed by the opcode, which is enough for the pipeline to run the
+/// pops before the instruction and the pushes after.
+///
+/// Both halves cannot be non-zero for any instruction in this set: nothing both
+/// pops and pushes.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct StackAccess {
+    /// Words read from the stack before the instruction runs.
+    pub pops: u8,
+    /// Words written to the stack after it has run.
+    pub pushes: u8,
+}
+
+impl StackAccess {
+    const fn pops(n: u8) -> Self {
+        Self { pops: n, pushes: 0 }
+    }
+    const fn pushes(n: u8) -> Self {
+        Self { pops: 0, pushes: n }
+    }
+}
+
+/// What `opcode` does to the stack.
+///
+/// Returns nothing for the instructions whose stack use is *conditional*, which
+/// a count fixed by the opcode cannot express: `INTO` pushes three words only
+/// when the overflow flag is set, and `DIV`, `IDIV` and `AAM` push three only
+/// when they fault. Those keep reaching the stack directly from inside the
+/// executor. The pipeline handles what it can predict and leaves the rest
+/// alone, rather than predicting wrongly.
+pub(crate) fn stack_access(opcode: u8, modrm: u8) -> StackAccess {
+    match opcode {
+        // PUSH and POP of a segment register, interleaved with the ALU block.
+        0x06 | 0x0E | 0x16 | 0x1E => StackAccess::pushes(1),
+        0x07 | 0x0F | 0x17 | 0x1F => StackAccess::pops(1),
+        // PUSH and POP with the register in the opcode.
+        0x50..=0x57 => StackAccess::pushes(1),
+        0x58..=0x5F => StackAccess::pops(1),
+        // POP r/m16, which pops the stack and then writes the operand.
+        0x8F => StackAccess::pops(1),
+        // CALL far direct pushes the return segment and offset.
+        0x9A => StackAccess::pushes(2),
+        // PUSHF and POPF.
+        0x9C => StackAccess::pushes(1),
+        0x9D => StackAccess::pops(1),
+        // The near returns, and their undocumented aliases one encoding below.
+        0xC0..=0xC3 => StackAccess::pops(1),
+        // The far returns, which pop an offset and a segment.
+        0xC8..=0xCB => StackAccess::pops(2),
+        // INT 3 and INT n push flags, segment and offset. INTO is not here: it
+        // pushes only when the overflow flag is set.
+        0xCC | 0xCD => StackAccess::pushes(3),
+        // IRET pops all three back.
+        0xCF => StackAccess::pops(3),
+        // CALL near direct pushes the return offset.
+        0xE8 => StackAccess::pushes(1),
+        // The group: indirect near call pushes one, indirect far call pushes
+        // two, PUSH r/m16 pushes one. The jumps push nothing.
+        0xFF => match (modrm >> 3) & 7 {
+            2 => StackAccess::pushes(1),
+            3 => StackAccess::pushes(2),
+            6 => StackAccess::pushes(1),
+            _ => StackAccess::default(),
+        },
+        _ => StackAccess::default(),
+    }
+}
+
 /// Clocks the EU spends computing an effective address, by addressing mode.
 ///
 /// From the 8088 datasheet's EA calculation table, and it is a table of

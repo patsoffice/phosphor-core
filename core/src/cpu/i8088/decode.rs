@@ -207,6 +207,7 @@ impl I8088 {
         master: BusMaster,
         value: u16,
     ) {
+        self.stack_ops.1 += 1;
         self.sp = self.sp.wrapping_sub(2);
         self.write_word(bus, master, self.ss, self.sp, value);
     }
@@ -218,6 +219,7 @@ impl I8088 {
         bus: &mut B,
         master: BusMaster,
     ) -> u16 {
+        self.stack_ops.0 += 1;
         let val = self.read_word(bus, master, self.ss, self.sp);
         self.sp = self.sp.wrapping_add(2);
         val
