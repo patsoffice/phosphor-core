@@ -6,14 +6,24 @@
 //! real AMD D8088 through an Arduino8088 interface, and the state gate throws
 //! all of it away.
 //!
-//! **The comparison widens in four steps, and this file is at step 1.** See
-//! `docs/designs/cycle-accurate-i8088.md`, Decision 3. Step 1 is cycle *count*
-//! only: how many T-states our core took against how many the hardware took.
-//! Steps 2 to 4 add bus status and T-state, then address and data on the cycles
-//! where the trace says they are valid, then queue operation status and
-//! contents. Widening in that order is what keeps a failure legible: one
-//! all-or-nothing comparison against eleven fields fails for one reason and
-//! gets read as failing for another.
+//! **The comparison widens in steps.** See
+//! `docs/designs/cycle-accurate-i8088.md`, Decision 3. Widening in order is
+//! what keeps a failure legible: one all-or-nothing comparison against eleven
+//! fields fails for one reason and gets read as failing for another.
+//!
+//! Two comparisons are live here:
+//!
+//! - **Cycle count**, reported and not asserted. Execution is still atomic, so
+//!   the core charges nothing for effective-address calculation or for operand
+//!   bus cycles, and the count is a floor rather than an answer.
+//! - **Queue operations in order**, asserted exactly. Which bytes the EU took
+//!   out of the prefetch queue, whether each was a First or a Subsequent byte,
+//!   and where the queue was flushed. This is most of what the doc calls step 4
+//!   of the ladder: what is missing from it is the *position* of each operation
+//!   in the cycle stream, which cannot be checked until the cycle counts are
+//!   right, and which the hardware reports one cycle late in any case.
+//!
+//! Bus status, T-state, address and data are still unread.
 //!
 //! The vectors are a fixed, external, hardware-recorded standard. Nothing in
 //! here may adjust them, and no tolerance may be widened to make a milestone
@@ -32,7 +42,7 @@ use std::io::Read;
 use rayon::prelude::*;
 
 use phosphor_core::core::{BusMaster, BusMasterComponent};
-use phosphor_core::cpu::i8088::I8088;
+use phosphor_core::cpu::i8088::{I8088, QueueStatus};
 use phosphor_cpu_validation::{I8088InitialState, I8088TestCase, QueueOp, TracingBus20};
 
 /// Opcodes the suite ships no file for at all, which is why this gate needs no
@@ -55,19 +65,91 @@ const NOT_IN_THE_SUITE: &[&str] = &[
     "F4", "9B",
 ];
 
-/// How a case's cycle count compared, and why it could not be compared when it
-/// could not.
-enum Verdict {
-    /// Our T-state count equals the hardware's.
-    Match,
-    /// Both counts are known and differ, by `ours - theirs`.
-    Differed { ours: usize, theirs: usize },
-    /// The vector carries no `cycles` array, so there is nothing to compare.
-    /// Counted separately rather than as a pass, because a comparison that did
-    /// not happen is not a comparison that succeeded.
-    NoTrace,
+/// What one case's replay produced.
+struct Verdict {
+    /// Our T-state count, and the hardware's, when there was a trace.
+    counts: Option<(usize, usize)>,
+    /// The queue operations we performed against the ones recorded, compared
+    /// as ordered sequences. `None` when there was no trace to compare.
+    queue: Option<Result<(), String>>,
     /// Our core never reached an instruction boundary.
-    Hung,
+    hung: bool,
+}
+
+/// One queue operation: what the EU did, and the byte it read.
+///
+/// A flush carries no byte. The recorded trace puts a zero in the byte column
+/// for one, and comparing that against ours would be comparing a field the
+/// hardware does not define, so the byte is dropped here for `Emptied`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QueueEvent {
+    Read(QueueOp, u8),
+    Flush,
+}
+
+impl std::fmt::Display for QueueEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            QueueEvent::Read(QueueOp::First, b) => write!(f, "F:{b:02X}"),
+            QueueEvent::Read(QueueOp::Subsequent, b) => write!(f, "S:{b:02X}"),
+            QueueEvent::Read(op, b) => write!(f, "{op:?}:{b:02X}"),
+            QueueEvent::Flush => write!(f, "E"),
+        }
+    }
+}
+
+fn render(events: &[QueueEvent]) -> String {
+    events
+        .iter()
+        .map(|e| e.to_string())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The queue operations the hardware recorded for this case, in order.
+///
+/// The trace reports each operation on the cycle *after* it happened, which
+/// does not matter here because this compares order rather than position.
+fn recorded_queue_events(tc: &I8088TestCase) -> Vec<QueueEvent> {
+    tc.cycles
+        .iter()
+        .filter_map(|c| c.queue_op())
+        .map(|(op, byte)| match op {
+            QueueOp::Emptied => QueueEvent::Flush,
+            op => QueueEvent::Read(op, byte),
+        })
+        .collect()
+}
+
+/// Compare two queue-operation sequences.
+///
+/// The suite defines a test's span as ending when the next instruction's First
+/// Byte is read, and that read is the boundary rather than part of the trace:
+/// the recorded array stops on the cycle before it. So the two sequences cover
+/// the same span and compare exactly, with no allowance at either end. The
+/// first draft of this function subtracted one for a trailing First Byte that
+/// is not there, which failed every well-behaved case while printing two
+/// identical sequences side by side.
+fn compare_queue_events(ours: &[QueueEvent], theirs: &[QueueEvent]) -> Result<(), String> {
+    if ours.len() != theirs.len() {
+        return Err(format!(
+            "{} queue operations, hardware had {}: got [{}] want [{}]",
+            ours.len(),
+            theirs.len(),
+            render(ours),
+            render(theirs),
+        ));
+    }
+    for (i, (a, b)) in ours.iter().zip(theirs).enumerate() {
+        if a != b {
+            return Err(format!(
+                "queue operation {i} is {a}, hardware had {b}: got [{}] want [{}]",
+                render(ours),
+                render(theirs),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn load_initial_state(cpu: &mut I8088, bus: &mut TracingBus20, state: &I8088InitialState) {
@@ -89,6 +171,17 @@ fn load_initial_state(cpu: &mut I8088, bus: &mut TracingBus20, state: &I8088Init
     for &(addr, val) in &state.ram {
         bus.memory[(addr & 0xF_FFFF) as usize] = val;
     }
+
+    // Install the prefetch queue. Half the suite's cases run from a full one,
+    // and until now this harness deserialized the array and dropped it.
+    //
+    // The README says to set the queue after reset has flushed it and then
+    // "add the length of the queue contents to your PC register", because on
+    // the part IP *is* the prefetch pointer. Here IP is the architectural one,
+    // which is what the vectors' `ip` field reports, and the prefetch pointer
+    // is separate: it starts ahead of IP by the number of bytes queued, which
+    // is the same arithmetic seen from the other side.
+    cpu.load_prefetch_queue(&state.queue);
 }
 
 /// Run one case and compare T-state counts.
@@ -105,29 +198,44 @@ fn run_test_case(tc: &I8088TestCase) -> Verdict {
     load_initial_state(&mut cpu, &mut bus, &tc.initial);
 
     let mut ticks = 0usize;
+    let mut ours: Vec<QueueEvent> = Vec::new();
     loop {
         ticks += 1;
-        if cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0)) {
+        let retired = cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+        // Sample the QS lines every cycle, exactly as the recording rig did.
+        if let Some((status, byte)) = cpu.queue_status {
+            ours.push(match status {
+                QueueStatus::First => QueueEvent::Read(QueueOp::First, byte),
+                QueueStatus::Subsequent => QueueEvent::Read(QueueOp::Subsequent, byte),
+                QueueStatus::Emptied => QueueEvent::Flush,
+            });
+        }
+        if retired {
             break;
         }
         // Generous: the longest recorded traces in the suite are the REP string
         // operations, and a word IDIV runs past 200 cycles on its own.
         if ticks > 2000 {
-            return Verdict::Hung;
+            return Verdict {
+                counts: None,
+                queue: None,
+                hung: true,
+            };
         }
     }
 
     if tc.cycles.is_empty() {
-        return Verdict::NoTrace;
+        return Verdict {
+            counts: None,
+            queue: None,
+            hung: false,
+        };
     }
 
-    if ticks == tc.cycles.len() {
-        Verdict::Match
-    } else {
-        Verdict::Differed {
-            ours: ticks,
-            theirs: tc.cycles.len(),
-        }
+    Verdict {
+        counts: Some((ticks, tc.cycles.len())),
+        queue: Some(compare_queue_events(&ours, &recorded_queue_events(tc))),
+        hung: false,
     }
 }
 
@@ -158,8 +266,12 @@ struct FileOutcome {
     hung: usize,
     /// Summed signed error, for the average over/undercount.
     error_sum: i64,
-    /// The first differing case, kept for the report.
+    /// Cases whose queue-operation sequence matched the recording.
+    queue_matched: usize,
+    queue_total: usize,
+    /// The first differing case of each kind, kept for the report.
     first_difference: Option<String>,
+    first_queue_difference: Option<String>,
 }
 
 #[test]
@@ -204,33 +316,51 @@ fn i8088_cycle_counts_against_the_hardware_trace() {
 
             for tc in &tests {
                 let prefetched = is_prefetched(tc);
-                match run_test_case(tc) {
-                    Verdict::Match => {
-                        if prefetched {
-                            out.total_prefetched += 1;
-                            out.matched_prefetched += 1;
-                        } else {
-                            out.total_empty += 1;
-                            out.matched_empty += 1;
+                let verdict = run_test_case(tc);
+
+                if verdict.hung {
+                    out.hung += 1;
+                    continue;
+                }
+
+                let Some((ours, theirs)) = verdict.counts else {
+                    out.no_trace += 1;
+                    continue;
+                };
+
+                if prefetched {
+                    out.total_prefetched += 1;
+                } else {
+                    out.total_empty += 1;
+                }
+
+                if ours == theirs {
+                    if prefetched {
+                        out.matched_prefetched += 1;
+                    } else {
+                        out.matched_empty += 1;
+                    }
+                } else {
+                    out.error_sum += ours as i64 - theirs as i64;
+                    if out.first_difference.is_none() {
+                        let queue = if prefetched { "prefetched" } else { "empty" };
+                        out.first_difference = Some(format!(
+                            "{}: {ours} cycles, hardware took {theirs} ({queue} queue)",
+                            tc.name
+                        ));
+                    }
+                }
+
+                if let Some(queue) = verdict.queue {
+                    out.queue_total += 1;
+                    match queue {
+                        Ok(()) => out.queue_matched += 1,
+                        Err(why) => {
+                            if out.first_queue_difference.is_none() {
+                                out.first_queue_difference = Some(format!("{}: {why}", tc.name));
+                            }
                         }
                     }
-                    Verdict::Differed { ours, theirs } => {
-                        if prefetched {
-                            out.total_prefetched += 1;
-                        } else {
-                            out.total_empty += 1;
-                        }
-                        out.error_sum += ours as i64 - theirs as i64;
-                        if out.first_difference.is_none() {
-                            let queue = if prefetched { "prefetched" } else { "empty" };
-                            out.first_difference = Some(format!(
-                                "{}: {ours} cycles, hardware took {theirs} ({queue} queue)",
-                                tc.name
-                            ));
-                        }
-                    }
-                    Verdict::NoTrace => out.no_trace += 1,
-                    Verdict::Hung => out.hung += 1,
                 }
             }
 
@@ -246,7 +376,10 @@ fn i8088_cycle_counts_against_the_hardware_trace() {
     let mut no_trace = 0usize;
     let mut hung = 0usize;
     let mut error_sum = 0i64;
+    let mut queue_matched = 0usize;
+    let mut queue_total = 0usize;
     let mut examples: Vec<String> = Vec::new();
+    let mut queue_examples: Vec<String> = Vec::new();
 
     for o in &outcomes {
         files += 1;
@@ -257,10 +390,17 @@ fn i8088_cycle_counts_against_the_hardware_trace() {
         no_trace += o.no_trace;
         hung += o.hung;
         error_sum += o.error_sum;
+        queue_matched += o.queue_matched;
+        queue_total += o.queue_total;
         if let Some(d) = &o.first_difference
             && examples.len() < 20
         {
             examples.push(format!("{}  {}", o.filename, d));
+        }
+        if let Some(d) = &o.first_queue_difference
+            && queue_examples.len() < 20
+        {
+            queue_examples.push(format!("{}  {}", o.filename, d));
         }
     }
 
@@ -274,8 +414,13 @@ fn i8088_cycle_counts_against_the_hardware_trace() {
         }
     };
 
-    eprintln!("\nI8088 per-cycle gate, step 1 of 4: cycle count only");
+    eprintln!("\nI8088 per-cycle gate: cycle count, and queue operations in order");
     eprintln!("  {files} opcode files compared, none skipped");
+    eprintln!(
+        "  {queue_matched} of {queue_total} vectors match on the queue-operation \
+         sequence ({:.2}%)",
+        pct(queue_matched, queue_total)
+    );
     eprintln!(
         "  {matched} of {compared} vectors match on cycle count ({:.2}%)",
         pct(matched, compared)
@@ -301,8 +446,20 @@ fn i8088_cycle_counts_against_the_hardware_trace() {
     if hung > 0 {
         eprintln!("  {hung} vectors never reached an instruction boundary");
     }
+    if !queue_examples.is_empty() {
+        eprintln!(
+            "\nFirst queue-sequence difference per file (first {}):",
+            queue_examples.len()
+        );
+        for e in &queue_examples {
+            eprintln!("  {e}");
+        }
+    }
     if !examples.is_empty() {
-        eprintln!("\nFirst difference per file (first {}):", examples.len());
+        eprintln!(
+            "\nFirst count difference per file (first {}):",
+            examples.len()
+        );
         for e in &examples {
             eprintln!("  {e}");
         }
@@ -310,17 +467,23 @@ fn i8088_cycle_counts_against_the_hardware_trace() {
 
     // What this test asserts, and deliberately does not.
     //
-    // It does NOT assert that the counts match. At M1 they overwhelmingly do
-    // not, by construction: the core has no prefetch queue and charges no
-    // EU-internal cycles, so the number above is a floor that M2 and M3 raise.
-    // Asserting a pass here would mean either a failing suite for weeks or a
-    // threshold tuned to whatever today's number happens to be, and a threshold
-    // fitted to the current result is a check that cannot fail.
+    // It does NOT assert that the CYCLE COUNTS match. They overwhelmingly do
+    // not, by construction: execution is still atomic, so the core charges
+    // nothing for the cycles the EU spends computing an effective address or
+    // for the bus cycles an operand access takes. The number above is a floor
+    // that M3 raises. Asserting a pass would mean either a failing suite for
+    // weeks or a threshold tuned to whatever today's figure happens to be, and
+    // a threshold fitted to the current result is a check that cannot fail.
     //
-    // What it does assert is that the gate is wired up and could report a
-    // failure: that vectors were found, that they carry traces, and that the
-    // core reaches an instruction boundary on every one of them. Those are the
-    // three ways this file could silently become decorative.
+    // It DOES assert that the QUEUE OPERATIONS match, exactly, on every vector.
+    // That is not a fitted threshold: it is equality against a hardware
+    // recording, with no tolerance anywhere, and it went from 0 to 3,007,000
+    // over the course of one milestone. The four bugs found on the way there
+    // were each a real defect, and this is what keeps them fixed.
+    //
+    // And it asserts the three ways the file could silently become decorative:
+    // that vectors were found, that they carry traces, and that the core
+    // reaches an instruction boundary on every one of them.
     assert!(compared > 0, "no vectors were compared");
     assert_eq!(
         no_trace, 0,
@@ -329,6 +492,13 @@ fn i8088_cycle_counts_against_the_hardware_trace() {
     assert_eq!(
         hung, 0,
         "{hung} vectors never reached an instruction boundary"
+    );
+    assert_eq!(
+        queue_matched,
+        queue_total,
+        "{} vectors disagree with the hardware about what the EU took out of \
+         the prefetch queue, in what order. See the examples above.",
+        queue_total - queue_matched,
     );
 }
 

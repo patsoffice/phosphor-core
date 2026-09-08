@@ -375,6 +375,69 @@ the CPU gets through in between, as long as it keeps up. It still does.
   made the executor's silence measurable. 18 files came off the skip list as a
   result, which is a coverage gain the plan had assigned to M4.
 
+## M2 as built, and what it got wrong
+
+**Landed 2026-09-04.** The BIU and its four-byte queue run alongside the EU.
+
+**The numbers.**
+
+| Gate | After M1 | After M2 |
+|---|---|---|
+| State, vectors | 2,757,000 across 297 files | **2,797,000 across 301 files**, 0 failed |
+| Queue operations, in order | not checked | **3,007,000 of 3,007,000 (100.00%)** |
+| Per-cycle, count only | 576,568 (19.17%) | 24,104 (0.80%) |
+| Q\*bert throughput | 10.66x realtime | 10.20x realtime |
+
+**The cycle count got much worse, and that is the milestone working.** M1
+charged four T-states for every instruction byte, including the bytes of an
+instruction that arrived prefetched, which the hardware gets for nothing. That
+overcount was partly cancelling the undercount from execution being atomic, and
+two errors cancelling is the exact failure mode
+[Decision 3](#decision-3-validation) exists to prevent. Removing the wrong cost
+exposes the missing one: the mean signed error is now -19.42 cycles, and this
+core charges nothing for effective-address calculation or for operand bus
+cycles. That is M3.
+
+**The queue-operation check is asserted, not reported.** Equality against the
+hardware recording on every vector, no tolerance. It is most of what
+[Decision 3](#decision-3-validation) calls step 4 of the ladder; what is missing
+is the *position* of each operation in the cycle stream, which cannot mean
+anything until the counts are right.
+
+**Throughput cost 4.6%**, 1.489 to 1.558 ms/frame, from running the BIU state
+machine on every T-state. Q\*bert's golden frame did not move, for the reason
+given under M1.
+
+**What it got wrong.**
+
+- **The two-cycle restart delay was the only constant that needed pointing at,
+  and it is in the primary source.** The suite README states it as an
+  observable, and the sample trace confirms it. Nothing else about the queue
+  needed a number.
+- **Four defects, each found by the gate and each a real bug.** In order:
+  the queue status for the opcode *behind a prefix* is another `F`, not an `S`,
+  which the README says outright and this implementation got wrong first time;
+  the recorded trace does **not** carry the next instruction's First Byte, so
+  the first comparison helpfully allowed for a trailing event that is not
+  there and failed every well-behaved case while printing two identical
+  sequences; a taken branch reports its last byte read and *then* the flush, on
+  two separate cycles, rather than the flush overwriting the read; and
+  0xC0/0xC1/0xC8/0xC9 are RET and RETF and never flushed at all.
+- **Detecting a control transfer by comparing addresses does not work**, and
+  the vectors are full of the counterexample. A *taken* conditional jump with a
+  displacement of zero lands exactly where execution would have gone anyway,
+  and the part still flushes. Address equality cannot distinguish a branch not
+  taken from a branch taken to the next instruction. Every transfer now says so
+  explicitly through `set_ip` and `set_cs`, which is the mechanism rather than a
+  proxy for it. This is the clearest instance in the whole conversion of
+  "can I point at the part?": the inference was right 98.67% of the time, which
+  is exactly the sort of number that gets accepted.
+- **The plan said M2 would widen the gate to "queue operation status and queue
+  contents".** Contents turned out not to be comparable yet: the suite samples
+  `final.queue` *after* the next instruction's first byte has been read, which
+  is one queue read past where this replay stops, and reconciling that needs
+  the cycle counts M3 brings.
+
 ## Sequencing against the M68000
 
 `phosphor-emulator-cycle-accurate-i8088-nvrh` is currently sequenced *after* the

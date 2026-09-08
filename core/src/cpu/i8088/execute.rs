@@ -52,7 +52,7 @@ impl I8088 {
             }
             0x0F => {
                 let val = self.pop16(bus, master);
-                self.cs = val;
+                self.set_cs(val);
             }
             0x10..=0x15 => self.alu_dispatch(opcode, 2, bus, master),
             0x16 => {
@@ -215,7 +215,7 @@ impl I8088 {
             0x60..=0x7F => {
                 let disp = self.fetch_byte() as i8;
                 if self.test_condition(opcode & 0x0F) {
-                    self.ip = self.ip.wrapping_add(disp as u16);
+                    self.set_ip(self.ip.wrapping_add(disp as u16));
                 }
             }
 
@@ -405,8 +405,8 @@ impl I8088 {
                 let segment = self.fetch_word();
                 self.push16(bus, master, self.cs);
                 self.push16(bus, master, self.ip);
-                self.cs = segment;
-                self.ip = offset;
+                self.set_cs(segment);
+                self.set_ip(offset);
             }
 
             // =============================================================
@@ -518,29 +518,43 @@ impl I8088 {
             // =============================================================
             // RET near with imm16 (0xC2): pop IP, SP += imm16
             // RET near (0xC3): pop IP
+            //
+            // 0xC0 and 0xC1 are the same two instructions. The decoder ignores
+            // the low bit of this group the way it ignores bit 4 of the
+            // conditional jumps, so each RET has an undocumented second
+            // spelling one encoding below it, and the suite's capture
+            // disassembles them as "retn 5706h" and "retn".
             // =============================================================
-            0xC2 => {
+            0xC0 | 0xC2 => {
                 let imm = self.fetch_word();
-                self.ip = self.pop16(bus, master);
+                let ip = self.pop16(bus, master);
+                self.set_ip(ip);
                 self.sp = self.sp.wrapping_add(imm);
             }
-            0xC3 => {
-                self.ip = self.pop16(bus, master);
+            0xC1 | 0xC3 => {
+                let ip = self.pop16(bus, master);
+                self.set_ip(ip);
             }
 
             // =============================================================
-            // RETF near with imm16 (0xCA): pop IP, pop CS, SP += imm16
+            // RETF with imm16 (0xCA): pop IP, pop CS, SP += imm16
             // RETF (0xCB): pop IP, pop CS
+            //
+            // 0xC8 and 0xC9 alias these two, for the same reason.
             // =============================================================
-            0xCA => {
+            0xC8 | 0xCA => {
                 let imm = self.fetch_word();
-                self.ip = self.pop16(bus, master);
-                self.cs = self.pop16(bus, master);
+                let ip = self.pop16(bus, master);
+                self.set_ip(ip);
+                let cs = self.pop16(bus, master);
+                self.set_cs(cs);
                 self.sp = self.sp.wrapping_add(imm);
             }
-            0xCB => {
-                self.ip = self.pop16(bus, master);
-                self.cs = self.pop16(bus, master);
+            0xC9 | 0xCB => {
+                let ip = self.pop16(bus, master);
+                self.set_ip(ip);
+                let cs = self.pop16(bus, master);
+                self.set_cs(cs);
             }
 
             // =============================================================
@@ -598,8 +612,10 @@ impl I8088 {
             }
             0xCF => {
                 // IRET: pop IP, CS, FLAGS
-                self.ip = self.pop16(bus, master);
-                self.cs = self.pop16(bus, master);
+                let ip = self.pop16(bus, master);
+                self.set_ip(ip);
+                let cs = self.pop16(bus, master);
+                self.set_cs(cs);
                 self.flags = flags::normalize(self.pop16(bus, master));
             }
 
@@ -684,7 +700,7 @@ impl I8088 {
                 let disp = self.fetch_byte() as i8;
                 self.cx = self.cx.wrapping_sub(1);
                 if self.cx != 0 && !flags::get(self.flags, Flag::ZF) {
-                    self.ip = self.ip.wrapping_add(disp as u16);
+                    self.set_ip(self.ip.wrapping_add(disp as u16));
                 }
             }
             0xE1 => {
@@ -692,7 +708,7 @@ impl I8088 {
                 let disp = self.fetch_byte() as i8;
                 self.cx = self.cx.wrapping_sub(1);
                 if self.cx != 0 && flags::get(self.flags, Flag::ZF) {
-                    self.ip = self.ip.wrapping_add(disp as u16);
+                    self.set_ip(self.ip.wrapping_add(disp as u16));
                 }
             }
             0xE2 => {
@@ -700,14 +716,14 @@ impl I8088 {
                 let disp = self.fetch_byte() as i8;
                 self.cx = self.cx.wrapping_sub(1);
                 if self.cx != 0 {
-                    self.ip = self.ip.wrapping_add(disp as u16);
+                    self.set_ip(self.ip.wrapping_add(disp as u16));
                 }
             }
             0xE3 => {
                 // JCXZ: jump if CX == 0
                 let disp = self.fetch_byte() as i8;
                 if self.cx == 0 {
-                    self.ip = self.ip.wrapping_add(disp as u16);
+                    self.set_ip(self.ip.wrapping_add(disp as u16));
                 }
             }
 
@@ -743,7 +759,7 @@ impl I8088 {
             0xE8 => {
                 let disp = self.fetch_word();
                 self.push16(bus, master, self.ip);
-                self.ip = self.ip.wrapping_add(disp);
+                self.set_ip(self.ip.wrapping_add(disp));
             }
 
             // =============================================================
@@ -751,7 +767,7 @@ impl I8088 {
             // =============================================================
             0xE9 => {
                 let disp = self.fetch_word();
-                self.ip = self.ip.wrapping_add(disp);
+                self.set_ip(self.ip.wrapping_add(disp));
             }
 
             // =============================================================
@@ -760,8 +776,8 @@ impl I8088 {
             0xEA => {
                 let offset = self.fetch_word();
                 let segment = self.fetch_word();
-                self.ip = offset;
-                self.cs = segment;
+                self.set_ip(offset);
+                self.set_cs(segment);
             }
 
             // =============================================================
@@ -769,7 +785,7 @@ impl I8088 {
             // =============================================================
             0xEB => {
                 let disp = self.fetch_byte() as i8;
-                self.ip = self.ip.wrapping_add(disp as u16);
+                self.set_ip(self.ip.wrapping_add(disp as u16));
             }
 
             // =============================================================
@@ -1029,7 +1045,7 @@ impl I8088 {
                         // CALL near indirect: push IP, IP = r/m16
                         let target = self.read_operand16(operand, bus, master);
                         self.push16(bus, master, self.ip);
-                        self.ip = target;
+                        self.set_ip(target);
                     }
                     3 => {
                         // CALL far indirect: push CS, push IP, load CS:IP from m32
@@ -1039,14 +1055,14 @@ impl I8088 {
                                 self.read_word(bus, master, segment, offset.wrapping_add(2));
                             self.push16(bus, master, self.cs);
                             self.push16(bus, master, self.ip);
-                            self.ip = new_ip;
-                            self.cs = new_cs;
+                            self.set_ip(new_ip);
+                            self.set_cs(new_cs);
                         }
                     }
                     4 => {
                         // JMP near indirect: IP = r/m16
                         let target = self.read_operand16(operand, bus, master);
-                        self.ip = target;
+                        self.set_ip(target);
                     }
                     5 => {
                         // JMP far indirect: load CS:IP from m32
@@ -1054,8 +1070,8 @@ impl I8088 {
                             let new_ip = self.read_word(bus, master, segment, offset);
                             let new_cs =
                                 self.read_word(bus, master, segment, offset.wrapping_add(2));
-                            self.ip = new_ip;
-                            self.cs = new_cs;
+                            self.set_ip(new_ip);
+                            self.set_cs(new_cs);
                         }
                     }
                     6 => {
@@ -1123,8 +1139,8 @@ impl I8088 {
         self.push16(bus, master, self.ip);
         // IVT: 4 bytes per vector at physical 0000:(vector*4)
         let ivt_addr = (vector as u16).wrapping_mul(4);
-        self.ip = self.read_word(bus, master, 0, ivt_addr);
-        self.cs = self.read_word(bus, master, 0, ivt_addr.wrapping_add(2));
+        self.set_ip(self.read_word(bus, master, 0, ivt_addr));
+        self.set_cs(self.read_word(bus, master, 0, ivt_addr.wrapping_add(2)));
     }
 
     /// Trigger a divide-error exception (INT 0).

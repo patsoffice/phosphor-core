@@ -8,7 +8,7 @@ Instruction-level emulation of the Intel 8088 microprocessor, implementing 279 o
 |--------|-------|
 | Opcodes | 279 (documented + sub-opcode variants) |
 | Unit tests | 325 |
-| Cross-validation | 2,757,000/2,757,000 (100%) |
+| Cross-validation | 2,797,000/2,797,000 (100%) |
 | Timing | Instruction-level (not cycle-accurate) |
 
 ## Registers
@@ -110,17 +110,40 @@ Segment override prefixes (CS:, DS:, ES:, SS:) can override the default segment 
 
 ## Architecture
 
-### State Machine
+### Bus interface unit and execution unit
+
+One `execute_cycle()` is one T-state, and two things run in it independently.
+
+The **BIU** keeps the four-byte prefetch queue full. When there is room it runs
+a CODE bus cycle, four T-states long: the address is latched on T1 and the byte
+arrives on T3. A fetch that ends with room left runs straight into the next one,
+back to back; restarting from idle costs two idle cycles first. Its fetch
+pointer is separate from IP and runs ahead of it by however many bytes are
+queued.
+
+The **EU** takes one byte per T-state out of the queue and stalls when it is
+empty. It walks the shape of an instruction (opcode, ModR/M, displacement,
+immediate) using the length table in `format.rs`, and runs the instruction when
+the last byte arrives. A control transfer flushes the queue on the following
+T-state, which is what a taken branch costs.
 
 ```rust
-enum ExecState {
-    Fetch,          // Read next opcode, consume prefixes
-    Execute,        // Execute the decoded instruction
-    Halted,         // HLT: wait for NMI or IRQ (if IF=1)
+enum Biu {
+    Idle,                            // queue full, nothing to do
+    Restarting(u8),                  // counting idle cycles before T1
+    Fetching { t: u8, addr: u32 },   // inside a CODE bus cycle
 }
 ```
 
-The 8088 uses instruction-level execution: each `tick_with_bus()` call executes one complete instruction. This differs from the cycle-accurate M6809 and Z80 implementations but is sufficient for the Gottlieb System 80 arcade board where cycle-level timing is not critical.
+The queue is directly observable, and validated as such: `queue_status` carries
+the QS0/QS1 lines, and all 3,007,000 recorded vectors agree with this core about
+which bytes the EU took out of the queue, in what order, and where it was
+flushed.
+
+**Execution is still atomic.** An instruction's operand reads and writes, and
+the cycles the EU spends computing an effective address, all happen on the
+T-state its last byte arrives. That is why the Timing row above still says
+instruction-level, and it is the next milestone.
 
 ### Interrupts
 
@@ -158,7 +181,7 @@ core/src/cpu/i8088/
 
 ## Skipped Test Vectors
 
-26 opcode files are skipped in validation (297 pass out of 323 total):
+22 opcode files are skipped in validation (301 pass out of 323 total):
 
 | Opcodes | Reason |
 |---------|--------|
@@ -167,30 +190,32 @@ core/src/cpu/i8088/
 | 0xF4 | HLT: blocks forever in test harness (no interrupt source) |
 | 0xD8-0xDF | FPU ESC opcodes (no 8087 coprocessor) |
 | 0xD6 | SALC (undocumented) |
-| 0xC0, 0xC1, 0xC8, 0xC9 | RET/RETF alias encodings |
 | 0x0F | POP CS (undocumented) |
 | 0xD0.6, 0xD1.6, 0xD2.6, 0xD3.6 | SETMO/SETMOC (undocumented) |
 | 0xFF.7 | Undefined sub-opcode |
 
-18 files came off this list on 2026-09-04, and none of them was found by this
-gate. Adding a loader that fetches an instruction before executing it made the
-executor's silence about them measurable: the loader knew each instruction's
-length and the executor consumed fewer bytes than that. The state gate could
-never see it, because it only checks the state an instruction leaves behind.
+22 files came off this list on 2026-09-04, and not one of them was found by this
+gate. All four defects were about instruction *length* or about *control flow*,
+neither of which a state-only comparison can see: it checks what an instruction
+leaves behind, not what it did on the way.
 
 - **0x60-0x6F** are the conditional jumps sixteen above them, not
   "hardware-dependent aliases". The suite's hardware capture disassembles 0x60
   as JO, 0x65 as JNZ, 0x6A as JP and 0x6F as JNLE, each with a rel8. Dispatch
   now covers `0x60..=0x7F` and the low four bits select the condition either
-  way.
+  way. Found by the loader: it fetched the rel8 the executor never consumed.
 - **0xF6.1 and 0xF7.1** are TEST, the same instruction as 0xF6.0 and 0xF7.0.
   The group's dispatch handled reg=0 and left reg=1 doing nothing, so its
-  immediate was never consumed.
+  immediate was never consumed. Found the same way.
+- **0xC0, 0xC1, 0xC8 and 0xC9** are RET and RETF, aliases of 0xC2, 0xC3, 0xCA
+  and 0xCB. They consumed their bytes but did not return, so they never flushed
+  the prefetch queue. Found by the queue: the recorded traces end with an `E`
+  this core did not produce.
 
-An opcode with no implementation here still consumes its operand bytes now,
-which is what the part does: it fetches every byte of an instruction whether or
-not it acts on one. The remaining skipped opcodes are skipped for their
-semantics, not their length.
+An opcode with no implementation here still consumes its operand bytes, which is
+what the part does: it fetches every byte of an instruction whether or not it
+acts on one. The remaining skipped opcodes are skipped for their semantics, not
+their length.
 
 ## Resources
 

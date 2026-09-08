@@ -36,6 +36,55 @@ use crate::prelude::Saveable;
 /// overruns if that is ever wrong.
 pub(crate) const MAX_INSTRUCTION: usize = 10;
 
+/// Bytes the BIU's instruction queue holds. Four on the 8088; the 8086, with
+/// twice the external bus, has six.
+pub(crate) const QUEUE_LEN: usize = 4;
+
+/// Idle cycles between the queue gaining room and the T1 of the fetch that
+/// refills it.
+///
+/// From the test suite's README, which states it as an observable rather than
+/// as a design note: "It takes two cycles to begin a fetch after reading from a
+/// full queue, therefore tests that specify an initial queue state will start
+/// with two 'Ti' cycle states." The sample trace bears that out exactly, with
+/// queue reads on cycles 0 and 1 and T1 on cycle 2.
+///
+/// This applies only to restarting from idle. A fetch that ends with room still
+/// in the queue is followed immediately by the next T1, back to back with no
+/// idle cycle between, which the same trace shows at cycles 5 and 6.
+const PREFETCH_RESTART_CYCLES: u8 = 2;
+
+/// What the EU did to the queue on a given cycle: the QS0/QS1 status lines.
+///
+/// The part reports these one cycle after the operation they describe. This
+/// enum is what happened *now*; the delay is the reader's to apply.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QueueStatus {
+    /// First byte of an instruction, or of one of its prefixes.
+    First,
+    /// A subsequent byte: ModR/M, displacement or immediate.
+    Subsequent,
+    /// The queue was flushed by a control transfer.
+    Emptied,
+}
+
+/// The bus interface unit's prefetch state machine, which runs alongside the
+/// EU and independently of it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Biu {
+    /// Not fetching, because the queue is full.
+    #[default]
+    Idle,
+    /// The queue has room and the BIU is counting the idle cycles before it can
+    /// drive T1. See [`PREFETCH_RESTART_CYCLES`].
+    Restarting(u8),
+    /// Inside a CODE bus cycle: `t` is 1 through 4, `addr` the address latched
+    /// on T1. The address is held here rather than recomputed, because the EU
+    /// consuming bytes while a fetch is in flight must not move an address the
+    /// BIU has already put on the pins.
+    Fetching { t: u8, addr: u32 },
+}
+
 /// Which part of the instruction the loader's next fetched byte belongs to.
 ///
 /// This is the shape of an 8088 instruction read left to right, and the loader
@@ -139,9 +188,51 @@ pub struct I8088 {
     /// Which part of the instruction the loader is fetching.
     #[save_skip(default)]
     pub(crate) stage: Stage,
-    /// T-state within the current fetch bus cycle, 1 through 4.
-    #[save_skip(default = 1)]
-    pub(crate) t: u8,
+    /// Set for the one T-state on which an instruction retires.
+    #[save_skip(default)]
+    pub(crate) retired: bool,
+    /// This instruction transferred control, so the queue holds bytes from the
+    /// path not taken. Set by [`I8088::set_ip`] and [`I8088::set_cs`], cleared
+    /// when the instruction retires.
+    #[save_skip(default)]
+    pub(crate) transferred: bool,
+    /// A control transfer has run and the queue must be flushed on the next
+    /// T-state.
+    ///
+    /// It cannot be flushed on the same one. The part reports a single queue
+    /// operation per cycle, and a taken branch produces two: the read of the
+    /// last byte of the branch instruction, and then the flush. They have to be
+    /// in that order because the branch is not resolved until that byte is in
+    /// hand. The recorded traces show it directly: a taken `JO` reports
+    /// `F` then `S` then `E` on three separate cycles.
+    #[save_skip(default)]
+    pub(crate) pending_flush: bool,
+
+    // -- BIU and prefetch queue --------------------------------------------
+    /// The instruction queue, oldest byte first.
+    #[save_skip(default = [0; QUEUE_LEN])]
+    pub(crate) queue: [u8; QUEUE_LEN],
+    /// How many bytes of `queue` are live.
+    #[save_skip(default)]
+    pub(crate) queue_len: u8,
+    /// The address the BIU will fetch next.
+    ///
+    /// On the part this *is* IP, and the architectural IP is computed by
+    /// subtracting the queue length when something needs it. Here it is the
+    /// other way round, because the value the test vectors report as `ip` is
+    /// the architectural one: `ip` trails, and this runs ahead of it by however
+    /// many bytes are queued or already loaded.
+    #[save_skip(default)]
+    pub(crate) prefetch_ip: u16,
+    /// The BIU's own state machine, independent of the EU's.
+    #[save_skip(default)]
+    pub(crate) biu: Biu,
+    /// What the EU did to the queue on this T-state, cleared at the start of
+    /// each one. These are the QS0/QS1 status lines, which the part exposes for
+    /// exactly this reason: an outside observer cannot otherwise tell where one
+    /// instruction ends and the next begins.
+    #[save_skip(default)]
+    pub queue_status: Option<(QueueStatus, u8)>,
 
     #[save_skip(default)]
     pub(crate) segment_override: Option<SegReg>,
@@ -184,7 +275,14 @@ impl I8088 {
             instr_pos: 0,
             opcode_at: 0,
             stage: Stage::Opcode,
-            t: 1,
+            retired: false,
+            transferred: false,
+            pending_flush: false,
+            queue: [0; QUEUE_LEN],
+            queue_len: 0,
+            prefetch_ip: 0,
+            biu: Biu::Idle,
+            queue_status: None,
             segment_override: None,
             rep_prefix: None,
             nmi_pending: false,
@@ -194,10 +292,14 @@ impl I8088 {
         }
     }
 
-    /// Returns true when the CPU is at an instruction boundary: nothing loaded,
-    /// and the next T-state will be the T1 of the next opcode fetch.
+    /// Returns true when the CPU is between instructions: nothing loaded, so
+    /// the next byte the EU takes from the queue will be a First Byte.
+    ///
+    /// This is not the same as "an instruction just retired": the EU can sit
+    /// here for many cycles with an empty queue, waiting for the BIU. Use
+    /// [`Self::retired`](I8088::retired) for the edge.
     pub fn at_instruction_boundary(&self) -> bool {
-        !self.halted && self.instr_len == 0 && self.t == 1
+        !self.halted && self.instr_len == 0
     }
 
     /// Total T-states executed since creation.
@@ -208,25 +310,44 @@ impl I8088 {
     /// Execute one T-state.
     ///
     /// A T-state is one CPU clock, so a board clocking this at 5 MHz calls this
-    /// five million times per emulated second. An instruction-fetch bus cycle
-    /// is four of them: the address goes out on T1, the byte comes back on T3,
-    /// and T4 completes the transaction. Every byte of the instruction stream
-    /// costs one such cycle.
+    /// five million times per emulated second.
+    ///
+    /// Two things run here, and their independence is the whole point of the
+    /// design. The EU takes instruction bytes out of the queue, one per
+    /// T-state, stalling when the queue is empty. The BIU refills the queue
+    /// whenever there is room, through four-T-state CODE bus cycles the EU
+    /// knows nothing about. Neither waits on the other except through the
+    /// queue, which is why an instruction that arrives prefetched costs no bus
+    /// cycles of its own.
+    ///
+    /// The EU runs first, so a byte the BIU latches on this cycle's T3 is
+    /// available to the EU on the next cycle rather than this one.
     ///
     /// What is *not* yet per-cycle: the instruction's own execution, including
-    /// its operand reads and writes, still happens atomically on the T4 of its
-    /// last fetched byte. That is the next step of the conversion, and until it
-    /// lands this core undercounts every instruction that touches memory. See
-    /// `docs/designs/cycle-accurate-i8088.md`.
+    /// its operand reads and writes and the cycles the EU spends computing an
+    /// effective address, still happens atomically on the T-state that its last
+    /// byte arrives. Until that lands this core undercounts every instruction
+    /// that touches memory. See `docs/designs/cycle-accurate-i8088.md`.
     pub fn execute_cycle<B: Bus<Address = u32, Data = u8> + ?Sized>(
         &mut self,
         bus: &mut B,
         master: BusMaster,
     ) {
         self.clock += 1;
+        self.queue_status = None;
+        self.retired = false;
+
+        // A branch taken on the previous T-state flushes here, on its own
+        // cycle, and only then has the instruction retired.
+        if self.pending_flush {
+            self.pending_flush = false;
+            self.flush_queue();
+            self.retired = true;
+            return;
+        }
 
         if self.halted {
-            // Check for an interrupt that can wake us.
+            // A halted 8088 stops prefetching, so the BIU does not run here.
             let ints = bus.check_interrupts(master);
             let nmi_edge = crate::cpu::flags::detect_rising_edge(ints.nmi, &mut self.nmi_prev);
             if nmi_edge {
@@ -236,53 +357,215 @@ impl I8088 {
                 self.nmi_pending = false;
                 self.halted = false;
                 self.interrupt(bus, master, 2);
+                self.flush_queue();
             } else if ints.irq && flags::get(self.flags, flags::Flag::IF) {
                 self.halted = false;
                 self.interrupt(bus, master, ints.irq_vector);
+                self.flush_queue();
             }
             return;
         }
 
         // Interrupts are recognized between instructions, which is the only
-        // point the loader can be redirected without discarding a partial
-        // fetch.
+        // point the queue can be redirected without discarding a partial fetch.
         if self.at_instruction_boundary() {
             let ints = bus.check_interrupts(master);
             if self.handle_interrupts(ints, bus, master) {
+                self.flush_queue();
                 return;
             }
         }
 
-        match self.t {
-            // T1 puts the address on the multiplexed bus and T2 turns it
-            // around for data. Neither is observable through a `Bus` that
-            // resolves an access in one call, but both are real clocks and the
-            // part cannot deliver a byte in fewer than four of them.
-            1 | 2 => self.t += 1,
-            // T3 is when the addressed device drives the byte back.
-            3 => {
-                let addr =
-                    Self::physical_addr(self.cs, self.ip.wrapping_add(self.instr_len.into()));
-                let byte = bus.read(master, addr);
-                assert!(
-                    (self.instr_len as usize) < MAX_INSTRUCTION,
-                    "instruction longer than {MAX_INSTRUCTION} bytes at {:04X}:{:04X}",
-                    self.cs,
-                    self.ip
-                );
-                self.instr[self.instr_len as usize] = byte;
-                self.instr_len += 1;
-                self.t = 4;
-            }
-            // T4 completes the transaction. If that was the instruction's last
-            // byte, it runs here.
-            _ => {
-                self.t = 1;
-                if self.advance_stage() {
-                    self.run_loaded_instruction(bus, master);
+        self.tick_eu(bus, master);
+        self.tick_biu(bus, master);
+    }
+
+    /// The execution unit's cycle: take one byte from the queue, if there is
+    /// one and the EU still wants one.
+    fn tick_eu<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        if self.queue_len == 0 {
+            // Starved. The EU idles until the BIU delivers, which is the cost
+            // the prefetch queue exists to avoid and the reason a jump is
+            // expensive.
+            return;
+        }
+
+        let byte = self.pop_queue();
+        // A prefix reads as a First Byte, and so does the opcode behind it. The
+        // suite's README is explicit: an instruction's first byte "may be an
+        // optional instruction prefix, in which case there will be multiple
+        // First Byte statuses until the first byte that is a non-prefixed
+        // opcode byte is read". The loader's opcode stage is exactly that span,
+        // so the stage is the status.
+        self.queue_status = Some((
+            if self.stage == Stage::Opcode {
+                QueueStatus::First
+            } else {
+                QueueStatus::Subsequent
+            },
+            byte,
+        ));
+
+        assert!(
+            (self.instr_len as usize) < MAX_INSTRUCTION,
+            "instruction longer than {MAX_INSTRUCTION} bytes at {:04X}:{:04X}",
+            self.cs,
+            self.ip
+        );
+        self.instr[self.instr_len as usize] = byte;
+        self.instr_len += 1;
+
+        if self.advance_stage() {
+            self.run_loaded_instruction(bus, master);
+        }
+    }
+
+    /// The bus interface unit's cycle: keep the queue full.
+    fn tick_biu<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+    ) {
+        match self.biu {
+            Biu::Idle => {
+                if self.queue_has_room() {
+                    self.biu = Biu::Restarting(PREFETCH_RESTART_CYCLES - 1);
                 }
             }
+            Biu::Restarting(0) => {
+                self.biu = Biu::Fetching {
+                    t: 1,
+                    addr: Self::physical_addr(self.cs, self.prefetch_ip),
+                };
+            }
+            Biu::Restarting(n) => self.biu = Biu::Restarting(n - 1),
+            // T1 latches the address, T2 turns the multiplexed pins around for
+            // data. Neither is observable through a `Bus` that resolves an
+            // access in one call, but both are real clocks and the part cannot
+            // deliver a byte in fewer than four of them.
+            Biu::Fetching { t: t @ 1..=2, addr } => {
+                self.biu = Biu::Fetching { t: t + 1, addr };
+            }
+            // T3 is when the addressed device drives the byte back.
+            Biu::Fetching { t: 3, addr } => {
+                let byte = bus.read(master, addr);
+                self.push_queue(byte);
+                self.prefetch_ip = self.prefetch_ip.wrapping_add(1);
+                self.biu = Biu::Fetching { t: 4, addr };
+            }
+            // T4 completes the transaction. A fetch that ends with room left in
+            // the queue runs straight into the next T1, back to back, with no
+            // idle cycle in between.
+            Biu::Fetching { .. } => {
+                self.biu = if self.queue_has_room() {
+                    Biu::Fetching {
+                        t: 1,
+                        addr: Self::physical_addr(self.cs, self.prefetch_ip),
+                    }
+                } else {
+                    Biu::Idle
+                };
+            }
         }
+    }
+
+    /// Whether the BIU may start another fetch. The 8088 prefetches whenever
+    /// one byte is free, its bus being one byte wide.
+    #[inline]
+    fn queue_has_room(&self) -> bool {
+        (self.queue_len as usize) < QUEUE_LEN
+    }
+
+    /// Take the oldest byte out of the queue.
+    #[inline]
+    fn pop_queue(&mut self) -> u8 {
+        let byte = self.queue[0];
+        self.queue.copy_within(1.., 0);
+        self.queue_len -= 1;
+        byte
+    }
+
+    /// Append a freshly fetched byte.
+    #[inline]
+    fn push_queue(&mut self, byte: u8) {
+        self.queue[self.queue_len as usize] = byte;
+        self.queue_len += 1;
+    }
+
+    /// Transfer control to a new offset, flushing the queue when the
+    /// instruction retires.
+    ///
+    /// Every jump, call, return and interrupt goes through this rather than
+    /// assigning `ip` directly, and that distinction is not cosmetic. The first
+    /// version of this inferred a transfer by comparing the final CS:IP against
+    /// where the instruction stream would have run on to, which is right for
+    /// almost every case and wrong for the one the vectors are full of: a
+    /// *taken* conditional jump with a displacement of zero lands exactly where
+    /// it would have anyway, and the part still flushes. Address equality
+    /// cannot see the difference between a branch not taken and a branch taken
+    /// to the next instruction. Only the instruction knows.
+    #[inline]
+    pub(crate) fn set_ip(&mut self, ip: u16) {
+        self.ip = ip;
+        self.transferred = true;
+    }
+
+    /// Transfer control to a new segment. See [`Self::set_ip`].
+    #[inline]
+    pub(crate) fn set_cs(&mut self, cs: u16) {
+        self.cs = cs;
+        self.transferred = true;
+    }
+
+    /// Install a prefetch queue and point the BIU past it.
+    ///
+    /// This exists for the per-cycle test vectors, half of which run their
+    /// instruction from a queue the hardware had already filled. It is not
+    /// something a board does: a real 8088 arrives at a full queue by
+    /// prefetching into one.
+    ///
+    /// IP is left alone, because here it is the architectural pointer to the
+    /// next byte the EU has not consumed, and the queue sits in front of it.
+    /// The BIU's pointer goes past the installed bytes so the next fetch does
+    /// not read them a second time.
+    ///
+    /// Panics if handed more bytes than the queue holds.
+    pub fn load_prefetch_queue(&mut self, bytes: &[u8]) {
+        assert!(
+            bytes.len() <= QUEUE_LEN,
+            "the 8088 queue holds {QUEUE_LEN} bytes, got {}",
+            bytes.len()
+        );
+        self.queue[..bytes.len()].copy_from_slice(bytes);
+        self.queue_len = bytes.len() as u8;
+        self.prefetch_ip = self.ip.wrapping_add(bytes.len() as u16);
+        // A full queue leaves the BIU with nothing to do; a partial one lets it
+        // start counting down to its next fetch.
+        self.biu = Biu::Idle;
+    }
+
+    /// The bytes currently queued, oldest first.
+    pub fn prefetch_queue(&self) -> &[u8] {
+        &self.queue[..self.queue_len as usize]
+    }
+
+    /// Throw the queue away and restart prefetching at CS:IP.
+    ///
+    /// Every control transfer does this: the bytes behind the jump were fetched
+    /// from the path not taken. The part reports it on QS0/QS1 as `E`, which is
+    /// the only way an outside observer can see a branch being taken.
+    pub(crate) fn flush_queue(&mut self) {
+        self.queue_len = 0;
+        self.prefetch_ip = self.ip;
+        self.biu = Biu::Idle;
+        self.instr_len = 0;
+        self.instr_pos = 0;
+        self.stage = Stage::Opcode;
+        self.queue_status = Some((QueueStatus::Emptied, 0));
     }
 
     /// Decide what the loader fetches next, having just taken delivery of a
@@ -371,6 +654,7 @@ impl I8088 {
         bus: &mut B,
         master: BusMaster,
     ) {
+        self.transferred = false;
         self.instr_pos = 0;
         let opcode = self.consume_prefixes();
         self.execute(opcode, bus, master);
@@ -394,6 +678,16 @@ impl I8088 {
 
         self.instr_len = 0;
         self.instr_pos = 0;
+
+        if self.transferred {
+            // The queue holds bytes from the path not taken, and throwing them
+            // away is what makes a jump cost what it costs. The flush happens
+            // on the next T-state, not this one: see `pending_flush`. Until it
+            // does, the instruction has not retired.
+            self.pending_flush = true;
+        } else {
+            self.retired = true;
+        }
     }
 
     /// Check for pending interrupts. Returns true if an interrupt was taken.
@@ -459,7 +753,7 @@ impl BusMasterComponent for I8088 {
         master: BusMaster,
     ) -> bool {
         self.execute_cycle(bus, master);
-        self.at_instruction_boundary()
+        self.retired
     }
 }
 
@@ -484,11 +778,13 @@ impl Cpu for I8088 {
         self.ip = 0;
         self.flags = flags::normalize(0);
         self.halted = false;
-        self.instr_len = 0;
-        self.instr_pos = 0;
         self.opcode_at = 0;
-        self.stage = Stage::Opcode;
-        self.t = 1;
+        self.retired = false;
+        self.pending_flush = false;
+        // Reset flushes the instruction queue, which is exactly what the test
+        // suite's setup routine relies on before it installs a queue state.
+        self.flush_queue();
+        self.queue_status = None;
         self.segment_override = None;
         self.rep_prefix = None;
         self.nmi_pending = false;
@@ -870,5 +1166,97 @@ mod tests {
         assert_eq!(seen, vec![Stage::Opcode], "no stage after the opcode");
         assert_eq!(cpu.instr_len, 1);
         assert_eq!(cpu.stage, Stage::Opcode, "reset for the next instruction");
+    }
+
+    // --- The prefetch queue -------------------------------------------------
+
+    #[test]
+    fn an_installed_queue_puts_the_prefetch_pointer_past_it() {
+        let mut cpu = I8088::new();
+        cpu.cs = 0x1000;
+        cpu.ip = 0x0100;
+        cpu.load_prefetch_queue(&[0x90, 0x91, 0x92]);
+
+        assert_eq!(cpu.prefetch_queue(), &[0x90, 0x91, 0x92]);
+        // IP still points at the first byte the EU has not consumed. The BIU
+        // fetches from past the bytes already queued, or it would read them a
+        // second time.
+        assert_eq!(cpu.ip, 0x0100);
+        assert_eq!(cpu.prefetch_ip, 0x0103);
+    }
+
+    #[test]
+    #[should_panic(expected = "queue holds 4 bytes")]
+    fn a_queue_longer_than_the_hardware_has_is_rejected() {
+        I8088::new().load_prefetch_queue(&[0, 1, 2, 3, 4]);
+    }
+
+    /// A flush is what a taken branch costs, and it has to leave the BIU
+    /// fetching from the new CS:IP rather than from wherever it had got to.
+    #[test]
+    fn a_flush_restarts_prefetching_at_the_new_address() {
+        let mut cpu = I8088::new();
+        cpu.cs = 0x1000;
+        cpu.ip = 0x0100;
+        cpu.load_prefetch_queue(&[0x90, 0x91, 0x92, 0x93]);
+        assert_eq!(
+            cpu.biu,
+            Biu::Idle,
+            "a full queue leaves the BIU nothing to do"
+        );
+
+        cpu.set_ip(0x0200);
+        cpu.flush_queue();
+
+        assert!(cpu.prefetch_queue().is_empty());
+        assert_eq!(cpu.prefetch_ip, 0x0200);
+        assert_eq!(cpu.biu, Biu::Idle);
+        assert_eq!(
+            cpu.queue_status,
+            Some((QueueStatus::Emptied, 0)),
+            "a flush is reported on QS0/QS1 as E"
+        );
+    }
+
+    /// The queue is a FIFO, and the EU takes from the end the BIU is not
+    /// filling. Getting this backwards would execute the instruction stream in
+    /// reverse within each four bytes.
+    #[test]
+    fn the_queue_is_first_in_first_out() {
+        let mut cpu = I8088::new();
+        cpu.load_prefetch_queue(&[0x11, 0x22]);
+        cpu.push_queue(0x33);
+
+        assert_eq!(cpu.pop_queue(), 0x11);
+        assert_eq!(cpu.pop_queue(), 0x22);
+        assert_eq!(cpu.pop_queue(), 0x33);
+        assert_eq!(cpu.queue_len, 0);
+    }
+
+    /// The BIU prefetches whenever a single byte is free, the 8088's bus being
+    /// one byte wide.
+    #[test]
+    fn the_biu_wants_to_fetch_whenever_one_byte_is_free() {
+        let mut cpu = I8088::new();
+        cpu.load_prefetch_queue(&[0, 1, 2, 3]);
+        assert!(!cpu.queue_has_room(), "a full queue has no room");
+        cpu.pop_queue();
+        assert!(cpu.queue_has_room(), "one byte free is enough");
+    }
+
+    /// Transferring control is something the instruction says, not something
+    /// the address says. A taken jump with a displacement of zero lands on the
+    /// address execution would have reached anyway, and the part still flushes:
+    /// the hardware traces show `F`, `S`, then `E` for exactly that case.
+    #[test]
+    fn a_branch_to_the_next_instruction_still_counts_as_a_transfer() {
+        let mut cpu = I8088::new();
+        cpu.ip = 0x0100;
+        cpu.transferred = false;
+
+        cpu.set_ip(0x0100);
+
+        assert_eq!(cpu.ip, 0x0100, "the address did not move");
+        assert!(cpu.transferred, "but control was transferred");
     }
 }

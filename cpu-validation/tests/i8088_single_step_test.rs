@@ -27,6 +27,12 @@ use phosphor_cpu_validation::{I8088InitialState, I8088Metadata, I8088TestCase, T
 /// - `F6.1`, `F7.1`: TEST, the same instruction as `F6.0` and `F7.0`. The
 ///   group's dispatch handled reg=0 and left reg=1 to do nothing, so its
 ///   immediate was never consumed.
+///
+/// Four more came off on the same day, found the same way once the prefetch
+/// queue existed: `C0`, `C1`, `C8` and `C9` are RET and RETF, aliases of `C2`,
+/// `C3`, `CA` and `CB`. They consumed their bytes but did not return, so they
+/// never flushed the queue, and the recorded traces end with an `E` that this
+/// core did not produce.
 fn should_skip(filename: &str) -> bool {
     // Strip .json.gz suffix to get the opcode identifier
     let stem = filename.strip_suffix(".json.gz").unwrap_or(filename);
@@ -45,10 +51,6 @@ fn should_skip(filename: &str) -> bool {
         | "D6"
         // D0.6/D1.6/D2.6/D3.6 — undocumented SETMO/SETMOC
         | "D0.6" | "D1.6" | "D2.6" | "D3.6"
-        // 0xC0, 0xC1 — aliases for RET
-        | "C0" | "C1"
-        // 0xC8, 0xC9 — aliases for RETF
-        | "C8" | "C9"
         // 0x0F — POP CS (undocumented, rarely used)
         | "0F"
         // FF.7 — undefined sub-opcode
@@ -80,6 +82,14 @@ fn load_initial_state(cpu: &mut I8088, bus: &mut TracingBus20, state: &I8088Init
     for &(addr, val) in &state.ram {
         bus.memory[(addr & 0xF_FFFF) as usize] = val;
     }
+
+    // Install the prefetch queue for the half of the suite that runs from a
+    // full one. This gate does not check timing, so it did not need the queue
+    // while there was no queue to fill; now that there is one, leaving it empty
+    // would have the BIU fetch bytes the hardware already held, which changes
+    // nothing about the final state but makes the two gates model different
+    // machines.
+    cpu.load_prefetch_queue(&state.queue);
 }
 
 fn run_test_case(tc: &I8088TestCase, flags_mask: u16) -> Option<String> {
