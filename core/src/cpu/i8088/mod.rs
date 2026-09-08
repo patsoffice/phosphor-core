@@ -158,16 +158,24 @@ pub(crate) enum Biu {
 /// the last cannot start until the middle has decided what to write:
 ///
 /// ```text
-/// Loading -> Reading (MEMR, 1, 2 or 4 cycles) -> execute -> Writing (MEMW)
+/// Loading -> AddressCalc -> Reading (MEMR) -> execute -> Writing (MEMW)
 /// ```
 ///
 /// `execute` itself is still one indivisible step. What has moved out of it is
-/// the bus traffic on either side.
+/// the bus traffic on either side, and the address arithmetic in front of it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Eu {
     /// Taking instruction bytes out of the queue.
     #[default]
     Loading,
+    /// Adding up an effective address, with the clocks still to go.
+    ///
+    /// The bus is free during this, so the BIU keeps prefetching through it.
+    /// That is not a detail: an addressing mode that takes twelve clocks to
+    /// compute is twelve clocks in which the queue refills, which is why a
+    /// complicated address can be nearly free on a part that would otherwise
+    /// have been waiting for instruction bytes.
+    AddressCalc(u8),
     /// Reading the memory operand before the instruction runs.
     Reading {
         /// Which byte of the operand, counting from zero.
@@ -519,6 +527,20 @@ impl I8088 {
             Eu::Loading => {
                 self.tick_eu(bus, master);
                 self.tick_biu(bus, master);
+            }
+            // Address arithmetic uses no bus, so the BIU runs alongside it.
+            Eu::AddressCalc(remaining) => {
+                self.eu = if remaining > 1 {
+                    Eu::AddressCalc(remaining - 1)
+                } else {
+                    self.begin_operand_phase()
+                };
+                self.tick_biu(bus, master);
+                if self.eu == Eu::Loading {
+                    // No read to do: the instruction runs here, once the BIU
+                    // has had its cycle.
+                    self.run_execute_step(bus, master);
+                }
             }
             // There is one bus, and while the EU is using it the BIU cannot
             // prefetch. That contention is not incidental: it is why an
@@ -881,19 +903,35 @@ impl I8088 {
         self.ip = saved_ip;
         self.instr_pos = 0;
 
-        // A read has to happen before the instruction can run, so the
-        // instruction does not run on this cycle at all: the pipeline goes into
-        // its read phase and comes back here through `finish_execute`.
-        if self.operand_at.is_some() && operand_access.reads {
-            self.eu = Eu::Reading {
-                byte: 0,
-                total: operand_access.width.bytes(),
-                t: 1,
-            };
+        // A memory operand has to have its address worked out before anything
+        // can be done with it, and that arithmetic takes the EU real clocks.
+        // The instruction does not run on this cycle at all: the pipeline goes
+        // through its address, read and write phases and comes back through
+        // `run_execute_step`.
+        if self.operand_at.is_some() {
+            let modrm = self.instr[self.opcode_at as usize + 1];
+            let cycles = access::ea_cycles(modrm, self.segment_override.is_some());
+            self.eu = Eu::AddressCalc(cycles);
             return;
         }
 
+        let _ = operand_access;
         self.run_execute_step(bus, master);
+    }
+
+    /// Leave the address-calculation phase for whatever the instruction does
+    /// with the operand next: a read, or straight to execution.
+    fn begin_operand_phase(&mut self) -> Eu {
+        let acc = access::operand_access(self.opcode(), self.instr[self.opcode_at as usize + 1]);
+        if acc.reads {
+            Eu::Reading {
+                byte: 0,
+                total: acc.width.bytes(),
+                t: 1,
+            }
+        } else {
+            Eu::Loading
+        }
     }
 
     /// Run the instruction proper, with its operand already in hand, and then

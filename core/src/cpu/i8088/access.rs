@@ -76,6 +76,47 @@ const RMW_B: Access = Access::new(true, true, Width::Byte);
 const RMW_W: Access = Access::new(true, true, Width::Word);
 const READ_FAR: Access = Access::new(true, false, Width::FarPointer);
 
+/// Clocks the EU spends computing an effective address, by addressing mode.
+///
+/// From the 8088 datasheet's EA calculation table, and it is a table of
+/// *additions* rather than an arbitrary cost per mode: one component costs 5,
+/// a bare displacement 6, two components 7 or 8, three 9, 11 or 12. The two
+/// base-plus-index pairings differ by one clock, which is a real asymmetry in
+/// the part and not a transcription error: `BX+SI` and `BP+DI` take 7 where
+/// `BX+DI` and `BP+SI` take 8.
+///
+/// Deliberately **not** applied: the datasheet's further "add 4 for word
+/// operands at odd addresses". That is an 8086 penalty, where a misaligned word
+/// costs a second bus cycle on a 16-bit bus. The 8088's bus is one byte wide,
+/// so every word operand is already two bus cycles whatever its alignment, and
+/// the pipeline issues both. Adding it here would charge that twice.
+pub(crate) fn ea_cycles(modrm: u8, segment_override: bool) -> u8 {
+    let mod_bits = (modrm >> 6) & 3;
+    let rm = modrm & 7;
+
+    let base = match (mod_bits, rm) {
+        // mod=00 rm=110 is a bare 16-bit address, the one mode with a
+        // displacement and nothing to add it to.
+        (0, 6) => 6,
+        // One register: [SI], [DI], [BX].
+        (0, 4 | 5 | 7) => 5,
+        // Two registers. The pairing decides which of the two costs it takes.
+        (0, 0 | 3) => 7,
+        (0, 1 | 2) => 8,
+        // With a displacement, mod=01 or mod=10. One register plus it, where
+        // rm=110 is [BP] rather than the direct-address escape.
+        (1 | 2, 4..=7) => 9,
+        // Two registers plus a displacement, in the same two pairings.
+        (1 | 2, 0 | 3) => 11,
+        (1 | 2, 1 | 2) => 12,
+        // mod=11 is a register operand with no address to compute, and the
+        // caller does not ask.
+        _ => 0,
+    };
+
+    base + if segment_override { 2 } else { 0 }
+}
+
 /// The ModR/M `reg` field, which selects the operation inside a group opcode.
 #[inline]
 fn reg_of(modrm: u8) -> u8 {
@@ -270,6 +311,58 @@ mod tests {
             for reg in 0..8u8 {
                 let _ = operand_access(opcode, reg << 3);
             }
+        }
+    }
+
+    // --- Effective address timing ---
+
+    /// The cost tracks the number of components the EU has to add, which is
+    /// what makes this a structure rather than a list.
+    #[test]
+    fn ea_cost_rises_with_the_number_of_components() {
+        // One register.
+        assert_eq!(ea_cycles(0b00_000_100, false), 5, "[SI]");
+        assert_eq!(ea_cycles(0b00_000_111, false), 5, "[BX]");
+        // A bare displacement, which costs one more than a register.
+        assert_eq!(ea_cycles(0b00_000_110, false), 6, "[disp16]");
+        // Two registers.
+        assert_eq!(ea_cycles(0b00_000_000, false), 7, "[BX+SI]");
+        assert_eq!(ea_cycles(0b00_000_011, false), 7, "[BP+DI]");
+        // One register and a displacement.
+        assert_eq!(ea_cycles(0b01_000_111, false), 9, "[BX+d8]");
+        assert_eq!(ea_cycles(0b10_000_110, false), 9, "[BP+d16]");
+        // Three components.
+        assert_eq!(ea_cycles(0b01_000_000, false), 11, "[BX+SI+d8]");
+        assert_eq!(ea_cycles(0b10_000_001, false), 12, "[BX+DI+d16]");
+    }
+
+    /// The two base-plus-index pairings differ by a clock. This is a real
+    /// asymmetry in the part, and the sort of detail that gets flattened by
+    /// someone tidying the table.
+    #[test]
+    fn the_two_base_plus_index_pairings_cost_differently() {
+        assert_eq!(ea_cycles(0b00_000_000, false), 7, "[BX+SI]");
+        assert_eq!(ea_cycles(0b00_000_011, false), 7, "[BP+DI]");
+        assert_eq!(ea_cycles(0b00_000_001, false), 8, "[BX+DI]");
+        assert_eq!(ea_cycles(0b00_000_010, false), 8, "[BP+SI]");
+    }
+
+    #[test]
+    fn a_segment_override_costs_two_more_whatever_the_mode() {
+        for modrm in [0b00_000_100u8, 0b00_000_110, 0b01_000_000, 0b10_000_010] {
+            assert_eq!(
+                ea_cycles(modrm, true),
+                ea_cycles(modrm, false) + 2,
+                "{modrm:#010b}"
+            );
+        }
+    }
+
+    /// A register operand has no address to compute.
+    #[test]
+    fn a_register_operand_costs_nothing_to_address() {
+        for rm in 0..8u8 {
+            assert_eq!(ea_cycles(0b11_000_000 | rm, false), 0, "rm={rm}");
         }
     }
 }
