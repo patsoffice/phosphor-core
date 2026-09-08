@@ -8,7 +8,7 @@ use super::addressing::Operand;
 use super::alu;
 use super::flags::{self, Flag};
 use super::registers::SegReg;
-use super::{I8088, RepPrefix};
+use super::{FetchState, I8088, RepPrefix};
 use crate::core::{Bus, BusMaster};
 
 impl I8088 {
@@ -819,6 +819,11 @@ impl I8088 {
             // =============================================================
             0xF4 => {
                 self.halted = true;
+                // A halted part has nothing to prefetch for. The prefetcher is
+                // stopped through its own state rather than by the pipeline
+                // stepping around it, so a fetch already on the bus still
+                // finishes.
+                self.fetch = FetchState::Halted;
             }
             0xF5 => {
                 let cf = flags::get(self.flags, Flag::CF);

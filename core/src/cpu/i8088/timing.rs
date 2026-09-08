@@ -733,32 +733,6 @@ pub(crate) fn will_transfer(opcode: u8, modrm: u8, taken: bool) -> bool {
     }
 }
 
-/// T-states a pop's microcode runs before its first read reaches the bus.
-///
-/// Measured: `POP AX` from a full queue drives its read's T1 three T-states
-/// after the opcode is taken from the queue, and this core drove it one after,
-/// on every case of every file in the family. Taken out of the microcode that
-/// follows the read, so an instruction's total is unchanged and only the bus
-/// cycle moves. See [`super::Eu::StackLeadIn`].
-pub(crate) const STACK_POP_LEAD_IN: u8 = 3;
-
-/// The T-state a write spends before its own T1, as the `t` a write phase
-/// starts on: `0` for the lead-in, `1` to drive T1 at once.
-///
-/// **A write reaches the bus one T-state later than this core used to send
-/// it**, and it lets go of the execution unit one T-state earlier. The two are
-/// the same fact from either end: the part's write occupies T1 through T4 and
-/// releases the microcode at T3, so the cycle sits one clock further right than
-/// a model that starts it immediately and holds until T4, while costing the
-/// instruction exactly the same.
-///
-/// `fetch_gap_diff` reported the first half over the whole `PUSH` family, `F0
-/// W6 W4` against this core's `F0 W5 W4`, on all 60,000 cases. `MOV
-/// [SS:BP+SI+disp16], DX` shows both halves at once: the part runs a code fetch
-/// on the four T-states before its write and this core, sending the write a
-/// clock early, has already claimed the bus and suppresses it.
-pub(crate) const WRITE_LEAD_IN: u8 = 0;
-
 /// T-states the loader stops for after reading a prefix byte.
 ///
 /// The manual gives a segment override, `LOCK` and `REP` two clocks apiece. One
@@ -766,26 +740,6 @@ pub(crate) const WRITE_LEAD_IN: u8 = 0;
 /// recording shows it falling immediately after that read rather than anywhere
 /// in the instruction's own microcode. See [`super::I8088::tick_eu`].
 pub(crate) const PREFIX_PAUSE: u8 = 1;
-
-/// T-states of address cycle in front of a memory operand that carries its
-/// address in the instruction rather than in a ModR/M byte: `A0`-`A3` and
-/// `XLAT`.
-///
-/// A ModR/M form spends this inside [`super::access::address_phase_cycles`],
-/// which is measured per mode and already sits in front of the access. These
-/// five have no effective address to compute and so had nothing in front of
-/// theirs, and the clocks ended up behind it as microcode instead. `A0` from a
-/// full queue is the measurement: ten clocks, four in the loader, two here and
-/// four on the bus, with the next instruction's first byte read on the T-state
-/// after the read's T4.
-///
-/// Taken back out of the microcode in [`super::I8088::begin_execute_phase`], so
-/// the instruction's total is unchanged and only the bus cycle moves.
-///
-/// Two is the best of the three values that fit the trace, over the whole
-/// corpus: one gives 92.09% on the prefetched cycle count and three gives
-/// 92.27%, against 92.76% here.
-pub(crate) const DIRECT_ADDRESS_PHASE: u8 = 2;
 
 /// Where in an instruction the loader stops for a T-state, and for how long.
 ///

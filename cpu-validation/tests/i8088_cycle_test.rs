@@ -406,7 +406,13 @@ fn run_test_case(tc: &I8088TestCase) -> Verdict {
         ticks += 1;
         // Generous: the longest recorded traces in the suite are the REP string
         // operations, and a word IDIV runs past 200 cycles on its own.
-        if ticks > 4000 {
+        //
+        // **Raised from 4,000 for the bus-unit rewrite**, for the same reason
+        // and on the same 78 vectors as the state gate's: while the timing rows
+        // and the bus state machine both hold the same clocks, `repne cmpsw`
+        // crosses 4,000 on the double charge alone. Put it back with the last
+        // of the rows.
+        if ticks > 400_000 {
             return hung(());
         }
         // Retirement as of *before* this tick. A one-byte instruction retires

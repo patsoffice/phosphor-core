@@ -230,15 +230,6 @@ pub(crate) struct Cursor {
     pub(crate) pushed: u8,
     /// How many vector words it has already read.
     pub(crate) read: u8,
-    /// Whether the address cycle in front of the bus step the cursor is
-    /// pointing at has already been spent.
-    ///
-    /// A read is not on the bus on the clock the microcode asks for it: the
-    /// request and the address arithmetic run in front of every transfer, and
-    /// the recording of `CD` puts the first vector read's T1 three T-states
-    /// after the microcode that asked for it. A push carries the same clocks
-    /// in its own lead-in and does not need this.
-    pub(crate) addressed: bool,
 }
 
 impl Cursor {
@@ -249,7 +240,6 @@ impl Cursor {
             at: 0,
             pushed: 0,
             read: 0,
-            addressed: false,
         }
     }
 
@@ -258,12 +248,6 @@ impl Cursor {
         let step = self.steps.get(self.at as usize).copied()?;
         self.at += 1;
         Some(step)
-    }
-
-    /// Put the step just taken back, so the sequencer can spend the address
-    /// cycle in front of it and then run it.
-    pub(crate) fn rewind(&mut self) {
-        self.at -= 1;
     }
 
     /// Put a [`Step::Susp`] back so it is asked again on the next clock.
