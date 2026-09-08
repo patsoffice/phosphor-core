@@ -434,7 +434,7 @@ pub(crate) enum Eu {
     /// that one retires into the instruction body, this one hands back to the
     /// sequencer, which may have several more spends and several more bus
     /// cycles to place before the instruction is over.
-    McSpend(u8),
+    McSpend(u16),
     /// Writing the memory operand back after the instruction has run.
     Writing { byte: u8, total: u8 },
 }
@@ -796,6 +796,14 @@ pub struct I8088 {
     /// whether or not there is a byte waiting.
     #[save_skip(default)]
     pub(crate) loader_stall: u8,
+    /// The string access the clocks currently being spent are in front of.
+    ///
+    /// A string operation's microcode is not one lump before or after its bus
+    /// cycles: it falls between them, and `CMPS` has clocks in all three
+    /// positions. [`Eu::StringEntry`] spends them, and this says what it is
+    /// spending them in front of. See [`timing::string_clocks`].
+    #[save_skip(default)]
+    pub(crate) string_next: Option<StringPart>,
     /// T-states this instruction's loader has spent with an empty queue, since
     /// its first byte. A pause taken inside one of these cost nothing, so it is
     /// not charged back. See [`I8088::begin_execute_phase`].
@@ -904,6 +912,7 @@ impl I8088 {
             queue: [0; QUEUE_LEN],
             loader_stall: 0,
             loader_starved: 0,
+            string_next: None,
             queue_len: 0,
             prefetch_ip: 0,
             t_cycle: TCycle::Ti,
@@ -1111,6 +1120,10 @@ impl I8088 {
             Eu::StringEntry(remaining) => {
                 self.eu = if remaining > 1 {
                     Eu::StringEntry(remaining - 1)
+                } else if let Some(part) = self.string_next.take() {
+                    // These were the clocks in front of an access the iteration
+                    // has already chosen. See [`timing::string_clocks`].
+                    Eu::StringAccess { part, byte: 0 }
                 } else {
                     self.begin_string_iteration()
                 };
@@ -2627,7 +2640,10 @@ impl I8088 {
         // The conditional forms take a different arm of their own microcode
         // depending on the flags, so the routine has to be told which.
         let branch = self.microcode_branch(self.opcode());
-        let Some(steps) = microcode::routine(self.opcode(), modrm, branch) else {
+        // The shifts loop on CL, so the routine has to be told the count as well
+        // as the branch. Both are read here rather than inside the transcription
+        // so that a routine stays a pure function of the case it is built for.
+        let Some(steps) = microcode::routine(self.opcode(), modrm, branch, self.cl()) else {
             return false;
         };
         self.mc = Some(microcode::Cursor::new(steps));
@@ -2819,10 +2835,11 @@ impl I8088 {
             // The byte after the opcode, which for these two is the immediate
             // rather than a ModR/M byte.
             let imm = self.instr[self.opcode_at as usize + 1];
-            match opcode {
-                0xD4 => cycles += i32::from(timing::aam_cycles(self.al(), imm)),
-                0xD5 => cycles += i32::from(timing::aad_cycles(imm)),
-                _ => {}
+            // `AAD` is not here: it runs the transcribed routine at 0x170, whose
+            // `CORX` clocks are derived from the co-routine rather than fitted
+            // to it. See [`microcode::routine`].
+            if opcode == 0xD4 {
+                cycles += i32::from(timing::aam_cycles(self.al(), imm));
             }
         }
         // The multiplies and divides take a time that is a function of their
@@ -3589,7 +3606,7 @@ impl I8088 {
     /// The microcode clocks one iteration of the current string operation
     /// spends, beyond its bus cycles.
     fn string_iteration_cycles(&self) -> u8 {
-        timing::string_cycles(self.opcode(), self.rep_prefix.is_some())
+        timing::string_clocks(self.opcode()).after
     }
 
     /// Start a string operation, or the next iteration of one.
@@ -3618,7 +3635,13 @@ impl I8088 {
             self.string_iteration(opcode);
             StringPart::Write
         };
-        Eu::StringAccess { part, byte: 0 }
+        self.string_next = Some(part);
+        // The clocks in front of the first access. See
+        // [`timing::string_clocks`].
+        match timing::string_clocks(opcode).before {
+            0 => Eu::StringAccess { part, byte: 0 },
+            n => Eu::StringEntry(n),
+        }
     }
 
     /// One T-state of a string operation's bus traffic.
@@ -3693,20 +3716,24 @@ impl I8088 {
             };
             return true;
         }
+        // The clocks between one access and the next, which only the operations
+        // with two accesses have. See [`timing::string_clocks`].
+        let between = timing::string_clocks(opcode).between;
+        let next_access = |cpu: &mut Self, part| match between {
+            0 => Eu::StringAccess { part, byte: 0 },
+            n => {
+                cpu.string_next = Some(part);
+                Eu::StringEntry(n)
+            }
+        };
         self.eu = match part {
             // The source is read; the destination may still have to be read or
             // written, and the iteration runs between the two.
-            StringPart::Source if access.reads_dest => Eu::StringAccess {
-                part: StringPart::Destination,
-                byte: 0,
-            },
+            StringPart::Source if access.reads_dest => next_access(self, StringPart::Destination),
             StringPart::Source | StringPart::Destination => {
                 self.string_iteration(opcode);
                 if access.writes_dest {
-                    Eu::StringAccess {
-                        part: StringPart::Write,
-                        byte: 0,
-                    }
+                    next_access(self, StringPart::Write)
                 } else {
                     Eu::StringDelay(self.string_iteration_cycles())
                 }

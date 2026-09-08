@@ -242,20 +242,9 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
         // transfers in memory. By CL the table quotes 8+4/bit and 20+4/bit, and
         // the per-bit part is added by the caller, which is the only place that
         // knows CL.
-        0xD0 | 0xD1 => {
-            if is_mem {
-                15 - 8
-            } else {
-                2
-            }
-        }
-        0xD2 | 0xD3 => {
-            if is_mem {
-                20 - 8
-            } else {
-                8
-            }
-        }
+        // The shifts and rotates have no rows: they run the transcribed
+        // routines at 0x088 and 0x08c, and the loop on CL is in the routine
+        // rather than in [`shift_count_cycles`].
 
         // The unary group. TEST with an immediate is 11 clocks and one
         // transfer; NOT and NEG are 16 and two.
@@ -265,13 +254,10 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
         // memory, and every other TEST form with a memory operand shows one.
         // Read as one here, and flagged rather than silently corrected.
         0xF6 | 0xF7 => match reg {
-            0 | 1 => {
-                if is_mem {
-                    11 - 4
-                } else {
-                    5
-                }
-            }
+            // `TEST r/m, imm` has no row: it runs the transcribed routine at
+            // 0x098, which is the jump over the immediate's second queue read
+            // and 0x09a.
+            0 | 1 => 0,
             // NOT and NEG. The register form is the table's 3. **The memory
             // form is 7, not the table's `16 - 8`**: all four of `F6 /2`,
             // `F6 /3`, `F7 /2` and `F7 /3` read +1 on all 24 memory modes and
@@ -449,38 +435,18 @@ pub(crate) fn branch_cycles(opcode: u8, taken: bool) -> u8 {
                 3
             }
         }
-        // Jcc and its aliases sixteen below. Documented 16 taken, 4 not.
-        0x60..=0x7F => {
-            if taken {
-                10
-            } else {
-                4
-            }
-        }
+        // The conditional jumps and their aliases sixteen below have no rows:
+        // they run the transcribed routine at 0x0e8, whose one clock is 0x0e9
+        // and whose taken arm is RELJMP.
+        0x60..=0x7F => 0,
         // LOOPNE and LOOPE. Documented 19 and 18 taken, 5 and 6 not.
-        0xE0 | 0xE1 => {
-            if taken {
-                14
-            } else {
-                6
-            }
-        }
-        // LOOP. Documented 17 taken, 5 not.
-        0xE2 => {
-            if taken {
-                10
-            } else {
-                6
-            }
-        }
-        // JCXZ. Documented 18 taken, 6 not.
-        0xE3 => {
-            if taken {
-                14
-            } else {
-                6
-            }
-        }
+        // The `LOOP` family has no rows: it runs the transcribed routines at
+        // 0x134, 0x138 and 0x140.
+        0xE0 | 0xE1 => 0,
+        // `LOOP` has no row: it runs the transcribed routine at 0x140, whose
+        // 0x140 and 0x141 are the loader's pause and whose taken arm is RELJMP.
+        0xE2 => 0,
+        0xE3 => 0,
         // INTO, which is an INT 4 when the overflow flag is set and four clocks
         // when it is not. Documented 53 and 4, and one clock dearer than `INT`
         // taken, which is the flag test.
@@ -681,6 +647,13 @@ pub(crate) fn deferred_immediate_stall(opcode: u8, modrm: u8) -> u8 {
     // The loader defers an immediate exactly when the operand is in memory, so
     // that the address can be computed and the operand read first. See
     // `I8088::begin_immediate`.
+    // **Only where the operand is read**, and `C6`/`C7` are the reason to say so
+    // rather than the exception to it. The probe shows their immediate arriving
+    // a clock before the part's on every addressing mode, so the pause looks
+    // like it should be one for them too; charging it costs *two*, which says
+    // the write-only path reaches this immediate by a route that already spends
+    // one of them and that this is not where the clock goes. It is left alone
+    // until that route is read rather than guessed at.
     if f.modrm
         && modrm >> 6 != 3
         && f.imm.len(Some(modrm)) > 0
@@ -708,7 +681,11 @@ pub(crate) fn loader_stall(opcode: u8, modrm: u8) -> LoaderStall {
         // opcode on cycle 0 and its immediate on cycle 1, with nothing between.
         // See [`I8088::preload`].
         return match opcode {
-            0xE0..=0xE3 => LoaderStall::AfterOpcode(3),
+            // The `LOOP` family decrements CX and spends two clocks before it
+            // reads its displacement: 0x138 and 0x139 for `LOOPNE`/`LOOPE`,
+            // 0x140 and 0x141 for `LOOP`. It was three while the loader took its
+            // bytes a T-state late.
+            0xE0..=0xE3 => LoaderStall::AfterOpcode(2),
             _ => LoaderStall::None,
         };
     }
@@ -1082,83 +1059,88 @@ pub(crate) fn aam_cycles(al: u8, imm: u8) -> u16 {
     77 + compared + 2 * u16::from(last_bit)
 }
 
-/// Clocks `AAD` spends, given the immediate it multiplies by.
+// `AAD` had a row here, `59 + imm.count_ones()`, fitted to the recording. It
+// runs the transcribed routine at 0x170 now, whose `CORX` clocks come from
+// `corx_cycles` and so are read off the co-routine rather than measured against
+// it. The fitted base was one clock over, and the whole of that clock was the
+// loader's before the boundary fetch existed.
+
+/// Clocks the `CORX` multiply co-routine spends, for an operand `width` bits
+/// wide whose multiplier has `bits` of them set.
 ///
-/// The mirror of `AAM`: a multiply wearing a BCD adjust's name, folding AH into
-/// AL by multiplying it by the immediate, through the same shift-and-add loop
-/// `MUL` uses. It follows the same rule, one clock per set bit of the
-/// multiplier, and the recording says which operand that is: grouped by the set
-/// bits of the **immediate** every group is uniform, 59 through 67, and grouped
-/// by the set bits of AH nothing separates at all.
+/// Read off the routine rather than fitted to it. `0x17f` and `0x180` open it;
+/// then one pass a bit, each spending `0x181`, either `0x182` and `0x183` when
+/// the shifted-out carry is set or a jump when it is not, and `0x184` through
+/// `0x186`; each pass but the last spends a jump to get back to the top; and
+/// `0x187` and the return close it.
 ///
-/// That is the opposite of `MUL`, where the accumulator is the multiplier. It
-/// is not a contradiction: the microcode moves a different operand into the
-/// register it shifts. Table 1-16 quotes the instruction at 60, which is what
-/// this gives for a one-bit immediate, the commonest by far in real code
-/// because the immediate is nearly always 10.
-pub(crate) fn aad_cycles(imm: u8) -> u16 {
-    59 + imm.count_ones() as u16
+/// So a pass is five clocks and a sixth when the bit is set, the jumps back add
+/// one short of the width, and the ends add four:
+/// `6 * width + bits + 3`.
+pub(crate) fn corx_cycles(width: u16, bits: u32) -> u16 {
+    6 * width + bits as u16 + 3
 }
 
-/// Clocks one iteration of a string operation spends, beyond its bus cycles.
+/// Where a string operation's microcode clocks fall around its bus cycles:
+/// before the first access, between the two, and after the last.
 ///
-/// Table 1-16 gives these twice: once for a single operation and once for a
-/// repeated one, quoted as `9 + 17/rep`. The two halves are not the same
-/// number and the difference is real: a repeated `LODS` costs more per
-/// iteration than a lone one, a repeated `CMPS` one more, and a repeated `MOVS`
-/// exactly the same.
+/// **A total cannot express a string operation.** Table 1-16 gives one number an
+/// iteration, and the recording shows the clocks distributed around the
+/// accesses: `CMPS` spends two before its source read, two more before its
+/// destination read, and three after. Charged as a lump at the end, the reads
+/// come out too early and the prefetching around them goes with them.
 ///
-/// The decomposition is the usual one and self-checks the usual way, because
-/// the microcode does not know how wide its operand is. `MOVS` is 18 clocks
-/// with two transfers, so on the 8088 its word form is 26 with four bus cycles;
-/// `18 - 8` and `26 - 16` are both 10, less the opcode byte the loader pulls.
+/// Read off `string_op` and the line that dispatches to it. Every operation
+/// spends one clock on its own entry line first, `0x11c` for `STOS`, `0x120` for
+/// `CMPS` and `SCAS`, `0x12c` for `MOVS` and `LODS`, and then:
 ///
-/// What is not here is the `REP` prefix's own setup, the `9 +` half of the
-/// quotation. That is [`string_entry_cycles`].
-/// A single operation is one clock dearer than the manual's number, on four of
-/// the five. `MOVS`, `STOS`, `LODS` and `SCAS` each run a clock longer than
-/// `documented - bus - opcode byte` predicts, uniformly over every unprefixed
-/// case in their files, and `CMPS` lands on it exactly. The four are corrected
-/// here and the odd one out is left alone rather than averaged with them.
-pub(crate) fn string_cycles(opcode: u8, repeated: bool) -> u8 {
-    match opcode {
-        // MOVS: 18 alone and 17 repeated, two transfers either way.
-        0xA4 | 0xA5 => {
-            if repeated {
-                9
-            } else {
-                10
-            }
-        }
-        // CMPS: 22 both ways, two transfers.
-        0xA6 | 0xA7 => {
-            if repeated {
-                14
-            } else {
-                13
-            }
-        }
-        // STOS: 11 alone, 10 repeated, one transfer.
-        0xAA | 0xAB => {
-            if repeated {
-                6
-            } else {
-                7
-            }
-        }
-        // LODS: 12 alone, 13 repeated, one transfer. The one operation the
-        // table makes *dearer* to repeat.
-        0xAC | 0xAD => {
-            if repeated {
-                9
-            } else {
-                8
-            }
-        }
-        // SCAS: 15 both ways, one transfer.
-        0xAE | 0xAF => 11,
-        _ => 0,
+/// - `STOS` writes with nothing on either side.
+/// - `LODS` reads with nothing on either side.
+/// - `MOVS` reads, spends `0x12e`, and writes.
+/// - `SCAS` spends `0x121` and a jump, reads, and spends `0x126` through
+///   `0x128`.
+/// - `CMPS` spends `0x121`, reads the source, spends `0x123` and `0x124`, reads
+///   the destination, and spends `0x126` through `0x128`.
+pub(crate) fn string_clocks(opcode: u8) -> StringClocks {
+    let (before, between, after) = match opcode {
+        // MOVS: the entry line, then `0x12e` between the read and the write,
+        // which falls on the read's own release clock and so counts for
+        // nothing here.
+        0xA4 | 0xA5 => (1, 0, 2),
+        // CMPS: the entry line and `0x121`, then `0x123` and `0x124`, then
+        // `0x126`, `0x127` and `0x128`.
+        //
+        // `0x123` falls on the source read's own T4, the release clock the
+        // microcode behind a transfer always spends, so only `0x124` is left to
+        // count between the two reads. `0x126` does the same for the
+        // destination read, and the tail is what stands past it.
+        0xA6 | 0xA7 => (2, 1, 3),
+        // STOS and LODS: the entry line, and the same tail. All three of this
+        // group run the same routine behind `string_op` and so count the same,
+        // which is the check on the rule rather than three numbers that happen
+        // to work.
+        0xAA..=0xAD => (1, 0, 2),
+        // SCAS: the entry line, `0x121` and the jump, then `0x126` through
+        // `0x128`. It reads once, so nothing falls between.
+        0xAE | 0xAF => (3, 0, 3),
+        _ => (0, 0, 0),
+    };
+    StringClocks {
+        before,
+        between,
+        after,
     }
+}
+
+/// The three positions [`string_clocks`] reports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct StringClocks {
+    /// Before the iteration's first bus cycle.
+    pub before: u8,
+    /// Between the two, for the operations that have two.
+    pub between: u8,
+    /// After the last, before the repeat decision.
+    pub after: u8,
 }
 
 /// Clocks a `REP` prefix spends before its first iteration.
@@ -1291,8 +1273,11 @@ mod tests {
             (0xC6, 0xC7, true),      // MOV r/m, imm
             (0xD0, 0xD1, false),     // shift by 1
             (0xD2, 0xD3, false),     // shift by CL
-            (0xF6, 0xF7, false),     // the unary group
-            (0xFE, 0xFF, false),     // INC/DEC
+            // Both ModR/M bytes here carry a reg field of zero, which in the
+            // unary group selects `TEST r/m, imm`, so this pair does carry an
+            // immediate and does take the jump over its second queue read.
+            (0xF6, 0xF7, true),  // the unary group's TEST
+            (0xFE, 0xFF, false), // INC/DEC
         ] {
             for modrm in [mem, reg] {
                 let what = if modrm == mem { "memory" } else { "register" };
@@ -1312,8 +1297,8 @@ mod tests {
                 // differ by exactly one clock and nothing else. That is a
                 // property of the microcode rather than of the operand's width,
                 // which is why the rule above still holds for everything else.
-                let by = super::super::microcode::routine(byte_op, modrm, false);
-                let wo = super::super::microcode::routine(word_op, modrm, false);
+                let by = super::super::microcode::routine(byte_op, modrm, false, 0);
+                let wo = super::super::microcode::routine(word_op, modrm, false, 0);
                 if carries_immediate {
                     let (Some(by), Some(wo)) = (by, wo) else {
                         continue;
@@ -1350,15 +1335,15 @@ mod tests {
         // property is structural rather than arithmetic: `CMP` has no write
         // back, so it has neither the write step nor the two clocks the part
         // spends in front of one.
-        let add = super::super::microcode::routine(0x00, mem, false).expect("ADD r/m8, reg8");
-        let cmp = super::super::microcode::routine(0x38, mem, false).expect("CMP r/m8, reg8");
+        let add = super::super::microcode::routine(0x00, mem, false, 0).expect("ADD r/m8, reg8");
+        let cmp = super::super::microcode::routine(0x38, mem, false, 0).expect("CMP r/m8, reg8");
         assert_ne!(add, cmp, "CMP must not run the writing routine");
         // And in the immediate group, where the reg field picks the operation.
         use super::super::microcode::Step;
         let add_imm =
-            super::super::microcode::routine(0x80, 0b00_000_100, false).expect("ADD r/m8, imm8");
+            super::super::microcode::routine(0x80, 0b00_000_100, false, 0).expect("ADD r/m8, imm8");
         let cmp_imm =
-            super::super::microcode::routine(0x80, 0b00_111_100, false).expect("CMP r/m8, imm8");
+            super::super::microcode::routine(0x80, 0b00_111_100, false, 0).expect("CMP r/m8, imm8");
         assert!(add_imm.contains(Step::WriteOperand), "ADD writes back");
         assert!(
             !cmp_imm.contains(Step::WriteOperand),
@@ -1389,8 +1374,8 @@ mod tests {
     fn a_mov_store_does_more_than_a_load() {
         use super::super::microcode::{self, Step};
         let mem = 0b00_000_100;
-        let store = microcode::routine(0x88, mem, false).expect("MOV r/m8, reg8");
-        let load = microcode::routine(0x8A, mem, false).expect("MOV reg8, r/m8");
+        let store = microcode::routine(0x88, mem, false, 0).expect("MOV r/m8, reg8");
+        let load = microcode::routine(0x8A, mem, false, 0).expect("MOV reg8, r/m8");
         assert!(store.contains(Step::WriteOperand), "a store writes back");
         assert!(
             !load.contains(Step::WriteOperand),
@@ -1408,7 +1393,7 @@ mod tests {
     fn lea_is_two_clocks_and_no_transfers() {
         assert_eq!(eu_cycles(0x8D, 0b00_000_100), 0, "no row");
         assert_eq!(
-            super::super::microcode::routine(0x8D, 0b00_000_100, false)
+            super::super::microcode::routine(0x8D, 0b00_000_100, false, 0)
                 .expect("LEA runs a routine")
                 .clocks(),
             2
@@ -1484,11 +1469,28 @@ mod tests {
 
     /// `AAD` multiplies by its immediate, one clock a set bit, which is the
     /// opposite operand from the one `MUL` tests.
+    ///
+    /// Asked of the routine, which is where the count lives now, and of
+    /// [`corx_cycles`] underneath it. The co-routine is `6 * width + bits + 3`
+    /// and `AAD` adds five of its own: 0x170, 0x171 and a jump in front, 0x172
+    /// and 0x173 behind.
     #[test]
     fn the_ascii_multiply_counts_the_immediates_bits() {
-        assert_eq!(aad_cycles(0), 59);
-        assert_eq!(aad_cycles(0x0A), 61, "the usual base of ten, two bits");
-        assert_eq!(aad_cycles(0xFF), 67);
+        for (imm, bits) in [(0u8, 0u32), (0x0A, 2), (0xFF, 8)] {
+            assert_eq!(imm.count_ones(), bits, "{imm:#04X}");
+            assert_eq!(
+                super::super::microcode::routine(0xD5, imm, false, 0)
+                    .expect("AAD runs a routine")
+                    .clocks(),
+                corx_cycles(8, bits) + 5,
+                "{imm:#04X}"
+            );
+        }
+        // And the co-routine itself: five clocks a pass, a sixth for a set bit,
+        // one short of the width in jumps back, and four at the ends.
+        assert_eq!(corx_cycles(8, 0), 51);
+        assert_eq!(corx_cycles(8, 8), 59);
+        assert_eq!(corx_cycles(16, 0), 99);
     }
 
     /// The count follows the compared subtracts and ignores the immediate
@@ -1665,12 +1667,28 @@ mod tests {
     fn an_opcode_with_a_routine_has_no_row() {
         for opcode in 0..=u8::MAX {
             for modrm in [0x00u8, 0xC0, 0x10, 0xD0, 0x20, 0xE0, 0x30, 0xF0] {
-                if super::super::microcode::routine(opcode, modrm, false).is_some() {
+                for branch in [false, true] {
+                    if super::super::microcode::routine(opcode, modrm, branch, 0).is_none() {
+                        continue;
+                    }
                     assert_eq!(
                         eu_cycles(opcode, modrm),
                         0,
                         "{opcode:#04X}/{modrm:#04X} is priced by a routine and by a row"
                     );
+                    // **And by the other table.** A conditional form is priced
+                    // by `branch_cycles` rather than by `eu_cycles`, so asking
+                    // only the latter let `LOOP` carry a routine and a row at
+                    // once without a word said. The two arms are asked
+                    // separately because `branches_on_state` gates which table
+                    // an opcode is read from at all.
+                    if branches_on_state(opcode) {
+                        assert_eq!(
+                            branch_cycles(opcode, branch),
+                            0,
+                            "{opcode:#04X} is priced by a routine and by a branch row"
+                        );
+                    }
                 }
             }
         }
@@ -1699,7 +1717,7 @@ mod tests {
         for op in 0x40u8..=0x4F {
             assert_eq!(eu_cycles(op, 0), 2, "{op:#04X}");
             assert!(
-                super::super::microcode::routine(op, 0, false).is_none(),
+                super::super::microcode::routine(op, 0, false, 0).is_none(),
                 "{op:#04X} is a row, not a routine"
             );
         }
@@ -1709,7 +1727,7 @@ mod tests {
             "the group form has no row"
         );
         assert_eq!(
-            super::super::microcode::routine(0xFE, 0b11_000_000, false)
+            super::super::microcode::routine(0xFE, 0b11_000_000, false, 0)
                 .expect("INC reg8 runs a routine")
                 .clocks(),
             1,
@@ -1766,13 +1784,26 @@ mod tests {
     /// them is more expensive taken than not. Getting the sense of the
     /// condition backwards would still produce two plausible numbers, and the
     /// only thing that would notice is the gate.
+    ///
+    /// Asked of the routine where one has been transcribed, and of the row
+    /// otherwise. The property is the same either way and the point of the test
+    /// is that it holds; asking only the rows would go quietly vacuous as each
+    /// family moves to its microcode, which is exactly when it stops protecting
+    /// anything.
     #[test]
     fn a_conditional_transfer_costs_more_when_it_transfers() {
         for opcode in [0x60u8, 0x70, 0x7F, 0xE0, 0xE1, 0xE2, 0xE3, 0xCE] {
-            assert!(
-                branch_cycles(opcode, true) > branch_cycles(opcode, false),
-                "{opcode:#04X}"
-            );
+            let taken = super::super::microcode::routine(opcode, 0, true, 0);
+            let untaken = super::super::microcode::routine(opcode, 0, false, 0);
+            match (taken, untaken) {
+                (Some(taken), Some(untaken)) => {
+                    assert!(taken.clocks() > untaken.clocks(), "{opcode:#04X} routine")
+                }
+                _ => assert!(
+                    branch_cycles(opcode, true) > branch_cycles(opcode, false),
+                    "{opcode:#04X} row"
+                ),
+            }
             assert!(branches_on_state(opcode), "{opcode:#04X}");
         }
         // And nothing else branches on the state, in particular the
@@ -1783,7 +1814,7 @@ mod tests {
             // the microcode module and their rows went with them.
             assert!(
                 eu_cycles(opcode, 0) > 0
-                    || super::super::microcode::routine(opcode, 0, false).is_some(),
+                    || super::super::microcode::routine(opcode, 0, false, 0).is_some(),
                 "{opcode:#04X}"
             );
         }
@@ -1823,7 +1854,7 @@ mod tests {
         for opcode in [0xA0u8, 0xA1, 0xA2, 0xA3] {
             assert_eq!(eu_cycles(opcode, 0), 0, "{opcode:#04X} has no row");
             assert_eq!(
-                super::super::microcode::routine(opcode, 0, false)
+                super::super::microcode::routine(opcode, 0, false, 0)
                     .expect("a direct-address move runs a routine")
                     .clocks(),
                 0,
@@ -1848,8 +1879,8 @@ mod tests {
     fn the_return_aliases_run_what_they_alias() {
         for (alias, documented) in [(0xC0u8, 0xC2u8), (0xC1, 0xC3), (0xC8, 0xCA), (0xC9, 0xCB)] {
             assert_eq!(
-                super::super::microcode::routine(alias, 0, false),
-                super::super::microcode::routine(documented, 0, false),
+                super::super::microcode::routine(alias, 0, false, 0),
+                super::super::microcode::routine(documented, 0, false, 0),
                 "{alias:#04X} against {documented:#04X}"
             );
         }

@@ -33,7 +33,11 @@
 pub(crate) enum Step {
     /// `n` clocks of microcode with the bus free, so the prefetcher runs
     /// through them.
-    Spend(u8),
+    ///
+    /// Wider than a byte because the shifts loop on CL: `mc_08c` spends four
+    /// clocks a bit and CL is not masked on this part, so a single step can run
+    /// to a thousand.
+    Spend(u16),
     /// Stop prefetching, the `SUSP` of the published microcode.
     ///
     /// Free in itself. It costs clocks only when a code fetch is already
@@ -148,7 +152,7 @@ impl Routine {
     /// The clocks its `Spend`s add up to, which is its microcode time and not
     /// its span: the bus steps around them cost whatever the bus unit spends.
     #[cfg(test)]
-    pub(crate) fn clocks(&self) -> u8 {
+    pub(crate) fn clocks(&self) -> u16 {
         self.steps[..self.len as usize]
             .iter()
             .map(|s| match s {
@@ -191,7 +195,7 @@ impl Build {
     }
 
     /// Add `n` clocks of microcode, or nothing at all when `n` is zero.
-    fn spend(self, n: u8) -> Self {
+    fn spend(self, n: u16) -> Self {
         if n == 0 {
             self
         } else {
@@ -221,9 +225,50 @@ fn mc() -> Build {
 /// The group opcodes are asked for their reg field because the group is not one
 /// instruction: `FF` carries `INC` and `PUSH`, which go nowhere, beside the
 /// indirect calls and jumps, which are transfers.
-pub(crate) fn routine(opcode: u8, modrm: u8, branch: bool) -> Option<Routine> {
+pub(crate) fn routine(opcode: u8, modrm: u8, branch: bool, cl: u8) -> Option<Routine> {
     let register_form = modrm >> 6 == 3;
     match opcode {
+        // The shifts and rotates: `r/m, 1` at 0x088 and `r/m, CL` at 0x08c,
+        // opcodes D0 through D3.
+        //
+        // `mc_088` reads the operand, shifts it once, and spends 0x088 and
+        // 0x089 only when the destination is an address. `mc_08c` spends
+        // 0x08c, 0x08d, 0x08e, a jump, 0x090 and 0x091, then four clocks a bit
+        // for however many CL holds, then 0x092 for an address destination.
+        //
+        // **CL is not masked on this part**, so the loop runs the full count and
+        // a `rol word [bx], cl` with CL at 200 really does take eight hundred
+        // clocks in it. `rol word [ds:bx+di-7h], cl` matches the reference for
+        // 168 consecutive cycles through that loop.
+        0xD0..=0xD3 => {
+            let by_cl = opcode & 0x02 != 0;
+            let mut r = mc();
+            if !register_form {
+                // The operand is read and written, so the address routine
+                // leaves through `1E2: OPR -> tmpb` and only its return is left.
+                r = r.spend(1);
+            }
+            if by_cl {
+                // 0x08c, 0x08d, 0x08e, the jump, 0x090, 0x091.
+                r = r.spend(6);
+                if cl > 0 {
+                    // The jump, 0x08f, 0x090 and 0x091, once a bit.
+                    r = r.spend(4 * u16::from(cl));
+                }
+            }
+            if !register_form {
+                // 0x088 and 0x089 for the shift by one, 0x092 for the shift by
+                // CL: the clock before the write back, which only a destination
+                // in memory spends.
+                r = r.spend(if by_cl { 1 } else { 2 });
+            }
+            r = r.then(Step::Run);
+            if !register_form {
+                r = r.then(Step::WriteOperand);
+            }
+            Some(r.done())
+        }
+
         // The conditional jumps at 0x0e8, opcodes 70 through 7F and their
         // aliases sixteen below. `mc_0e8` tests the flag, reads the
         // displacement, spends one clock at 0x0e9 and only then, if it is
@@ -302,6 +347,69 @@ pub(crate) fn routine(opcode: u8, modrm: u8, branch: bool) -> Option<Routine> {
             Some(r.done())
         }
 
+        // `AAD` at 0x170. A multiply wearing a BCD adjust's name: `mc_170` reads
+        // the immediate, spends 0x170, 0x171 and a jump, runs `CORX` on AH and
+        // the immediate, and spends 0x172 and 0x173.
+        //
+        // The byte behind the opcode is the immediate rather than a ModR/M byte,
+        // which is what `modrm` holds for a format that has none.
+        0xD5 => Some(
+            mc().spend(3 + super::timing::corx_cycles(8, modrm.count_ones()) + 2)
+                .then(Step::Run)
+                .done(),
+        ),
+
+        // The `LOOP` family at 0x134, 0x138 and 0x140, opcodes E0 through E3.
+        // All three spend two clocks before reading their displacement, which
+        // is the loader's pause (`timing::loader_stall`), and all three fall
+        // into RELJMP when they transfer.
+        //
+        // `LOOP` falls straight in. `JCXZ` spends 0x137 first and `LOOPNE`/
+        // `LOOPE` 0x13b, the extra line being where each tests the half of its
+        // condition the other does not.
+        //
+        // **`LOOPNE` and `LOOPE` have an arm this cannot reach.** Not taken,
+        // they spend `MC_JUMP` when the zero flag is what refused and nothing at
+        // all when the count is what ran out, and a routine built from the
+        // branch alone cannot tell those apart. The flag arm is the one modeled;
+        // the count arm is a clock long until the routine is given the count as
+        // well.
+        0xE0..=0xE3 => {
+            let entry = match opcode {
+                0xE3 => 1, // 0x137
+                0xE2 => 0, // `LOOP` falls straight into RELJMP
+                _ => 1,    // 0x13b
+            };
+            let r = mc().then(Step::Run);
+            if !branch {
+                // The jump the untaken arm spends.
+                return Some(r.spend(1).done());
+            }
+            Some(
+                r.spend(entry)
+                    // The jump into RELJMP, then its suspend, 0x0d2, 0x0d3,
+                    // CORR, 0x0d4, the flush and 0x0d5.
+                    .spend(1)
+                    .then(Step::Susp)
+                    .spend(4)
+                    .then(Step::Flush)
+                    .spend(1)
+                    .done(),
+            )
+        }
+
+        // `TEST r/m, imm` at 0x098, the unary group's `/0` and `/1`. `mc_098`
+        // reads both operands, spends a jump over the immediate's second queue
+        // read for the byte form, and then 0x09a. Nothing in front of it: a
+        // memory form's immediate is deferred, and the address routine's return
+        // is already the pause before that read
+        // (`timing::deferred_immediate_stall`).
+        0xF6 | 0xF7 if (modrm >> 3) & 7 < 2 => Some(
+            mc().spend(u16::from(opcode == 0xF6) + 1)
+                .then(Step::Run)
+                .done(),
+        ),
+
         // `LEA` at 0x004. It computes an effective address and reads nothing, so
         // it leaves the address routine the way every write-only form does:
         // `1E3: tmpa -> IND` with a clock of its own and `RET` behind it. Its
@@ -363,7 +471,7 @@ pub(crate) fn routine(opcode: u8, modrm: u8, branch: bool) -> Option<Routine> {
         // second queue read. The word form spends nothing at all: its
         // `09E: XA -> tmpa` shares the boundary fetch's clock, the label being
         // the microcode counter left over rather than a line with a T-state.
-        0xA8 | 0xA9 => Some(mc().spend(u8::from(opcode == 0xA8)).then(Step::Run).done()),
+        0xA8 | 0xA9 => Some(mc().spend(u16::from(opcode == 0xA8)).then(Step::Run).done()),
 
         // `TEST r/m, reg` at 0x094, opcodes 84 and 85. One clock and nothing
         // else: `mc_094` reads both operands, ANDs them for the flags and spends
@@ -423,7 +531,7 @@ pub(crate) fn routine(opcode: u8, modrm: u8, branch: bool) -> Option<Routine> {
             // jump behind it, then `00E` and the write request. Spending two
             // here charged the return a second time and put the write two clocks
             // late.
-            let mut r = mc().spend(u8::from(one_immediate_byte)).then(Step::Run);
+            let mut r = mc().spend(u16::from(one_immediate_byte)).then(Step::Run);
             if !register_form {
                 // 0x00e.
                 r = r.spend(1);
@@ -443,7 +551,7 @@ pub(crate) fn routine(opcode: u8, modrm: u8, branch: bool) -> Option<Routine> {
             if !register_form {
                 r = r.spend(2);
             }
-            r = r.spend(u8::from(opcode == 0xC6)).then(Step::Run);
+            r = r.spend(u16::from(opcode == 0xC6)).then(Step::Run);
             if !register_form {
                 // 0x016.
                 r = r.spend(1).then(Step::WriteOperand);
@@ -473,11 +581,13 @@ pub(crate) fn routine(opcode: u8, modrm: u8, branch: bool) -> Option<Routine> {
         // touches memory, and the only clock either spends is the jump over the
         // immediate's second queue read, taken by the byte-sized forms.
         0x04 | 0x05 | 0x0C | 0x0D | 0x14 | 0x15 | 0x1C | 0x1D | 0x24 | 0x25 | 0x2C | 0x2D
-        | 0x34 | 0x35 | 0x3C | 0x3D => {
-            Some(mc().spend(u8::from(opcode & 1 == 0)).then(Step::Run).done())
-        }
+        | 0x34 | 0x35 | 0x3C | 0x3D => Some(
+            mc().spend(u16::from(opcode & 1 == 0))
+                .then(Step::Run)
+                .done(),
+        ),
         0xB0..=0xBF => Some(
-            mc().spend(u8::from(opcode & 0x08 == 0))
+            mc().spend(u16::from(opcode & 0x08 == 0))
                 .then(Step::Run)
                 .done(),
         ),
@@ -732,7 +842,7 @@ pub(crate) fn routine(opcode: u8, modrm: u8, branch: bool) -> Option<Routine> {
             2 => Some(
                 mc().then(Step::Run)
                     // 0x074, spent only when the operand was a register.
-                    .spend(u8::from(register_form))
+                    .spend(u16::from(register_form))
                     .then(Step::Susp)
                     // 0x074, 0x075, CORR, 0x076.
                     .spend(4)
@@ -772,7 +882,7 @@ pub(crate) fn routine(opcode: u8, modrm: u8, branch: bool) -> Option<Routine> {
             // `JMP r/m16` at 0x0d8. No pushes and one clock of microcode.
             4 => Some(
                 mc().then(Step::Run)
-                    .spend(u8::from(register_form))
+                    .spend(u16::from(register_form))
                     .then(Step::Susp)
                     // 0x0d8.
                     .spend(1)
@@ -820,7 +930,7 @@ pub(crate) fn routine(opcode: u8, modrm: u8, branch: bool) -> Option<Routine> {
 /// for `INT n`, three clocks for `INT 3`. Everything behind it is shared, which
 /// is why one routine with an entry cost is the right shape rather than two
 /// lists to keep in step by hand.
-fn interrupt(entry: u8) -> Routine {
+fn interrupt(entry: u16) -> Routine {
     mc().spend(entry)
         // 0x19d, 0x19e, 0x19f.
         .spend(3)
@@ -960,7 +1070,7 @@ mod tests {
         let mut out = Vec::new();
         for opcode in 0..=u8::MAX {
             for modrm in [0x00u8, 0xC0, 0x10, 0xD0, 0x20, 0xE0, 0x30, 0xF0] {
-                if let Some(r) = routine(opcode, modrm, false) {
+                if let Some(r) = routine(opcode, modrm, false, 0) {
                     out.push((opcode, modrm, r));
                 }
             }
