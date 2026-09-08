@@ -933,7 +933,12 @@ fn i8088_cycle_counts_against_the_hardware_trace() {
     let mut broken: Vec<String> = Vec::new();
     for &(name, floor, matched, total) in &[
         ("cycle count", RATCHET.count, matched, compared),
-        ("cycle count, empty queue", RATCHET.count_empty, matched_empty, total_empty),
+        (
+            "cycle count, empty queue",
+            RATCHET.count_empty,
+            matched_empty,
+            total_empty,
+        ),
         (
             "cycle count, prefetched",
             RATCHET.count_prefetched,
@@ -988,22 +993,26 @@ struct Ratchet {
     bus_prefetched: f64,
 }
 
-/// Recorded 2026-09-05, over 3,007,000 vectors in 323 files, when the loader
-/// learned where the part stops for a T-state. See `timing::loader_stall` in
-/// the core.
+/// Recorded 2026-09-05, over 3,007,000 vectors in 323 files, when the bus grew
+/// the address cycle that runs in front of every transfer and overlaps the one
+/// before it. See `TaCycle` in the core.
+///
+/// The prefetched bus-cycle figure is what moved most, and that is the point:
+/// it measures *where* a transaction happens, which is what the address cycle
+/// decides. The count followed once the clocks the address cycle spends were
+/// taken off the side of the access they had been charged to.
 const RATCHET: Ratchet = Ratchet {
-    count: 73.76,
-    count_empty: 54.83,
-    count_prefetched: 92.68,
-    bus: 38.78,
-    // **This one is a floor under a number that is not yet meaningful.** The
-    // loader still takes an instruction's first byte a T-state after the part
-    // does, so every empty-queue case is one bus cycle out at the front and
-    // this half cannot pass whatever else is right. It is here so that fixing
-    // the loader is visible as a jump rather than as a number nobody was
-    // watching.
-    bus_empty: 0.03,
-    bus_prefetched: 77.54,
+    count: 75.40,
+    count_empty: 58.04,
+    count_prefetched: 92.75,
+    bus: 42.62,
+    // **Not one case in 1,503,500, and that is a statement about the loader.**
+    // It still takes an instruction's first byte a T-state after the part does,
+    // so every empty-queue case is one bus cycle out at the front and this half
+    // cannot pass whatever else is right. The floor is here so that fixing the
+    // loader shows up as a jump rather than as a number nobody was watching.
+    bus_empty: 0.0,
+    bus_prefetched: 85.24,
 };
 
 /// How far above [`RATCHET`] a figure may sit before the gate insists it be

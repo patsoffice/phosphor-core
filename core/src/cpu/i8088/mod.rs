@@ -42,40 +42,38 @@ pub(crate) const MAX_INSTRUCTION: usize = 10;
 /// twice the external bus, has six.
 pub(crate) const QUEUE_LEN: usize = 4;
 
-/// Idle cycles between the queue gaining room and the T1 of the fetch that
-/// refills it.
+/// Where a fetch decided on an idle bus enters the address cycle.
 ///
-/// From the test suite's README, which states it as an observable rather than
-/// as a design note: "It takes two cycles to begin a fetch after reading from a
-/// full queue, therefore tests that specify an initial queue state will start
-/// with two 'Ti' cycle states." The sample trace bears that out exactly, with
-/// queue reads on cycles 0 and 1 and T1 on cycle 2.
+/// A fetch chained off the end of another spends `Tr` inside the running cycle
+/// and costs nothing for it. From idle there is nothing to hide `Tr` inside, so
+/// the whole address cycle would be spent afterwards and T1 would land three
+/// T-states after the decision rather than two.
 ///
-/// This applies only to restarting from idle. A fetch that ends with room still
-/// in the queue is followed immediately by the next T1, back to back with no
-/// idle cycle between, which the same trace shows at cycles 5 and 6.
-const PREFETCH_RESTART_CYCLES: u8 = 2;
+/// It lands two, and that is not this core taking a shortcut. What the vectors
+/// hand it is not idle in that sense: they install a queue rather than
+/// prefetching into one, so the BIU arrives part way through a decision it never
+/// took. The suite's own README states it as an observable rather than as a
+/// design note: "It takes two cycles to begin a fetch after reading from a full
+/// queue, therefore tests that specify an initial queue state will start with
+/// two 'Ti' cycle states."
+///
+/// Entering at `Tr` instead was measured at 68.83% on cycle count against
+/// 73.76% and 66.33% on bus-cycle order against 72.88%.
+const IDLE_RESTART_FROM: TaCycle = TaCycle::Ts;
 
-/// The queue length at which the part stops chaining one fetch straight into
-/// the next.
+/// T-states between a bus request and the T1 it produces: `Tr`, `Ts`, `T0`.
 ///
-/// **Having room is not the same as deciding to use it.** With this many bytes
-/// already queued the part throttles: it declines to run the next fetch back to
-/// back and takes the decision again later. It is not a limit, since the queue
-/// holds [`QUEUE_LEN`] and the BIU does still fill it.
-///
-/// Not applied. Three encodings of it were measured and all cost bus-cycle
-/// order; see the note at the fetch's T4. The rule belongs to a decision taken
-/// at the end of T2, which is what settles whether the address cycle overlaps
-/// T3 and T4, and this BIU takes its decision at T4 instead.
-#[expect(dead_code, reason = "measured, not applied; see the note at T4")]
-const QUEUE_THROTTLE_LEN: u8 = 3;
+/// This is how far ahead of its own T1 the EU claims the bus, and it is the
+/// number that decides whether a prefetch fits in front of an operand access.
+/// A request this far out takes the address cycle away from the prefetcher
+/// before it can reach T1; a request any later leaves a code fetch in front of
+/// the access that the part does not run. See [`TaCycle`].
+const ADDRESS_CYCLE_CLOCKS: u8 = 3;
 
 /// T-states in one bus cycle, T1 through T4.
 ///
 /// The BIU cannot abandon one partway, which is why it matters whether a fetch
-/// would finish before the EU comes for the bus. See
-/// [`I8088::tick_biu_while`].
+/// would finish before the EU comes for the bus. See [`I8088::eu_wants_bus`].
 const BUS_CYCLE_CLOCKS: u8 = 4;
 
 /// S0-S2: what kind of bus cycle the CPU is running.
@@ -157,65 +155,86 @@ pub enum QueueStatus {
     Emptied,
 }
 
-/// The bus interface unit's prefetch state machine, which runs alongside the
-/// EU and independently of it.
+/// The address cycle that runs in front of every bus cycle, and the reason a
+/// bus cycle takes seven clocks where the datasheet draws four.
 ///
-/// # The states, and the two that no datasheet names
-///
-/// A bus cycle is documented as four T-states, and it is not: **the physical
-/// address is computed in the two clocks before T1**, so that it can be on the
-/// pins when T1 begins. Those two are `Ts` and `T0` here, and the clock on
-/// which the BIU decides to fetch at all is `Tr`. The whole sequence is
+/// A bus cycle is documented as four T-states and it is not: **the physical
+/// address is computed in the clocks before T1**, so that it can be on the pins
+/// when T1 begins. Those clocks are their own little state machine, and it runs
+/// *in parallel with whatever the bus is already doing*, which is why two bus
+/// cycles back to back show no gap between one T4 and the next T1.
 ///
 /// ```text
-///   Ti          idle, nothing scheduled
-///   Tr          the decision: prefetch, or an EU request
-///   Ts, T0      the address is computed
-///   T1..T4      the documented cycle, address on the pins at T1
+///   Tr   the request: something has decided it wants a bus cycle
+///   Ts   the address is computed
+///   T0   the address is ready, and this REPEATS until the bus is free
+///   Td   no address cycle in progress
 /// ```
 ///
-/// This matters because it is the difference between a prefetch that follows
-/// another back to back and one started from idle. **A chained fetch spends
-/// `Ts` and `T0` inside the previous cycle's T3 and T4**, so its T1 lands on
-/// the clock after that T4 with nothing idle between; a fetch started from idle
-/// has to spend them afterwards. [`Biu::Address`] is those two clocks, and the
-/// chained case enters it already spent.
+/// **`T0` repeating is the structure this core spent an epic without.** A fetch
+/// decided in the middle of somebody else's bus cycle does not begin four
+/// T-states later regardless of what the bus is doing: it waits in `T0` and
+/// issues on the clock after that cycle's T4. Every rule about *where* to take
+/// the prefetch decision is fitted around this one, and six of them in a row
+/// were tried and rejected here because without the hold each of them moved a
+/// fetch to a place the part never puts one. With the hold, the decision point
+/// stops mattering nearly as much: a decision taken early simply waits.
 ///
-/// # Where this deviates, and what was measured
+/// It is also what makes an idle restart cost three clocks and a chained fetch
+/// none. From idle the whole of `Tr`, `Ts`, `T0` has to be spent after the
+/// event that triggered it, so a queue read that frees a slot puts T1 three
+/// T-states later. A fetch decided at the end of T2 spends `Ts` in T3 and `T0`
+/// in T4 and issues immediately after.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum TaCycle {
+    /// The request, on the clock the decision is taken.
+    Tr,
+    /// The address is computed.
+    Ts,
+    /// The address is ready and the cycle is waiting for the bus. Repeats.
+    T0,
+    /// Nothing scheduled.
+    #[default]
+    Td,
+}
+
+/// Why the BIU is not prefetching right now.
 ///
-/// The reference model takes the prefetch decision at the **end of T2** rather
-/// than at T4, spending `Ts` and `T0` in T3 and T4. The two agree on a fetch
-/// that chains and differ whenever the EU takes a byte during T3 or T4, which
-/// makes room the part had already decided it did not have. Deciding at T2 here
-/// holds the count at 73.76% and takes the prefetched bus-cycle order from
-/// 73.96% to 68.99%, so it is not the defect, and it is not done.
+/// `Normal` is not "fetching": it is "nothing is stopping it", and whether a
+/// fetch is actually in flight is [`Biu`]'s business. This is the reason the
+/// decision came back negative, kept because it says what event lifts it: the
+/// queue being full is lifted by the EU taking a byte out, and nothing else.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum FetchState {
+    #[default]
+    Normal,
+    /// The queue is full. Lifted when the EU takes a byte out.
+    PausedFull,
+}
+
+/// The bus interface unit's code-fetch state machine, which runs alongside the
+/// EU and independently of it.
 ///
-/// It also gives an **idle** restart a full `Tr`, `Ts`, `T0` before T1, three
-/// clocks; this spends two. Spending three takes the count from 73.76% to
-/// 68.83% and the bus order from 72.88% to 66.33%. The vectors install a queue
-/// rather than prefetching into one, so the BIU they hand this core is part way
-/// through a decision it never made, and two is what fits.
-///
-/// And an EU request arriving during T3 or T4 lets the part **abort** the
-/// prefetch on T4. This core instead declines to *begin* one it could not
-/// finish, in [`I8088::tick_biu_while`], which reaches the same bus schedule
-/// from the other side for every case the suite records.
+/// This is only the four documented T-states. The clocks in front of T1 are
+/// [`TaCycle`], and they are not here because they are not exclusive to the
+/// prefetcher and not exclusive to the bus: an address cycle overlaps the bus
+/// cycle before it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Biu {
-    /// `Ti`: not fetching, because the queue is full.
+    /// Not driving the bus.
     #[default]
     Idle,
-    /// `Ts` and `T0`: the address is being computed, with the clocks still to
-    /// go. `Address(0)` drives T1 on the next tick, which is the state a
-    /// chained fetch enters at T4 having already spent both.
-    Address(u8),
-    /// Inside a CODE bus cycle: `t` is 1 through 4, `addr` the address latched
-    /// on T1. The address is held here rather than recomputed, because the EU
-    /// consuming bytes while a fetch is in flight must not move an address the
-    /// BIU has already put on the pins.
+    /// The address is latched and T1 is driven on the next clock. This is one
+    /// real T-state: it is the clock the address cycle ends on, and the bus is
+    /// already claimed even though no status has gone out yet.
+    Starting { addr: u32 },
+    /// Driving T-state `t` of a CODE bus cycle on *this* clock, `addr` being
+    /// what went out on T1. The address is held here rather than recomputed,
+    /// because the EU consuming bytes while a fetch is in flight must not move
+    /// an address the BIU has already put on the pins.
     ///
-    /// `byte` is what the addressed device drove on T3, held until the end of
-    /// T4, which is when it joins the queue. See [`I8088::tick_biu`].
+    /// `byte` is what the addressed device drove on T3, held until T4, which is
+    /// when it joins the queue.
     Fetching { t: u8, addr: u32, byte: u8 },
 }
 
@@ -606,6 +625,28 @@ pub struct I8088 {
     /// The BIU's own state machine, independent of the EU's.
     #[save_skip(default)]
     pub(crate) biu: Biu,
+    /// A bus cycle's T4 that the execution unit has already walked away from.
+    ///
+    /// **A write does not hold the EU until T4.** The data is on the pins at
+    /// T3 and there is nothing left for the EU to wait for, so its microcode
+    /// moves on and the next instruction's first byte is taken from the queue
+    /// on the very T-state that finishes the write. The bus cycle still has to
+    /// end, and this carries the T4 that goes out while the EU is elsewhere.
+    ///
+    /// The recording says so without ambiguity. `ADD word [DS:DI+4611h],
+    /// BF61h` from a full queue puts every one of its nine bus cycles on the
+    /// T-state this core does, and then reads the next first byte on the last
+    /// write's T4 where this core read it on the T-state after. That one clock
+    /// is the whole difference on 140,000 cases of the override population
+    /// alone.
+    #[save_skip(default)]
+    pub(crate) eu_tail: Option<(BusStatus, SegReg)>,
+    /// The address cycle in front of the next code fetch. See [`TaCycle`].
+    #[save_skip(default)]
+    pub(crate) ta: TaCycle,
+    /// Why the BIU is not prefetching, when it is not. See [`FetchState`].
+    #[save_skip(default)]
+    pub(crate) fetch: FetchState,
     /// T-states the loader still owes before it may take its next byte, from
     /// [`timing::loader_stall`]. Decode time, not a queue wait: it is spent
     /// whether or not there is a byte waiting.
@@ -696,6 +737,9 @@ impl I8088 {
             queue_len: 0,
             prefetch_ip: 0,
             biu: Biu::Idle,
+            eu_tail: None,
+            ta: TaCycle::Td,
+            fetch: FetchState::Normal,
             queue_status: None,
             bus: BusPins::default(),
             segment_override: None,
@@ -767,12 +811,25 @@ impl I8088 {
         // a cycle that is not carrying one.
         self.bus = BusPins::default();
 
+        // A write the EU has already finished with still has a T4 to drive, and
+        // it goes out here rather than from a phase, because the EU has moved on
+        // and is reading the next instruction's first byte on this very
+        // T-state. See [`I8088::eu_tail`].
+        if let Some((status, segment)) = self.eu_tail.take() {
+            self.drive_bus_cycle(status, TState::T4, segment);
+        }
+
         // A branch taken on the previous T-state flushes here, on its own
         // cycle, and only then has the instruction retired.
         if self.pending_flush {
             self.pending_flush = false;
             self.flush_queue();
             self.retired = true;
+            // The request for the reload is made on the flush clock itself, so
+            // the bus still runs here: `Tr` is spent now, `Ts` and `T0` on the
+            // two after it, and the reload's T1 lands three clocks past the
+            // flush.
+            self.tick_bus(bus, master);
             return;
         }
 
@@ -798,27 +855,32 @@ impl I8088 {
             }
         }
 
+        // There is one bus. The BIU holds its address cycle in `T0` whenever the
+        // EU is a clock away from wanting it, so it should never have taken the
+        // bus from under an EU phase waiting to drive T1: this is the safety net
+        // for the case where it did anyway, and a fetch in flight is not
+        // abandoned. The EU spends the T-state waiting, which is what the part
+        // does.
+        if self.eu_bus_t_state() == Some(1) && !self.bus_free_for_eu() {
+            self.tick_bus(bus, master);
+            return;
+        }
+
         match self.eu {
-            Eu::Loading => {
-                self.tick_eu(bus, master);
-                self.tick_biu(bus, master);
-            }
-            // Address arithmetic uses no bus, so the BIU runs alongside it, but
-            // it may not *begin* a fetch it would still be holding when the EU
-            // comes for the bus. See [`I8088::tick_biu_while`].
+            Eu::Loading => self.tick_eu(bus, master),
+            // Address arithmetic uses no bus, so the BIU runs alongside it, and
+            // only stays off it for the address cycle at the end. Suppressing
+            // prefetching for the whole address phase was measured and is
+            // wrong: it took the prefetched half of the bus order from 67.09%
+            // down to 53.98%, because the part does slip prefetches into an
+            // address phase with room for them.
+            // See [`I8088::eu_wants_bus`].
             Eu::AddressCalc(remaining) => {
-                // Only once the fetch would not finish in time. Suppressing for
-                // the whole address phase was measured and is wrong: it took
-                // the prefetched half of the bus order from 67.09% down to
-                // 53.98%, because the part does slip prefetches into an address
-                // phase that has room for them.
-                let wants_bus = remaining < BUS_CYCLE_CLOCKS && self.operand_reaches_memory();
                 self.eu = if remaining > 1 {
                     Eu::AddressCalc(remaining - 1)
                 } else {
                     self.begin_operand_phase()
                 };
-                self.tick_biu_while(bus, master, wants_bus);
                 // An instruction that neither reads its operand nor has any
                 // modeled execution time runs here. Dropping this made the
                 // pipeline fall back to Loading without ever executing, so the
@@ -828,21 +890,8 @@ impl I8088 {
             // Nor does microcode. This is the phase the hardware traces show
             // the BIU prefetching through.
             Eu::Executing(remaining) => {
-                // The same rule the address phase runs under, and for the same
-                // reason: a bus cycle is four T-states and the BIU cannot
-                // abandon one, so it may not *begin* a fetch the EU is about to
-                // want the bus for. Without this an `OUT` from an empty queue
-                // drives a code T1 and then an I/O write T1 on the very next
-                // T-state, which no 8088 can do, and the part is plainly idle
-                // there instead. See [`I8088::tick_biu_while`].
-                // `<=` rather than `<`, because an `OUT`'s port cycle does not
-                // start on the microcode's last T-state but on the one after
-                // it: the instruction has to decide what to write first.
-                let wants_bus = remaining <= BUS_CYCLE_CLOCKS
-                    && access::port_access(self.opcode()).is_some();
                 if remaining > 1 {
                     self.eu = Eu::Executing(remaining - 1);
-                    self.tick_biu_while(bus, master, wants_bus);
                 } else if let Some(acc) = access::port_access(self.opcode())
                     && acc.reads
                 {
@@ -854,10 +903,8 @@ impl I8088 {
                         total: acc.width.bytes(),
                         t: 1,
                     };
-                    self.tick_biu_while(bus, master, wants_bus);
                 } else {
                     self.eu = Eu::Loading;
-                    self.tick_biu_while(bus, master, wants_bus);
                     self.run_execute_step(bus, master);
                 }
             }
@@ -867,19 +914,21 @@ impl I8088 {
             // one without, and why the instruction after it may then stall.
             Eu::Reading { .. } => self.tick_operand_read(bus, master),
             // A string operation's own clocks leave the bus free, so the BIU
-            // prefetches through them, as it does through any microcode.
+            // prefetches through them, as it does through any microcode. No
+            // claim is made across the entry, and none should be until the
+            // entry itself is measured: the recording fetches twice before
+            // `SCASB`'s first read where this core fetches once, so the part is
+            // still in its own microcode where this core has already resolved an
+            // address, and claiming the bus there would suppress a fetch the
+            // part does run.
             Eu::StringEntry(remaining) => {
                 self.eu = if remaining > 1 {
                     Eu::StringEntry(remaining - 1)
                 } else {
                     self.begin_string_iteration()
                 };
-                self.tick_biu(bus, master);
             }
-            Eu::StringDelay(_) => {
-                self.tick_string_delay(bus, master);
-                self.tick_biu(bus, master);
-            }
+            Eu::StringDelay(_) => self.tick_string_delay(bus, master),
             Eu::StringAccess { .. } => self.tick_string(bus, master),
             Eu::Acknowledging { .. } => self.tick_acknowledge(),
             Eu::ReadingVector { .. } => self.tick_vector_read(bus, master),
@@ -906,11 +955,12 @@ impl I8088 {
                 // but suppressing the fetch across the corpus takes the
                 // bus-cycle order from 72.88% to 72.17%. The part slips one in
                 // wherever the queue is emptier than that case's.
-                self.tick_biu(bus, master);
             }
             Eu::PoppingStack { .. } => self.tick_stack(bus, master, true),
             Eu::PushingStack { .. } => self.tick_stack(bus, master, false),
         }
+
+        self.tick_bus(bus, master);
     }
 
     /// The execution unit's cycle: take one byte from the queue, if there is
@@ -968,12 +1018,11 @@ impl I8088 {
         self.instr[self.instr_len as usize] = byte;
         self.instr_len += 1;
 
+        let was_prefix = stage_before == Stage::Opcode && decode::decode_prefix(byte).is_some();
         let complete = self.advance_stage();
         if !complete {
             // The pause belongs to the byte just read, so it is charged only
-            // when another byte of this instruction is still to come. A prefix
-            // leaves the stage on `Opcode` and takes none: the surveys exclude
-            // prefixed cases, so there is no measurement to model.
+            // when another byte of this instruction is still to come.
             let modrm = self.instr[self.opcode_at as usize + 1];
             self.loader_stall = match timing::loader_stall(self.opcode(), modrm) {
                 timing::LoaderStall::AfterOpcode(n)
@@ -985,6 +1034,24 @@ impl I8088 {
                 timing::LoaderStall::BeforeImmediate(n) if stage_before == Stage::Modrm => n,
                 _ => 0,
             };
+        }
+        // **A prefix costs a T-state of its own, after the byte is read.** The
+        // recording puts it beyond argument: `3E 8B 3D` from a full queue reads
+        // the override on the opening T-state, nothing on the next, and the
+        // opcode on the one after, on every case of the file. This core read the
+        // opcode immediately and paid the same clock at the far end, as
+        // microcode, which is where the manual's second clock per prefix had
+        // been going. The total was right and every queue read and every fetch
+        // behind it was a T-state early, which the bus schedule then compensated
+        // for; when the bus stopped compensating, 140,000 cases of the override
+        // population were `+1` for this alone.
+        //
+        // It is not charged back to the microcode, because it *is* the
+        // microcode: the second of the prefix's two documented clocks, moved to
+        // the side of the read that it happens on. See
+        // [`I8088::begin_execute_phase`], which no longer adds it there.
+        if was_prefix {
+            self.loader_stall = timing::PREFIX_PAUSE;
         }
         if complete {
             if self.immediate_resuming {
@@ -1051,16 +1118,21 @@ impl I8088 {
         acc.reads || acc.writes
     }
 
-    /// The bus interface unit's cycle: keep the queue full.
-    fn tick_biu<B: Bus<Address = u32, Data = u8> + ?Sized>(
-        &mut self,
-        bus: &mut B,
-        master: BusMaster,
-    ) {
-        self.tick_biu_while(bus, master, false);
-    }
-
-    /// The same, told whether the EU is about to want the bus.
+    /// One T-state of the bus, which the EU and the BIU share.
+    ///
+    /// This runs *every* T-state, including the ones the EU spends driving its
+    /// own operand access, and that is the point. The address cycle in front of
+    /// a code fetch overlaps whatever the bus is already doing (see
+    /// [`TaCycle`]), so a fetch decided in the middle of an operand read issues
+    /// on the clock after that read's T4 with nothing idle between. A BIU that
+    /// freezes while the EU has the bus cannot express that, and this one used
+    /// to freeze.
+    ///
+    /// The order within the clock is the part's: operate the T-state the bus is
+    /// already in, take the prefetch decision, then advance the address cycle,
+    /// then advance the bus cycle. A byte fetched at T4 is therefore in the
+    /// queue before the decision that follows it looks at the queue, so a fetch
+    /// that fills it is the one that stops the next one.
     ///
     /// **The part will not start a fetch it would still be holding when the EU
     /// comes for the bus.** A code fetch is four T-states and the EU cannot
@@ -1068,95 +1140,48 @@ impl I8088 {
     /// delays that access by up to a whole bus cycle. The recording shows the
     /// part declining: on `MOV AX, [BP+DI+4]` from an empty queue its BIU goes
     /// idle the cycle after its last fetch completes, with one byte queued and
-    /// room for three, and then runs the operand read. This core started
-    /// another fetch there and read three clocks late.
-    ///
-    /// A fetch already underway is not abandoned: the request only stops the
-    /// BIU *beginning* one, which is why this gates the transition that drives
-    /// T1 rather than the whole unit.
-    fn tick_biu_while<B: Bus<Address = u32, Data = u8> + ?Sized>(
+    /// room for three, and then runs the operand read. See
+    /// [`Self::eu_wants_bus`].
+    fn tick_bus<B: Bus<Address = u32, Data = u8> + ?Sized>(
         &mut self,
         bus: &mut B,
         master: BusMaster,
-        eu_wants_bus: bool,
     ) {
-        // `Biu::Fetching { t }` is the T-state driven on *this* cycle, and
-        // `Address(0)` means "drive T1 next time you are ticked". Written any
-        // other way a state transition eats a clock: the first version of this
-        // spent a cycle moving from `Address(0)` into the fetch before driving
-        // T1, which made every queue refill five cycles long instead of four.
-        // Nothing caught it, because M2 compared the order of queue operations
-        // and not their position.
+        // The EU has already run this T-state, so the phase it is now in says
+        // what it is about to do as well as what it just did.
+        let eu_wants_bus = self.eu_wants_bus();
+        // What the EU drove this T-state, if anything. Reading it off the pins
+        // rather than out of a second copy of the state keeps the two from
+        // drifting: the pins are what the recording compares against.
+        let eu_bus_t = if self.bus.status == BusStatus::Passive {
+            None
+        } else {
+            Some(self.bus.t_state)
+        };
+
+        // -- operate the T-state the bus is in ------------------------------
         match self.biu {
-            Biu::Idle => {
-                // Ti. Start counting the moment there is somewhere to put a
-                // byte.
-                //
-                // Asking instead what the queue held when the T-state *began*,
-                // so that a slot the EU frees this cycle is not visible until
-                // the next one, was measured and is wrong: it moves every
-                // refill behind a full queue a clock later, and the bus-cycle
-                // order falls from 67.74% to 62.16% (its prefetched half from
-                // 75.39% to 64.23%) while the count gains 0.03. That gate
-                // compares ordered sequences rather than positions, so the
-                // drop is fetches the part runs and this core then does not.
-                if self.queue_has_room() {
-                    self.biu = Biu::Address(PREFETCH_RESTART_CYCLES - 1);
-                }
-            }
-            // Ts: one of the two clocks the address takes.
-            Biu::Address(n) if n > 0 => self.biu = Biu::Address(n - 1),
-            // T0, but the EU is coming for the bus: hold here rather than start
-            // four T-states the EU would have to wait out. This is where this
-            // core does its arbitration, in place of the abort on T4 the part
-            // is capable of.
-            Biu::Address(_) if eu_wants_bus => {}
-            // T0 is spent and the address is ready: drive T1 now.
-            Biu::Address(_) => {
-                let addr = Self::physical_addr(self.cs, self.prefetch_ip);
+            // T1: the address goes out on the multiplexed pins with ALE.
+            Biu::Fetching { t: 1, addr, .. } => {
                 self.begin_bus_cycle(BusStatus::Code, addr, SegReg::CS);
-                self.biu = Biu::Fetching {
-                    t: 2,
-                    addr,
-                    byte: 0,
-                };
             }
             // T2 turns the multiplexed pins around for data. The address is off
             // them by now, which is what the external latch exists for.
-            Biu::Fetching { t: 2, addr, .. } => {
+            Biu::Fetching { t: 2, .. } => {
                 self.drive_bus_cycle(BusStatus::Code, TState::T2, SegReg::CS);
-                // The part takes its prefetch decision here, at the end of T2,
-                // and spends the address's two clocks pipelined into T3 and T4;
-                // this BIU decides at T4 and then spends them. The two agree on
-                // a fetch that chains and differ whenever the EU takes a byte
-                // during T3 or T4, which makes room the part had already
-                // decided it did not have.
-                //
-                // Deciding here and not revisiting at T4 was measured and is
-                // worse: the count holds at 73.76% and the prefetched bus order
-                // falls from 73.96% to 68.99%, the same figures the queue-depth
-                // policy delay gave, because it is the same condition. So the
-                // decision point alone is not the defect. Establish where the
-                // part's fetches actually sit, with `fetch_gap_diff`, before
-                // moving this again.
-                self.biu = Biu::Fetching {
-                    t: 3,
-                    addr,
-                    byte: 0,
-                };
             }
             // T3: the addressed device drives the byte back. It goes on the pins
-            // here and is held; it does not reach the queue until T4 is over.
+            // here and is held; it does not reach the queue until T4.
             Biu::Fetching { t: 3, addr, .. } => {
                 self.drive_bus_cycle(BusStatus::Code, TState::T3, SegReg::CS);
                 let byte = bus.read(master, addr);
                 self.bus.data = Some(byte);
                 self.prefetch_ip = self.prefetch_ip.wrapping_add(1);
-                self.biu = Biu::Fetching { t: 4, addr, byte };
+                self.biu = Biu::Fetching { t: 3, addr, byte };
             }
-            // T4 completes the transaction, and the byte joins the queue as it
-            // ends. The EU runs before the BIU on a tick, so a byte delivered
-            // here is one the EU can take on the *next* T-state.
+            // T4 completes the transaction, and the byte joins the queue here.
+            // The EU runs before the BIU on a tick, so a byte delivered on this
+            // T-state is one the EU can take on the *next* one.
             //
             // That one cycle is not a detail. The recorded traces show a fetched
             // byte being read out of the queue on the cycle after T4, never on
@@ -1180,49 +1205,224 @@ impl I8088 {
             // suite documents and which that survey cannot correct for, because
             // the bus columns beside them are not. The floor of two is one
             // T-state of reporting on top of the one real T-state.
-            //
-            // Narrowing the wait to a byte that lands in a queue the EU read
-            // dry, on an instruction boundary, is the one version that is half
-            // right, and it is where the `-1` on the four-byte register forms
-            // lives. It takes the *prefetched* count from 88.64% to 89.39% and
-            // moves no bus cycle at all, and it takes the empty-queue count
-            // from 44.53% to 18.40%. So the boundary cost is real and it is
-            // conditional on something that separates a queue a four-byte
-            // instruction drained from one that is chronically empty. Finding
-            // that condition is worth about 11,000 vectors on the half that
-            // already works and far more on the half that does not.
-            //
-            // A fetch that ends with room left in the queue runs straight into
-            // the next T1, back to back, with no idle cycle between:
-            // `Restarting(0)` drives T1 on the very next tick.
             Biu::Fetching { byte, .. } => {
                 self.drive_bus_cycle(BusStatus::Code, TState::T4, SegReg::CS);
-                // Holding this byte back a T-state when the EU is already
-                // waiting for it, and the BIU had to restart the fetch from
-                // idle, is the shape `9A` and `EA` ask for: five bytes from a
-                // full queue, and the part's last read comes three T-states
-                // after its fourth against two here. Measured and rejected, at
-                // 71.80% count against 73.76% and the prefetched half 88.77%
-                // against 92.69%: the condition catches every full-queue
-                // instruction whose first refill lands while the EU waits, and
-                // most of those are right already.
                 self.push_queue(byte);
-                // Declining to chain at or above [`QUEUE_THROTTLE_LEN`], and
-                // taking the decision again from idle instead, is measured and
-                // wrong here: the count holds at 73.76% and the bus-cycle order
-                // falls from 72.88% to 70.33%. That is the third encoding of
-                // the throttle tried, after deferring at the T2 decision on a
-                // queue of three (68.99%) and of two (59.44%). The rule is
-                // real; where it belongs is the decision at the *end of T2*,
-                // which is what sets whether the address cycle overlaps T3 and
-                // T4, and this BIU has no such decision to hang it on.
-                self.biu = if self.queue_has_room() {
-                    Biu::Address(0)
-                } else {
-                    Biu::Idle
-                };
             }
+            Biu::Idle | Biu::Starting { .. } => {}
         }
+
+        // -- take the prefetch decision -------------------------------------
+        //
+        // Which T-state the bus is on, ours or the EU's. There is one bus, so at
+        // most one of the two is driving it, and the decision points below are
+        // the same wherever the cycle came from: the part's prefetcher does not
+        // know whose cycle it is waiting out.
+        let bus_t = match self.biu {
+            Biu::Fetching { t, .. } => Some(t),
+            Biu::Starting { .. } => None,
+            Biu::Idle => match eu_bus_t {
+                Some(TState::T1) => Some(1),
+                Some(TState::T2) => Some(2),
+                Some(TState::T3) => Some(3),
+                Some(TState::T4) => Some(4),
+                _ => None,
+            },
+        };
+        match bus_t {
+            // The end of T2 is the decision that lets the address cycle overlap
+            // T3 and T4, so a fetch decided here chains with no gap. The one at
+            // T4 catches a queue that only made room when this fetch's own byte
+            // went in.
+            Some(2 | 4) => self.fetch_decision(eu_wants_bus, false),
+            Some(_) => {}
+            // Ti: an idle bus, where the queue gaining room is the event.
+            None => self.fetch_decision(eu_wants_bus, true),
+        }
+
+        // -- advance the address cycle --------------------------------------
+        self.ta = match self.ta {
+            TaCycle::Tr => TaCycle::Ts,
+            TaCycle::Ts => TaCycle::T0,
+            // **T0 repeats.** The address is ready and the fetch issues on the
+            // first clock the bus is free: the T4 of whatever is running, or
+            // any idle clock. Holding here rather than issuing regardless is
+            // the structure the rest of this unit is built on.
+            TaCycle::T0 => {
+                let bus_free =
+                    !matches!(self.biu, Biu::Starting { .. }) && bus_t.is_none_or(|t| t == 4);
+                if !bus_free || eu_wants_bus {
+                    TaCycle::T0
+                } else if self.queue_has_room() {
+                    self.biu = Biu::Starting {
+                        addr: Self::physical_addr(self.cs, self.prefetch_ip),
+                    };
+                    TaCycle::Td
+                } else {
+                    // The byte this clock's T4 delivered filled the queue after
+                    // the decision that scheduled this address cycle was taken.
+                    // The cycle is dropped rather than run into a queue with
+                    // nowhere to put the byte, and the pause lifts when the EU
+                    // takes one out.
+                    self.fetch = FetchState::PausedFull;
+                    TaCycle::Td
+                }
+            }
+            TaCycle::Td => TaCycle::Td,
+        };
+
+        // -- advance the bus cycle ------------------------------------------
+        self.biu = match self.biu {
+            Biu::Starting { addr } => Biu::Fetching {
+                t: 1,
+                addr,
+                byte: 0,
+            },
+            Biu::Fetching { t: 4, .. } => Biu::Idle,
+            Biu::Fetching { t, addr, byte } => Biu::Fetching {
+                t: t + 1,
+                addr,
+                byte,
+            },
+            Biu::Idle => Biu::Idle,
+        };
+    }
+
+    /// Decide whether to begin a code fetch.
+    ///
+    /// The queue being full is not the same answer as the EU having claimed the
+    /// bus, and they are kept apart because they are lifted by different events:
+    /// a full queue by the EU taking a byte, a claim by the EU finishing with
+    /// the bus.
+    fn fetch_decision(&mut self, eu_wants_bus: bool, from_idle: bool) {
+        if !self.queue_has_room() {
+            self.fetch = FetchState::PausedFull;
+            return;
+        }
+        if eu_wants_bus {
+            return;
+        }
+        // **There is no queue-depth throttle here, and that is a measurement.**
+        // The rule is that a fetch leaving the queue holding three bytes is not
+        // chained into the next one but decided again three clocks later. It has
+        // now been rejected four times, the first three against a BIU that
+        // decided at T4 with no address cycle, and once here, where the
+        // objection to the earlier three does not apply: the decision is at the
+        // end of T2 with the byte's arrival still ahead of it, which is exactly
+        // the shape the rule is written for. It costs the prefetched bus-cycle
+        // order 83.24% to 77.32% and buys nothing, the empty-queue half not
+        // moving by a single vector.
+        //
+        // So the throttle is not a property of this queue's depth. Do not try a
+        // fifth encoding of it without a survey that says which fetches it is
+        // supposed to move.
+        if self.ta == TaCycle::Td {
+            self.fetch = FetchState::Normal;
+            self.ta = if from_idle {
+                IDLE_RESTART_FROM
+            } else {
+                TaCycle::Tr
+            };
+        }
+    }
+
+    /// Whether the microcode phase hands straight to a bus cycle when it ends.
+    ///
+    /// The BIU asks [`ADDRESS_CYCLE_CLOCKS`] out, because that is how far in
+    /// front of T1 the part's request goes in, and a prefetch begun inside that
+    /// window is one the part never runs.
+    fn execute_ends_on_the_bus(&self) -> bool {
+        // A serviced interrupt always writes its three words.
+        if self.servicing.is_some() {
+            return true;
+        }
+        let opcode = self.opcode();
+        let modrm = self.instr[self.opcode_at as usize + 1];
+        if access::stack_access(opcode, modrm).pushes > 0 {
+            return true;
+        }
+        // A register operand is written in a register, whatever the table says
+        // about the instruction: only an operand that resolved to an address
+        // reaches the bus.
+        self.operand_at.is_some() && access::operand_access(opcode, modrm).writes
+    }
+
+    /// The T-state a bus phase is about to drive, if the EU is in one.
+    ///
+    /// `0` is the lead-in a write spends before its T1, and `1` means T1 has
+    /// not gone out yet, so it goes out on the next clock.
+    fn eu_bus_t_state(&self) -> Option<u8> {
+        match self.eu {
+            Eu::Reading { t, .. }
+            | Eu::Writing { t, .. }
+            | Eu::PoppingStack { t, .. }
+            | Eu::PushingStack { t, .. }
+            | Eu::ReadingVector { t, .. }
+            | Eu::PortReading { t, .. }
+            | Eu::PortWriting { t, .. }
+            | Eu::StringAccess { t, .. }
+            | Eu::Acknowledging { t, .. } => Some(t),
+            _ => None,
+        }
+    }
+
+    /// Whether the EU is about to want the bus, read off the phase it is in
+    /// after it has run this T-state.
+    ///
+    /// **The part claims the bus [`ADDRESS_CYCLE_CLOCKS`] before its T1**, and
+    /// that claim takes the address cycle away from the prefetcher before it can
+    /// reach one of its own. A claim any later leaves a code fetch in front of
+    /// the access that the part does not run, which is what the whole `POP`
+    /// family looked like when this was one clock: three bus cycles against the
+    /// recording's two, on every case of every file.
+    ///
+    /// Asking the phase rather than the arm that just ran it is what covers the
+    /// clock a phase is *entered* on. A memory operand with no ModR/M byte
+    /// enters its address phase on the loader's last clock, and the arm for that
+    /// phase does not run until the next one; a fetch begun in that gap is the
+    /// one the recording does not have.
+    fn eu_wants_bus(&self) -> bool {
+        if let Some(t) = self.eu_bus_t_state() {
+            // Not yet at T1, so T1 is a clock or two away. This also covers the
+            // gap between two transfers of one operand and the gap between an
+            // operand read and the write-back behind it.
+            return t <= 1;
+        }
+        // The phases that use no bus but end in one. Each count is what remains
+        // *after* this clock, so T1 is one further out than the number says.
+        match self.eu {
+            Eu::AddressCalc(n) => n < ADDRESS_CYCLE_CLOCKS && self.operand_reaches_memory(),
+            // These three clocks are a pop's address cycle under another name.
+            Eu::StackLeadIn(n) => n < ADDRESS_CYCLE_CLOCKS,
+            Eu::Executing(n) => {
+                // An `OUT`'s port cycle does not start on the microcode's last
+                // T-state but on the one after it: the instruction has to decide
+                // what to write first. Without this an `OUT` from an empty queue
+                // drives a code T1 and then an I/O write T1 on consecutive
+                // T-states, which no 8088 can do.
+                (n < BUS_CYCLE_CLOCKS && access::port_access(self.opcode()).is_some())
+                    // A write spends a lead-in of its own before T1, so the
+                    // microcode is that much further from the bus than it looks.
+                    // Widened, because a divide's microcode runs to 255 clocks
+                    // and `n + 2` in a byte is an overflow a release build
+                    // wraps in silence.
+                    || (u16::from(n) + 2
+                        <= u16::from(ADDRESS_CYCLE_CLOCKS) + u16::from(timing::WRITE_LEAD_IN)
+                        && self.execute_ends_on_the_bus())
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether the EU may drive T1 of a bus cycle on this T-state.
+    ///
+    /// There is one bus. The BIU will not normally have taken it, because
+    /// [`Self::eu_wants_bus`] holds its address cycle in `T0` whenever the EU
+    /// is a clock away from wanting it, but a fetch already in flight is not
+    /// abandoned and the EU waits it out.
+    #[inline]
+    fn bus_free_for_eu(&self) -> bool {
+        matches!(self.biu, Biu::Idle)
     }
 
     /// Drive one of the T-states after T1, where the address is no longer on
@@ -1321,9 +1521,15 @@ impl I8088 {
         self.queue[..bytes.len()].copy_from_slice(bytes);
         self.queue_len = bytes.len() as u8;
         self.prefetch_ip = self.ip.wrapping_add(bytes.len() as u16);
-        // A full queue leaves the BIU with nothing to do; a partial one lets it
-        // start counting down to its next fetch.
+        // A full queue leaves the BIU with nothing to do until the EU takes a
+        // byte; a partial one lets it decide on the first clock.
         self.biu = Biu::Idle;
+        self.ta = TaCycle::Td;
+        self.fetch = if self.queue_has_room() {
+            FetchState::Normal
+        } else {
+            FetchState::PausedFull
+        };
     }
 
     /// The bytes currently queued, oldest first.
@@ -1357,7 +1563,12 @@ impl I8088 {
     pub(crate) fn flush_queue(&mut self) {
         self.queue_len = 0;
         self.prefetch_ip = self.ip;
+        // A flush is itself the request for the reload: the address cycle
+        // starts here, on the clock the queue is thrown away, rather than
+        // waiting for the next decision point.
         self.biu = Biu::Idle;
+        self.ta = TaCycle::Tr;
+        self.fetch = FetchState::Normal;
         self.instr_len = 0;
         self.instr_pos = 0;
         self.stage = Stage::Opcode;
@@ -1571,11 +1782,24 @@ impl I8088 {
                 self.execute_if_ready(bus, master);
                 return;
             }
-            // The operands with no ModR/M byte have no address to compute: the
-            // direct moves carry theirs as a displacement and XLAT's is one
-            // addition, which the manual folds into its clock count rather than
-            // quoting as an EA. So they go straight to the bus.
-            self.eu = self.begin_operand_phase();
+            // The operands with no ModR/M byte have no *effective address* to
+            // compute: the direct moves carry theirs as a displacement and
+            // XLAT's is one addition, which the manual folds into its clock
+            // count rather than quoting as an EA. They still spend the address
+            // cycle in front of the bus request, and this core used to spend it
+            // behind the access instead, as microcode.
+            //
+            // `A0` says so to the clock. Its ten are four in the loader, two
+            // here and the four of the read, and the recording reads the next
+            // instruction's first byte on the T-state after that read's T4 with
+            // nothing in between. Charging those two as microcode after the read
+            // put the read two T-states early and the retirement two late, and
+            // the two errors cancelled in the total until the bus grew an
+            // address cycle and the read stopped moving.
+            self.eu = match timing::DIRECT_ADDRESS_PHASE {
+                0 => self.begin_operand_phase(),
+                n => Eu::AddressCalc(n),
+            };
             self.execute_if_ready(bus, master);
             return;
         }
@@ -1933,7 +2157,11 @@ impl I8088 {
             0
         };
         cycles -= i32::from(self.instr_len - self.opcode_at - displacement);
-        cycles += i32::from(self.opcode_at);
+        // A prefix's second clock used to be added here. It is now spent where
+        // the recording puts it, in the loader, on the T-state after the prefix
+        // byte is read. See [`timing::PREFIX_PAUSE`]. The instruction's total is
+        // the same either way; what moved is every read and every fetch behind
+        // it, by one T-state, onto the clocks the part uses.
 
         // And the T-states the loader stopped for, for the same reason as the
         // bytes above: they are inside the manual's total, not on top of it.
@@ -1973,6 +2201,11 @@ impl I8088 {
             cycles -= i32::from(timing::STACK_POP_LEAD_IN);
         }
 
+        // And the address cycle in front of a direct memory operand, for the
+        // same reason. See [`timing::DIRECT_ADDRESS_PHASE`].
+        if self.operand_at.is_some() && !format::format_of(opcode).modrm {
+            cycles -= i32::from(timing::DIRECT_ADDRESS_PHASE);
+        }
 
         // An instruction as long as the queue costs one clock more, unless it
         // reaches memory.
@@ -2179,7 +2412,7 @@ impl I8088 {
                 word: 0,
                 total,
                 byte: 0,
-                t: 1,
+                t: timing::WRITE_LEAD_IN,
             };
             return true;
         }
@@ -2199,7 +2432,7 @@ impl I8088 {
             self.eu = Eu::Writing {
                 byte: 0,
                 total: width.bytes(),
-                t: 1,
+                t: timing::WRITE_LEAD_IN,
             };
             return;
         }
@@ -2743,17 +2976,17 @@ impl I8088 {
         };
 
         match t {
-            // `fetch_gap_diff` says the part spends a T-state here, before the
-            // first write's T1: every `PUSH` starts that write six T-states
-            // after the preceding code fetch's T1 where this core starts it at
-            // five, uniformly, on all 5000 cases of each of twelve files.
+            // The write's lead-in. `fetch_gap_diff` says the part spends a
+            // T-state here, before the first write's T1: every `PUSH` starts
+            // that write six T-states after the preceding code fetch's T1 where
+            // this core started it at five, uniformly, on all 5000 cases of each
+            // of twelve files.
             //
-            // Spending it is measured and wrong, both bare and with the clock
-            // taken back out of the pushing rows: 70.39% and 73.19% against
-            // 73.76%, and the bus order 71.76% to 69.40%. The position is
-            // right and this pipeline cannot move it without moving what
-            // follows, which is the same wall the rest of this epic's residual
-            // is behind.
+            // Spending it alone was measured and wrong, at 70.39% against
+            // 73.76%, and so was spending it with the clock taken back out of
+            // the pushing rows, at 73.19%. It is neither: the clock comes off
+            // the far end of the same bus cycle, because the EU lets go of a
+            // write at T3. See [`timing::WRITE_LEAD_IN`] and [`I8088::eu_tail`].
             0 => self.eu = rebuild(byte, 1),
             1 => {
                 self.begin_bus_cycle(status, addr, SegReg::SS);
@@ -2777,7 +3010,15 @@ impl I8088 {
                     self.bus.data = Some(value);
                     bus.write(master, addr, value);
                 }
-                self.eu = rebuild(byte, 4);
+                // The last byte of the last word is a write the EU has nothing
+                // left to wait for, so it moves on here and the T4 goes out
+                // behind it. See [`I8088::eu_tail`].
+                if !popping && byte == 1 && word + 1 == total {
+                    self.eu_tail = Some((status, SegReg::SS));
+                    self.finish_or_write_operand();
+                } else {
+                    self.eu = rebuild(byte, 4);
+                }
             }
             _ => {
                 self.drive_bus_cycle(status, TState::T4, SegReg::SS);
@@ -2800,17 +3041,14 @@ impl I8088 {
                             t: 1,
                         }
                     };
-                } else if popping {
-                    // Everything the instruction will pop is in hand.
+                } else {
+                    // Everything the instruction will pop is in hand. A push
+                    // never arrives here: its last T4 goes out from `eu_tail`
+                    // after the EU has already moved on at T3.
+                    debug_assert!(popping, "a push should have retired at T3");
                     self.stack_pos = 0;
                     self.eu = self.begin_execute_phase();
                     self.execute_if_ready(bus, master);
-                } else {
-                    // Nothing in this instruction set both pushes and writes a
-                    // memory operand, but the write-back is checked rather than
-                    // assumed away: losing one silently would be a wrong answer
-                    // rather than a wrong cycle count.
-                    self.finish_or_write_operand();
                 }
             }
         }
@@ -2829,6 +3067,8 @@ impl I8088 {
         let addr = Self::physical_addr(segment, offset.wrapping_add(byte.into()));
 
         match t {
+            // The lead-in. See [`timing::WRITE_LEAD_IN`].
+            0 => self.eu = Eu::Writing { byte, total, t: 1 },
             1 => {
                 self.begin_bus_cycle(BusStatus::MemWrite, addr, self.operand_segment());
                 self.eu = Eu::Writing { byte, total, t: 2 };
@@ -2842,19 +3082,23 @@ impl I8088 {
                 let value = self.operand_bytes[byte as usize];
                 self.bus.data = Some(value);
                 bus.write(master, addr, value);
-                self.eu = Eu::Writing { byte, total, t: 4 };
+                if byte + 1 < total {
+                    self.eu = Eu::Writing { byte, total, t: 4 };
+                } else {
+                    // The last byte of the write-back is on the pins and the EU
+                    // has nothing left to wait for, so it retires here and the
+                    // T4 goes out behind it. See [`I8088::eu_tail`].
+                    self.eu_tail = Some((BusStatus::MemWrite, self.operand_segment()));
+                    self.finish_instruction();
+                }
             }
             _ => {
                 self.drive_bus_cycle(BusStatus::MemWrite, TState::T4, self.operand_segment());
-                if byte + 1 < total {
-                    self.eu = Eu::Writing {
-                        byte: byte + 1,
-                        total,
-                        t: 1,
-                    };
-                } else {
-                    self.finish_instruction();
-                }
+                self.eu = Eu::Writing {
+                    byte: byte + 1,
+                    total,
+                    t: 1,
+                };
             }
         }
     }
