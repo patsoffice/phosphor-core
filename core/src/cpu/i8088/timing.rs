@@ -169,15 +169,9 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
         // `TEST r/m, reg` at 84 and 85 has no row: it prices from its microcode,
         // which is one clock at 0x094 and nothing else. See `microcode::routine`.
 
-        // XCHG r/m, reg: 4 for two registers; 17 clocks and two transfers when
-        // one of them is in memory.
-        0x86 | 0x87 => {
-            if is_mem {
-                17 - 8
-            } else {
-                4
-            }
-        }
+        // `XCHG r/m, reg` has no row: it runs the transcribed routine at 0x0a4,
+        // which spends 0x0a6 and 0x0a7 only when the ModR/M operand is in
+        // memory. See `microcode::routine`.
 
         // `MOV r/m, reg` and `MOV reg, r/m` have no rows: they run the
         // transcribed routine at 0x000. The store direction costs one clock
@@ -258,18 +252,10 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
             // 0x098, which is the jump over the immediate's second queue read
             // and 0x09a.
             0 | 1 => 0,
-            // NOT and NEG. The register form is the table's 3. **The memory
-            // form is 7, not the table's `16 - 8`**: all four of `F6 /2`,
-            // `F6 /3`, `F7 /2` and `F7 /3` read +1 on all 24 memory modes and
-            // +0 on all 8 register ones, so the read-modify-write path is a
-            // clock dearer here than the part spends.
-            2 | 3 => {
-                if is_mem {
-                    7
-                } else {
-                    3
-                }
-            }
+            // `NOT` and `NEG` have no rows: they run the transcribed routines
+            // at 0x04c and 0x050, which are `INC r/m`'s shape with different
+            // line numbers. See `microcode::routine`.
+            2 | 3 => 0,
             // The four multiplies and divides are functions of their operands
             // rather than of their encoding, so the caller computes them, from
             // [`multiply_cycles`], [`signed_multiply_cycles`],
@@ -303,16 +289,10 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
         0xFE => 0,
         0xFF => match reg {
             0 | 1 => 0,
-            // PUSH r/m16: 16 clocks and two transfers, the operand read and
-            // the stack write. reg=7 is the same instruction: the group's
-            // decoder does not check the top bit of the reg field.
-            6 | 7 => {
-                if is_mem {
-                    16 - 8
-                } else {
-                    11 - 4
-                }
-            }
+            // `PUSH r/m16` has no row: it runs the transcribed routine at
+            // 0x026. reg=7 is the same instruction, because the group's decoder
+            // does not check the top bit of the reg field.
+            6 | 7 => 0,
             // The indirect far call and far jump. The memory forms run
             // transcribed routines at 0x068 and 0x0dc, which read the segment
             // half of the far pointer themselves. The register forms are
@@ -1845,20 +1825,27 @@ mod tests {
     /// The five opcodes that reach memory without a ModR/M byte are modeled.
     ///
     /// The four moves price from their microcode now rather than from a row,
-    /// and it spends nothing: `mc_060` reads the operand and sets the
-    /// accumulator, `mc_064` takes the accumulator and writes it, and neither
-    /// runs a `cycle_i`. Their span is the transfer's and the boundary fetch's.
-    /// `XLAT` still has a row.
+    /// and **the two directions are not symmetric**. Both read the displacement
+    /// out of the queue with one `q_read_u16`, which is 0x064 and 0x065. The
+    /// load then goes straight to `biu_read_u8`; the store spends a bare
+    /// `self.cycle()` first, which is 0x066, and only then asks for the bus.
+    ///
+    /// The asymmetry is the thing worth pinning, because it is worth two clocks
+    /// rather than one. Asking for the bus a clock early suppresses a prefetch
+    /// decision the part takes, and the part's write then arrives behind the
+    /// fetch that decision started and aborts it. `XLAT` still has a row.
     #[test]
     fn the_direct_address_moves_and_xlat_are_modeled() {
         for opcode in [0xA0u8, 0xA1, 0xA2, 0xA3] {
             assert_eq!(eu_cycles(opcode, 0), 0, "{opcode:#04X} has no row");
+            // The store direction spends 0x066 and the load direction nothing.
+            let stores = opcode & 0x02 != 0;
             assert_eq!(
                 super::super::microcode::routine(opcode, 0, false, 0)
                     .expect("a direct-address move runs a routine")
                     .clocks(),
-                0,
-                "{opcode:#04X} spends no microcode clock"
+                u16::from(stores),
+                "{opcode:#04X} spends 0x066 only when it writes"
             );
         }
         assert_eq!(eu_cycles(0xD7, 0), 8, "XLAT");

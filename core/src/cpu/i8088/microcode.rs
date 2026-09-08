@@ -457,14 +457,30 @@ pub(crate) fn routine(opcode: u8, modrm: u8, branch: bool, cl: u8) -> Option<Rou
         }
 
         // `MOV acc, [addr]` at 0x060 and `MOV [addr], acc` at 0x064, opcodes A0
-        // through A3. **Neither spends a clock of its own.** `mc_060` reads the
-        // operand and sets the accumulator; `mc_064` takes the accumulator and
-        // writes it. The address comes out of the instruction rather than a
-        // ModR/M byte, so there is no effective-address routine to return from
-        // either, and on `mov al, byte [ds:AD30h]` the read's T4 carries
-        // `FETCH_NEXT` and the span ends on it.
+        // through A3. The address comes out of the instruction rather than a
+        // ModR/M byte, so there is no effective-address routine to return from,
+        // and on `mov al, byte [ds:AD30h]` the read's T4 carries `FETCH_NEXT`
+        // and the span ends on it.
+        //
+        // **The two directions are not symmetric, and the reference's operand
+        // code is where that is written down.** Both read the displacement out
+        // of the queue with one `q_read_u16`, which is 0x064 and 0x065. The load
+        // then goes straight to `biu_read_u8`; the store spends a bare
+        // `self.cycle()` first, which is 0x066, and only then asks for the bus.
+        //
+        // That one clock is the whole of `A2` and `A3`'s shortfall, and it costs
+        // two. Asking for the bus a clock early suppresses the prefetch decision
+        // that would otherwise have run, so the part starts a code fetch this
+        // core did not; and when the part's write does arrive, it arrives behind
+        // that fetch and aborts it, which restarts the address cycle at `Ts`.
         0xA0 | 0xA1 => Some(mc().then(Step::Run).done()),
-        0xA2 | 0xA3 => Some(mc().then(Step::Run).then(Step::WriteOperand).done()),
+        0xA2 | 0xA3 => Some(
+            mc().then(Step::Run)
+                // 0x066.
+                .spend(1)
+                .then(Step::WriteOperand)
+                .done(),
+        ),
 
         // `TEST acc, imm` at 0x09c, opcodes A8 and A9. `mc_09c` reads the
         // immediate and, for the byte form only, spends `MC_JUMP` to skip the
@@ -555,6 +571,52 @@ pub(crate) fn routine(opcode: u8, modrm: u8, branch: bool, cl: u8) -> Option<Rou
             if !register_form {
                 // 0x016.
                 r = r.spend(1).then(Step::WriteOperand);
+            }
+            Some(r.done())
+        }
+
+        // `NOT` at 0x04c and `NEG` at 0x050, the reg 2 and 3 forms of the unary
+        // group. `INC r/m`'s shape with different line numbers: one clock for a
+        // register destination, two for one in memory, and the return in front
+        // when there was an address routine to return from.
+        //
+        // The published microcode flags 0x04c and 0x050 with `NXT`, which would
+        // make the register form's clock the last of the instruction rather than
+        // a line of its own. The reference does not reproduce that and neither
+        // does this, for the same reason: the recorded spans say otherwise.
+        0xF6 | 0xF7 if matches!((modrm >> 3) & 7, 2 | 3) => {
+            let mut r = mc();
+            if !register_form {
+                // `RET`, the address routine having been left through `1E2`.
+                r = r.spend(1);
+            }
+            r = r.then(Step::Run);
+            if register_form {
+                // 0x04c, or 0x050.
+                r = r.spend(1);
+            } else {
+                // 0x04c and 0x04d, or 0x050 and 0x051.
+                r = r.spend(2).then(Step::WriteOperand);
+            }
+            Some(r.done())
+        }
+
+        // `XCHG r/m, reg` at 0x0a4. `mc_0a4` spends 0x0a4 and 0x0a5 whichever
+        // the operand, and 0x0a6 and 0x0a7 as well when the ModR/M operand is in
+        // memory. It reads that operand, so the address routine leaves through
+        // `1E2` and only `RET` stands in front.
+        //
+        // The register form exchanges two registers and reaches no bus at all,
+        // which is why it has no `WriteOperand`: the body does the swap on the
+        // `Run`.
+        0x86 | 0x87 => {
+            let mut r = mc();
+            if register_form {
+                // 0x0a4 and 0x0a5.
+                r = r.spend(2).then(Step::Run);
+            } else {
+                // `RET`, then 0x0a4 through 0x0a7.
+                r = r.spend(5).then(Step::Run).then(Step::WriteOperand);
             }
             Some(r.done())
         }
@@ -825,7 +887,15 @@ pub(crate) fn routine(opcode: u8, modrm: u8, branch: bool, cl: u8) -> Option<Rou
         0xFE | 0xFF if (modrm >> 3) & 7 < 2 => {
             let mut r = mc();
             if !register_form {
-                r = r.spend(2);
+                // **`RET` alone.** `INC r/m` reads its operand and writes it
+                // back, so the address routine leaves through `1E2: OPR ->
+                // tmpb`, and that is the line that spends the read's T4. Only
+                // the return stands between it and 0x020. The two clocks this
+                // spent are the write-only path's, where `1E3: tmpa -> IND` has
+                // a clock of its own in front of the return, and charging them
+                // here put the write-back a clock late on every memory form of
+                // all four opcodes.
+                r = r.spend(1);
             }
             // 0x020.
             r = r.then(Step::Run).spend(1);
@@ -841,8 +911,10 @@ pub(crate) fn routine(opcode: u8, modrm: u8, branch: bool, cl: u8) -> Option<Rou
             // memory form does not; everything after is `CALL rel16`'s routine.
             2 => Some(
                 mc().then(Step::Run)
-                    // 0x074, spent only when the operand was a register.
-                    .spend(u16::from(register_form))
+                    // `RET` for a memory operand, which was read through `1E2`;
+                    // 0x074 for a register one, which had no address routine to
+                    // return from and spends a clock of its own instead.
+                    .spend(1)
                     .then(Step::Susp)
                     // 0x074, 0x075, CORR, 0x076.
                     .spend(4)
@@ -879,14 +951,31 @@ pub(crate) fn routine(opcode: u8, modrm: u8, branch: bool, cl: u8) -> Option<Rou
                     .then(Step::Push)
                     .done(),
             ),
-            // `JMP r/m16` at 0x0d8. No pushes and one clock of microcode.
+            // `JMP r/m16` at 0x0d8. No pushes and one clock of microcode, with
+            // the same front as `CALL r/m16`: the return for a memory operand,
+            // an unnumbered clock of its own for a register one.
             4 => Some(
                 mc().then(Step::Run)
-                    .spend(u16::from(register_form))
+                    .spend(1)
                     .then(Step::Susp)
                     // 0x0d8.
                     .spend(1)
                     .then(Step::Flush)
+                    .done(),
+            ),
+            // `PUSH r/m` at 0x026, reg 6 and reg 7 alike: the group's decoder
+            // does not look at the top bit of the reg field, so both encodings
+            // are the same instruction. `mc_026` reads the operand, spends
+            // 0x024, 0x025 and 0x026, and puts the word on the stack. A memory
+            // operand adds the return from the address routine, which it leaves
+            // through `1E2` because it read through it.
+            //
+            // `PUSH SP` pushes the already-decremented value, which is the
+            // executor's business on the `Run` rather than the sequencer's.
+            6 | 7 => Some(
+                mc().spend(if register_form { 3 } else { 4 })
+                    .then(Step::Run)
+                    .then(Step::Push)
                     .done(),
             ),
             // `JMP FAR r/m` at 0x0dc. `RET` and 0x0dc, then the prefetcher
