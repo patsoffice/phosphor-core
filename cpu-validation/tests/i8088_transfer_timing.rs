@@ -190,6 +190,84 @@ fn replay_operand_start(tc: &I8088TestCase) -> Option<usize> {
     }
 }
 
+/// Replay a case and report its first *code* fetch: which cycle of the span
+/// drove T1 of it, and what address it latched.
+///
+/// The counterpart of [`replay_operand_start`] for the other kind of bus cycle,
+/// and the one that measures the loader rather than the operand path. The
+/// bus-cycle comparison fails on nearly every file with the whole fetch stream
+/// shifted by one position, which is either this core starting a fetch the part
+/// had already finished or the part starting one this core has not reached. The
+/// address says which.
+fn replay_first_code(tc: &I8088TestCase) -> Option<(usize, u32)> {
+    let mut cpu = I8088::new();
+    let mut bus = TracingBus20::new();
+    bus.memory.fill(0x90);
+    let r = &tc.initial.regs;
+    cpu.ax = r.ax;
+    cpu.bx = r.bx;
+    cpu.cx = r.cx;
+    cpu.dx = r.dx;
+    cpu.cs = r.cs;
+    cpu.ss = r.ss;
+    cpu.ds = r.ds;
+    cpu.es = r.es;
+    cpu.sp = r.sp;
+    cpu.bp = r.bp;
+    cpu.si = r.si;
+    cpu.di = r.di;
+    cpu.ip = r.ip;
+    cpu.flags = r.flags;
+    for &(addr, val) in &tc.initial.ram {
+        bus.memory[(addr & 0xF_FFFF) as usize] = val;
+    }
+    cpu.load_prefetch_queue(&tc.initial.queue);
+
+    let mut ticks = 0usize;
+    let mut measuring = false;
+    let mut retired = false;
+    let mut elapsed = 0usize;
+    loop {
+        ticks += 1;
+        if ticks > 4000 {
+            return None;
+        }
+        let was_retired = retired;
+        retired |= cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+        let next = matches!(cpu.queue_status, Some((QueueStatus::First, _))) && was_retired;
+        if !measuring {
+            if cpu.queue_status.is_some() {
+                measuring = true;
+            } else {
+                continue;
+            }
+        } else if next {
+            return None;
+        } else {
+            elapsed += 1;
+        }
+        if cpu.bus.status == phosphor_core::cpu::i8088::BusStatus::Code
+            && let Some(addr) = cpu.bus.address
+        {
+            return Some((elapsed, addr));
+        }
+    }
+}
+
+/// The same quantity out of the recording: the first cycle that latches an
+/// address for an instruction fetch.
+fn recorded_first_code(tc: &I8088TestCase) -> Option<(usize, u32)> {
+    tc.cycles.iter().enumerate().find_map(|(i, c)| {
+        match (
+            c.address(),
+            c.status() == phosphor_cpu_validation::BusStatus::CODE,
+        ) {
+            (Some(addr), true) => Some((i, addr)),
+            _ => None,
+        }
+    })
+}
+
 /// The same quantity out of the recording: the index of the first cycle that
 /// latches an address for a data read or write.
 fn recorded_operand_start(tc: &I8088TestCase) -> Option<usize> {
@@ -244,6 +322,74 @@ fn operand_start_by_mode(stem: &str) {
             top.join(" ")
         );
     }
+}
+
+/// Where the loader's first instruction fetch lands, ours against the
+/// recording.
+///
+/// The answer is that on a full queue it lands exactly right: cycle 2 and the
+/// same address, on every case of every file tried. So the bus-cycle order's
+/// shortfall is not the loader starting its first fetch on the wrong clock, and
+/// the EU-before-BIU ordering inside `execute_cycle` is not the cause either.
+///
+/// **Full-queue cases only, and that restriction is the point.** The first
+/// version of this also grouped the empty-queue cases and printed a confident
+/// `(0, 3, -1)` for them, which measured nothing: for a case that starts with
+/// an empty queue the recorded trace window opens partway through the opcode's
+/// own fetch, so the T1 that carries its address is outside the trace and the
+/// first address-carrying cycle in the recording is already the *second* fetch.
+/// Our index counts from the First Byte and theirs from the start of the trace,
+/// which are different origins, and the `-1` is the missing opcode fetch rather
+/// than a disagreement. Comparing the two needs the whole ordered list, which
+/// is what `i8088_cycle_test` already does.
+fn code_start_by_queue_length(stem: &str) {
+    let Some(tests) = load(stem) else { return };
+    let mut groups: BTreeMap<usize, BTreeMap<(i64, i64, i64), usize>> = BTreeMap::new();
+    for tc in &tests {
+        if tc.cycles.is_empty() || tc.initial.queue.len() != 4 {
+            continue;
+        }
+        if tc.bytes.first().is_some_and(|&b| is_prefix(b)) {
+            continue;
+        }
+        let (Some((ours, our_addr)), Some((theirs, their_addr))) =
+            (replay_first_code(tc), recorded_first_code(tc))
+        else {
+            continue;
+        };
+        *groups
+            .entry(tc.initial.queue.len())
+            .or_default()
+            .entry((
+                ours as i64,
+                theirs as i64,
+                our_addr as i64 - their_addr as i64,
+            ))
+            .or_default() += 1;
+    }
+    eprintln!("\n{stem}: first code fetch (our cycle, their cycle, address delta)");
+    for (queued, hist) in &groups {
+        let mut modes: Vec<((i64, i64, i64), usize)> = hist.iter().map(|(a, b)| (*a, *b)).collect();
+        modes.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
+        let total: usize = hist.values().sum();
+        let top: Vec<String> = modes
+            .iter()
+            .take(4)
+            .map(|((o, t, d), n)| format!("({o},{t},{d:+}):{n}"))
+            .collect();
+        eprintln!("  queue {queued}: {total} cases  {}", top.join(" "));
+    }
+}
+
+#[test]
+#[ignore = "survey, not a check: where the loader's first fetch lands"]
+fn code_fetch_start() {
+    // A one-byte opcode, a two-byte one with an immediate, a memory form, and a
+    // long one, so the instruction's own length is varied against the queue's.
+    code_start_by_queue_length("90");
+    code_start_by_queue_length("04");
+    code_start_by_queue_length("8B");
+    code_start_by_queue_length("81.0");
 }
 
 #[test]
@@ -730,25 +876,41 @@ fn rep_residuals() {
 /// that is wrong, and what this measures is how much of the gate's residual the
 /// table accounts for, as against the prefetcher's scheduling, which this
 /// population cannot see.
+/// One opcode file's standing against the recording, for the ranked sweep.
+struct RowResidual {
+    stem: String,
+    /// Cases compared: a full queue, no prefix, and a trace to compare against.
+    cases: usize,
+    /// How many of those this core gets wrong, which is what the ranking is by.
+    wrong: usize,
+    /// The signed differences, commonest first.
+    modes: Vec<(i64, usize)>,
+}
+
 #[test]
 #[ignore = "survey, not a check: how far each row is from the recording"]
 fn row_residuals() {
-    let mut rows: Vec<(String, usize, usize, Vec<(i64, usize)>)> = Vec::new();
+    let mut rows: Vec<RowResidual> = Vec::new();
     for stem in every_opcode_file() {
         let hist = residual_histogram(&stem);
-        let total: usize = hist.values().sum();
-        if total == 0 {
+        let cases: usize = hist.values().sum();
+        if cases == 0 {
             continue;
         }
         let exact = hist.get(&0).copied().unwrap_or(0);
         let mut modes: Vec<(i64, usize)> = hist.into_iter().collect();
         modes.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
-        rows.push((stem, total, total - exact, modes));
+        rows.push(RowResidual {
+            stem,
+            cases,
+            wrong: cases - exact,
+            modes,
+        });
     }
 
-    let cases: usize = rows.iter().map(|(_, total, _, _)| total).sum();
-    let wrong: usize = rows.iter().map(|(_, _, wrong, _)| wrong).sum();
-    let clean = rows.iter().filter(|(_, _, wrong, _)| *wrong == 0).count();
+    let cases: usize = rows.iter().map(|r| r.cases).sum();
+    let wrong: usize = rows.iter().map(|r| r.wrong).sum();
+    let clean = rows.iter().filter(|r| r.wrong == 0).count();
 
     eprintln!("\nresiduals against the recording, full queue, no prefix, every file");
     eprintln!("  {} files, {clean} of them +0 on every case", rows.len());
@@ -758,8 +920,14 @@ fn row_residuals() {
         100.0 * (cases - wrong) as f64 / cases as f64
     );
     eprintln!("\n  worst first, by cases wrong:");
-    rows.sort_by_key(|(_, _, wrong, _)| std::cmp::Reverse(*wrong));
-    for (stem, total, wrong, modes) in &rows {
+    rows.sort_by_key(|r| std::cmp::Reverse(r.wrong));
+    for RowResidual {
+        stem,
+        cases: total,
+        wrong,
+        modes,
+    } in &rows
+    {
         if *wrong == 0 {
             break;
         }

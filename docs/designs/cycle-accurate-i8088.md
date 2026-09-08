@@ -742,6 +742,64 @@ also do not write back, are `-1` with them.
 matchable; there is no evidence of a floor below it, only an unfinished list and
 one structural cause behind the empty-queue half.
 
+## The bus-cycle order is two populations, not one number
+
+**2026-09-05.** The bus-cycle comparison has sat around a third since it was
+introduced, and the aggregate is the least informative thing about it. Split by
+population, the way the cycle count is:
+
+```text
+  bus-cycle sequence            34.89%
+    empty queue:                 4.36%
+    prefetched:                 65.43%
+```
+
+A fifteenfold gap between two halves of the same corpus is not a timing
+constant, and it is the reason the split is in the gate from the moment the
+comparison exists rather than added once the aggregate stopped moving.
+
+**Every empty-queue trace opens mid-fetch**, on the T2 of the fetch already in
+flight when the opening First Byte is read:
+
+```text
+  0 CODE T2       data=00 q=First:90
+  1 PASV T3       data=90
+  2 PASV T4
+  3 CODE T1 E0442
+```
+
+An address is latched on T1 and nowhere else, so that fetch reaches
+`recorded_bus_cycles` with no address and is dropped. This replay's window opens
+a T-state *earlier* and does record its equivalent, so ours is one entry longer
+at the front on **every** empty-queue case, at an address one lower. That is
+what nearly every reported difference is.
+
+**The fix is the loader, not the comparison.** It is tempting to decline to
+compare a cycle the recording structurally cannot report, and dropping our
+leading `Code` entry would lift the empty-queue half a long way while leaving
+the prefetched half untouched, which looks like the signature of a correct
+allowance. But the two windows differ only because this core takes an
+instruction's first byte a T-state after the part does: once
+the loader reads on the part's clock, both windows open mid-fetch with no T1 in
+either, and any such allowance would be deleting a real code fetch. An
+allowance is the right tool for something the recording cannot express and the
+wrong tool for something this core does wrongly, and the two are easy to
+confuse when only the aggregate is visible.
+
+**What the comparison says beyond that**, and all of it is real:
+
+- **The part fits one more prefetch into its microcode time than this core
+  does**, on every memory-operand form: `add byte [ds:di], bl` wants
+  `[F F R F F W]` and gets `[F F R F W]`, `neg word [ss:bp+si]` wants
+  `[F F R R F W W]` and gets `[F F R R W W]`. This is probably not an
+  independent defect: those same rows carry the one-clock memory tail, and a
+  four-cycle fetch does not fit in a gap that is a clock too short. Item 5 and
+  the bus-cycle order may be one bug.
+- **The string operations start their access before the part does**: `LODSB`
+  gets `[R F]` where the part runs `[F R]`.
+- **`ESC` runs no operand read at all**, and a faulting `IDIV` still reads its
+  vector off the bus in no time, both already known.
+
 ## Sequencing against the M68000
 
 `phosphor-emulator-cycle-accurate-i8088-nvrh` is currently sequenced *after* the
