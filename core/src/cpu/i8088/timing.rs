@@ -712,6 +712,27 @@ pub(crate) fn may_flush_the_queue(opcode: u8) -> bool {
     )
 }
 
+/// Whether this instruction really will redirect the stream, as against
+/// [`may_flush_the_queue`]'s conservative "could".
+///
+/// The difference matters because this decides when the prefetcher stops rather
+/// than a table entry: `SUSP` is the first or second step of a transfer's
+/// microcode, and suspending an instruction that turns out not to transfer costs
+/// fetches the part does run. So the group opcodes are asked for their reg
+/// field, and the conditional forms have to be told whether they branch.
+///
+/// `INC`, `DEC` and `PUSH` share `FF`'s encoding with the indirect calls and
+/// jumps and go nowhere; `taken` is what the caller predicted for the
+/// conditional forms, which is the same prediction the timing rows are charged
+/// from.
+pub(crate) fn will_transfer(opcode: u8, modrm: u8, taken: bool) -> bool {
+    match opcode {
+        // The indirect group: CALL, CALLF, JMP and JMPF are reg 2 through 5.
+        0xFF | 0xFE => matches!((modrm >> 3) & 7, 2..=5),
+        _ => may_flush_the_queue(opcode) && taken,
+    }
+}
+
 /// T-states a pop's microcode runs before its first read reaches the bus.
 ///
 /// Measured: `POP AX` from a full queue drives its read's T1 three T-states

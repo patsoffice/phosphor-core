@@ -993,26 +993,26 @@ struct Ratchet {
     bus_prefetched: f64,
 }
 
-/// Recorded 2026-09-05, over 3,007,000 vectors in 323 files, when the bus grew
-/// the address cycle that runs in front of every transfer and overlaps the one
-/// before it. See `TaCycle` in the core.
+/// Recorded 2026-09-06, over 3,007,000 vectors in 323 files, when a control
+/// transfer learned to stop prefetching. See `FetchState::Suspended` in the
+/// core.
 ///
-/// The prefetched bus-cycle figure is what moved most, and that is the point:
-/// it measures *where* a transaction happens, which is what the address cycle
-/// decides. The count followed once the clocks the address cycle spends were
-/// taken off the side of the access they had been charged to.
+/// The bus-cycle figures are what these two changes moved, and that is the
+/// point: they measure *where* a transaction happens, and both changes were
+/// about where. The address cycle before this one and `SUSP` here each moved
+/// the prefetched half several points.
 const RATCHET: Ratchet = Ratchet {
-    count: 75.40,
+    count: 75.50,
     count_empty: 58.04,
-    count_prefetched: 92.75,
-    bus: 42.62,
+    count_prefetched: 92.96,
+    bus: 45.30,
     // **Not one case in 1,503,500, and that is a statement about the loader.**
     // It still takes an instruction's first byte a T-state after the part does,
     // so every empty-queue case is one bus cycle out at the front and this half
     // cannot pass whatever else is right. The floor is here so that fixing the
     // loader shows up as a jump rather than as a number nobody was watching.
     bus_empty: 0.0,
-    bus_prefetched: 85.24,
+    bus_prefetched: 90.61,
 };
 
 /// How far above [`RATCHET`] a figure may sit before the gate insists it be

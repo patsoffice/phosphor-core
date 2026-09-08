@@ -210,6 +210,15 @@ pub(crate) enum FetchState {
     Normal,
     /// The queue is full. Lifted when the EU takes a byte out.
     PausedFull,
+    /// A control transfer's microcode has stopped prefetching, because the
+    /// bytes behind it are on the path not taken and fetching more of them is
+    /// wasted bus. Lifted only by the flush at the end of that microcode.
+    ///
+    /// This is the part's `SUSP`, and it is the first or second step of every
+    /// transfer's microcode. A fetch already in flight is not abandoned: `SUSP`
+    /// waits for it, which is why a transfer entered while the queue is
+    /// refilling costs more than one entered on an idle bus.
+    Suspended,
 }
 
 /// The bus interface unit's code-fetch state machine, which runs alongside the
@@ -1295,6 +1304,13 @@ impl I8088 {
     /// a full queue by the EU taking a byte, a claim by the EU finishing with
     /// the bus.
     fn fetch_decision(&mut self, eu_wants_bus: bool, from_idle: bool) {
+        // A transfer's `SUSP` outranks everything else here: the queue's length
+        // stops mattering once the bytes it would hold are on the path not
+        // taken. Asked before the full-queue test so a suspended prefetcher is
+        // not recorded as a paused one, which the EU taking a byte would lift.
+        if self.fetch == FetchState::Suspended {
+            return;
+        }
         if !self.queue_has_room() {
             self.fetch = FetchState::PausedFull;
             return;
@@ -2069,6 +2085,22 @@ impl I8088 {
 
         let opcode = self.opcode();
         let modrm = self.instr[self.opcode_at as usize + 1];
+
+        // **A control transfer stops prefetching before it does anything else.**
+        // `SUSP` is the first or second step of every one of their microcode
+        // routines, and it is here because here is where their microcode begins:
+        // the queue behind a taken branch holds bytes from the path not taken,
+        // and the part does not spend bus cycles filling it with more of them.
+        // Only the flush at the end of the same routine lifts it.
+        //
+        // Without this the recording and this core part company on every one of
+        // them, and the count cannot see it: `JMP`, `Jcc` taken and the indirect
+        // forms each run one code fetch this core does and the part does not,
+        // and it lands in the queue that is about to be thrown away.
+        if timing::will_transfer(opcode, modrm, self.microcode_branch(opcode)) {
+            self.fetch = FetchState::Suspended;
+        }
+
         let mut cycles = if timing::branches_on_state(opcode) {
             i32::from(timing::branch_cycles(opcode, self.microcode_branch(opcode)))
         } else {
