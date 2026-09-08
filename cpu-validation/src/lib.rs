@@ -483,7 +483,215 @@ pub struct I8088TestCase {
     pub initial: I8088InitialState,
     #[serde(rename = "final")]
     pub final_state: I8088FinalState,
-    // cycles, hash, idx are present but not used for functional validation
+    /// Per-cycle bus and queue trace, recorded from the hardware. One entry per
+    /// CPU cycle (T-state), not per bus cycle. See [`I8088Cycle`].
+    #[serde(default)]
+    pub cycles: Vec<I8088Cycle>,
+    // hash and idx are present but not used for validation
+}
+
+/// One recorded CPU cycle: the eleven fields the suite documents, in order.
+///
+/// Deserialized from a heterogeneous JSON array, e.g.
+/// `[1, 205194, "--", "---", "---", 0, 0, "CODE", "T1", "-", 0]`. The string
+/// fields become enums and bitfields here rather than `String`s, because there
+/// are on the order of fifty million of them across the suite.
+///
+/// Which fields are *valid* on a given cycle is not uniform, and comparing one
+/// where it is not valid produces a failure that means nothing:
+///
+/// - `bus` holds a valid address only while [`ale`](Self::ale) is asserted, on
+///   T1. On other cycles it is whatever the multiplexed pins happen to carry.
+/// - `data` is valid on T3, or on the last Tw when wait states are inserted.
+/// - `queue_byte` is valid only when `queue_op` is not [`QueueOp::Idle`].
+/// - `queue_op` reports an operation that happened on the *previous* cycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub struct I8088Cycle(
+    /// Pin bitfield: bit 0 = ALE, bit 1 = INTR, bit 2 = NMI.
+    pub u8,
+    /// The 20-bit multiplexed address/data bus, latched on ALE.
+    pub u32,
+    /// S3/S4: which segment register computed the address.
+    pub SegmentStatus,
+    /// i8288 memory command lines, as asserted bits (see [`CommandLines`]).
+    pub CommandLines,
+    /// i8288 I/O command lines, as asserted bits (see [`CommandLines`]).
+    pub CommandLines,
+    /// BHE. An 8086 pin that does not exist on the 8088; always 0 here.
+    pub u8,
+    /// The low 8 bits of the multiplexed bus. Valid on T3 or the last Tw.
+    pub u8,
+    /// S0-S2: what kind of bus cycle this is.
+    pub BusStatus,
+    /// Which T-state of the bus cycle this is.
+    pub TState,
+    /// QS0/QS1: what the EU did to the queue on the previous cycle.
+    pub QueueOp,
+    /// The byte read out of the queue, valid when `queue_op` is not `Idle`.
+    pub u8,
+);
+
+impl I8088Cycle {
+    /// True when ALE is asserted, which is the only time field 1 is an address.
+    pub fn ale(&self) -> bool {
+        self.0 & 1 != 0
+    }
+
+    /// The latched 20-bit address. `None` on any cycle where the bus does not
+    /// carry one, so a caller cannot accidentally compare a stale value.
+    pub fn address(&self) -> Option<u32> {
+        self.ale().then_some(self.1 & 0xF_FFFF)
+    }
+
+    /// What kind of bus cycle this is.
+    pub fn status(&self) -> BusStatus {
+        self.7
+    }
+
+    /// Which T-state this is.
+    pub fn t_state(&self) -> TState {
+        self.8
+    }
+
+    /// What the EU did to the queue on the previous cycle, and the byte it
+    /// read. `None` when the queue was untouched.
+    pub fn queue_op(&self) -> Option<(QueueOp, u8)> {
+        match self.9 {
+            QueueOp::Idle => None,
+            op => Some((op, self.10)),
+        }
+    }
+}
+
+/// S3/S4: which segment register the CPU used to compute the current address.
+/// `None` on a cycle that is not driving an address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub enum SegmentStatus {
+    #[serde(rename = "--")]
+    None,
+    ES,
+    SS,
+    CS,
+    DS,
+}
+
+/// S0-S2: the type of bus cycle in progress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub enum BusStatus {
+    /// Interrupt acknowledge.
+    INTA,
+    /// I/O read.
+    IOR,
+    /// I/O write.
+    IOW,
+    /// Memory read (data).
+    MEMR,
+    /// Memory write.
+    MEMW,
+    /// Halt acknowledge.
+    HALT,
+    /// Instruction fetch.
+    CODE,
+    /// Passive: no bus cycle in progress.
+    PASV,
+}
+
+/// The T-state of the bus cycle. `Ti` is idle, `Tw` is a wait state inserted
+/// between T3 and T4. The suite's own tests incur no wait states, so `Tw` does
+/// not appear in the recorded data, but the format carries it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub enum TState {
+    T1,
+    T2,
+    T3,
+    T4,
+    Tw,
+    Ti,
+}
+
+/// QS0/QS1: what the EU did to the prefetch queue. Reported one cycle late, so
+/// the operation happened on the cycle *before* the one carrying it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub enum QueueOp {
+    /// First byte of an instruction or of an instruction prefix. This is what
+    /// delimits a test: a case's cycles run from one `First` to the next.
+    #[serde(rename = "F")]
+    First,
+    /// A subsequent byte: ModR/M, displacement or immediate.
+    #[serde(rename = "S")]
+    Subsequent,
+    /// The queue was emptied, that is, flushed by a control transfer.
+    #[serde(rename = "E")]
+    Emptied,
+    /// Nothing was read from the queue on the previous cycle.
+    #[serde(rename = "-")]
+    Idle,
+}
+
+/// The i8288's three command lines for one address space, as a bitfield of
+/// *asserted* lines.
+///
+/// The recorded field is a three-character string in the shape `RAW`, with a
+/// letter where a line is asserted and `-` where it is not, e.g. `"R--"` or
+/// `"-AW"`. The lines themselves are active low on the part; this type stores
+/// "asserted", so [`Self::read`] is true exactly when the recorded string has an
+/// `R`, with no inversion left for a caller to get backwards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CommandLines(u8);
+
+impl CommandLines {
+    /// MRDC for memory, IORC for I/O: a read is in progress.
+    pub fn read(&self) -> bool {
+        self.0 & 1 != 0
+    }
+
+    /// AMWC for memory, AIOWC for I/O: the advanced write command.
+    pub fn advanced_write(&self) -> bool {
+        self.0 & 2 != 0
+    }
+
+    /// MWTC for memory, IOWC for I/O: the normal write command.
+    pub fn write(&self) -> bool {
+        self.0 & 4 != 0
+    }
+
+    /// True when no line is asserted, the `"---"` case.
+    pub fn is_idle(&self) -> bool {
+        self.0 == 0
+    }
+}
+
+impl<'de> Deserialize<'de> for CommandLines {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl serde::de::Visitor<'_> for V {
+            type Value = CommandLines;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a three-character i8288 status string in the shape RAW")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, s: &str) -> Result<CommandLines, E> {
+                let b = s.as_bytes();
+                if b.len() != 3 {
+                    return Err(E::invalid_length(b.len(), &self));
+                }
+                let mut bits = 0u8;
+                for (i, (asserted, idle)) in [(b'R', b'-'), (b'A', b'-'), (b'W', b'-')]
+                    .into_iter()
+                    .enumerate()
+                {
+                    match b[i] {
+                        c if c == asserted => bits |= 1 << i,
+                        c if c == idle => {}
+                        _ => return Err(E::invalid_value(serde::de::Unexpected::Str(s), &self)),
+                    }
+                }
+                Ok(CommandLines(bits))
+            }
+        }
+        d.deserialize_str(V)
+    }
 }
 
 /// Full initial CPU state (all registers present).
@@ -861,5 +1069,143 @@ mod tests {
         let here = Path::new(env!("CARGO_MANIFEST_DIR"));
         assert!(vectors_available(here, "unused", false));
         assert!(vectors_available(here, "unused", true));
+    }
+
+    // --- I8088 cycle trace parsing ---
+    //
+    // The rows below are copied verbatim from the sample test in the suite's
+    // own README (`test_data/8088/README.md`), which is the only description of
+    // this format there is. Parsing it wrong is the failure mode that would
+    // make the per-cycle gate compare our trace against a misreading of the
+    // hardware's, so the parser is checked against the document rather than
+    // against what our CPU happens to produce.
+
+    fn cycle(json: &str) -> I8088Cycle {
+        serde_json::from_str(json).expect("cycle row parses")
+    }
+
+    /// The T1 of a code fetch: ALE asserted, so the bus carries a real address.
+    #[test]
+    fn a_t1_cycle_latches_an_address_because_ale_is_asserted() {
+        let c = cycle(r#"[1, 205194, "--", "---", "---", 0, 0, "CODE", "T1", "-", 0]"#);
+        assert!(c.ale());
+        assert_eq!(c.address(), Some(205194));
+        assert_eq!(c.status(), BusStatus::CODE);
+        assert_eq!(c.t_state(), TState::T1);
+        assert_eq!(c.queue_op(), None);
+    }
+
+    /// And the T2 that follows it does not, even though the bus field still
+    /// holds a number. Reading that number as an address is exactly the
+    /// mistake `address()` exists to prevent.
+    #[test]
+    fn a_cycle_without_ale_has_no_address_however_full_the_bus_field_looks() {
+        let c = cycle(r#"[0, 139658, "CS", "R--", "---", 0, 0, "CODE", "T2", "-", 0]"#);
+        assert!(!c.ale());
+        assert_eq!(c.address(), None);
+        assert_eq!(c.2, SegmentStatus::CS);
+        assert!(c.3.read(), "MRDC is asserted on the memory lines");
+        assert!(c.4.is_idle(), "the I/O lines are not");
+    }
+
+    /// A queue read is reported one cycle after it happened, and only then is
+    /// the queue byte meaningful.
+    #[test]
+    fn a_queue_read_carries_its_byte_and_an_idle_one_does_not() {
+        let read = cycle(r#"[0, 139659, "CS", "R--", "---", 0, 0, "CODE", "T2", "S", 156]"#);
+        assert_eq!(read.queue_op(), Some((QueueOp::Subsequent, 156)));
+
+        let idle = cycle(r#"[0, 72724, "--", "---", "---", 0, 0, "PASV", "Ti", "-", 0]"#);
+        assert_eq!(idle.queue_op(), None);
+        assert_eq!(idle.t_state(), TState::Ti);
+        assert_eq!(idle.status(), BusStatus::PASV);
+    }
+
+    /// The suite defines a test's span by the queue status lines: from the
+    /// First Byte of this instruction to the First Byte of the next. So `F` has
+    /// to survive parsing as something distinguishable from `S`.
+    #[test]
+    fn a_first_byte_is_what_delimits_a_test() {
+        let c = cycle(r#"[0, 62369, "--", "---", "---", 0, 0, "PASV", "Ti", "F", 0]"#);
+        assert_eq!(c.queue_op(), Some((QueueOp::First, 0)));
+    }
+
+    /// The i8288 status strings are stored as asserted lines, so no caller has
+    /// an active-low inversion left to get backwards.
+    #[test]
+    fn command_lines_record_which_lines_are_asserted() {
+        let write = cycle(r#"[0, 72924, "SS", "-AW", "---", 0, 220, "PASV", "T3", "-", 0]"#);
+        assert!(!write.3.read());
+        assert!(write.3.advanced_write());
+        assert!(write.3.write());
+        assert_eq!(write.6, 220, "the data bus is valid on T3");
+
+        let none = cycle(r#"[0, 72724, "--", "---", "---", 0, 0, "PASV", "Ti", "-", 0]"#);
+        assert!(none.3.is_idle());
+        assert!(none.4.is_idle());
+    }
+
+    /// An I/O cycle asserts the other set of lines, and nothing in the parser
+    /// conflates the two.
+    #[test]
+    fn io_lines_are_a_separate_field_from_memory_lines() {
+        let c = cycle(r#"[0, 100, "DS", "---", "R--", 0, 255, "IOR", "T3", "-", 0]"#);
+        assert!(c.3.is_idle(), "memory lines idle during an I/O read");
+        assert!(c.4.read());
+        assert_eq!(c.status(), BusStatus::IOR);
+    }
+
+    /// A status string that is not three characters, or carries a letter in the
+    /// wrong column, is a parse failure rather than a silently wrong bitfield.
+    #[test]
+    fn a_malformed_status_string_does_not_parse() {
+        assert!(serde_json::from_str::<CommandLines>(r#""RA""#).is_err());
+        assert!(serde_json::from_str::<CommandLines>(r#""RAWX""#).is_err());
+        assert!(
+            serde_json::from_str::<CommandLines>(r#""W--""#).is_err(),
+            "W in the MRDC column is not a valid encoding"
+        );
+    }
+
+    /// The whole point of deserializing `cycles` at all: a test case now knows
+    /// how many cycles the hardware took, which is the M1 gate.
+    #[test]
+    fn a_test_case_carries_its_cycle_trace() {
+        let tc: I8088TestCase = serde_json::from_str(
+            r#"{
+                "name": "nop",
+                "bytes": [144],
+                "initial": {"regs": {"ax":0,"bx":0,"cx":0,"dx":0,"cs":0,"ss":0,
+                    "ds":0,"es":0,"sp":0,"bp":0,"si":0,"di":0,"ip":0,"flags":0},
+                    "ram": [[0, 144]], "queue": []},
+                "final": {"regs": {}, "ram": []},
+                "cycles": [
+                    [1, 0, "--", "---", "---", 0, 0, "CODE", "T1", "-", 0],
+                    [0, 0, "CS", "R--", "---", 0, 0, "CODE", "T2", "-", 0],
+                    [0, 0, "CS", "R--", "---", 0, 144, "PASV", "T3", "-", 0]
+                ]
+            }"#,
+        )
+        .expect("test case parses");
+        assert_eq!(tc.cycles.len(), 3);
+        assert_eq!(tc.cycles[2].6, 144);
+    }
+
+    /// And a case with no `cycles` key at all still parses, so the state-only
+    /// gate does not become dependent on the trace being present.
+    #[test]
+    fn a_test_case_without_a_trace_still_parses() {
+        let tc: I8088TestCase = serde_json::from_str(
+            r#"{
+                "name": "nop",
+                "bytes": [144],
+                "initial": {"regs": {"ax":0,"bx":0,"cx":0,"dx":0,"cs":0,"ss":0,
+                    "ds":0,"es":0,"sp":0,"bp":0,"si":0,"di":0,"ip":0,"flags":0},
+                    "ram": [], "queue": []},
+                "final": {"regs": {}, "ram": []}
+            }"#,
+        )
+        .expect("test case parses");
+        assert!(tc.cycles.is_empty());
     }
 }
