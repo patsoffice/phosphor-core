@@ -1037,11 +1037,48 @@ Three things that rule out the easy answers:
 So the excess is a function of how long the address phase runs *and* which way
 the operand goes: this core prefetches through the whole phase where the part
 stops at some point inside it, and the longer the phase the more extra fetches
-this core fits. Uniform groups mean a rule exists. Deriving it is the next piece
-of work, and it is worth doing carefully rather than quickly: this is 372,000
-vectors, the largest single prize left in the epic, and the two previous
-attempts at the prefetcher's arbitration both failed by generalizing from too
-little.
+this core fits.
+
+## The rule, and the version of it that was wrong
+
+**A bus cycle is four T-states and the BIU cannot abandon one partway.** So the
+part will not *begin* a fetch it would still be holding when the EU comes for
+the bus: beginning one there delays the operand access by up to a whole bus
+cycle. A fetch already underway is not abandoned, which is why this gates the
+transition that drives T1 rather than the whole unit.
+
+**The first version suppressed prefetching for the entire address phase, and
+the gate rejected it.** It is the reading the single trace invites, and it is
+wrong:
+
+```text
+                          before   whole phase   fetch would not finish
+  bus-cycle order         59.02%     55.47%           67.66%
+    empty queue           53.62%     59.63%           60.10%
+    prefetched            64.42%     51.31%           75.22%
+  cycle count             64.73%     64.05%           64.61%
+```
+
+Suppressing the whole phase moved the empty-queue half up six points and the
+prefetched half down thirteen, because **the part does slip prefetches into an
+address phase that has room for them**: that is the same behavior the bus-cycle
+comparison had already reported from the other end, as the part fitting one more
+prefetch into its microcode time than this core does. Both numbers had to move
+the right way before the rule was the right rule.
+
+Narrowed to "only when the fetch would not finish in time", `remaining < 4`, the
+bus-cycle order goes from 59.02% to **67.66%**, its prefetched half from 64.42%
+to **75.22%**. The 4 is not fitted: it is the length of a bus cycle, and
+`remaining >= 4` is exactly the condition that the fetch completes before the
+address phase ends.
+
+**Cycle count did not follow, and that is worth saying plainly.** It moved
+64.73% to 64.61%, a tenth of a point down. Putting the fetches in the right
+places changes when the queue refills and therefore when later instructions
+stall, so counts that were accidentally right become wrong and others become
+right. An eight-point gain on the stricter, positional gate against a tenth of a
+point on the looser one is a clear net, but it also says the remaining
+count-level cause is not this one.
 
 ## Sequencing against the M68000
 

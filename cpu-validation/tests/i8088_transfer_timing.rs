@@ -893,6 +893,10 @@ fn memory_residual_by_mode() {
     // rounding then it separates by addressing mode.
     residuals_by_mode("D8");
     residuals_by_mode("D9");
+    // The next rows down the ranked sweep.
+    for stem in ["8C", "8F", "C6", "C7", "FF.2", "FF.4", "D6"] {
+        residuals_by_mode(stem);
+    }
 }
 
 /// Does the suite record an interrupt acknowledge anywhere, or an asserted

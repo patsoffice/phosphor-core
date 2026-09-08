@@ -56,6 +56,13 @@ pub(crate) const QUEUE_LEN: usize = 4;
 /// idle cycle between, which the same trace shows at cycles 5 and 6.
 const PREFETCH_RESTART_CYCLES: u8 = 2;
 
+/// T-states in one bus cycle, T1 through T4.
+///
+/// The BIU cannot abandon one partway, which is why it matters whether a fetch
+/// would finish before the EU comes for the bus. See
+/// [`I8088::tick_biu_while`].
+const BUS_CYCLE_CLOCKS: u8 = 4;
+
 /// S0-S2: what kind of bus cycle the CPU is running.
 ///
 /// The 8288 bus controller decodes these into the memory and I/O command lines.
@@ -710,14 +717,22 @@ impl I8088 {
                 self.tick_eu(bus, master);
                 self.tick_biu(bus, master);
             }
-            // Address arithmetic uses no bus, so the BIU runs alongside it.
+            // Address arithmetic uses no bus, so the BIU runs alongside it, but
+            // it may not *begin* a fetch it would still be holding when the EU
+            // comes for the bus. See [`I8088::tick_biu_while`].
             Eu::AddressCalc(remaining) => {
+                // Only once the fetch would not finish in time. Suppressing for
+                // the whole address phase was measured and is wrong: it took
+                // the prefetched half of the bus order from 67.09% down to
+                // 53.98%, because the part does slip prefetches into an address
+                // phase that has room for them.
+                let wants_bus = remaining < BUS_CYCLE_CLOCKS && self.operand_access_is_pending();
                 self.eu = if remaining > 1 {
                     Eu::AddressCalc(remaining - 1)
                 } else {
                     self.begin_operand_phase()
                 };
-                self.tick_biu(bus, master);
+                self.tick_biu_while(bus, master, wants_bus);
                 // An instruction that neither reads its operand nor has any
                 // modeled execution time runs here. Dropping this made the
                 // pipeline fall back to Loading without ever executing, so the
@@ -832,11 +847,46 @@ impl I8088 {
         }
     }
 
+    /// Whether the instruction being loaded is going to want the bus for an
+    /// operand once its address is worked out.
+    ///
+    /// The BIU asks so it can stay off the bus. See [`I8088::tick_biu_while`].
+    fn operand_access_is_pending(&self) -> bool {
+        if !format::format_of(self.opcode()).modrm {
+            return false;
+        }
+        let acc = access::operand_access(self.opcode(), self.instr[self.opcode_at as usize + 1]);
+        acc.reads || acc.writes
+    }
+
     /// The bus interface unit's cycle: keep the queue full.
     fn tick_biu<B: Bus<Address = u32, Data = u8> + ?Sized>(
         &mut self,
         bus: &mut B,
         master: BusMaster,
+    ) {
+        self.tick_biu_while(bus, master, false);
+    }
+
+    /// The same, told whether the EU is about to want the bus.
+    ///
+    /// **The part will not start a fetch it would still be holding when the EU
+    /// comes for the bus.** A code fetch is four T-states and the EU cannot
+    /// interrupt one, so beginning a fetch while an operand access is pending
+    /// delays that access by up to a whole bus cycle. The recording shows the
+    /// part declining: on `MOV AX, [BP+DI+4]` from an empty queue its BIU goes
+    /// idle the cycle after its last fetch completes, with one byte queued and
+    /// room for three, and then runs the operand read. This core started
+    /// another fetch there and read three clocks late.
+    ///
+    /// A fetch already underway is not abandoned: the request only stops the
+    /// BIU *beginning* one, which is why this gates the transition that drives
+    /// T1 rather than the whole unit.
+    fn tick_biu_while<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+        eu_wants_bus: bool,
     ) {
         // `Biu::Fetching { t }` is the T-state driven on *this* cycle, and
         // `Restarting(0)` means "drive T1 next time you are ticked". Written
@@ -855,6 +905,9 @@ impl I8088 {
             }
             // Ti, waiting out the restart delay.
             Biu::Restarting(n) if n > 0 => self.biu = Biu::Restarting(n - 1),
+            // The delay is spent, but the EU is coming for the bus: hold here
+            // rather than start four T-states the EU would have to wait out.
+            Biu::Restarting(_) if eu_wants_bus => {}
             // The delay is spent: drive T1 now.
             Biu::Restarting(_) => {
                 let addr = Self::physical_addr(self.cs, self.prefetch_ip);
