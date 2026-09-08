@@ -672,18 +672,22 @@ impl LoaderStall {
 /// form, which the loader goes back for after the operand access rather than
 /// fetching with the rest of the instruction.
 ///
-/// Two T-states, measured and uniform. `loader_read_gap_diff` reports the gap
-/// from the last displacement byte to the immediate as exactly two short across
-/// the whole `80`, `81`, `82`, `83`, `F6` and `F7` set, in every addressing
-/// mode and whether or not the form carries a displacement at all: `1 4 1 14 1`
-/// here against `1 4 1 16 1`, `1 17` against `1 19`, `1 4 11` against `1 4 13`.
+/// **One T-state, and it is the effective-address routine's return.** The
+/// reference probe shows the whole seam on `add byte [ds:bx+si-64h], FAh`: the
+/// operand read's T4 is spent by `1E2: OPR -> tmpb`, `RET` spends the clock
+/// after it, and the immediate is read on the next one at
+/// `00C: Q -> tmpbL`, which is also the instruction's first execute line.
+///
+/// It was two while the loader took its bytes a T-state late, which put the
+/// deferred immediate two clocks behind the return instead of one. See
+/// [`I8088::preload`].
 ///
 /// Given back by [`eu_cycles`]'s caller, like the other pauses that are not the
 /// effective address's.
 /// **Only where the operand is read.** `C6` and `C7` write their memory operand
 /// and never read it, and they take no pause: giving them one put their gap at
 /// nine against the part's six, where leaving them alone puts it at seven. So
-/// the two T-states belong to the read-modify-write turnaround and not to the
+/// the pause belongs to the read-modify-write turnaround and not to the
 /// deferral itself.
 pub(crate) fn deferred_immediate_stall(opcode: u8, modrm: u8) -> u8 {
     use super::format;
@@ -697,7 +701,7 @@ pub(crate) fn deferred_immediate_stall(opcode: u8, modrm: u8) -> u8 {
         && f.imm.len(Some(modrm)) > 0
         && super::access::operand_access(opcode, modrm).reads
     {
-        2
+        1
     } else {
         0
     }
@@ -1323,8 +1327,8 @@ mod tests {
                 // differ by exactly one clock and nothing else. That is a
                 // property of the microcode rather than of the operand's width,
                 // which is why the rule above still holds for everything else.
-                let by = super::super::microcode::routine(byte_op, modrm);
-                let wo = super::super::microcode::routine(word_op, modrm);
+                let by = super::super::microcode::routine(byte_op, modrm, false);
+                let wo = super::super::microcode::routine(word_op, modrm, false);
                 if carries_immediate {
                     let (Some(by), Some(wo)) = (by, wo) else {
                         continue;
@@ -1361,13 +1365,15 @@ mod tests {
         // property is structural rather than arithmetic: `CMP` has no write
         // back, so it has neither the write step nor the two clocks the part
         // spends in front of one.
-        let add = super::super::microcode::routine(0x00, mem).expect("ADD r/m8, reg8");
-        let cmp = super::super::microcode::routine(0x38, mem).expect("CMP r/m8, reg8");
+        let add = super::super::microcode::routine(0x00, mem, false).expect("ADD r/m8, reg8");
+        let cmp = super::super::microcode::routine(0x38, mem, false).expect("CMP r/m8, reg8");
         assert_ne!(add, cmp, "CMP must not run the writing routine");
         // And in the immediate group, where the reg field picks the operation.
         use super::super::microcode::Step;
-        let add_imm = super::super::microcode::routine(0x80, 0b00_000_100).expect("ADD r/m8, imm8");
-        let cmp_imm = super::super::microcode::routine(0x80, 0b00_111_100).expect("CMP r/m8, imm8");
+        let add_imm =
+            super::super::microcode::routine(0x80, 0b00_000_100, false).expect("ADD r/m8, imm8");
+        let cmp_imm =
+            super::super::microcode::routine(0x80, 0b00_111_100, false).expect("CMP r/m8, imm8");
         assert!(add_imm.contains(Step::WriteOperand), "ADD writes back");
         assert!(
             !cmp_imm.contains(Step::WriteOperand),
@@ -1398,8 +1404,8 @@ mod tests {
     fn a_mov_store_does_more_than_a_load() {
         use super::super::microcode::{self, Step};
         let mem = 0b00_000_100;
-        let store = microcode::routine(0x88, mem).expect("MOV r/m8, reg8");
-        let load = microcode::routine(0x8A, mem).expect("MOV reg8, r/m8");
+        let store = microcode::routine(0x88, mem, false).expect("MOV r/m8, reg8");
+        let load = microcode::routine(0x8A, mem, false).expect("MOV reg8, r/m8");
         assert!(store.contains(Step::WriteOperand), "a store writes back");
         assert!(
             !load.contains(Step::WriteOperand),
@@ -1665,7 +1671,7 @@ mod tests {
     fn an_opcode_with_a_routine_has_no_row() {
         for opcode in 0..=u8::MAX {
             for modrm in [0x00u8, 0xC0, 0x10, 0xD0, 0x20, 0xE0, 0x30, 0xF0] {
-                if super::super::microcode::routine(opcode, modrm).is_some() {
+                if super::super::microcode::routine(opcode, modrm, false).is_some() {
                     assert_eq!(
                         eu_cycles(opcode, modrm),
                         0,
@@ -1699,7 +1705,7 @@ mod tests {
         for op in 0x40u8..=0x4F {
             assert_eq!(eu_cycles(op, 0), 2, "{op:#04X}");
             assert!(
-                super::super::microcode::routine(op, 0).is_none(),
+                super::super::microcode::routine(op, 0, false).is_none(),
                 "{op:#04X} is a row, not a routine"
             );
         }
@@ -1709,7 +1715,7 @@ mod tests {
             "the group form has no row"
         );
         assert_eq!(
-            super::super::microcode::routine(0xFE, 0b11_000_000)
+            super::super::microcode::routine(0xFE, 0b11_000_000, false)
                 .expect("INC reg8 runs a routine")
                 .clocks(),
             1,
@@ -1782,7 +1788,8 @@ mod tests {
             // Priced by a row or by a routine, but priced. The returns moved to
             // the microcode module and their rows went with them.
             assert!(
-                eu_cycles(opcode, 0) > 0 || super::super::microcode::routine(opcode, 0).is_some(),
+                eu_cycles(opcode, 0) > 0
+                    || super::super::microcode::routine(opcode, 0, false).is_some(),
                 "{opcode:#04X}"
             );
         }
@@ -1837,8 +1844,8 @@ mod tests {
     fn the_return_aliases_run_what_they_alias() {
         for (alias, documented) in [(0xC0u8, 0xC2u8), (0xC1, 0xC3), (0xC8, 0xCA), (0xC9, 0xCB)] {
             assert_eq!(
-                super::super::microcode::routine(alias, 0),
-                super::super::microcode::routine(documented, 0),
+                super::super::microcode::routine(alias, 0, false),
+                super::super::microcode::routine(documented, 0, false),
                 "{alias:#04X} against {documented:#04X}"
             );
         }

@@ -707,6 +707,21 @@ pub struct I8088 {
     /// `F` then `S` then `E` on three separate cycles.
     #[save_skip(default)]
     pub(crate) pending_flush: bool,
+    /// The queue has already been thrown away and the reload already requested,
+    /// on a T-state that was running when the step list reached the flush. Only
+    /// the status line is still owed, on the T-state after.
+    ///
+    /// **The published flush has an immediate effect and a lagged report, and
+    /// they are not the same clock.** `biu_queue_flush` empties the queue and
+    /// calls `biu_fetch_start` at the instant the routine reaches it, so
+    /// `ta_cycle` is `Tr` before the T-state it lands in is spent; but the
+    /// `QueueOp::Flush` it raises is only rolled into `last_queue_op` at the end
+    /// of that T-state (`cycle.rs:367`) and recorded by the one after
+    /// (`mod.rs:1167`). [`I8088::pending_flush`] carries both together, which is
+    /// right when the sequencer is choosing what the next T-state does and a
+    /// clock late when it is already inside one.
+    #[save_skip(default)]
+    pub(crate) pending_flush_report: bool,
 
     // -- BIU and prefetch queue --------------------------------------------
     /// The instruction queue, oldest byte first.
@@ -901,6 +916,7 @@ impl I8088 {
             retired: false,
             transferred: false,
             pending_flush: false,
+            pending_flush_report: false,
             queue: [0; QUEUE_LEN],
             loader_stall: 0,
             loader_starved: 0,
@@ -1007,6 +1023,13 @@ impl I8088 {
         // The reload is requested here too, so the bus below runs on this same
         // clock: `Tr` is spent now, `Ts` and `T0` on the two after it, and the
         // reload's T1 lands three clocks past the flush.
+        // A flush that already took effect inside the previous T-state still
+        // owes its status line here. See [`I8088::pending_flush_report`].
+        if self.pending_flush_report {
+            self.pending_flush_report = false;
+            self.queue_status = Some((QueueStatus::Emptied, 0));
+        }
+
         if self.pending_flush {
             self.pending_flush = false;
             self.flush_queue();
@@ -1190,18 +1213,22 @@ impl I8088 {
             // the prefetch queue exists to avoid and the reason a jump is
             // expensive.
             //
-            // **A first byte out of an empty queue does not cost a clock more
-            // than a subsequent one, measured.** The published boundary fetch
-            // waits for the byte, preloads it and then spends a clock of its own
+            // **The published boundary fetch spends a clock this core does not,
+            // and putting it here is not where it goes.** `biu_fetch_next` waits
+            // for the byte, preloads it and then spends a clock of its own
             // (`biu.rs:329`) where a mid-instruction read pops with nothing
-            // behind it (`biu.rs:222`), which reads like a clock this core is
-            // missing. It is not: the clock this pop is taken on is that clock,
-            // and the preload only moves where the status is reported, which the
-            // gate measures first-byte to first-byte and so cancels. Charging it
-            // here is a uniform +1 on every instruction that ends starved: 41
-            // files to exact and 37 off it, 72.57% to 64.06%, because the
-            // population it fixes and the population it breaks are the same
-            // population measured against two different second errors.
+            // behind it (`biu.rs:222`). The reference probe shows that clock
+            // directly, as the trailing `FOQR; FETCH_END` line, and it is the
+            // last cycle of the recording every time: `RET` near's 19 of 20,
+            // `RET far`'s 33 of 34, `JMP rel8`'s 16 of 17.
+            //
+            // Charging it on every starved first byte gets the totals right and
+            // the bus wrong: cycle count 51.35% to 61.73%, and the bus-cycle
+            // sequence 81.64% to 46.49%. It fires on the opening starvation of
+            // an empty-queue case, where no instruction has retired and the
+            // published unit is not in `biu_fetch_next` at all. It belongs to a
+            // retirement, which is where `step_finish` calls that routine, and
+            // it needs to be armed there rather than here.
             self.loader_starved = self.loader_starved.saturating_add(1);
             return;
         }
@@ -2568,7 +2595,10 @@ impl I8088 {
             return false;
         }
         let modrm = self.instr[self.opcode_at as usize + 1];
-        let Some(steps) = microcode::routine(self.opcode(), modrm) else {
+        // The conditional forms take a different arm of their own microcode
+        // depending on the flags, so the routine has to be told which.
+        let branch = self.microcode_branch(self.opcode());
+        let Some(steps) = microcode::routine(self.opcode(), modrm, branch) else {
             return false;
         };
         self.mc = Some(microcode::Cursor::new(steps));
@@ -3000,6 +3030,16 @@ impl I8088 {
                 }
                 self.mc = None;
                 self.finish_instruction();
+                // **A routine that runs out on a transfer's release clock hands
+                // that clock to the boundary fetch.** The release is not a clock
+                // of its own: whatever the routine has behind the transfer
+                // spends it, and with nothing behind it that is the published
+                // RNI. `add byte [ss:bp+di-64h], cl` ends on its write's T3 with
+                // `TX`, `FETCH_NEXT` and `FETCH_END` together on that line, and
+                // the write's T4 belongs to the instruction after it.
+                if released {
+                    self.boundary_fetch();
+                }
                 return self.eu;
             };
             self.mc = Some(cursor);
@@ -3079,7 +3119,19 @@ impl I8088 {
                 // exists: leaving the flag set would throw the queue away a
                 // second time at the far end.
                 microcode::Step::Flush => {
-                    self.pending_flush = true;
+                    if released {
+                        // This T-state is already running: it is the transfer's
+                        // release clock, and the published routine reaches its
+                        // flush before that clock is spent. So the queue goes
+                        // and the reload is requested now, three clocks ahead of
+                        // the reload's T1, and only the status line waits for
+                        // the T-state after. See [`I8088::pending_flush_report`].
+                        self.flush_queue();
+                        self.queue_status = None;
+                        self.pending_flush_report = true;
+                    } else {
+                        self.pending_flush = true;
+                    }
                     self.transferred = false;
                     cursor.flushed = true;
                     self.mc = Some(cursor);
@@ -3934,6 +3986,14 @@ impl I8088 {
                     self.eu = self.advance_microcode_after_transfer(bus, master);
                 } else {
                     self.finish_instruction();
+                    // **The release clock is the boundary fetch's.** The write's
+                    // wait exits at T3 without spending it, exactly as a read's
+                    // exits at T4, and what spends it is whatever the routine has
+                    // behind the transfer. With nothing behind it that is the
+                    // published RNI, which is why the recording puts `TX`,
+                    // `FETCH_NEXT` and `FETCH_END` on one line and ends there,
+                    // leaving the write's T4 to the instruction after.
+                    self.boundary_fetch();
                 }
                 return;
             }
@@ -4101,6 +4161,7 @@ impl Cpu for I8088 {
         self.opcode_at = 0;
         self.retired = false;
         self.pending_flush = false;
+        self.pending_flush_report = false;
         // Reset flushes the instruction queue, which is exactly what the test
         // suite's setup routine relies on before it installs a queue state.
         self.flush_queue();

@@ -209,9 +209,36 @@ fn mc() -> Build {
 /// The group opcodes are asked for their reg field because the group is not one
 /// instruction: `FF` carries `INC` and `PUSH`, which go nowhere, beside the
 /// indirect calls and jumps, which are transfers.
-pub(crate) fn routine(opcode: u8, modrm: u8) -> Option<Routine> {
+pub(crate) fn routine(opcode: u8, modrm: u8, branch: bool) -> Option<Routine> {
     let register_form = modrm >> 6 == 3;
     match opcode {
+        // The conditional jumps at 0x0e8, opcodes 70 through 7F and their
+        // aliases sixteen below. `mc_0e8` tests the flag, reads the
+        // displacement, spends one clock at 0x0e9 and only then, if it is
+        // taken, falls into RELJMP.
+        //
+        // The displacement read is the loader's, so what is left here is that
+        // one clock and the transfer behind it. RELJMP itself is `JMP rel8`'s
+        // routine without the jump into it: suspend, 0x0d2, 0x0d3, CORR, 0x0d4,
+        // the flush, and 0x0d5.
+        0x60..=0x7F => {
+            // 0x0e9.
+            let r = mc().spend(1);
+            if !branch {
+                return Some(r.then(Step::Run).done());
+            }
+            Some(
+                r.then(Step::Run)
+                    .then(Step::Susp)
+                    // 0x0d2, 0x0d3, CORR, 0x0d4.
+                    .spend(4)
+                    .then(Step::Flush)
+                    // 0x0d5.
+                    .spend(1)
+                    .done(),
+            )
+        }
+
         // -------------------------------------------------------------------
         // The ModR/M groups. These begin *after* the pipeline's operand read,
         // because that read is the published `load_operand`, which runs between
@@ -255,7 +282,13 @@ pub(crate) fn routine(opcode: u8, modrm: u8) -> Option<Routine> {
             let compares = (opcode >> 3) & 7 == 7;
             let mut r = mc();
             if !register_form {
-                r = r.spend(2);
+                // The effective-address routine's return, and only that. The
+                // reference probe puts the whole seam on one screen: the operand
+                // read's T4 is spent by `1E2: OPR -> tmpb`, `RET` spends the
+                // clock behind it, and `008: M -> tmpa` runs on the next. It was
+                // two while the loader took its bytes a T-state late. See
+                // [`I8088::preload`].
+                r = r.spend(1);
             }
             // 0x008.
             r = r.spend(1).then(Step::Run);
@@ -274,11 +307,16 @@ pub(crate) fn routine(opcode: u8, modrm: u8) -> Option<Routine> {
         0x80..=0x83 => {
             let compares = (modrm >> 3) & 7 == 7;
             let one_immediate_byte = opcode != 0x81;
-            let mut r = mc();
-            if !register_form {
-                r = r.spend(2);
-            }
-            r = r.spend(u8::from(one_immediate_byte)).then(Step::Run);
+            // **A memory form spends nothing at the front.** Its deferred
+            // immediate is the loader's, and the effective-address routine's
+            // return is already the pause in front of that read
+            // (`timing::deferred_immediate_stall`). The reference probe puts the
+            // whole seam in view on `add byte [ds:bx+si-64h], FAh`: `RET` on one
+            // clock, `00C: Q -> tmpbL` reading the immediate on the next, the
+            // jump behind it, then `00E` and the write request. Spending two
+            // here charged the return a second time and put the write two clocks
+            // late.
+            let mut r = mc().spend(u8::from(one_immediate_byte)).then(Step::Run);
             if !register_form {
                 // 0x00e.
                 r = r.spend(1);
@@ -473,12 +511,16 @@ pub(crate) fn routine(opcode: u8, modrm: u8) -> Option<Routine> {
                 .done(),
         ),
 
-        // `JMP rel16` and `JMP rel8` through RELJMP at 0x0d2. The byte form
-        // jumps straight into the routine and spends a clock the word form,
-        // which falls through into it, does not.
+        // `JMP rel16` and `JMP rel8` through RELJMP at 0x0d2.
+        //
+        // **Neither form spends a clock for the jump into the routine.** The
+        // byte form is written as the arm that takes it, but its trace carries
+        // no `JMP` line at all: the reference probe shows `0D0`, `0D1` and the
+        // suspend wait running straight into `0D2`. Charging it here put every
+        // case of the file one clock late from the queue read onward, which
+        // `fetch_gap_diff` reads as a reload at gap 11 against the part's 10.
         0xE9 | 0xEB => Some(
             mc().then(Step::Run)
-                .spend(u8::from(opcode == 0xEB))
                 .then(Step::Susp)
                 // 0x0d2, 0x0d3, CORR, 0x0d4.
                 .spend(4)
@@ -743,7 +785,7 @@ mod tests {
         let mut out = Vec::new();
         for opcode in 0..=u8::MAX {
             for modrm in [0x00u8, 0xC0, 0x10, 0xD0, 0x20, 0xE0, 0x30, 0xF0] {
-                if let Some(r) = routine(opcode, modrm) {
+                if let Some(r) = routine(opcode, modrm, false) {
                     out.push((opcode, modrm, r));
                 }
             }
