@@ -739,27 +739,31 @@ impl I8088 {
             // =============================================================
             // IN/OUT with immediate port (0xE4-0xE7)
             // =============================================================
+            // IN and OUT with an immediate port. The port cycle itself is the
+            // pipeline's: it ran the IOR before this and will run the IOW
+            // after, so what happens here is only moving the bytes. The
+            // immediate is still consumed, because the loader fetched it and
+            // the two have to agree on the instruction's length.
             0xE4 => {
-                // IN AL, imm8
-                let port = self.fetch_byte() as u32;
-                self.set_al(bus.io_read(master, port));
+                let _port = self.fetch_byte();
+                let value = self.port_bytes[0];
+                self.set_al(value);
             }
             0xE5 => {
-                // IN AX, imm8
-                let port = self.fetch_byte() as u32;
-                self.set_al(bus.io_read(master, port));
-                self.set_ah(bus.io_read(master, port.wrapping_add(1)));
+                let _port = self.fetch_byte();
+                self.set_al(self.port_bytes[0]);
+                self.set_ah(self.port_bytes[1]);
             }
             0xE6 => {
-                // OUT imm8, AL
-                let port = self.fetch_byte() as u32;
-                bus.io_write(master, port, self.al());
+                let _port = self.fetch_byte();
+                self.port_bytes[0] = self.al();
+                self.port_written = true;
             }
             0xE7 => {
-                // OUT imm8, AX
-                let port = self.fetch_byte() as u32;
-                bus.io_write(master, port, self.al());
-                bus.io_write(master, port.wrapping_add(1), self.ah());
+                let _port = self.fetch_byte();
+                self.port_bytes[0] = self.al();
+                self.port_bytes[1] = self.ah();
+                self.port_written = true;
             }
 
             // =============================================================
@@ -800,27 +804,21 @@ impl I8088 {
             // =============================================================
             // IN/OUT with DX port (0xEC-0xEF)
             // =============================================================
-            0xEC => {
-                // IN AL, DX
-                let port = self.dx as u32;
-                self.set_al(bus.io_read(master, port));
-            }
+            // And with the port in DX. Same division of labor: the pipeline
+            // ran the cycle, this moves the bytes.
+            0xEC => self.set_al(self.port_bytes[0]),
             0xED => {
-                // IN AX, DX
-                let port = self.dx as u32;
-                self.set_al(bus.io_read(master, port));
-                self.set_ah(bus.io_read(master, port.wrapping_add(1)));
+                self.set_al(self.port_bytes[0]);
+                self.set_ah(self.port_bytes[1]);
             }
             0xEE => {
-                // OUT DX, AL
-                let port = self.dx as u32;
-                bus.io_write(master, port, self.al());
+                self.port_bytes[0] = self.al();
+                self.port_written = true;
             }
             0xEF => {
-                // OUT DX, AX
-                let port = self.dx as u32;
-                bus.io_write(master, port, self.al());
-                bus.io_write(master, port.wrapping_add(1), self.ah());
+                self.port_bytes[0] = self.al();
+                self.port_bytes[1] = self.ah();
+                self.port_written = true;
             }
 
             // =============================================================
@@ -4866,12 +4864,17 @@ mod tests {
     // IN / OUT
     // =====================================================================
 
+    // The port cycle is the pipeline's, not the executor's: by the time these
+    // run, an `IN`'s IOR has already happened and an `OUT`'s IOW has not yet.
+    // So what the executor does is move bytes between the accumulator and the
+    // staging buffer, and that is what these check. The cycle itself is checked
+    // where it happens, in `mod.rs`.
+
     #[test]
     fn in_al_imm8() {
         let (mut cpu, mut bus) = setup();
-        // io_read defaults to memory read, so set up a value at addr 0x42
-        bus.mem[0x42] = 0xAB;
         bus.mem[0x100] = 0x42; // port number
+        cpu.port_bytes[0] = 0xAB; // what the pipeline's IOR cycle read
         exec(&mut cpu, &mut bus, 0xE4); // IN AL, 0x42
         assert_eq!(cpu.al(), 0xAB);
     }
@@ -4882,15 +4885,15 @@ mod tests {
         cpu.set_al(0xCD);
         bus.mem[0x100] = 0x80; // port number
         exec(&mut cpu, &mut bus, 0xE6); // OUT 0x80, AL
-        // io_write defaults to memory write
-        assert_eq!(bus.mem[0x80], 0xCD);
+        assert_eq!(cpu.port_bytes[0], 0xCD, "staged for the IOW cycle");
+        assert!(cpu.port_written, "and the pipeline is told there is one");
     }
 
     #[test]
     fn in_al_dx() {
         let (mut cpu, mut bus) = setup();
         cpu.dx = 0x0060;
-        bus.mem[0x60] = 0x77;
+        cpu.port_bytes[0] = 0x77;
         exec(&mut cpu, &mut bus, 0xEC); // IN AL, DX
         assert_eq!(cpu.al(), 0x77);
     }
@@ -4901,7 +4904,25 @@ mod tests {
         cpu.dx = 0x0061;
         cpu.set_al(0xEE);
         exec(&mut cpu, &mut bus, 0xEE); // OUT DX, AL
-        assert_eq!(bus.mem[0x61], 0xEE);
+        assert_eq!(cpu.port_bytes[0], 0xEE);
+        assert!(cpu.port_written);
+    }
+
+    /// A word port is two accesses at consecutive port numbers, low half
+    /// first, because the data bus is one byte wide.
+    #[test]
+    fn a_word_port_moves_two_bytes() {
+        let (mut cpu, mut bus) = setup();
+        cpu.ax = 0x1234;
+        bus.mem[0x100] = 0x80;
+        exec(&mut cpu, &mut bus, 0xE7); // OUT 0x80, AX
+        assert_eq!(cpu.port_bytes, [0x34, 0x12], "low half first");
+
+        let (mut cpu, mut bus) = setup();
+        bus.mem[0x100] = 0x80;
+        cpu.port_bytes = [0x78, 0x56];
+        exec(&mut cpu, &mut bus, 0xE5); // IN AX, 0x80
+        assert_eq!(cpu.ax, 0x5678);
     }
 
     // =====================================================================

@@ -438,6 +438,21 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
         0xCD => 23,
         // IRET, popping IP, CS and the flags. Documented 32, three transfers.
         0xCF => 13,
+        // IN and OUT. Documented 10 with an immediate port and 8 through DX,
+        // one transfer each, and the transfer is an I/O cycle the pipeline
+        // runs. A word port is two of them, at consecutive port numbers.
+        //
+        // `IN` lands on the documented figure exactly, on all 5,000 cases of
+        // each of its four encodings. `OUT` needs one clock more, uniformly,
+        // which is the asymmetry the manual gives the ModR/M forms of `MOV`
+        // and does not give these: a store costs the EU one more than a load.
+        // The direct-address `MOV`s are the same story, printed equal in the
+        // table and measured a clock apart.
+        0xE4 | 0xE5 => 10 - 4,
+        0xE6 | 0xE7 => 10 - 4 + 1,
+        0xEC | 0xED => 8 - 4,
+        0xEE | 0xEF => 8 - 4 + 1,
+
         // CALL near direct, pushing IP. Documented 19, one transfer.
         0xE8 => 8,
         // JMP near, far and short, none of which touch memory. All three are
@@ -838,11 +853,11 @@ pub(crate) fn is_modeled(opcode: u8, modrm: u8) -> bool {
         0xD8..=0xDF => false,
         // The loops and JCXZ.
         0xE0..=0xE3 => true,
-        // The I/O instructions, which are M4.
-        0xE4..=0xE7 => false,
+        // IN and OUT, with an immediate port and through DX.
+        0xE4..=0xE7 => true,
         // CALL near, and the three direct jumps.
         0xE8..=0xEB => true,
-        0xEC..=0xEF => false,
+        0xEC..=0xEF => true,
         // The prefixes and HLT, which the suite does not record.
         0xF0..=0xF4 => false,
         // CMC.

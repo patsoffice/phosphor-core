@@ -33,6 +33,13 @@ use phosphor_cpu_validation::{I8088InitialState, I8088Metadata, I8088TestCase, T
 /// `C3`, `CA` and `CB`. They consumed their bytes but did not return, so they
 /// never flushed the queue, and the recorded traces end with an `E` that this
 /// core did not produce.
+///
+/// And eight more with M4: `E4`-`E7` and `EC`-`EF`, the `IN` and `OUT` forms.
+/// Their reason was never that the instructions were unimplemented but that
+/// this harness could not feed them: the suite keeps a port read's data in the
+/// cycle trace rather than in `initial.ram`. It reads the trace now, through
+/// [`I8088TestCase::port_reads`], which is the coverage the design doc said the
+/// conversion would pay for itself with.
 fn should_skip(filename: &str) -> bool {
     // Strip .json.gz suffix to get the opcode identifier
     let stem = filename.strip_suffix(".json.gz").unwrap_or(filename);
@@ -43,8 +50,6 @@ fn should_skip(filename: &str) -> bool {
         "26" | "2E" | "36" | "3E" | "F0" | "F1" | "F2" | "F3"
         // HLT (0xF4) — blocks forever in test harness (no interrupts)
         | "F4"
-        // IN/OUT — test vectors embed I/O data in cycles array, not initial RAM
-        | "E4" | "E5" | "E6" | "E7" | "EC" | "ED" | "EE" | "EF"
         // FPU ESC opcodes (0xD8-0xDF)
         | "D8" | "D9" | "DA" | "DB" | "DC" | "DD" | "DE" | "DF"
         // SALC / undocumented (0xD6)
@@ -97,6 +102,9 @@ fn run_test_case(tc: &I8088TestCase, flags_mask: u16) -> Option<String> {
     let mut bus = TracingBus20::new();
 
     load_initial_state(&mut cpu, &mut bus, &tc.initial);
+    // What the part read from its ports, so that an `IN` puts the same byte in
+    // the accumulator here as it did on the bench.
+    bus.port_reads = tc.port_reads();
 
     // Execute one instruction until instruction boundary
     let mut total_ticks = 0;

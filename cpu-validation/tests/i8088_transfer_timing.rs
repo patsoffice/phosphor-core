@@ -336,6 +336,52 @@ fn memory_residual_by_mode() {
     residuals_by_mode("81.0");
 }
 
+/// Does the suite record an interrupt acknowledge anywhere, or an asserted
+/// INTR or NMI pin? M4 asks for INTA cycles, and whether the vectors can check
+/// them decides whether they are modeled against a recording or against the
+/// manual.
+#[test]
+#[ignore = "survey, not a check: what the suite records about interrupts"]
+fn interrupt_pins_and_acknowledge() {
+    let dir = phosphor_cpu_validation::vector_dir("8088/v2");
+    if !phosphor_cpu_validation::require_test_data(&dir, "vectors") {
+        return;
+    }
+    let mut entries: Vec<_> = std::fs::read_dir(&dir)
+        .expect("read")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|x| x == "gz"))
+        .collect();
+    entries.sort_by_key(|e| e.file_name());
+
+    let mut files_with_inta = Vec::new();
+    let mut files_with_intr = Vec::new();
+    let mut files_with_nmi = Vec::new();
+    for entry in &entries {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let stem = name.strip_suffix(".json.gz").unwrap_or(&name).to_string();
+        let Some(tests) = load(&stem) else { continue };
+        for tc in &tests {
+            for c in &tc.cycles {
+                if c.status() == phosphor_cpu_validation::BusStatus::INTA
+                    && !files_with_inta.contains(&stem)
+                {
+                    files_with_inta.push(stem.clone());
+                }
+                if c.0 & 2 != 0 && !files_with_intr.contains(&stem) {
+                    files_with_intr.push(stem.clone());
+                }
+                if c.0 & 4 != 0 && !files_with_nmi.contains(&stem) {
+                    files_with_nmi.push(stem.clone());
+                }
+            }
+        }
+    }
+    eprintln!("\nfiles whose traces contain an INTA cycle: {files_with_inta:?}");
+    eprintln!("files with INTR asserted on any cycle:      {files_with_intr:?}");
+    eprintln!("files with NMI asserted on any cycle:       {files_with_nmi:?}");
+}
+
 #[test]
 #[ignore = "survey, not a check: how far each row is from the recording"]
 fn row_residuals() {
@@ -343,9 +389,9 @@ fn row_residuals() {
     for stem in [
         "70", "E0", "E1", "E2", "E3", "E8", "E9", "EA", "EB", "9A", "C2", "C3", "CA", "CB", "CC",
         "CD", "CE", "CF", "A0", "A1", "A2", "A3", "D7", "98", "99", "9E", "9F", "27", "37", "C4",
-        "C5", "F8", "FF.2", "FF.3", "FF.4", "FF.5", "8B", "01", "50", "58", "90", "D4", "D5",
-        "F6.6", "F7.6", "F6.4", "F7.4", "8D", "8A", "88", "00", "02", "80.0", "81.0", "83.0", "C6",
-        "C7", "FE.0", "FF.0", "D1.4", "F7.2",
+        "C5", "F8", "FF.2", "FF.3", "FF.4", "FF.5", "8B", "01", "50", "58", "90", "D4", "D5", "E4",
+        "E5", "E6", "E7", "EC", "ED", "EE", "EF", "F6.6", "F7.6", "F6.4", "F7.4", "8D", "8A", "88",
+        "00", "02", "80.0", "81.0", "83.0", "C6", "C7", "FE.0", "FF.0", "D1.4", "F7.2",
     ] {
         residuals(stem);
     }
@@ -821,6 +867,8 @@ fn empty_queue_traces() {
 #[ignore = "survey, not a check: where a transfer flushes and how it reloads"]
 fn control_transfer_traces() {
     dump("EA", true);
+    dump("E4", false);
+    dump("E7", false);
     dump("CC", true);
     dump("9A", true);
     dump("EB", true);

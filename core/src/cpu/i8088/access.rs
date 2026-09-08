@@ -204,6 +204,30 @@ pub(crate) fn ea_cycles(modrm: u8) -> u8 {
     }
 }
 
+/// What `opcode` does to an I/O port, and how wide.
+///
+/// The third way an instruction reaches the outside world, after the ModR/M
+/// operand and the stack, and the only one that is not memory: `IN` and `OUT`
+/// drive IOR and IOW rather than MEMR and MEMW, and address sixteen bits of
+/// port space rather than twenty of memory. A word port access is two cycles at
+/// consecutive port numbers, for the same reason a word memory access is: the
+/// 8088's data bus is one byte wide.
+///
+/// The port itself is not here, because it is not a property of the opcode
+/// alone: `E4` through `E7` carry it as an immediate byte and `EC` through `EF`
+/// take it from DX. [`super::I8088::port_of`] resolves that.
+pub(crate) fn port_access(opcode: u8) -> Option<Access> {
+    match opcode {
+        // IN accumulator, immed8 and IN accumulator, DX.
+        0xE4 | 0xEC => Some(READ_B),
+        0xE5 | 0xED => Some(READ_W),
+        // OUT immed8, accumulator and OUT DX, accumulator.
+        0xE6 | 0xEE => Some(WRITE_B),
+        0xE7 | 0xEF => Some(WRITE_W),
+        _ => None,
+    }
+}
+
 /// Clocks the pipeline spends in its address phase, which is not the same as
 /// the effective address costing something different.
 ///

@@ -211,6 +211,12 @@ pub(crate) enum Eu {
     /// reads 0000C through 0000F and only then writes the three words onto the
     /// stack.
     ReadingVector { byte: u8, t: u8 },
+    /// Reading an I/O port, `byte` of `total`, on T-state `t`. IOR rather than
+    /// MEMR, and after the microcode rather than before it: the recording puts
+    /// `IN AL, imm8`'s port cycle four clocks after its last instruction byte.
+    PortReading { byte: u8, total: u8, t: u8 },
+    /// Writing an I/O port, after the instruction has decided what to write.
+    PortWriting { byte: u8, total: u8, t: u8 },
     /// Running the instruction's microcode, with the clocks still to go.
     ///
     /// The bus is free throughout, so the BIU prefetches through it. That is
@@ -351,6 +357,18 @@ pub struct I8088 {
     /// Where in `stack_words` the executor's next pop or push lands.
     #[save_skip(default)]
     pub(crate) stack_pos: u8,
+    /// The bytes an `IN` read from its port, or an `OUT` is about to write,
+    /// low byte first, and whether the instruction produced any.
+    ///
+    /// Kept apart from `operand_bytes` rather than sharing it: an I/O access is
+    /// not a ModR/M operand, it is not described by [`access::operand_access`],
+    /// and it is not covered by the cross-check that keeps that table honest.
+    /// Sharing the buffer would make the two look like one thing to a reader
+    /// and to that assertion.
+    #[save_skip(default = [0; 2])]
+    pub(crate) port_bytes: [u8; 2],
+    #[save_skip(default)]
+    pub(crate) port_written: bool,
     /// An immediate that belongs to an instruction with a memory operand, and
     /// which the loader has therefore not fetched yet.
     ///
@@ -502,6 +520,8 @@ impl I8088 {
             operand_written: false,
             stack_words: [0; 3],
             stack_pos: 0,
+            port_bytes: [0; 2],
+            port_written: false,
             immediate_deferred: false,
             immediate_resuming: false,
             vector_words: (0, 0),
@@ -642,6 +662,18 @@ impl I8088 {
                 if remaining > 1 {
                     self.eu = Eu::Executing(remaining - 1);
                     self.tick_biu(bus, master);
+                } else if let Some(acc) = access::port_access(self.opcode())
+                    && acc.reads
+                {
+                    // An `IN` reads its port after the microcode and before the
+                    // instruction runs, which is where the recording puts it:
+                    // four clocks after the last instruction byte, not on it.
+                    self.eu = Eu::PortReading {
+                        byte: 0,
+                        total: acc.width.bytes(),
+                        t: 1,
+                    };
+                    self.tick_biu(bus, master);
                 } else {
                     self.eu = Eu::Loading;
                     self.tick_biu(bus, master);
@@ -654,6 +686,8 @@ impl I8088 {
             // one without, and why the instruction after it may then stall.
             Eu::Reading { .. } => self.tick_operand_read(bus, master),
             Eu::ReadingVector { .. } => self.tick_vector_read(bus, master),
+            Eu::PortReading { .. } => self.tick_port(bus, master, true),
+            Eu::PortWriting { .. } => self.tick_port(bus, master, false),
             Eu::Writing { .. } => self.tick_operand_write(bus, master),
             Eu::PoppingStack { .. } => self.tick_stack(bus, master, true),
             Eu::PushingStack { .. } => self.tick_stack(bus, master, false),
@@ -946,6 +980,7 @@ impl I8088 {
         // and hand a half-loaded instruction to the pipeline.
         self.immediate_deferred = false;
         self.immediate_resuming = false;
+        self.port_written = false;
         self.queue_status = Some((QueueStatus::Emptied, 0));
     }
 
@@ -1057,6 +1092,8 @@ impl I8088 {
         self.stack_base = self.sp;
         self.vector_staged = false;
         self.vector_words = (0, 0);
+        self.port_bytes = [0; 2];
+        self.port_written = false;
 
         // Resolve the operand before running anything, by walking the loaded
         // bytes exactly as the executor is about to and then rewinding.
@@ -1556,6 +1593,20 @@ impl I8088 {
             return;
         }
 
+        // An `OUT`'s port cycle goes out here for the same reason an operand
+        // write-back does: the instruction has to decide what to write first.
+        if self.port_written
+            && let Some(acc) = access::port_access(self.opcode())
+        {
+            self.port_written = false;
+            self.eu = Eu::PortWriting {
+                byte: 0,
+                total: acc.width.bytes(),
+                t: 1,
+            };
+            return;
+        }
+
         self.finish_instruction();
     }
 
@@ -1585,6 +1636,105 @@ impl I8088 {
         } else {
             self.retired = true;
         }
+    }
+
+    /// The port an `IN` or `OUT` addresses: its immediate byte, or DX.
+    ///
+    /// Known before the instruction runs either way, which is what lets the
+    /// pipeline drive the cycle rather than the executor.
+    fn port_of(&self, opcode: u8) -> u16 {
+        match opcode {
+            0xE4..=0xE7 => u16::from(self.instr[self.opcode_at as usize + 1]),
+            _ => self.dx,
+        }
+    }
+
+    /// One T-state of an I/O access: a four-T-state IOR or IOW cycle per byte,
+    /// low byte first, at consecutive port numbers.
+    ///
+    /// The port goes on the address pins the way a memory address does, in the
+    /// low sixteen bits, which is what the recording shows: `IN AL, 1Bh`
+    /// latches 0001B. No segment register computes it, so the segment status
+    /// lines say nothing for these cycles.
+    fn tick_port<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+        reading: bool,
+    ) {
+        let (byte, total, t) = match self.eu {
+            Eu::PortReading { byte, total, t } | Eu::PortWriting { byte, total, t } => {
+                (byte, total, t)
+            }
+            _ => return,
+        };
+        let port = self.port_of(self.opcode()).wrapping_add(u16::from(byte));
+        let status = if reading {
+            BusStatus::IoRead
+        } else {
+            BusStatus::IoWrite
+        };
+        let rebuild = |byte: u8, t: u8| {
+            if reading {
+                Eu::PortReading { byte, total, t }
+            } else {
+                Eu::PortWriting { byte, total, t }
+            }
+        };
+
+        match t {
+            1 => {
+                self.bus = BusPins {
+                    status,
+                    t_state: TState::T1,
+                    address: Some(u32::from(port)),
+                    data: None,
+                    segment: None,
+                };
+                self.eu = rebuild(byte, 2);
+            }
+            2 => {
+                self.drive_port_cycle(status, TState::T2);
+                self.eu = rebuild(byte, 3);
+            }
+            3 => {
+                self.drive_port_cycle(status, TState::T3);
+                if reading {
+                    let value = bus.io_read(master, u32::from(port));
+                    self.bus.data = Some(value);
+                    self.port_bytes[byte as usize] = value;
+                } else {
+                    let value = self.port_bytes[byte as usize];
+                    self.bus.data = Some(value);
+                    bus.io_write(master, u32::from(port), value);
+                }
+                self.eu = rebuild(byte, 4);
+            }
+            _ => {
+                self.drive_port_cycle(status, TState::T4);
+                if byte + 1 < total {
+                    self.eu = rebuild(byte + 1, 1);
+                } else if reading {
+                    // The port's bytes are in hand, so the instruction can run.
+                    self.eu = Eu::Loading;
+                    self.run_execute_step(bus, master);
+                } else {
+                    self.finish_instruction();
+                }
+            }
+        }
+    }
+
+    /// Drive a T-state of an I/O cycle, which no segment register addresses.
+    #[inline]
+    fn drive_port_cycle(&mut self, status: BusStatus, t_state: TState) {
+        self.bus = BusPins {
+            status,
+            t_state,
+            address: None,
+            data: None,
+            segment: None,
+        };
     }
 
     /// One T-state of the interrupt-vector read: four MEMR bus cycles from the
@@ -2151,6 +2301,120 @@ impl crate::core::debug::DebugCpu for I8088 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A bus that answers I/O separately from memory and records what the CPU
+    /// did to its ports, which is what an `IN` or `OUT` needs to be visible at
+    /// all: the trait's default sends I/O to memory.
+    struct PortBus {
+        mem: Box<[u8; 0x10_0000]>,
+        reads: Vec<u32>,
+        writes: Vec<(u32, u8)>,
+        answer: u8,
+    }
+
+    impl PortBus {
+        fn new() -> Self {
+            Self {
+                mem: Box::new([0x90; 0x10_0000]),
+                reads: Vec::new(),
+                writes: Vec::new(),
+                answer: 0,
+            }
+        }
+    }
+
+    impl Bus for PortBus {
+        type Address = u32;
+        type Data = u8;
+
+        fn read(&mut self, _master: BusMaster, addr: u32) -> u8 {
+            self.mem[(addr & 0xF_FFFF) as usize]
+        }
+
+        fn write(&mut self, _master: BusMaster, addr: u32, data: u8) {
+            self.mem[(addr & 0xF_FFFF) as usize] = data;
+        }
+
+        fn io_read(&mut self, _master: BusMaster, addr: u32) -> u8 {
+            self.reads.push(addr);
+            self.answer
+        }
+
+        fn io_write(&mut self, _master: BusMaster, addr: u32, data: u8) {
+            self.writes.push((addr, data));
+        }
+
+        fn is_halted_for(&self, _master: BusMaster) -> bool {
+            false
+        }
+
+        fn check_interrupts(&mut self, _target: BusMaster) -> InterruptState {
+            InterruptState::default()
+        }
+    }
+
+    /// Run one instruction from `CS:IP` and collect the bus cycles it drove, as
+    /// (status, address) taken off T1, which is the only T-state carrying one.
+    fn run_one(cpu: &mut I8088, bus: &mut PortBus) -> Vec<(BusStatus, u32)> {
+        let mut seen = Vec::new();
+        for _ in 0..200 {
+            let retired = cpu.tick_with_bus(bus, BusMaster::Cpu(0));
+            if let Some(addr) = cpu.bus.address {
+                seen.push((cpu.bus.status, addr));
+            }
+            if retired {
+                break;
+            }
+        }
+        seen
+    }
+
+    /// `IN AL, imm8` drives one IOR cycle at the port in its immediate, and
+    /// the byte the port answered with lands in AL. The pins are the point:
+    /// before M4 this instruction reached the outside world through the
+    /// trait's default, which sends I/O to memory, and drove no I/O cycle at
+    /// all.
+    #[test]
+    fn in_drives_an_io_read_cycle_at_its_port() {
+        let mut cpu = I8088::new();
+        let mut bus = PortBus::new();
+        cpu.cs = 0;
+        cpu.ip = 0x100;
+        // The BIU fetches from its own pointer, which `new` leaves at zero.
+        cpu.load_prefetch_queue(&[]);
+        bus.answer = 0xA5;
+        bus.mem[0x100] = 0xE4;
+        bus.mem[0x101] = 0x42;
+
+        let cycles = run_one(&mut cpu, &mut bus);
+        assert_eq!(bus.reads, vec![0x42], "one read, at the port");
+        assert_eq!(cpu.al(), 0xA5, "and its answer reaches AL");
+        assert!(
+            cycles.contains(&(BusStatus::IoRead, 0x42)),
+            "an IOR cycle with the port on the address pins: {cycles:?}"
+        );
+    }
+
+    /// `OUT DX, AX` is two IOW cycles at consecutive ports, low half first.
+    #[test]
+    fn a_word_out_drives_two_io_write_cycles() {
+        let mut cpu = I8088::new();
+        let mut bus = PortBus::new();
+        cpu.cs = 0;
+        cpu.ip = 0x100;
+        cpu.dx = 0x0300;
+        cpu.ax = 0x1234;
+        cpu.load_prefetch_queue(&[]);
+        bus.mem[0x100] = 0xEF;
+
+        let cycles = run_one(&mut cpu, &mut bus);
+        assert_eq!(bus.writes, vec![(0x300, 0x34), (0x301, 0x12)]);
+        assert!(
+            cycles.contains(&(BusStatus::IoWrite, 0x300))
+                && cycles.contains(&(BusStatus::IoWrite, 0x301)),
+            "two IOW cycles: {cycles:?}"
+        );
+    }
 
     #[test]
     fn new_reset_state() {

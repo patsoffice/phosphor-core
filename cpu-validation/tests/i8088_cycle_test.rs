@@ -22,16 +22,18 @@
 //! - **Cycle count**, reported. Execution is still atomic, so the core charges
 //!   nothing for effective-address calculation or for operand bus cycles, and
 //!   the count is a floor rather than an answer.
-//! - **Bus cycles in order**, reported. Every CODE, MEMR and MEMW transaction
-//!   the core ran, as kind, address and byte, against the recording. This is
-//!   the most diagnostic of the three, because a failure says *where* rather
-//!   than *how much*: the commonest one is that the hardware slipped a
+//! - **Bus cycles in order**, reported. Every CODE, MEMR, MEMW, IOR and IOW
+//!   transaction the core ran, as kind, address and byte, against the recording.
+//!   This is the most diagnostic of the three, because a failure says *where*
+//!   rather than *how much*: the commonest one is that the hardware slipped a
 //!   prefetch in between an operand read and its write-back, in execution time
 //!   this core does not yet spend, and the mismatch shows that as an ordering
 //!   difference with every address and byte still correct.
 //!
-//! I/O and interrupt-acknowledge cycles are M4; a trace containing one is left
-//! uncompared rather than silently matched against nothing.
+//! Interrupt-acknowledge cycles are M4; a trace containing one is left
+//! uncompared rather than silently matched against nothing. I/O cycles are
+//! compared, which takes reading the recording's second set of command lines:
+//! see [`recorded_bus_cycles`].
 //!
 //! The vectors are a fixed, external, hardware-recorded standard. Nothing in
 //! here may adjust them, and no tolerance may be widened to make a milestone
@@ -103,13 +105,15 @@ struct BusCycle {
     byte: u8,
 }
 
-/// The kinds of bus cycle this core can currently drive. I/O and interrupt
-/// acknowledge are M4.
+/// The kinds of bus cycle this core drives. Interrupt acknowledge is the one
+/// the suite records nowhere and this core cannot yet produce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
     Code,
     MemRead,
     MemWrite,
+    IoRead,
+    IoWrite,
 }
 
 impl std::fmt::Display for BusCycle {
@@ -118,6 +122,8 @@ impl std::fmt::Display for BusCycle {
             Kind::Code => "F",
             Kind::MemRead => "R",
             Kind::MemWrite => "W",
+            Kind::IoRead => "I",
+            Kind::IoWrite => "O",
         };
         write!(f, "{k}{:05X}:{:02X}", self.address, self.byte)
     }
@@ -138,16 +144,26 @@ fn recorded_bus_cycles(tc: &I8088TestCase) -> Vec<BusCycle> {
                 BusStatus::CODE => Some(Kind::Code),
                 BusStatus::MEMR => Some(Kind::MemRead),
                 BusStatus::MEMW => Some(Kind::MemWrite),
-                // INTA, IOR, IOW, HALT and PASV are not driven by this core
-                // yet. A trace containing one is left for M4 rather than
-                // silently compared against nothing.
+                BusStatus::IOR => Some(Kind::IoRead),
+                BusStatus::IOW => Some(Kind::IoWrite),
+                // INTA, HALT and PASV are not driven by this core. A trace
+                // containing an interrupt acknowledge is left uncompared
+                // rather than silently matched against nothing.
                 _ => None,
             };
             pending = kind.map(|k| (k, addr));
         }
         // T3 is where the data is valid, and where the i8288 asserts either the
         // read line or one of the two write lines.
-        let commanded = c.3.read() || c.3.advanced_write() || c.3.write();
+        //
+        // **There are two sets of them and an I/O cycle asserts the second.**
+        // Field 3 is MRDC/AMWC/MWTC and field 4 is IORC/AIOWC/IOWC, which
+        // `CommandLines::io_lines_are_a_separate_field_from_memory_lines` in the
+        // library states outright. Looking only at field 3 would mean no
+        // recorded I/O cycle ever reached this comparison, and all eight of
+        // `E4`-`E7` and `EC`-`EF` reading as this core inventing a bus cycle:
+        // `in al, 1Bh` would come out as "2 bus cycles, hardware ran 1".
+        let commanded = !c.3.is_idle() || !c.4.is_idle();
         if c.t_state() == TState::T3
             && commanded
             && let Some((kind, address)) = pending.take()
@@ -333,6 +349,13 @@ fn load_initial_state(cpu: &mut I8088, bus: &mut TracingBus20, state: &I8088Init
     cpu.load_prefetch_queue(&state.queue);
 }
 
+/// Serve the ports the way the recording did. Without this an `IN` reads 0xFF
+/// where the part read something else, and the comparison of its IOR cycle's
+/// data byte fails for a reason that is about this harness.
+fn load_port_reads(bus: &mut TracingBus20, tc: &I8088TestCase) {
+    bus.port_reads = tc.port_reads();
+}
+
 /// Run one case and compare T-state counts.
 ///
 /// The instruction is run to its boundary exactly as the state gate runs it,
@@ -345,6 +368,7 @@ fn run_test_case(tc: &I8088TestCase) -> Verdict {
     let mut bus = TracingBus20::new();
 
     load_initial_state(&mut cpu, &mut bus, &tc.initial);
+    load_port_reads(&mut bus, tc);
 
     // The span being measured is the suite's, not this replay's.
     //
@@ -432,6 +456,8 @@ fn run_test_case(tc: &I8088TestCase) -> Verdict {
             CoreBusStatus::Code => Some(Kind::Code),
             CoreBusStatus::MemRead => Some(Kind::MemRead),
             CoreBusStatus::MemWrite => Some(Kind::MemWrite),
+            CoreBusStatus::IoRead => Some(Kind::IoRead),
+            CoreBusStatus::IoWrite => Some(Kind::IoWrite),
             _ => None,
         };
         if let Some(kind) = kind {

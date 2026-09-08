@@ -531,6 +531,48 @@ pub struct I8088Cycle(
     pub u8,
 );
 
+impl I8088TestCase {
+    /// The bytes the recording shows the part reading from I/O ports, in order.
+    ///
+    /// Taken from the data pins on the T3 of every IOR cycle, which is where
+    /// this format keeps them: an `IN`'s result is nowhere in `initial.ram`,
+    /// and without this a replay reads whatever the harness's memory happens to
+    /// hold and then disagrees with `final.regs.ax` for a reason that is about
+    /// the harness.
+    pub fn port_reads(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut pending = false;
+        for c in &self.cycles {
+            if c.address().is_some() {
+                pending = c.status() == BusStatus::IOR;
+            }
+            if pending && c.t_state() == TState::T3 {
+                out.push(c.6);
+                pending = false;
+            }
+        }
+        out
+    }
+
+    /// And the writes, as (port, byte) pairs, for a harness that wants to check
+    /// what went out rather than only what came back.
+    pub fn port_writes(&self) -> Vec<(u16, u8)> {
+        let mut out = Vec::new();
+        let mut pending: Option<u16> = None;
+        for c in &self.cycles {
+            if let Some(addr) = c.address() {
+                pending = (c.status() == BusStatus::IOW).then_some(addr as u16);
+            }
+            if c.t_state() == TState::T3
+                && let Some(port) = pending.take()
+            {
+                out.push((port, c.6));
+            }
+        }
+        out
+    }
+}
+
 impl I8088Cycle {
     /// True when ALE is asserted, which is the only time field 1 is an address.
     pub fn ale(&self) -> bool {
@@ -812,12 +854,28 @@ impl I8088Metadata {
 /// A bus with 1MB of memory for 8088 validation (20-bit physical addresses).
 pub struct TracingBus20 {
     pub memory: Box<[u8; 0x10_0000]>,
+    /// What an I/O read should return, in the order the recording shows the
+    /// reads happening, and how many have been served.
+    ///
+    /// I/O is the one thing the 8088 vectors do not put in `initial.ram`: a
+    /// port read's data appears only in the cycle trace, on the T3 of an IOR
+    /// cycle. That is why the eight `IN`/`OUT` files were skipped for as long
+    /// as this harness read only the state. Fill this from
+    /// [`I8088TestCase::port_reads`] and an `IN` returns what the part saw.
+    pub port_reads: Vec<u8>,
+    pub port_index: usize,
+    /// The port writes the CPU performed, in order, for comparison against the
+    /// recorded IOW cycles.
+    pub port_writes: Vec<(u16, u8)>,
 }
 
 impl TracingBus20 {
     pub fn new() -> Self {
         Self {
             memory: Box::new([0; 0x10_0000]),
+            port_reads: Vec::new(),
+            port_index: 0,
+            port_writes: Vec::new(),
         }
     }
 }
@@ -955,6 +1013,23 @@ impl Bus for TracingBus20 {
 
     fn write(&mut self, _master: BusMaster, addr: u32, data: u8) {
         self.memory[(addr & 0xF_FFFF) as usize] = data;
+    }
+
+    /// I/O is a separate address space on the 8088, so this does not fall back
+    /// to memory the way the trait's default does. An unfilled queue returns
+    /// 0xFF, which is what an unclaimed port reads as on a real board.
+    fn io_read(&mut self, _master: BusMaster, _addr: u32) -> u8 {
+        let value = self
+            .port_reads
+            .get(self.port_index)
+            .copied()
+            .unwrap_or(0xFF);
+        self.port_index += 1;
+        value
+    }
+
+    fn io_write(&mut self, _master: BusMaster, addr: u32, data: u8) {
+        self.port_writes.push((addr as u16, data));
     }
 
     fn is_halted_for(&self, _master: BusMaster) -> bool {
