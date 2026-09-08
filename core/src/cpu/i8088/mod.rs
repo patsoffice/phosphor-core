@@ -17,6 +17,7 @@ pub mod decode;
 pub mod execute;
 pub mod flags;
 pub(crate) mod format;
+pub(crate) mod microcode;
 pub mod registers;
 pub(crate) mod timing;
 
@@ -350,6 +351,14 @@ pub(crate) enum Eu {
     /// what the recorded traces show the hardware doing between an operand read
     /// and its write-back, and it is why this phase sits where it does.
     Executing(u8),
+    /// The same clocks, spent by a [`microcode::Step::Spend`] rather than by a
+    /// timing row, with the clocks still to go.
+    ///
+    /// Distinct from [`Eu::Executing`] only in what happens when it runs out:
+    /// that one retires into the instruction body, this one hands back to the
+    /// sequencer, which may have several more spends and several more bus
+    /// cycles to place before the instruction is over.
+    McSpend(u8),
     /// Writing the memory operand back after the instruction has run.
     Writing { byte: u8, total: u8, t: u8 },
 }
@@ -492,6 +501,14 @@ pub struct I8088 {
     /// Which phase of an instruction the execution unit is in.
     #[save_skip(default)]
     pub(crate) eu: Eu,
+    /// The microcode routine this instruction is running, and how far into it.
+    ///
+    /// `None` for an instruction whose time still comes from a timing row.
+    /// While this is set the sequencer owns the order of everything the
+    /// instruction puts on the bus, and the row machinery is not consulted at
+    /// all: see [`microcode::routine`].
+    #[save_skip(default)]
+    pub(crate) mc: Option<microcode::Cursor>,
     /// The memory operand this instruction addresses, once resolved, as
     /// segment and offset. `None` for a register operand or no operand at all,
     /// which is also the case where no bus cycle is owed.
@@ -720,6 +737,7 @@ impl I8088 {
             opcode_at: 0,
             stage: Stage::Opcode,
             eu: Eu::Loading,
+            mc: None,
             operand_at: None,
             operand_bytes: [0; 4],
             operand_written: false,
@@ -833,7 +851,13 @@ impl I8088 {
         if self.pending_flush {
             self.pending_flush = false;
             self.flush_queue();
-            self.retired = true;
+            // A routine that flushes in the middle of itself has not retired:
+            // the part still owes the pushes the sequencer has after it. That
+            // ordering is the point of a step list, and retirement belongs at
+            // the end of one. See [`I8088::advance_microcode`].
+            if self.mc.is_none() {
+                self.retired = true;
+            }
             // The request for the reload is made on the flush clock itself, so
             // the bus still runs here: `Tr` is spent now, `Ts` and `T0` on the
             // two after it, and the reload's T1 lands three clocks past the
@@ -916,6 +940,17 @@ impl I8088 {
                     self.eu = Eu::Loading;
                     self.run_execute_step(bus, master);
                 }
+            }
+            // A step list's clocks, which are microcode exactly as
+            // [`Eu::Executing`]'s are, so the BIU prefetches through them too.
+            // That is what puts the recording's code fetch between `INT n`'s
+            // two vector reads: the single clock at 0x1a1 is one of these.
+            Eu::McSpend(remaining) => {
+                self.eu = if remaining > 1 {
+                    Eu::McSpend(remaining - 1)
+                } else {
+                    self.advance_microcode(bus, master)
+                };
             }
             // There is one bus, and while the EU is using it the BIU cannot
             // prefetch. That contention is not incidental: it is why an
@@ -1410,6 +1445,15 @@ impl I8088 {
             Eu::AddressCalc(n) => n < ADDRESS_CYCLE_CLOCKS && self.operand_reaches_memory(),
             // These three clocks are a pop's address cycle under another name.
             Eu::StackLeadIn(n) => n < ADDRESS_CYCLE_CLOCKS,
+            // A step list's address cycle is a claim like any other, and
+            // `addressed` is exactly the flag that says the sequencer is in
+            // one rather than in ordinary microcode. `INT n` measures the
+            // difference: the part runs a code fetch **between** its two
+            // vector words, on the clock at 0x1a1 where the prefetcher is
+            // still free, and none in front of the first word. Without this
+            // the BIU takes the bus in that first address cycle and the fetch
+            // comes out ten T-states early.
+            Eu::McSpend(_) => self.mc.is_some_and(|cursor| cursor.addressed),
             Eu::Executing(n) => {
                 // An `OUT`'s port cycle does not start on the microcode's last
                 // T-state but on the one after it: the instruction has to decide
@@ -1595,11 +1639,21 @@ impl I8088 {
         // this the hard way: it flushes, and a frame boundary lands mid-phase
         // often enough that the next frame started by executing a
         // zero-length instruction.
-        self.eu = Eu::Loading;
-        self.operand_at = None;
-        self.operand_written = false;
-        self.stack_staged = false;
-        self.stack_pos = 0;
+        //
+        // **Unless a step list is still running**, which is the one flush that
+        // is not the end of anything. `INT n` throws the queue away with a
+        // push still to go, so that the reload at the handler is on the bus
+        // before the return offset is; tearing the phase down here would drop
+        // that push and hand the loader a half-retired instruction. The queue
+        // and the prefetcher above are flushed either way, because those are
+        // what the step actually does.
+        if self.mc.is_none() {
+            self.eu = Eu::Loading;
+            self.operand_at = None;
+            self.operand_written = false;
+            self.stack_staged = false;
+            self.stack_pos = 0;
+        }
         // A deferred immediate belongs to the instruction being thrown away.
         // Left set, the loader would take the next instruction's opcode for it
         // and hand a half-loaded instruction to the pipeline.
@@ -1821,6 +1875,12 @@ impl I8088 {
         }
 
         let _ = operand_access;
+        // An instruction whose microcode has been transcribed is walked from
+        // here, and never asks a timing row what it costs.
+        if self.begin_microcode_routine() {
+            self.eu = self.advance_microcode(bus, master);
+            return;
+        }
         self.eu = self.begin_pre_execute_phase();
         self.execute_if_ready(bus, master);
     }
@@ -1931,6 +1991,31 @@ impl I8088 {
             return Eu::ReadingVector { byte: 0, t: 1 };
         }
         self.begin_execute_phase()
+    }
+
+    /// Start this instruction's microcode routine if it has one, and say
+    /// whether it did.
+    ///
+    /// This is the fork between the two models. An instruction with a routine
+    /// is walked step by step and never looks at a timing row; one without is
+    /// priced by [`I8088::begin_execute_phase`] exactly as before. The set
+    /// with routines is the set being transcribed, and it grows one opcode at
+    /// a time.
+    fn begin_microcode_routine(&mut self) -> bool {
+        // An interrupt being serviced has no opcode to look up. It runs the
+        // same routine, but the acknowledge cycles in front of it are not
+        // recorded anywhere in the suite, so it stays on the row until there
+        // is something to check a transcription against.
+        if self.servicing.is_some() {
+            return false;
+        }
+        let Some(steps) = microcode::routine(self.opcode()) else {
+            return false;
+        };
+        self.mc = Some(microcode::Cursor::new(steps));
+        self.stack_staged = true;
+        self.stack_pos = 0;
+        true
     }
 
     /// The interrupt vector this instruction is going to take, when the
@@ -2288,6 +2373,104 @@ impl I8088 {
         }
     }
 
+    /// Walk the step list until a step that occupies a T-state, and return the
+    /// phase that spends it.
+    ///
+    /// The steps that cost nothing in themselves happen here, on the clock of
+    /// whatever step follows them: stopping the prefetcher, and running the
+    /// instruction body. A routine that runs out returns the instruction to
+    /// the loader, which is the sequencer's version of retiring.
+    ///
+    /// `Flush` is the one step handled by setting a flag rather than by
+    /// returning a phase, because the flush clock is already a phase of its
+    /// own: [`I8088::pending_flush`] spends it and starts the reload, and the
+    /// sequencer picks up again on the T-state after.
+    fn advance_microcode<B: Bus<Address = u32, Data = u8> + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        master: BusMaster,
+    ) -> Eu {
+        loop {
+            let Some(mut cursor) = self.mc else {
+                return Eu::Loading;
+            };
+            let Some(step) = cursor.next() else {
+                // The routine is over. Everything it was going to put on the
+                // bus is there, and the flush, if it had one, has already
+                // happened at the point its microcode puts it.
+                self.mc = None;
+                self.finish_instruction();
+                return self.eu;
+            };
+            self.mc = Some(cursor);
+
+            match step {
+                microcode::Step::Spend(n) => return Eu::McSpend(n),
+                // Free in itself: it costs clocks only through a code fetch
+                // already in flight, which `FetchState::Suspended` handles.
+                microcode::Step::Susp => {
+                    self.fetch = FetchState::Suspended;
+                }
+                // Costs one clock, and that clock is `pending_flush`'s own
+                // cycle rather than a spend: it fires on the next T-state,
+                // throws the queue away and starts the reload, and the step
+                // after this one runs on the T-state after that. Returning a
+                // phase here as well would charge the flush twice.
+                //
+                // The transfer is discharged with it. `finish_instruction`
+                // flushes for any instruction that redirected the stream, and
+                // this routine has just done that at the point its own
+                // microcode puts it, which is the whole reason the list
+                // exists: leaving the flag set would throw the queue away a
+                // second time at the far end.
+                microcode::Step::Flush => {
+                    self.pending_flush = true;
+                    self.transferred = false;
+                }
+                microcode::Step::ReadVectorWord => {
+                    // A read is not on the bus on the clock its microcode asks
+                    // for it. The request and the two clocks of address
+                    // arithmetic run in front of every transfer, and the
+                    // recording is unambiguous about it: `INT n`'s first
+                    // vector read drives T1 three T-states after the last
+                    // clock of the microcode at 0x19f, and its second drives
+                    // T1 three after the clock at 0x1a1. Both were two early
+                    // when the phase drove T1 the moment it was entered.
+                    //
+                    // Spent here rather than written into the step list
+                    // because it is the bus unit's and not the microcode's:
+                    // the same three clocks sit in front of every other access
+                    // this core runs, as [`Eu::AddressCalc`] for an operand
+                    // and [`Eu::StackLeadIn`] for a pop.
+                    if !cursor.addressed {
+                        cursor.addressed = true;
+                        cursor.rewind();
+                        self.mc = Some(cursor);
+                        return Eu::McSpend(ADDRESS_CYCLE_CLOCKS - 1);
+                    }
+                    cursor.addressed = false;
+                    self.mc = Some(cursor);
+                    return Eu::ReadingVector {
+                        byte: cursor.read * 2,
+                        t: 1,
+                    };
+                }
+                microcode::Step::Push => {
+                    return Eu::PushingStack {
+                        word: cursor.pushed,
+                        total: cursor.pushed + 1,
+                        byte: 0,
+                        t: timing::WRITE_LEAD_IN,
+                    };
+                }
+                // Costs nothing: the values the pushes carry are decided here,
+                // and the clocks the part spends deciding them are the spends
+                // on either side.
+                microcode::Step::Run => self.run_execute_step(bus, master),
+            }
+        }
+    }
+
     /// Run the instruction proper, with its operand already in hand, and then
     /// hand off to the write-back phase if it produced one.
     fn run_execute_step<B: Bus<Address = u32, Data = u8> + ?Sized>(
@@ -2423,6 +2606,13 @@ impl I8088 {
             self.instr_pos,
         );
 
+        // A sequenced instruction has staged its pushes but not decided when
+        // they go out: that is the step list's, and so is retiring. Returning
+        // here leaves the cursor to place them.
+        if self.mc.is_some() {
+            return;
+        }
+
         if self.hand_staged_pushes_to_the_bus() {
             return;
         }
@@ -2505,6 +2695,10 @@ impl I8088 {
         // And the interrupt, if that is what just finished. Left set, the next
         // instruction's execute step would take itself for an interrupt.
         self.servicing = None;
+        // And the step list, for the same reason: a cursor left behind would
+        // have the next instruction's pushes and reads reporting to a routine
+        // that is over.
+        self.mc = None;
 
         if self.transferred {
             // The queue holds bytes from the path not taken, and throwing them
@@ -2883,7 +3077,26 @@ impl I8088 {
             }
             _ => {
                 self.drive_bus_cycle(BusStatus::MemRead, TState::T4, SegReg::DS);
-                if byte + 1 < 4 {
+                // A sequencer reads the vector a word at a time, because the
+                // part's microcode has a clock between the two words and puts
+                // a code fetch in it. Without a step list the four byte
+                // cycles run back to back, which is where the fetch used to
+                // go missing.
+                if let Some(mut cursor) = self.mc {
+                    if byte % 2 == 0 {
+                        self.eu = Eu::ReadingVector {
+                            byte: byte + 1,
+                            t: 1,
+                        };
+                        return;
+                    }
+                    cursor.read += 1;
+                    self.mc = Some(cursor);
+                    if cursor.read == 2 {
+                        self.vector_staged = true;
+                    }
+                    self.eu = self.advance_microcode(bus, master);
+                } else if byte + 1 < 4 {
                     self.eu = Eu::ReadingVector {
                         byte: byte + 1,
                         t: 1,
@@ -3047,7 +3260,18 @@ impl I8088 {
                 // behind it. See [`I8088::eu_tail`].
                 if !popping && byte == 1 && word + 1 == total {
                     self.eu_tail = Some((status, SegReg::SS));
-                    self.finish_or_write_operand();
+                    // A push inside a step list is one word of several, and
+                    // what follows it is the next step rather than the end of
+                    // the instruction: `INT n` writes the flags, spends five
+                    // clocks, writes the return segment, and only then throws
+                    // the queue away.
+                    if let Some(mut cursor) = self.mc {
+                        cursor.pushed += 1;
+                        self.mc = Some(cursor);
+                        self.eu = self.advance_microcode(bus, master);
+                    } else {
+                        self.finish_or_write_operand();
+                    }
                 } else {
                     self.eu = rebuild(byte, 4);
                 }

@@ -878,9 +878,7 @@ fn fetch_gap_diff() {
                     .collect::<Vec<_>>()
                     .join(" ")
             };
-            *pairs
-                .entry((render(&ours), render(&theirs)))
-                .or_default() += 1;
+            *pairs.entry((render(&ours), render(&theirs))).or_default() += 1;
         }
         let wrong: usize = pairs.values().sum();
         if wrong == 0 {
@@ -897,7 +895,10 @@ fn fetch_gap_diff() {
     rows.sort_by_key(|r| std::cmp::Reverse(r.4));
     let total: usize = rows.iter().map(|r| r.4).sum();
     eprintln!("\nwhen our bus cycles start, against the part's, as gaps between them");
-    eprintln!("  {} files differ somewhere, {total} cases in all", rows.len());
+    eprintln!(
+        "  {} files differ somewhere, {total} cases in all",
+        rows.len()
+    );
     eprintln!("\n  file     ours                      theirs");
     for (stem, ours, theirs, n, wrong) in rows.iter().take(30) {
         eprintln!("  {stem:7}  {ours:<24}  {theirs:<24}  {n} of {wrong}");
@@ -1118,9 +1119,7 @@ fn loader_read_gap_diff() {
                     .collect::<Vec<_>>()
                     .join(" ")
             };
-            *pairs
-                .entry((render(&ours), render(&theirs)))
-                .or_default() += 1;
+            *pairs.entry((render(&ours), render(&theirs))).or_default() += 1;
         }
         let wrong: usize = pairs.values().sum();
         if wrong == 0 {
@@ -1136,7 +1135,10 @@ fn loader_read_gap_diff() {
     rows.sort_by_key(|r| std::cmp::Reverse(r.4));
     let total: usize = rows.iter().map(|r| r.4).sum();
     eprintln!("\nour read rhythm against the part's, full queue and no prefix");
-    eprintln!("  {} files differ somewhere, {total} cases in all", rows.len());
+    eprintln!(
+        "  {} files differ somewhere, {total} cases in all",
+        rows.len()
+    );
     eprintln!("\n  file     ours            theirs          commonest of the file's wrong");
     for (stem, ours, theirs, n, wrong) in &rows {
         eprintln!("  {stem:7}  {ours:<15} {theirs:<15} {n} of {wrong}");

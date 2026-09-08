@@ -993,26 +993,29 @@ struct Ratchet {
     bus_prefetched: f64,
 }
 
-/// Recorded 2026-09-06, over 3,007,000 vectors in 323 files, when a control
-/// transfer learned to stop prefetching. See `FetchState::Suspended` in the
-/// core.
+/// Recorded 2026-09-06, over 3,007,000 vectors in 323 files, when `INT n`
+/// stopped being priced from a row and started being walked as microcode. See
+/// `microcode::INTERRUPT` in the core.
 ///
-/// The bus-cycle figures are what these two changes moved, and that is the
-/// point: they measure *where* a transaction happens, and both changes were
-/// about where. The address cycle before this one and `SUSP` here each moved
-/// the prefetched half several points.
+/// **Both prefetched figures moved and neither empty-queue figure moved at
+/// all**, which is what says this was one file and not a general gain: `CD` has
+/// exactly 5,000 cases in the prefetched half, and it went from wrong on every
+/// one of them, on count and on bus order alike, to exact on every one. Its
+/// empty-queue half is untouched, which every change on this branch has been:
+/// the loader still takes an instruction's first byte a T-state after the part
+/// does, so no empty-queue case can match its opening bus cycle.
 const RATCHET: Ratchet = Ratchet {
-    count: 75.50,
+    count: 75.67,
     count_empty: 58.04,
-    count_prefetched: 92.96,
-    bus: 45.30,
+    count_prefetched: 93.30,
+    bus: 45.47,
     // **Not one case in 1,503,500, and that is a statement about the loader.**
     // It still takes an instruction's first byte a T-state after the part does,
     // so every empty-queue case is one bus cycle out at the front and this half
     // cannot pass whatever else is right. The floor is here so that fixing the
     // loader shows up as a jump rather than as a number nobody was watching.
     bus_empty: 0.0,
-    bus_prefetched: 90.61,
+    bus_prefetched: 90.94,
 };
 
 /// How far above [`RATCHET`] a figure may sit before the gate insists it be
