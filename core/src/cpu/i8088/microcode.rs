@@ -229,6 +229,11 @@ pub(crate) fn routine(opcode: u8, modrm: u8, branch: bool) -> Option<Routine> {
             }
             Some(
                 r.then(Step::Run)
+                    // The jump into RELJMP. `reljmp2` takes it when the caller
+                    // fell in rather than through, which the conditional forms
+                    // do, and a taken `JO` shows the `JMP` clock in front of its
+                    // suspend.
+                    .spend(1)
                     .then(Step::Susp)
                     // 0x0d2, 0x0d3, CORR, 0x0d4.
                     .spend(4)
@@ -259,8 +264,22 @@ pub(crate) fn routine(opcode: u8, modrm: u8, branch: bool) -> Option<Routine> {
             let stores = opcode & 0x02 == 0;
             let mut r = mc();
             if !register_form {
-                r = r.spend(2);
+                // **The two ways out of the effective-address routine cost
+                // differently, and `MOV` is where it shows.** The load direction
+                // leaves through `1E2: OPR -> tmpb`, which is the line that
+                // spends the operand read's T4, so only `RET` is left and the
+                // front of the routine is one clock. The store direction never
+                // reads: it leaves through `1E3: tmpa -> IND`, which has a clock
+                // of its own, and `RET` behind it, so the front is two.
+                //
+                // The probe has both on screen. `mov cl, byte [ss:bp+di-64h]`
+                // runs `1E2` on the read's T4, `RET`, and then reaches
+                // `000: XA -> tmpb` on the same T-state as `FETCH_NEXT`.
+                // `mov byte [ds:bx+di+Dh], ch` runs `1E3`, `RET`, `000`, `001`,
+                // and asks for the bus on the clock after that.
+                r = r.spend(if stores { 2 } else { 1 });
                 if stores {
+                    // 0x000 and 0x001.
                     r = r.spend(2);
                 }
             }

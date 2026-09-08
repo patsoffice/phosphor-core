@@ -707,21 +707,6 @@ pub struct I8088 {
     /// `F` then `S` then `E` on three separate cycles.
     #[save_skip(default)]
     pub(crate) pending_flush: bool,
-    /// The queue has already been thrown away and the reload already requested,
-    /// on a T-state that was running when the step list reached the flush. Only
-    /// the status line is still owed, on the T-state after.
-    ///
-    /// **The published flush has an immediate effect and a lagged report, and
-    /// they are not the same clock.** `biu_queue_flush` empties the queue and
-    /// calls `biu_fetch_start` at the instant the routine reaches it, so
-    /// `ta_cycle` is `Tr` before the T-state it lands in is spent; but the
-    /// `QueueOp::Flush` it raises is only rolled into `last_queue_op` at the end
-    /// of that T-state (`cycle.rs:367`) and recorded by the one after
-    /// (`mod.rs:1167`). [`I8088::pending_flush`] carries both together, which is
-    /// right when the sequencer is choosing what the next T-state does and a
-    /// clock late when it is already inside one.
-    #[save_skip(default)]
-    pub(crate) pending_flush_report: bool,
 
     // -- BIU and prefetch queue --------------------------------------------
     /// The instruction queue, oldest byte first.
@@ -916,7 +901,6 @@ impl I8088 {
             retired: false,
             transferred: false,
             pending_flush: false,
-            pending_flush_report: false,
             queue: [0; QUEUE_LEN],
             loader_stall: 0,
             loader_starved: 0,
@@ -1023,13 +1007,6 @@ impl I8088 {
         // The reload is requested here too, so the bus below runs on this same
         // clock: `Tr` is spent now, `Ts` and `T0` on the two after it, and the
         // reload's T1 lands three clocks past the flush.
-        // A flush that already took effect inside the previous T-state still
-        // owes its status line here. See [`I8088::pending_flush_report`].
-        if self.pending_flush_report {
-            self.pending_flush_report = false;
-            self.queue_status = Some((QueueStatus::Emptied, 0));
-        }
-
         if self.pending_flush {
             self.pending_flush = false;
             self.flush_queue();
@@ -2233,7 +2210,11 @@ impl I8088 {
         // Not `servicing`: a flush is what a taken interrupt *ends* with, so
         // clearing it here would tear down the sequence at the moment it
         // succeeds. `finish_instruction` clears it, before the flush.
-        self.queue_status = Some((QueueStatus::Emptied, 0));
+        //
+        // The status line waits a T-state, as every queue operation's does: the
+        // queue and the reload are what happen now. A taken `JO` throws its
+        // queue away on `0D5`'s clock and reports `E` on the one behind it.
+        self.queue_status_pending = Some((QueueStatus::Emptied, 0));
     }
 
     /// Decide what the loader fetches next, having just taken delivery of a
@@ -3089,6 +3070,13 @@ impl I8088 {
                         self.mc = Some(cursor);
                         return Eu::McSpend(1);
                     }
+                    // **The T-state it stopped on belongs to the step behind
+                    // it.** The suspension ends at the fetch's last T-state
+                    // rather than after it, so that T4 is the next microcode
+                    // line's clock. A taken `JO` has it on screen: the fetch it
+                    // waits for reaches T4 on cycle 5 and `0D2` runs there, not
+                    // on cycle 6.
+                    released = true;
                     self.ta = TaCycle::Td;
                     self.pl_status = BusStatus::Passive;
                 }
@@ -3124,11 +3112,9 @@ impl I8088 {
                         // release clock, and the published routine reaches its
                         // flush before that clock is spent. So the queue goes
                         // and the reload is requested now, three clocks ahead of
-                        // the reload's T1, and only the status line waits for
-                        // the T-state after. See [`I8088::pending_flush_report`].
+                        // the reload's T1. The status line waits for the T-state
+                        // after on its own, as every queue operation's does.
                         self.flush_queue();
-                        self.queue_status = None;
-                        self.pending_flush_report = true;
                     } else {
                         self.pending_flush = true;
                     }
@@ -4161,7 +4147,6 @@ impl Cpu for I8088 {
         self.opcode_at = 0;
         self.retired = false;
         self.pending_flush = false;
-        self.pending_flush_report = false;
         // Reset flushes the instruction queue, which is exactly what the test
         // suite's setup routine relies on before it installs a queue state.
         self.flush_queue();
@@ -5007,10 +4992,13 @@ mod tests {
             "the flush is itself the request for the reload"
         );
         assert_eq!(cpu.pl_status, BusStatus::Code);
+        // The queue and the reload are what happen now; the status line follows
+        // a T-state behind, as every queue operation's does. See
+        // [`I8088::queue_status_pending`].
         assert_eq!(
-            cpu.queue_status,
+            cpu.queue_status_pending,
             Some((QueueStatus::Emptied, 0)),
-            "a flush is reported on QS0/QS1 as E"
+            "a flush is reported on QS0/QS1 as E, on the T-state after it"
         );
     }
 
