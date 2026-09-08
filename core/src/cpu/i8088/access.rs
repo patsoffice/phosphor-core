@@ -262,6 +262,19 @@ pub(crate) fn operand_access(opcode: u8, modrm: u8) -> Access {
         // POP r/m16 writes the operand, and separately pops the stack.
         0x8F => WRITE_W,
 
+        // The direct-address accumulator moves and XLAT. None of these has a
+        // ModR/M byte: the first four carry their address as a 16-bit
+        // displacement and XLAT computes it from BX and AL. They reach memory
+        // all the same, and until the pipeline knew that they were reaching it
+        // without running a bus cycle at all, which cost them four clocks
+        // apiece and left forty thousand vectors with a transaction missing
+        // from the middle of the recording.
+        0xA0 => READ_B,
+        0xA1 => READ_W,
+        0xA2 => WRITE_B,
+        0xA3 => WRITE_W,
+        0xD7 => READ_B,
+
         // LES and LDS load a segment register and a general register from four
         // consecutive bytes.
         0xC4 | 0xC5 => READ_FAR,

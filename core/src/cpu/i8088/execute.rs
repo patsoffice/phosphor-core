@@ -444,27 +444,28 @@ impl I8088 {
             // MOV AL/AX, [moffs] (0xA0-0xA1)
             // MOV [moffs], AL/AX (0xA2-0xA3)
             // =============================================================
+            // The direct-address accumulator moves. These reach memory through
+            // the operand helpers like any other memory operand, so the
+            // pipeline runs their bus cycles and the operand table's
+            // cross-check can see them. Reaching the bus directly, which is
+            // what they used to do, put the whole transaction on one T-state.
             0xA0 => {
-                let offset = self.fetch_word();
-                let seg = self.effective_segment(SegReg::DS);
-                let val = self.read_byte(bus, master, seg, offset);
+                let operand = self.direct_address_operand();
+                let val = self.read_operand8(operand, bus, master);
                 self.set_al(val);
             }
             0xA1 => {
-                let offset = self.fetch_word();
-                let seg = self.effective_segment(SegReg::DS);
-                let val = self.read_word(bus, master, seg, offset);
+                let operand = self.direct_address_operand();
+                let val = self.read_operand16(operand, bus, master);
                 self.ax = val;
             }
             0xA2 => {
-                let offset = self.fetch_word();
-                let seg = self.effective_segment(SegReg::DS);
-                self.write_byte(bus, master, seg, offset, self.al());
+                let operand = self.direct_address_operand();
+                self.write_operand8(operand, bus, master, self.al());
             }
             0xA3 => {
-                let offset = self.fetch_word();
-                let seg = self.effective_segment(SegReg::DS);
-                self.write_word(bus, master, seg, offset, self.ax);
+                let operand = self.direct_address_operand();
+                self.write_operand16(operand, bus, master, self.ax);
             }
 
             // =============================================================
@@ -689,7 +690,14 @@ impl I8088 {
             0xD7 => {
                 let seg = self.effective_segment(SegReg::DS);
                 let offset = self.bx.wrapping_add(self.al() as u16);
-                let val = self.read_byte(bus, master, seg, offset);
+                let val = self.read_operand8(
+                    Operand::Memory {
+                        segment: seg,
+                        offset,
+                    },
+                    bus,
+                    master,
+                );
                 self.set_al(val);
             }
 

@@ -100,6 +100,24 @@ impl I8088 {
         }
     }
 
+    /// The operand of a direct-address accumulator move, consuming the 16-bit
+    /// displacement that carries its address.
+    ///
+    /// `MOV AL, [1234h]` and its three siblings have no ModR/M byte, so nothing
+    /// in [`Self::resolve_modrm`] applies, but the result is an ordinary memory
+    /// operand and the pipeline runs its bus cycles like any other. Written
+    /// once here rather than four times in `execute.rs`, so that what the
+    /// executor consumes and what
+    /// [`I8088::direct_operand`](super::I8088::direct_operand) resolved cannot
+    /// drift apart.
+    pub(crate) fn direct_address_operand(&mut self) -> Operand {
+        let offset = self.fetch_word();
+        Operand::Memory {
+            segment: self.effective_segment(SegReg::DS),
+            offset,
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Operand read/write helpers
     // -----------------------------------------------------------------------

@@ -1013,6 +1013,7 @@ impl I8088 {
             }
             access::operand_access(opcode, self.instr[self.opcode_at as usize + 1])
         } else {
+            self.operand_at = self.direct_operand(opcode);
             access::operand_access(opcode, 0)
         };
         self.ip = saved_ip;
@@ -1024,9 +1025,19 @@ impl I8088 {
         // through its address, read and write phases and comes back through
         // `run_execute_step`.
         if self.operand_at.is_some() {
-            let modrm = self.instr[self.opcode_at as usize + 1];
-            let cycles = access::ea_cycles(modrm);
-            self.eu = Eu::AddressCalc(cycles);
+            if format::format_of(opcode).modrm {
+                let modrm = self.instr[self.opcode_at as usize + 1];
+                self.eu = Eu::AddressCalc(access::ea_cycles(modrm));
+                return;
+            }
+            // The operands with no ModR/M byte have no address to compute: the
+            // direct moves carry theirs as a displacement and XLAT's is one
+            // addition, which the manual folds into its clock count rather than
+            // quoting as an EA. So they go straight to the bus.
+            self.eu = self.begin_operand_phase();
+            if self.eu == Eu::Loading {
+                self.run_execute_step(bus, master);
+            }
             return;
         }
 
@@ -1034,6 +1045,34 @@ impl I8088 {
         self.eu = self.begin_stack_pop_phase();
         if self.eu == Eu::Loading {
             self.run_execute_step(bus, master);
+        }
+    }
+
+    /// Where an instruction with no ModR/M byte keeps its memory operand.
+    ///
+    /// Five opcodes address memory without a ModR/M byte, and they are easy to
+    /// miss for exactly that reason: the operand table's cross-check only looks
+    /// at instructions that have one. `MOV` between the accumulator and a
+    /// direct address carries a 16-bit displacement, and `XLAT` computes its
+    /// address from BX and AL. Everything else here returns `None`, including
+    /// the stack and the string operations, which reach memory through paths of
+    /// their own.
+    ///
+    /// Called with `instr_pos` where the executor will start, so the
+    /// displacement comes out of the instruction the same way the executor is
+    /// about to read it rather than by indexing into the buffer separately.
+    fn direct_operand(&mut self, opcode: u8) -> Option<(u16, u16)> {
+        match opcode {
+            0xA0..=0xA3 => {
+                let offset = self.fetch_word();
+                Some((self.effective_segment(SegReg::DS), offset))
+            }
+            // XLAT reads the byte AL positions into the table at BX.
+            0xD7 => Some((
+                self.effective_segment(SegReg::DS),
+                self.bx.wrapping_add(u16::from(self.al())),
+            )),
+            _ => None,
         }
     }
 
@@ -1099,26 +1138,36 @@ impl I8088 {
         }
     }
 
-    /// Whether a conditional transfer is going to transfer, decided before the
-    /// instruction runs because that is when the pipeline has to know how many
-    /// clocks to charge.
+    /// Which way an instruction's microcode is going to branch, decided before
+    /// it runs because that is when the pipeline has to know how many clocks to
+    /// charge.
     ///
-    /// This asks the same question the executor is about to ask, through the
-    /// same [`I8088::test_condition`], rather than a second copy of the
-    /// condition table. The loop forms are the ones that need care: `CX` is
-    /// decremented by the instruction and the transfer turns on the value
-    /// *after* that, so the prediction has to decrement too. Reading the flags
-    /// and CX early is otherwise safe, because none of these instructions
-    /// changes either.
-    fn will_transfer(&self, opcode: u8) -> bool {
+    /// For the conditional transfers this is "does it transfer", and it asks
+    /// the same question the executor is about to ask, through the same
+    /// [`I8088::test_condition`], rather than a second copy of the condition
+    /// table. The loop forms are the ones that need care: `CX` is decremented
+    /// by the instruction and the transfer turns on the value *after* that, so
+    /// the prediction has to decrement too.
+    ///
+    /// For the three that are not transfers it is the branch the recording
+    /// shows their microcode taking: whether `CWD` is extending a negative
+    /// value, and whether `AAA` and `AAS` adjust. Reading the flags and the
+    /// registers early is safe throughout, because none of these instructions
+    /// changes what it branches on before it has branched.
+    fn microcode_branch(&self, opcode: u8) -> bool {
         let next_cx = self.cx.wrapping_sub(1);
         match opcode {
+            // AAA and AAS adjust when the low nibble is above nine or the
+            // auxiliary carry is set.
+            0x37 | 0x3F => self.al() & 0x0F > 9 || flags::get(self.flags, flags::Flag::AF),
             0x60..=0x7F => self.test_condition(opcode & 0x0F),
+            // CWD, on the sign it is about to extend into DX.
+            0x99 => self.ax & 0x8000 != 0,
+            0xCE => flags::get(self.flags, flags::Flag::OF),
             0xE0 => next_cx != 0 && !flags::get(self.flags, flags::Flag::ZF),
             0xE1 => next_cx != 0 && flags::get(self.flags, flags::Flag::ZF),
             0xE2 => next_cx != 0,
             0xE3 => self.cx == 0,
-            0xCE => flags::get(self.flags, flags::Flag::OF),
             _ => true,
         }
     }
@@ -1150,11 +1199,8 @@ impl I8088 {
     fn begin_execute_phase(&mut self) -> Eu {
         let opcode = self.opcode();
         let modrm = self.instr[self.opcode_at as usize + 1];
-        let mut cycles = if timing::is_conditional(opcode) {
-            i32::from(timing::conditional_cycles(
-                opcode,
-                self.will_transfer(opcode),
-            ))
+        let mut cycles = if timing::branches_on_state(opcode) {
+            i32::from(timing::branch_cycles(opcode, self.microcode_branch(opcode)))
         } else {
             i32::from(timing::eu_cycles(opcode, modrm))
         };
@@ -1226,14 +1272,16 @@ impl I8088 {
         // fall-through the taken time, and nothing but the gate's aggregate
         // would notice.
         #[cfg(debug_assertions)]
-        let predicted = timing::is_conditional(opcode).then(|| self.will_transfer(opcode));
+        let predicted =
+            timing::is_conditional_transfer(opcode).then(|| self.microcode_branch(opcode));
 
         self.execute(opcode, bus, master);
 
         #[cfg(debug_assertions)]
         if let Some(predicted) = predicted {
             debug_assert_eq!(
-                predicted, self.transferred,
+                predicted,
+                self.transferred,
                 "opcode {opcode:02X}: the pipeline charged the {} time and the \
                  instruction {} transfer",
                 if predicted { "taken" } else { "not taken" },
@@ -1274,15 +1322,22 @@ impl I8088 {
         // what it did. A debug build runs this on all 3,007,000 per-cycle
         // vectors, which is what makes the table load-bearing safely.
         //
-        // Only instructions with a ModR/M byte addressing *memory* are checked.
-        // The others reach memory through push, pop, the string moves and the
-        // interrupt vector reads, which this table does not describe and the
-        // pipeline will have to handle separately; and a register operand
-        // costs no bus cycle either way, which is what lets `PUSH SP` take its
-        // own path through the 8088's push-the-decremented-value quirk without
+        // Checked for instructions with a ModR/M byte addressing *memory*, and
+        // for the five that address memory without one: the direct-address
+        // accumulator moves and XLAT. Those five were the hole this check had
+        // in it, and they sat in it for two milestones, running their operand
+        // access on a single T-state with no bus cycle at all.
+        //
+        // What is still outside it: push, pop, the string moves and the
+        // interrupt vector reads, which this table does not describe and which
+        // the pipeline handles separately or not yet. A register operand costs
+        // no bus cycle either way, which is what lets `PUSH SP` take its own
+        // path through the 8088's push-the-decremented-value quirk without
         // looking like a disagreement.
         #[cfg(debug_assertions)]
-        if format::format_of(opcode).modrm && self.instr[self.opcode_at as usize + 1] >> 6 != 3 {
+        if (format::format_of(opcode).modrm && self.instr[self.opcode_at as usize + 1] >> 6 != 3)
+            || matches!(opcode, 0xA0..=0xA3 | 0xD7)
+        {
             let modrm = self.instr[self.opcode_at as usize + 1];
             let want = access::operand_access(opcode, modrm);
             let (reads, writes) = self.operand_ops;

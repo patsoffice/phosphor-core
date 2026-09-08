@@ -473,6 +473,53 @@ rather than mechanism, which is why they are a separate step rather than part of
 this one, and the positional per-cycle comparison of status, T-state, address
 and data cannot mean anything until they land.
 
+## The timing table, and where Table 1-16 stops describing the part
+
+**2026-09-04.** The execution-timing work the M3 comments call for is most of
+the way through the instruction set. What is worth writing down is not the
+numbers but the two places the method had to change, both found by asking the
+recording a question the manual had already answered.
+
+**Table 1-16 is exactly right, and checkable, for most of the set.** Replay only
+the cases that begin with a full prefetch queue and carry no prefix, and the
+recorded span from an instruction's First Byte to the next one's *is* the
+documented clock count: `NOP` 3, `MOV reg, r/m` 2, `PUSH reg` 15, the ALU block
+3, the flag instructions 2, thousands of cases each and uniform to the cycle.
+That is a much stronger statement than "the numbers look plausible", and it is
+what makes the exceptions worth taking seriously.
+
+**The control transfers are the exception.** Measured the same way, they are
+three to eight clocks off the published figures, in both directions, and
+uniform per row: `JMP short` is documented at 15 and takes 17, `RET` is
+documented at 16 plus a transfer and leaves the EU 5 clocks rather than 12,
+`INT` is documented at 52 and takes 71. So those rows are measured rather than
+transcribed, and what makes that a measurement rather than a fit is that each
+number is read off the full-queue half of the suite and then has to predict the
+empty-queue half, which reaches the same instruction through a different
+sequence of fetches.
+
+**Two mechanism errors turned up on the way, and both were about a single
+cycle.** A fetched byte was reaching the EU on T4, where the part delivers it on
+the cycle *after* T4; and a segment override was being charged three clocks,
+one by the loader and two by the effective-address calculation, where the part
+charges two in total. The second is visible only because the recording shows the
+same two clocks on register forms, which compute no address at all.
+
+**`LEA` is the instrument that settled the effective-address table.** It is the
+only instruction that computes an address and runs no bus cycle, so its span is
+its own two clocks plus the EA and nothing else. Every addressing mode lands
+exactly on the datasheet's value, asymmetric pairings included. Without that
+one instruction the EA table and the operand path could not have been told
+apart, and the residual now known to sit in the memory-access path would have
+been attributed to the address calculation.
+
+**A per-row residual meter is what made this tractable**, and it is the tool to
+reach for next time:
+`cpu-validation/tests/i8088_transfer_timing.rs`, `row_residuals`. It replays one
+opcode file through the core and prints the histogram of ours-minus-hardware,
+so a row is either "+0 on all 5000 cases" or it is not, and a spread is
+immediately distinguishable from an offset. Every control transfer now reads +0.
+
 ## Sequencing against the M68000
 
 `phosphor-emulator-cycle-accurate-i8088-nvrh` is currently sequenced *after* the

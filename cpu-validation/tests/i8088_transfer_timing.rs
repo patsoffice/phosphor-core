@@ -45,7 +45,9 @@
 use std::collections::BTreeMap;
 use std::io::Read;
 
-use phosphor_cpu_validation::{I8088TestCase, QueueOp};
+use phosphor_core::core::{BusMaster, BusMasterComponent};
+use phosphor_core::cpu::i8088::{I8088, QueueStatus};
+use phosphor_cpu_validation::{I8088TestCase, QueueOp, TracingBus20};
 
 fn load(stem: &str) -> Option<Vec<I8088TestCase>> {
     let dir = phosphor_cpu_validation::vector_dir("8088/v2");
@@ -63,6 +65,110 @@ fn load(stem: &str) -> Option<Vec<I8088TestCase>> {
 
 fn is_prefix(b: u8) -> bool {
     matches!(b, 0x26 | 0x2E | 0x36 | 0x3E | 0xF0 | 0xF2 | 0xF3)
+}
+
+/// Replay one case through this core and return the span it takes, measured
+/// exactly as the gate measures it: from the cycle the queue status lines
+/// report a First Byte to the cycle they report the next instruction's.
+///
+/// A smaller copy of `i8088_cycle_test`'s replay, which is private to that test
+/// binary. It exists here so a single opcode's residual can be looked at
+/// directly, which is the difference between "this row is two clocks out on
+/// every case" and "this row is right and something else is wrong".
+fn replay(tc: &I8088TestCase) -> Option<usize> {
+    let mut cpu = I8088::new();
+    let mut bus = TracingBus20::new();
+    bus.memory.fill(0x90);
+
+    let r = &tc.initial.regs;
+    cpu.ax = r.ax;
+    cpu.bx = r.bx;
+    cpu.cx = r.cx;
+    cpu.dx = r.dx;
+    cpu.cs = r.cs;
+    cpu.ss = r.ss;
+    cpu.ds = r.ds;
+    cpu.es = r.es;
+    cpu.sp = r.sp;
+    cpu.bp = r.bp;
+    cpu.si = r.si;
+    cpu.di = r.di;
+    cpu.ip = r.ip;
+    cpu.flags = r.flags;
+    for &(addr, val) in &tc.initial.ram {
+        bus.memory[(addr & 0xF_FFFF) as usize] = val;
+    }
+    cpu.load_prefetch_queue(&tc.initial.queue);
+
+    let mut ticks = 0usize;
+    let mut measuring = false;
+    let mut retired = false;
+    let mut elapsed = 0usize;
+    loop {
+        ticks += 1;
+        if ticks > 4000 {
+            return None;
+        }
+        let was_retired = retired;
+        retired |= cpu.tick_with_bus(&mut bus, BusMaster::Cpu(0));
+        let next = matches!(cpu.queue_status, Some((QueueStatus::First, _))) && was_retired;
+        if !measuring {
+            if cpu.queue_status.is_some() {
+                measuring = true;
+            } else {
+                continue;
+            }
+        } else if next {
+            break;
+        } else {
+            elapsed += 1;
+        }
+    }
+    Some(elapsed + 1)
+}
+
+/// How far this core is from the recording on one opcode file, as a histogram
+/// of signed differences over the cases that begin with a full queue.
+fn residuals(stem: &str) {
+    let Some(tests) = load(stem) else { return };
+    let mut hist: BTreeMap<i64, usize> = BTreeMap::new();
+    for tc in &tests {
+        if tc.cycles.is_empty() || tc.initial.queue.len() != 4 {
+            continue;
+        }
+        if tc.bytes.first().is_some_and(|&b| is_prefix(b)) {
+            continue;
+        }
+        let Some(ours) = replay(tc) else { continue };
+        *hist
+            .entry(ours as i64 - tc.cycles.len() as i64)
+            .or_default() += 1;
+    }
+    let total: usize = hist.values().sum();
+    let mut modes: Vec<(i64, usize)> = hist.into_iter().collect();
+    modes.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
+    let top: Vec<String> = modes
+        .iter()
+        .take(5)
+        .map(|(d, n)| format!("{d:+}:{n}"))
+        .collect();
+    eprintln!(
+        "  {stem}: {total} cases, ours minus hardware {}",
+        top.join(" ")
+    );
+}
+
+#[test]
+#[ignore = "survey, not a check: how far each row is from the recording"]
+fn row_residuals() {
+    eprintln!("\nresiduals against the recording, full queue, no prefix");
+    for stem in [
+        "70", "E0", "E1", "E2", "E3", "E8", "E9", "EA", "EB", "9A", "C2", "C3", "CA", "CB", "CC",
+        "CD", "CE", "CF", "A0", "A1", "A2", "A3", "D7", "98", "99", "9E", "9F", "27", "37", "C4",
+        "C5", "F8", "FF.2", "FF.3", "FF.4", "FF.5", "8B", "01", "50", "58", "90",
+    ] {
+        residuals(stem);
+    }
 }
 
 /// Histogram of recorded span lengths, split by taken and not taken, over the
@@ -253,6 +359,8 @@ fn empty_queue_traces() {
 #[test]
 #[ignore = "survey, not a check: where a transfer flushes and how it reloads"]
 fn control_transfer_traces() {
+    dump("EA", true);
+    dump("9A", true);
     dump("EB", true);
     dump("70", true);
     dump("70", false);
@@ -446,6 +554,57 @@ fn required_eu_flat(stem: &str, bus: usize) {
     eprintln!("  {stem}: eu {}", top.join(" "));
 }
 
+/// Split an opcode's recorded spans by a property of the initial state, to see
+/// whether a two-valued row is the microcode branching on it.
+fn split_by(stem: &str, label: &str, key: fn(&I8088TestCase) -> bool) {
+    let Some(tests) = load(stem) else { return };
+    let mut groups: BTreeMap<bool, BTreeMap<usize, usize>> = BTreeMap::new();
+    for tc in &tests {
+        if tc.cycles.is_empty() || tc.initial.queue.len() != 4 {
+            continue;
+        }
+        if tc.bytes.first().is_some_and(|&b| is_prefix(b)) {
+            continue;
+        }
+        *groups
+            .entry(key(tc))
+            .or_default()
+            .entry(tc.cycles.len())
+            .or_default() += 1;
+    }
+    eprintln!("\n{stem} by {label}");
+    for (k, hist) in &groups {
+        let mut modes: Vec<(usize, usize)> = hist.iter().map(|(a, b)| (*a, *b)).collect();
+        modes.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
+        let top: Vec<String> = modes
+            .iter()
+            .take(4)
+            .map(|(v, n)| format!("{v}:{n}"))
+            .collect();
+        eprintln!("  {k:5}: {}", top.join(" "));
+    }
+}
+
+#[test]
+#[ignore = "survey, not a check: which microcode branch a two-valued row takes"]
+fn data_dependent_rows() {
+    // CWD sign-extends AX into DX, and the recording gives it two costs.
+    split_by("99", "AX negative", |tc| tc.initial.regs.ax & 0x8000 != 0);
+    // AAA and AAS adjust when the low nibble is above 9 or the auxiliary carry
+    // is set, which is the condition the microcode branches on.
+    for stem in ["37", "3F"] {
+        split_by(stem, "the adjust condition", |tc| {
+            (tc.initial.regs.ax & 0x0F) > 9 || tc.initial.regs.flags & 0x10 != 0
+        });
+    }
+    // And DAA and DAS, which have the same shape and did not split at all.
+    for stem in ["27", "2F"] {
+        split_by(stem, "the adjust condition", |tc| {
+            (tc.initial.regs.ax & 0x0F) > 9 || tc.initial.regs.flags & 0x10 != 0
+        });
+    }
+}
+
 #[test]
 #[ignore = "survey, not a check: EU clocks for the opcodes with no ModR/M byte"]
 fn required_eu_without_a_modrm_byte() {
@@ -493,6 +652,9 @@ fn required_eu_clocks() {
     required_eu("03", false, 0, 2);
     required_eu("01", false, 0, 4);
     required_eu("8B", false, 0, 2);
+    // The far-pointer loads, which read four bytes and write two registers.
+    required_eu("C4", false, 0, 4);
+    required_eu("C5", false, 0, 4);
     required_eu("FF.2", true, 2, 2);
     required_eu("FF.3", true, 4, 4);
     required_eu("FF.4", true, 0, 2);

@@ -112,6 +112,12 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
         0x06 | 0x0E | 0x16 | 0x1E => 10 - 4,
         0x07 | 0x0F | 0x17 | 0x1F => 8 - 4,
 
+        // DAA and DAS sit in the same block for the same reason, and take 4
+        // clocks whichever way their adjust goes. AAA and AAS are the other two
+        // corners of it and are not the same shape: they take 8 or 9 depending
+        // on the adjust, through [`branch_cycles`].
+        0x27 | 0x2F => 4,
+
         // -------------------------------------------------------------------
         // The ALU block, 0x00-0x3F. Seven operations share one set of numbers;
         // CMP differs because it does not write its result back, which costs it
@@ -217,8 +223,37 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
         0x90..=0x97 => 3,
 
         // MOV accumulator to and from a direct address: 10 clocks, one
-        // transfer, either way.
-        0xA0..=0xA3 => 10 - 4,
+        // transfer, either way. The recording agrees for the two loads and puts
+        // the two stores one clock higher, which is the same asymmetry the
+        // manual itself gives the ModR/M forms of MOV: a store costs the EU one
+        // more than a load. It simply prints the same 10 for both of these.
+        0xA0 | 0xA1 => 10 - 4,
+        0xA2 | 0xA3 => 10 - 4 + 1,
+
+        // XLAT, documented 11 with one transfer, recorded one clock above that.
+        // Its address is BX plus AL, which the manual does not quote as an
+        // effective address and this core does not charge as one.
+        0xD7 => 11 - 4 + 1,
+
+        // CBW and CWD, the sign extensions. CBW is the manual's 2. CWD is
+        // quoted at 5 and takes 5 when AX is positive and 6 when it is not,
+        // which is the microcode's own branch: writing 0FFFFh into DX is a
+        // clock dearer than writing zero. The caller supplies that through
+        // [`branch_cycles`].
+        0x98 => 2,
+
+        // SAHF, which the manual gives at 4 and the recording confirms, and
+        // LAHF, which the manual gives at 4 and the part does in 2. Loading AH
+        // from the flags is the cheaper direction, not the equal one.
+        0x9E => 4,
+        0x9F => 2,
+
+        // The flag instructions: CLC, STC, CLI, STI, CLD, STD and CMC, all 2.
+        0xF5 | 0xF8..=0xFD => 2,
+
+        // LES and LDS, 16 clocks with two transfers: four bytes of far pointer
+        // read into a segment register and a general one.
+        0xC4 | 0xC5 => 16 - 8,
 
         // TEST accumulator, immediate.
         0xA8 | 0xA9 => 4,
@@ -364,23 +399,23 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
         // CALL far direct, which pushes CS and IP. Documented 28 with two
         // transfers.
         //
-        // **The one row here that does not come out right**, and it is the
-        // pipeline rather than the number. This core runs both pushes, then
-        // flushes, then reloads, strictly in that order; the part starts the
-        // fetch at the target *between* the two pushes, which the bus-cycle
-        // comparison shows directly:
+        // Two clocks below what the recorded span alone would give, for the
+        // reason set out under `0xEA`: both are five bytes long, which is one
+        // more than the queue holds, and over an instruction that long the
+        // part's read schedule and this core's differ.
+        //
+        // Its **bus order** is still wrong, and the count cannot see it. This
+        // core runs both pushes, then flushes, then reloads; the part starts
+        // the fetch at the target between its two pushes:
         //
         // ```text
         //   got  [... W:CS W:CS W:IP W:IP F:target]
         //   want [... W:CS W:CS F:target W:IP W:IP]
         // ```
         //
-        // Every address and byte matches; what differs is that four T-states of
-        // pushing overlap the reload on the part and cannot here, so this runs
-        // two clocks long on every case. Lowering the number to 14 would hide a
-        // structural difference behind a constant, which is the one thing this
-        // table is not allowed to do.
-        0x9A => 16,
+        // Every address and byte matches. Only the interleaving differs, and
+        // only the bus-cycle comparison says so.
+        0x9A => 14,
         // The near returns and their undocumented aliases one encoding below,
         // popping IP. Documented 20 and 16, one transfer each.
         0xC0 | 0xC2 => 10,
@@ -402,9 +437,22 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
         // CALL near direct, pushing IP. Documented 19, one transfer.
         0xE8 => 8,
         // JMP near, far and short, none of which touch memory. All three are
-        // documented at 15.
+        // documented at 15 and all three come out at 10, which is worth
+        // noticing: the manual gives them one number and so does the part.
+        //
+        // The far form needed a correction the other two did not, and it is the
+        // one place where a recorded span cannot be read off directly. `JMP
+        // far` is five bytes long, one more than the queue holds, so its span
+        // includes the EU waiting for a byte, and the part waits differently
+        // from this core: it reads its opcode, idles a cycle, then takes the
+        // next three back to back, where this core takes all four back to back
+        // and then stalls. The microcode window is what is comparable, and the
+        // recording measures it directly: from the last instruction byte read
+        // to the queue flush is five cycles, and five plus its five bytes is
+        // this row. Reading the span instead gives 12 and runs two clocks long
+        // on every case.
         0xE9 => 10,
-        0xEA => 12,
+        0xEA => 10,
         0xEB => 10,
 
         // Everything else: not yet modeled, and charged nothing. See the module
@@ -413,13 +461,25 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
     }
 }
 
-/// Clocks a conditional transfer spends, which depends on whether it transfers.
+/// Clocks an instruction spends when its microcode branches on the state.
 ///
-/// The one class of instruction whose cost turns on the flags rather than on
-/// its encoding, so it cannot come out of [`eu_cycles`], which sees only the
-/// opcode and the ModR/M byte. The caller evaluates the condition before the
-/// instruction runs, which is safe because none of these change the flag they
-/// test.
+/// These are the instructions whose cost turns on the registers or the flags
+/// rather than on the encoding, so it cannot come out of [`eu_cycles`], which
+/// sees only the opcode and the ModR/M byte. The caller evaluates the condition
+/// before the instruction runs, which is safe because none of these changes
+/// what it branches on.
+///
+/// Most of them are the conditional transfers, where `branch` means "this one
+/// transfers". Three are not, and they are here because the recording shows two
+/// costs where the manual prints one:
+///
+/// - `CWD` takes 5 clocks when AX is positive and 6 when it is negative.
+///   Writing 0FFFFh into DX costs a clock that writing zero does not.
+/// - `AAA` and `AAS` take 8 when they adjust and **9 when they do not**, which
+///   is the same shape as the `MUL` flag step: the path that does less is the
+///   longer one. The two groups split exactly on `(AL AND 0Fh) > 9 OR AF`, at
+///   the 68.75% of cases that condition predicts from random operands, so the
+///   split is the microcode's branch rather than a correlation.
 ///
 /// Measured, like the unconditional transfers, and for the same reason. The
 /// not-taken numbers are the ones the manual gets right: `Jcc` at 4 and the
@@ -438,8 +498,24 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
 /// - `JCXZ` taken needs CX to be 0, and for the same reason never happens. It
 ///   is given `LOOPE`'s taken cost, which shares its documented 18 clocks and
 ///   its shape: test a register, then transfer.
-pub(crate) fn conditional_cycles(opcode: u8, taken: bool) -> u8 {
+pub(crate) fn branch_cycles(opcode: u8, taken: bool) -> u8 {
     match opcode {
+        // AAA and AAS, where `taken` is the adjust.
+        0x37 | 0x3F => {
+            if taken {
+                8
+            } else {
+                9
+            }
+        }
+        // CWD, where `taken` is AX being negative.
+        0x99 => {
+            if taken {
+                6
+            } else {
+                5
+            }
+        }
         // Jcc and its aliases sixteen below. Documented 16 taken, 4 not.
         0x60..=0x7F => {
             if taken {
@@ -486,10 +562,21 @@ pub(crate) fn conditional_cycles(opcode: u8, taken: bool) -> u8 {
     }
 }
 
-/// Whether `opcode` is one of the conditional transfers, whose cost
-/// [`conditional_cycles`] gives instead of [`eu_cycles`].
-pub(crate) fn is_conditional(opcode: u8) -> bool {
-    matches!(opcode, 0x60..=0x7F | 0xE0..=0xE3 | 0xCE)
+/// Whether `opcode`'s microcode branches on the state, so that
+/// [`branch_cycles`] gives its cost instead of [`eu_cycles`].
+pub(crate) fn branches_on_state(opcode: u8) -> bool {
+    matches!(opcode, 0x37 | 0x3F | 0x60..=0x7F | 0x99 | 0xCE | 0xE0..=0xE3)
+}
+
+/// Whether `opcode` is one of the conditional *transfers*, the subset of
+/// [`branches_on_state`] whose branch is a control transfer and can therefore
+/// be checked against what the instruction did.
+///
+/// Only the cross-check in [`super::I8088::run_execute_step`] asks, so this
+/// exists only in a build that runs it.
+#[cfg(debug_assertions)]
+pub(crate) fn is_conditional_transfer(opcode: u8) -> bool {
+    matches!(opcode, 0x60..=0x7F | 0xCE | 0xE0..=0xE3)
 }
 
 /// Clocks an unsigned multiply spends, given its multiplier.
@@ -624,9 +711,8 @@ pub(crate) fn shift_count_cycles(count: u8) -> u16 {
 pub(crate) fn is_modeled(opcode: u8, modrm: u8) -> bool {
     let reg = (modrm >> 3) & 7;
     match opcode {
-        // The ALU block. Its last column holds the BCD adjusts, which are not
-        // extracted; the segment pushes and pops beside them are.
-        0x27 | 0x2F | 0x37 | 0x3F => false,
+        // The ALU block, its last column's four BCD adjusts included: DAA and
+        // DAS from the manual, AAA and AAS from their microcode branch.
         0x00..=0x3F => true,
         // INC, DEC, PUSH and POP with the register in the opcode.
         0x40..=0x5F => true,
@@ -636,8 +722,9 @@ pub(crate) fn is_modeled(opcode: u8, modrm: u8) -> bool {
         0x80..=0x8F => true,
         // XCHG with the accumulator, including NOP.
         0x90..=0x97 => true,
-        // CBW, CWD, WAIT, SAHF and LAHF.
-        0x98 | 0x99 | 0x9B | 0x9E | 0x9F => false,
+        // CBW, CWD, SAHF and LAHF. WAIT is not in the suite and is not modeled.
+        0x98 | 0x99 | 0x9E | 0x9F => true,
+        0x9B => false,
         // CALL far direct.
         0x9A => true,
         // PUSHF and POPF.
@@ -655,15 +742,20 @@ pub(crate) fn is_modeled(opcode: u8, modrm: u8) -> bool {
         // The near returns and their aliases.
         0xC0..=0xC3 => true,
         // LES and LDS, the far-pointer loads.
-        0xC4 | 0xC5 => false,
+        0xC4 | 0xC5 => true,
         // MOV r/m, immediate.
         0xC6 | 0xC7 => true,
         // The far returns and their aliases, the interrupts and IRET.
         0xC8..=0xCF => true,
         // The shifts and rotates.
         0xD0..=0xD3 => true,
-        // AAM, AAD, SALC, XLAT and the coprocessor escapes.
-        0xD4..=0xDF => false,
+        // AAM and AAD, whose microcode is a divide and a multiply loop, and
+        // SALC, which is not an instruction Intel documents. XLAT is modeled.
+        0xD4..=0xD6 => false,
+        0xD7 => true,
+        // The coprocessor escapes, which this core does not perform the operand
+        // read for at all.
+        0xD8..=0xDF => false,
         // The loops and JCXZ.
         0xE0..=0xE3 => true,
         // The I/O instructions, which are M4.
@@ -671,14 +763,16 @@ pub(crate) fn is_modeled(opcode: u8, modrm: u8) -> bool {
         // CALL near, and the three direct jumps.
         0xE8..=0xEB => true,
         0xEC..=0xEF => false,
-        // The prefixes, HLT and CMC.
-        0xF0..=0xF5 => false,
+        // The prefixes and HLT, which the suite does not record.
+        0xF0..=0xF4 => false,
+        // CMC.
+        0xF5 => true,
         // The unary group. TEST, NOT and NEG come from the table, and MUL and
         // DIV from their microcode loops. IMUL and IDIV do not: their sign
         // conversion is data-dependent in a way that is not worked out.
         0xF6 | 0xF7 => reg != 5 && reg != 7,
         // The flag instructions.
-        0xF8..=0xFD => false,
+        0xF8..=0xFD => true,
         0xFE => true,
         // INC, DEC, PUSH and the four indirect transfers. Only reg=7 is left,
         // which is not an instruction.
@@ -905,16 +999,53 @@ mod tests {
     fn a_conditional_transfer_costs_more_when_it_transfers() {
         for opcode in [0x60u8, 0x70, 0x7F, 0xE0, 0xE1, 0xE2, 0xE3, 0xCE] {
             assert!(
-                conditional_cycles(opcode, true) > conditional_cycles(opcode, false),
+                branch_cycles(opcode, true) > branch_cycles(opcode, false),
                 "{opcode:#04X}"
             );
-            assert!(is_conditional(opcode), "{opcode:#04X}");
+            assert!(branches_on_state(opcode), "{opcode:#04X}");
         }
-        // And nothing else claims to be conditional, in particular the
+        // And nothing else branches on the state, in particular the
         // unconditional transfers sitting next to them in the opcode map.
         for opcode in [0x9Au8, 0xC3, 0xCB, 0xCF, 0xE8, 0xE9, 0xEA, 0xEB] {
-            assert!(!is_conditional(opcode), "{opcode:#04X}");
+            assert!(!branches_on_state(opcode), "{opcode:#04X}");
             assert!(eu_cycles(opcode, 0) > 0, "{opcode:#04X}");
+        }
+    }
+
+    /// The three rows that branch on the state without transferring, where the
+    /// path that does *less* work is the longer one. That is the surprising
+    /// direction in two of the three, and writing either of them the natural
+    /// way round would look entirely reasonable.
+    #[test]
+    fn the_adjusts_and_the_sign_extension_branch_the_other_way() {
+        // AAA and AAS: adjusting is the fast path.
+        for opcode in [0x37u8, 0x3F] {
+            assert_eq!(branch_cycles(opcode, true), 8, "{opcode:#04X} adjusting");
+            assert_eq!(branch_cycles(opcode, false), 9, "{opcode:#04X} not");
+            assert!(branches_on_state(opcode));
+        }
+        // CWD: extending a negative value costs the extra clock.
+        assert_eq!(branch_cycles(0x99, true), 6, "AX negative");
+        assert_eq!(branch_cycles(0x99, false), 5, "AX positive");
+        // DAA and DAS sit beside AAA and AAS and do not branch at all.
+        for opcode in [0x27u8, 0x2F] {
+            assert!(!branches_on_state(opcode), "{opcode:#04X}");
+            assert_eq!(eu_cycles(opcode, 0), 4, "{opcode:#04X}");
+        }
+    }
+
+    /// The five opcodes that reach memory without a ModR/M byte are modeled,
+    /// and a store costs one clock more than a load even here, where Table 1-16
+    /// prints the same number for both.
+    #[test]
+    fn the_direct_address_moves_and_xlat_are_modeled() {
+        assert_eq!(eu_cycles(0xA0, 0), 6, "MOV AL, [addr]");
+        assert_eq!(eu_cycles(0xA1, 0), 6, "MOV AX, [addr]");
+        assert_eq!(eu_cycles(0xA2, 0), 7, "MOV [addr], AL");
+        assert_eq!(eu_cycles(0xA3, 0), 7, "MOV [addr], AX");
+        assert_eq!(eu_cycles(0xD7, 0), 8, "XLAT");
+        for opcode in [0xA0u8, 0xA1, 0xA2, 0xA3, 0xD7] {
+            assert!(is_modeled(opcode, 0), "{opcode:#04X}");
         }
     }
 
