@@ -7,11 +7,17 @@ Per-cycle emulation of the Intel 8088 microprocessor, implementing 279 opcodes a
 | Metric | Value |
 |--------|-------|
 | Opcodes | 279 (documented + sub-opcode variants) |
-| Unit tests | 389 |
-| State validation | 2,877,000/2,877,000 across 309 opcode files |
+| Unit tests | 404 |
+| State validation, asserted | 3,007,000/3,007,000 across 323 opcode files, none skipped |
 | Queue operations, asserted | 3,007,000/3,007,000 (100%) |
-| Cycle count, reported | 1,758,141/3,007,000 (58.47%) |
-| Bus-cycle sequence, reported | 995,460/3,007,000 (33.10%) |
+| Bus-cycle sequence, asserted | 3,007,000/3,007,000 (100%) |
+| Cycle count, ratcheted | 3,006,667/3,007,000 (99.99%) |
+
+Every opcode's execution time comes from the published microcode, transcribed
+routine by routine, rather than from a timing table. `timing.rs` holds what is
+left of Intel's Table 1-16 for the forms no routine covers, and
+`an_opcode_with_a_routine_has_no_row` is what keeps an opcode from carrying
+both.
 
 ### What is not covered
 
@@ -22,10 +28,11 @@ Per-cycle emulation of the Intel 8088 microprocessor, implementing 279 opcodes a
   suite contains an INTA cycle, and INTR and NMI are never asserted on any cycle
   of any file. Those cycles come from Intel's timing table and are checked by
   this crate's own tests rather than against the hardware recording.
-- **The string operations, `IMUL` and `IDIV` have no execution timing yet**, so
-  they run short by their microcode time. `timing::is_modeled` is what
-  distinguishes "costs nothing" from "not yet measured", and the per-cycle gate
-  reports the two populations apart.
+- **333 vectors of 3,007,000 still differ on cycle count**, in four files: `C6`
+  at 307, `F6.5` at 21, `A6` at 3 and `AE` at 2. `C6` is not a transcription
+  problem: on those cases this core agrees with the reference emulator and both
+  disagree with the recording, so it wants settling against the hardware and the
+  answer may be that the reference is wrong.
 
 ## Registers
 
@@ -156,10 +163,13 @@ the QS0/QS1 lines, and all 3,007,000 recorded vectors agree with this core about
 which bytes the EU took out of the queue, in what order, and where it was
 flushed.
 
-**Execution is still atomic.** An instruction's operand reads and writes, and
-the cycles the EU spends computing an effective address, all happen on the
-T-state its last byte arrives. That is why the Timing row above still says
-instruction-level, and it is the next milestone.
+**Execution is not atomic.** An instruction's operand reads and writes go over
+the bus as MEMR and MEMW cycles in the order the part runs them, the effective
+address is its own phase, and the microcode between them is walked a step at a
+time. The bus unit is one state machine with the prefetcher and the execution
+unit both requesting through it, so how much address cycle a transfer spends
+depends on where in the running cycle it asks, which is what the bus-cycle
+sequence measures.
 
 ### Interrupts
 
@@ -197,23 +207,26 @@ core/src/cpu/i8088/
 
 ## Skipped Test Vectors
 
-22 opcode files are skipped in validation (301 pass out of 323 total):
+**There are none.** All 323 opcode files run in the state gate and all
+3,007,000 vectors pass. The list below is what the skip list held and what took
+each entry off it, because a skip list is a place work hides and every one of
+these turned out to be hiding something.
 
-| Opcodes | Reason |
-|---------|--------|
-| 0x26, 0x2E, 0x36, 0x3E, 0xF0-0xF3 | Prefix bytes (no standalone execution) |
-| 0xE4-0xE7, 0xEC-0xEF | IN/OUT: test vectors embed I/O data in cycle array, not RAM |
-| 0xF4 | HLT: blocks forever in test harness (no interrupt source) |
-| 0xD8-0xDF | FPU ESC opcodes (no 8087 coprocessor) |
-| 0xD6 | SALC (undocumented) |
-| 0x0F | POP CS (undocumented) |
-| 0xD0.6, 0xD1.6, 0xD2.6, 0xD3.6 | SETMO/SETMOC (undocumented) |
-| 0xFF.7 | Undefined sub-opcode |
+| Opcodes | Was skipped as | What it actually was |
+|---------|----------------|----------------------|
+| 0x26, 0x2E, 0x36, 0x3E, 0xF0-0xF3 | Prefix bytes | Correct: the suite ships no file for a prefix. Not a skip, an absence |
+| 0xE4-0xE7, 0xEC-0xEF | "I/O data in cycle array, not RAM" | The harness could not feed them. It reads the trace now, and all eight passed on the first run |
+| 0xF4 | HLT blocks forever | Correct, and the suite ships no file |
+| 0xD8-0xDF | FPU ESC, no 8087 | The part still performs the operand read, so a coprocessor on the bus can see it. Eighty thousand vectors checked by nothing |
+| 0xD6 | SALC undocumented | Modeled: four clocks with carry, three without |
+| 0x0F | POP CS undocumented | A pop on this part, a prefix escape only on later ones |
+| 0xD0.6-0xD3.6 | SETMO/SETMOC undocumented | Not an alias of SHL on this part. This core wrote `AA` shifted left where the hardware writes `FF` |
+| 0xFF.7 | Undefined sub-opcode | Another PUSH: the group's decoder does not check the top bit of its reg field |
 
-22 files came off this list on 2026-09-04, and not one of them was found by this
-gate. All four defects were about instruction *length* or about *control flow*,
-neither of which a state-only comparison can see: it checks what an instruction
-leaves behind, not what it did on the way.
+**Not one of the first 22 was found by the state gate**, which is the argument
+for the per-cycle one. All four defects were about instruction *length* or about
+*control flow*, neither of which a state-only comparison can see: it checks what
+an instruction leaves behind, not what it did on the way.
 
 - **0x60-0x6F** are the conditional jumps sixteen above them, not
   "hardware-dependent aliases". The suite's hardware capture disassembles 0x60
@@ -230,8 +243,14 @@ leaves behind, not what it did on the way.
 
 An opcode with no implementation here still consumes its operand bytes, which is
 what the part does: it fetches every byte of an instruction whether or not it
-acts on one. The remaining skipped opcodes are skipped for their semantics, not
-their length.
+acts on one.
+
+The last four came off on 2026-09-08, and the per-cycle gate is what found them:
+not as a timing difference but as a written value, `setmo byte [ss:bp-3D75h]`
+reading `AA` and this core writing `54` against the hardware's `FF`. The file's
+own doc comment had warned that a skip list is where work hides, and it still
+took a value mismatch to prove it. **If this list grows back, that is a finding
+and not a convenience.**
 
 ## Resources
 

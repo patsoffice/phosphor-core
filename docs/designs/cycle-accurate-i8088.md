@@ -1,9 +1,34 @@
 # Design: Cycle-Accurate Intel 8088
 
-> **Status: proposed.** Written to answer one question: is converting the I8088
-> from instruction-level to per-cycle worth doing, and if so, how. The
-> recommendation is **yes, and before the M68000**, for the reason in
-> [Sequencing](#sequencing-against-the-m68000).
+> **Status: implemented, 2026-09-08.** Written to answer one question: is
+> converting the I8088 from instruction-level to per-cycle worth doing, and if
+> so, how. The recommendation was **yes, and before the M68000**, for the reason
+> in [Sequencing](#sequencing-against-the-m68000). It was done, and the answer
+> held.
+>
+> Where it landed: the queue-operation sequence, the bus-cycle sequence and the
+> state gate are all exact on 3,007,000 vectors, and the cycle count is
+> 3,006,667 of them. Q\*bert runs at 5.87x realtime against the pre-conversion
+> core's 5.59x, so the conversion cost no throughput at all: the old core
+> retired a whole instruction per `execute_cycle` and so ran roughly an order of
+> magnitude more instructions per emulated frame than the hardware does, and
+> doing the right amount of work pays for running the bus every T-state.
+>
+> **What the doc got wrong** is the part worth reading. Four things, recorded in
+> the milestone notes below and summarized here:
+>
+> - "This is a re-timing job, not a rewrite" was optimistic, and qualified once
+>   in Decision 5 and then again by events. The bus unit was rewritten twice and
+>   the second rewrite regressed both gates by thirty points before the rows
+>   caught up.
+> - The plan never mentioned the instruction length table, which turned out to
+>   be most of M1's work and the piece with the most ways to be quietly wrong.
+> - "231 suspension points" was the right count for moving operand accesses and
+>   was zero for the fetch front end, which is what M1 actually did.
+> - The execution timing was expected to come from a published table. It came
+>   from the published *microcode*, transcribed routine by routine; every fitted
+>   constant in the timing table was eventually deleted, and each one had been
+>   wrong in a way no aggregate could see.
 
 ## Context
 
