@@ -11,24 +11,26 @@
 //! what keeps a failure legible: one all-or-nothing comparison against eleven
 //! fields fails for one reason and gets read as failing for another.
 //!
-//! Three comparisons are live here, and only one of them is asserted.
+//! Three comparisons are live here. Two are held to exactness and one is held
+//! to a ratchet, and which is which is a statement about the model rather than
+//! about how much tolerance was convenient.
 //!
 //! - **Queue operations in order**, ASSERTED exactly. Which bytes the EU took
 //!   out of the prefetch queue, whether each was a First or a Subsequent byte,
 //!   and where the queue was flushed. This is most of what the doc calls step 4
 //!   of the ladder: what is missing from it is the *position* of each operation
-//!   in the cycle stream, which cannot be checked until the cycle counts are
-//!   right, and which the hardware reports one cycle late in any case.
-//! - **Cycle count**, reported. Execution is still atomic, so the core charges
-//!   nothing for effective-address calculation or for operand bus cycles, and
-//!   the count is a floor rather than an answer.
-//! - **Bus cycles in order**, reported. Every CODE, MEMR, MEMW, IOR and IOW
-//!   transaction the core ran, as kind, address and byte, against the recording.
-//!   This is the most diagnostic of the three, because a failure says *where*
-//!   rather than *how much*: the commonest one is that the hardware slipped a
-//!   prefetch in between an operand read and its write-back, in execution time
-//!   this core does not yet spend, and the mismatch shows that as an ordering
-//!   difference with every address and byte still correct.
+//!   in the cycle stream, which the hardware reports one cycle late in any case.
+//! - **Bus cycles in order**, held to 100.00% through [`RATCHET`]. Every CODE,
+//!   MEMR, MEMW, IOR and IOW transaction the core ran, as kind, address and
+//!   byte, against the recording. This is the most diagnostic of the three,
+//!   because a failure says *where* rather than *how much*, and it is exact on
+//!   both populations, so the floor cannot be met by anything but exactness.
+//! - **Cycle count**, held to a ratchet and not to a pass. 333 vectors of
+//!   3,007,000 still differ, in four files, and one of those is a case where
+//!   the reference emulator disagrees with the recording too. A floor set at
+//!   today's figure to stop it falling is not the fitted threshold this file
+//!   argues against elsewhere: that one cannot fail, and this one cannot fail
+//!   *today*, which is the point.
 //!
 //! Interrupt-acknowledge cycles are M4; a trace containing one is left
 //! uncompared rather than silently matched against nothing. I/O cycles are
@@ -905,8 +907,14 @@ fn i8088_cycle_counts_against_the_hardware_trace() {
 
     // What this test asserts, and deliberately does not.
     //
-    // It does NOT assert that the CYCLE COUNTS match. They do not yet, and
-    // asserting a pass would mean a failing suite for months.
+    // It does NOT assert that the CYCLE COUNTS match. 333 vectors of 3,007,000
+    // still differ, so asserting a pass would mean a failing suite.
+    //
+    // It DOES assert the BUS-CYCLE ORDER, by the back door: its three floors
+    // are 100.00, which no figure short of exactness can meet, so the ratchet's
+    // lower branch is a full assertion with a per-population failure message
+    // attached. Written that way rather than as an `assert_eq!` so that the
+    // count and the order are held by one mechanism and read as one report.
     //
     // It DOES hold them to a RATCHET, which is a different thing from the
     // fitted threshold this comment used to argue against. That argument was
@@ -1012,54 +1020,46 @@ struct Ratchet {
     bus_prefetched: f64,
 }
 
-/// **The ratchet is off for the duration of the bus-unit rewrite.**
+/// Recorded 2026-09-08, over 3,007,000 vectors in 323 files, with the bus-unit
+/// rewrite finished and every family off its timing row.
 ///
-/// It exists to stop drift in a working model, and the model is being replaced
-/// rather than adjusted: the timing rows and the bus state machine both hold
-/// the same clocks while the conversion is half done, and the counts fall a
-/// long way before they come back. A gate that fails on the way through would
-/// only be turned off later and less honestly.
+/// **The three bus figures are 100.00, which makes them assertions.** The
+/// bus-cycle sequence is exact on both populations, so a floor at 100.00 cannot
+/// be met by anything but exactness and the ratchet's lower branch is the whole
+/// check: any regression at all fails, naming the population it happened in.
+/// That is deliberate. The bus-cycle order is the most diagnostic of the three
+/// comparisons, and the one a refactor is most likely to move without moving a
+/// count.
 ///
-/// Zeroing the floors alone does not do it. [`RATCHET_SLACK`] makes the
-/// comparison two-sided, so a floor of 0.0 fails on the *upper* branch for
-/// every figure instead. Both halves have to go, and both come back together.
+/// The count is not exact and is not asserted. Its 333 vectors are four files,
+/// `C6` at 307, `F6.5` at 21, `A6` at 3 and `AE` at 2, and `C6` is the one
+/// where the reference emulator disagrees with the recording too. See the
+/// worklist in the module docs.
 ///
-/// These are the figures as last recorded, on 2026-09-06, when `SUSP` learned
-/// both halves of what it does: wait for a fetch already on the bus, and cancel
-/// one that has only computed an address.
-///
-///     count            75.81      bus              45.63
-///     count_empty      58.13      bus_empty         0.00
-///     count_prefetched 93.50      bus_prefetched   91.27
-///
-/// `bus_empty` is zero and has been for every commit since the loader learned
-/// where the part stops. It is not a regression: the loader still takes an
-/// instruction's first byte a T-state after the part does, so every
-/// empty-queue case is one bus cycle out at the front and this half cannot
-/// pass whatever else is right. Fixing that is the next structural change, and
-/// this figure is the measure of it.
-///
-/// Restore both this and the slack in the commit that finishes the rewrite,
-/// with the figures the finished model measures. Write down the raw count
-/// rounded *down*, not the figure the run prints: a value that displays as
-/// 88.97% and is 88.9669% fails this gate for falling below itself when the
-/// printed form is banked.
+/// **Each figure is the raw count rounded *down*, which is not always the one
+/// the run prints.** A value that displays as 100.00% and is 99.9961% fails
+/// this gate for falling below itself the moment the printed form is banked,
+/// and a value that displays as 99.99% and is 99.9889% does the same. The
+/// gate's own upper branch prints the number to write.
 const RATCHET: Ratchet = Ratchet {
-    count: 0.0,
-    count_empty: 0.0,
-    count_prefetched: 0.0,
-    bus: 0.0,
-    bus_empty: 0.0,
-    bus_prefetched: 0.0,
+    count: 99.98,
+    count_empty: 99.99,
+    count_prefetched: 99.97,
+    bus: 100.00,
+    bus_empty: 100.00,
+    bus_prefetched: 100.00,
 };
 
 /// How far above [`RATCHET`] a figure may sit before the gate insists it be
 /// written down. One point is about 30,000 vectors on the whole corpus.
 ///
-/// 100.0 while the rewrite is in flight, which is what actually switches the
-/// ratchet off: no percentage can exceed a zero floor by more than the whole
-/// range. Back to 1.00 with the floors.
-const RATCHET_SLACK: f64 = 100.00;
+/// This is the half that makes the comparison two-sided, and it is what a floor
+/// alone cannot do: a floor rots below the truth as the core improves and
+/// quietly stops protecting anything. Widening it is also how the ratchet gets
+/// switched off, because zeroing the floors on their own fails on this branch
+/// instead. Both halves went together for the bus-unit rewrite and both come
+/// back together here.
+const RATCHET_SLACK: f64 = 1.00;
 
 /// This gate has no skip list, and that is a claim about the data rather than a
 /// convenience.
