@@ -287,6 +287,27 @@ fn reg_of(modrm: u8) -> u8 {
     (modrm >> 3) & 7
 }
 
+/// Whether the operand read belongs to the instruction's routine rather than to
+/// the phase in front of it.
+///
+/// The pipeline reads an operand before a routine can start, which is right for
+/// every instruction whose microcode begins after the read: the address
+/// routine's `1E2: OPR -> tmpb` is the read, and the instruction's own lines
+/// follow it. An instruction with microcode *in front of* its read cannot be
+/// expressed that way, and this is the list of them.
+///
+/// `XLAT` is the only one. `mc_10c` spends 0x10c, 0x10d and 0x10e and only then
+/// calls `biu_read_u8`, so this core asked for the bus three clocks early and
+/// the fetch the part runs in the meantime had nowhere to go. Its address comes
+/// from BX and AL rather than from a ModR/M byte, which is why there is no
+/// address routine to hold the clocks instead.
+///
+/// See [`microcode::Step::ReadOperand`], which is what drives the read once the
+/// pipeline has been told to leave it alone.
+pub(crate) fn reads_from_its_routine(opcode: u8) -> bool {
+    opcode == 0xD7
+}
+
 /// What `opcode` does to the operand `modrm` addresses.
 ///
 /// `modrm` is only consulted for the group opcodes, where the `reg` field

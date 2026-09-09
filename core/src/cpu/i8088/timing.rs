@@ -185,9 +185,8 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
         // `LEA` has no row: it runs the transcribed routine at 0x004, whose two
         // clocks are the way out of the address routine for a form that reads
         // nothing.
-        // POP r/m16: 17 clocks and two transfers, the stack read and the
-        // operand write.
-        0x8F => 17 - 8,
+        // `POP r/m16` has no row: it runs the transcribed routine at 0x040.
+        // See `microcode::routine`.
 
         // XCHG AX, reg16.
         0x90..=0x97 => 3,
@@ -196,10 +195,10 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
         // they price from their microcode, which spends nothing at all. See
         // `microcode::routine`.
 
-        // XLAT, documented 11 with one transfer, recorded one clock above that.
-        // Its address is BX plus AL, which the manual does not quote as an
-        // effective address and this core does not charge as one.
-        0xD7 => 11 - 4 + 1,
+        // `XLAT` has no row: it runs the transcribed routine at 0x10c, whose
+        // three clocks stand in front of its read rather than anywhere after
+        // it. The row was 11 documented less the transfer plus one recorded on
+        // top, and that extra clock was the three landing in the wrong place.
 
         // The 8087 escapes have no rows: they run the transcribed routine at
         // 0x108, which reads the operand so a coprocessor could see it and
@@ -622,33 +621,33 @@ impl LoaderStall {
 ///
 /// Given back by [`eu_cycles`]'s caller, like the other pauses that are not the
 /// effective address's.
-/// **Only where the operand is read.** `C6` and `C7` write their memory operand
-/// and never read it, and they take no pause: giving them one put their gap at
-/// nine against the part's six, where leaving them alone puts it at seven. So
-/// the pause belongs to the read-modify-write turnaround and not to the
-/// deferral itself.
+///
+/// **How long it waits is the two ways out of the address routine, the same
+/// asymmetry the routines carry.** A form that reads its operand leaves through
+/// `1E2: OPR -> tmpb`, which is the line that spends the read's T4, so only
+/// `RET` stands between it and the immediate. A form that only writes leaves
+/// through `1E3: tmpa -> IND`, which has a clock of its own, and `RET` behind
+/// that, so it waits two.
+///
+/// `C6` and `C7` are the whole of the second case, and their trace shows both
+/// clocks: `mov word [ds:di-6E21h], B683h` runs `1E3` on cycle 8 and `RET` on 9
+/// and reads its immediate at `014: Q -> tmpbL` on 10. This core read it on 8.
 pub(crate) fn deferred_immediate_stall(opcode: u8, modrm: u8) -> u8 {
     use super::format;
 
-    let f = format::format_of(opcode);
     // The loader defers an immediate exactly when the operand is in memory, so
     // that the address can be computed and the operand read first. See
     // `I8088::begin_immediate`.
-    // **Only where the operand is read**, and `C6`/`C7` are the reason to say so
-    // rather than the exception to it. The probe shows their immediate arriving
-    // a clock before the part's on every addressing mode, so the pause looks
-    // like it should be one for them too; charging it costs *two*, which says
-    // the write-only path reaches this immediate by a route that already spends
-    // one of them and that this is not where the clock goes. It is left alone
-    // until that route is read rather than guessed at.
-    if f.modrm
-        && modrm >> 6 != 3
-        && f.imm.len(Some(modrm)) > 0
-        && super::access::operand_access(opcode, modrm).reads
-    {
+    let f = format::format_of(opcode);
+    if !(f.modrm && modrm >> 6 != 3 && f.imm.len(Some(modrm)) > 0) {
+        return 0;
+    }
+    if super::access::operand_access(opcode, modrm).reads {
+        // `1E2` spent the read's T4, so only the return is left.
         1
     } else {
-        0
+        // `1E3` and the return.
+        2
     }
 }
 
@@ -2124,7 +2123,12 @@ mod tests {
     /// The asymmetry is the thing worth pinning, because it is worth two clocks
     /// rather than one. Asking for the bus a clock early suppresses a prefetch
     /// decision the part takes, and the part's write then arrives behind the
-    /// fetch that decision started and aborts it. `XLAT` still has a row.
+    /// fetch that decision started and aborts it.
+    ///
+    /// `XLAT` is the fifth and it prices from a routine now too, three clocks
+    /// that stand *in front of* its read: `mc_10c` spends 0x10c, 0x10d and
+    /// 0x10e and only then calls `biu_read_u8`. It is the one opcode whose
+    /// routine drives its own operand read.
     #[test]
     fn the_direct_address_moves_and_xlat_are_modeled() {
         for opcode in [0xA0u8, 0xA1, 0xA2, 0xA3] {
@@ -2139,7 +2143,18 @@ mod tests {
                 "{opcode:#04X} spends 0x066 only when it writes"
             );
         }
-        assert_eq!(eu_cycles(0xD7, 0), 8, "XLAT");
+        assert_eq!(eu_cycles(0xD7, 0), 0, "XLAT has no row");
+        assert_eq!(
+            super::super::microcode::routine(0xD7, 0, false, 0, None)
+                .expect("XLAT runs a routine")
+                .clocks(),
+            3,
+            "0x10c, 0x10d and 0x10e, all three in front of the read"
+        );
+        assert!(
+            super::super::access::reads_from_its_routine(0xD7),
+            "and the pipeline leaves the read to it"
+        );
         for opcode in [0xA0u8, 0xA1, 0xA2, 0xA3, 0xD7] {
             assert!(is_modeled(opcode, 0), "{opcode:#04X}");
         }

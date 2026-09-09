@@ -2491,7 +2491,7 @@ impl I8088 {
         master: BusMaster,
     ) -> Eu {
         let acc = access::operand_access(self.opcode(), self.instr[self.opcode_at as usize + 1]);
-        if acc.reads {
+        if acc.reads && !access::reads_from_its_routine(self.opcode()) {
             // **A far pointer's first read is the offset word alone.** The
             // address routine's operand load brings back one word whatever the
             // instruction is going to do with it; the segment word two bytes
@@ -2591,10 +2591,12 @@ impl I8088 {
             // And there has to have *been* a read. Most instructions reach here
             // with no transfer behind them at all, and handing them a release
             // clock they never earned gives every one of them a clock back:
-            // `add al, 2Dh` has no memory operand and no T4 to spend.
+            // `add al, 2Dh` has no memory operand and no T4 to spend. Nor has
+            // one whose routine is about to do the reading, which is `XLAT`.
             let released = self.operand_at.is_some()
                 && !format::format_of(self.opcode()).modrm
-                && access::operand_access(self.opcode(), 0).reads;
+                && access::operand_access(self.opcode(), 0).reads
+                && !access::reads_from_its_routine(self.opcode());
             return if released {
                 self.advance_microcode_after_transfer(bus, master)
             } else {
@@ -2652,7 +2654,26 @@ impl I8088 {
         else {
             return false;
         };
-        self.mc = Some(microcode::Cursor::new(steps));
+        // **The loader's lead-in, and the two conditions it takes.**
+        //
+        // The published `execute_instruction` spends a clock before the routine
+        // when the last queue operation was a First Byte, which is its own note
+        // for "every instruction that read nothing after its opcode". So an
+        // instruction with a ModR/M byte, a displacement or an immediate behind
+        // its opcode does not get one, whatever else is true.
+        //
+        // And it has to still be owed. The preload holds an instruction's first
+        // byte, so an *unprefixed* opcode is taken a T-state before the
+        // instruction begins and its lead-in is spent out there; a prefixed one
+        // is read out of the queue on the instruction's own clock and the
+        // lead-in is still to come. `opcode_at` is that distinction: it is zero
+        // only when nothing stood in front of the opcode.
+        //
+        // Charging it on every prefixed instruction rather than only these takes
+        // the prefixed population from 93.53% to 37.92%.
+        // See [`microcode::Cursor::new`].
+        let lead_in = self.opcode_at > 0 && self.instr_len == self.opcode_at + 1;
+        self.mc = Some(microcode::Cursor::new(steps, lead_in));
         self.stack_staged = true;
         self.stack_pos = 0;
         true
@@ -3336,6 +3357,21 @@ impl I8088 {
                 // routine began.
                 microcode::Step::ReadPointerSegment => {
                     return Eu::Reading { byte: 2, total: 4 };
+                }
+                // The operand itself, for an instruction whose microcode stands
+                // in front of the read rather than behind it. The phase that
+                // would have done this was told to leave it alone by
+                // [`access::reads_from_its_routine`].
+                microcode::Step::ReadOperand => {
+                    let width = access::operand_access(
+                        self.opcode(),
+                        self.instr[self.opcode_at as usize + 1],
+                    )
+                    .width;
+                    return Eu::Reading {
+                        byte: 0,
+                        total: width.bytes(),
+                    };
                 }
                 microcode::Step::Push => {
                     return Eu::PushingStack {

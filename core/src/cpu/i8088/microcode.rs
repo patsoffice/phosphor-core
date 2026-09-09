@@ -54,6 +54,18 @@ pub(crate) enum Step {
     Flush,
     /// Read one word through the interrupt vector table, low byte first.
     ReadVectorWord,
+    /// Read the instruction's memory operand, from the routine rather than
+    /// ahead of it.
+    ///
+    /// The pipeline reads an operand before a routine can start, which is right
+    /// for every instruction whose microcode begins after the read. `XLAT` is
+    /// not one: `mc_10c` spends 0x10c, 0x10d and 0x10e and only then calls
+    /// `biu_read_u8`, so its three clocks stand in front of the bus cycle and
+    /// there is nowhere to put them unless the routine drives the read.
+    ///
+    /// [`access::reads_from_its_routine`] is the other half of this: it is what
+    /// stops the pipeline reading the operand first.
+    ReadOperand,
     /// Read the segment half of a far pointer, the word two bytes above the
     /// operand's address.
     ///
@@ -592,12 +604,16 @@ pub(crate) fn routine(
         // address is computed and not loaded, and the clock at 0x016 is an
         // end-of-instruction for a register destination and a real one for a
         // memory destination.
+        //
+        // **The way out of the address routine is not here**, because for a
+        // memory destination it stands in front of the *immediate*, which the
+        // loader reads. `1E3: tmpa -> IND` and `RET` are
+        // [`timing::deferred_immediate_stall`]'s two clocks, and 0x014 and
+        // 0x015 are the queue reads themselves. What is left for the routine is
+        // the byte form's jump over the second of those reads, and 0x016.
         0xC6 | 0xC7 => {
-            let mut r = mc();
-            if !register_form {
-                r = r.spend(2);
-            }
-            r = r.spend(u16::from(opcode == 0xC6)).then(Step::Run);
+            // 0x014's jump, taken only by the byte form.
+            let mut r = mc().spend(u16::from(opcode == 0xC6)).then(Step::Run);
             if !register_form {
                 // 0x016.
                 r = r.spend(1).then(Step::WriteOperand);
@@ -660,6 +676,39 @@ pub(crate) fn routine(
             Loop::Completed(clocks) => mc().spend(clocks).then(Step::Run).done(),
             Loop::Faulted(clocks) => interrupt(clocks, false),
         }),
+
+        // `XLAT` at 0x10c. `mc_10c` spends 0x10c, 0x10d and 0x10e and only then
+        // reads, so all three stand in front of the bus cycle. Its address comes
+        // from BX and AL rather than from a ModR/M byte, so there is no address
+        // routine to hold them and nothing behind the read either: the byte goes
+        // into AL and the boundary fetch takes the read's T4.
+        //
+        // This is the one opcode whose routine drives its own operand read. See
+        // [`Step::ReadOperand`].
+        0xD7 => Some(mc().spend(3).then(Step::ReadOperand).then(Step::Run).done()),
+
+        // `POP r/m16` at 0x040. `mc_040` spends 0x040, takes the word off the
+        // stack, spends 0x042, and spends 0x043 and 0x044 as well when the
+        // destination is in memory.
+        //
+        // It writes its operand and never reads it, so a memory form leaves the
+        // address routine through `1E3: tmpa -> IND`, which has a clock of its
+        // own, with `RET` behind it. Two in front, the same as `MOV r/m, imm`.
+        0x8F => {
+            let mut r = mc();
+            if !register_form {
+                // `1E3` and `RET`.
+                r = r.spend(2);
+            }
+            // 0x040.
+            r = r.spend(1).then(Step::Pop).then(Step::Run);
+            // 0x042, then 0x043 and 0x044 for a destination in memory.
+            r = r.spend(1);
+            if !register_form {
+                r = r.spend(2).then(Step::WriteOperand);
+            }
+            Some(r.done())
+        }
 
         // `XCHG r/m, reg` at 0x0a4. `mc_0a4` spends 0x0a4 and 0x0a5 whichever
         // the operand, and 0x0a6 and 0x0a7 as well when the ModR/M operand is in
@@ -1154,29 +1203,36 @@ pub(crate) struct Cursor {
     /// execution unit, running before `tick_bus`, does not. Handing the clock
     /// back puts the question at the boundary the part asks it on.
     pub(crate) suspend_deferred: bool,
+    /// Whether the published loader's clock before the routine is still owed.
+    /// See [`Cursor::new`]; it is yielded once, as a `Spend(1)`, ahead of the
+    /// transcription, and belongs to the loader rather than to the routine.
+    pub(crate) lead_in: bool,
 }
 
 impl Cursor {
-    /// Start `steps` from the beginning.
+    /// Start `steps` from the beginning, with `lead_in` saying whether the
+    /// published loader's clock before the routine is still owed.
     ///
-    /// **There is no lead-in clock here, and that is measured rather than
-    /// overlooked.** The published `execute_instruction` spends one before the
-    /// routine begins, when the last queue operation was a First Byte, which is
-    /// every instruction that read nothing after its opcode. Transcribed
-    /// literally it costs 6.7 points of the clean population, 48.20% to 41.50%,
-    /// and takes `POP r16`, `RET` near and `IRET` off cycle-for-cycle exact to
-    /// `+1`.
+    /// **The published `execute_instruction` spends one before the routine
+    /// begins, when the last queue operation was a First Byte, and whether this
+    /// core owes it depends on where the opcode came from.** Charging it on
+    /// every instruction costs 6.7 points of the unprefixed population, 48.20%
+    /// to 41.50%, and takes `POP r16`, `RET` near and `IRET` off cycle-for-cycle
+    /// exact to `+1`. Charging it on none leaves every prefixed instruction a
+    /// clock short.
     ///
-    /// The reason is a difference in where the two models put the read. The
-    /// published loader spends a clock reporting the First Byte and only then
-    /// enters the routine, so its lead-in is the first clock the microcode
-    /// owns. This loader reads the byte and starts the routine within the same
-    /// T-state, so that clock has already been spent by the time a cursor
-    /// exists, and charging it again charges it twice.
+    /// The difference is where the read is. The published loader spends a clock
+    /// reporting the First Byte and only then enters the routine, so its lead-in
+    /// is the first clock the microcode owns. This loader takes an unprefixed
+    /// opcode out of the *preload*, a T-state before the instruction begins, so
+    /// that clock is already spent by the time a cursor exists and charging it
+    /// again charges it twice. A prefixed opcode is read out of the queue on the
+    /// instruction's own clock, and there the lead-in is still owed: `pushf`
+    /// under an override reaches 0x030 on cycle 3 and this core reached it on 2.
     ///
     /// The companion branch there is a deferred RNI carried over from the
     /// previous instruction, on a flag nothing in the reference ever sets.
-    pub(crate) fn new(steps: Routine) -> Self {
+    pub(crate) fn new(steps: Routine, lead_in: bool) -> Self {
         Self {
             steps,
             at: 0,
@@ -1185,11 +1241,21 @@ impl Cursor {
             read: 0,
             flushed: false,
             suspend_deferred: false,
+            lead_in,
         }
     }
 
     /// Take the next step, or `None` when the routine is over.
+    ///
+    /// The loader's lead-in comes out first, once, as a clock like any other.
+    /// It is not part of the transcription, which is why it is here rather than
+    /// in the step list: no routine should have to know where its opcode was
+    /// read from.
     pub(crate) fn next(&mut self) -> Option<Step> {
+        if self.lead_in {
+            self.lead_in = false;
+            return Some(Step::Spend(1));
+        }
         let step = self.steps.get(self.at)?;
         self.at += 1;
         Some(step)
