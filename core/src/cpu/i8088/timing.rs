@@ -1296,27 +1296,95 @@ pub(crate) struct StringClocks {
 ///
 /// `cs rep stosb` is the check at both ends: 45 writes, every one of them on the
 /// reference's clock, and the instruction retiring on its clock too.
-pub(crate) fn string_repeat_cycles(rep: Option<super::RepPrefix>, again: bool) -> u8 {
-    match (rep.is_some(), again) {
-        (false, _) => 0,
-        (true, true) => 2,
-        (true, false) => 1,
+///
+/// **An iteration that ends on a read closes in six clocks, whatever it is.**
+/// Counted off three whole reference iterations, stepped one at a time. Each
+/// spends five microcode lines and then the RNI, and `SCAS` and `CMPS` spend
+/// literally the same five, sharing the tail of the 0x120 routine:
+///
+/// - `rep lodsb` is thirteen clocks and closes on a jump, `1F8: OPR -> M`, a
+///   second jump, `0x131` and `0x132`.
+/// - `cs repne scasb` is fifteen and closes on `0x127` through `0x12b`.
+/// - `ds repne cmpsb` is twenty-two and closes on `0x127` through `0x12b`.
+///
+/// So the repeat's term is whatever brings `after` up to that six, which is four
+/// for `LODS` and three for the other two. `MOVS` and `STOS` end on a write,
+/// which releases its wait a clock earlier than a read does, so they are counted
+/// in the other frame: `rep stosb` closes on `0x11f`, `0x1f0` and the RNI, and
+/// the plain two is already right for both.
+///
+/// **And a repeat that stops on its flag stops a clock sooner than one that runs
+/// its count out.** `CMPS` and `SCAS` leave through two different lines and the
+/// reference shows both: after `129: SIGMA-> BC` a count exit spends
+/// `12A: SIGMA-> tmpc` and `12B` before the RNI, and a flag exit spends a single
+/// jump. `AE`'s `repe` cases are all flag exits and its `repne` cases all run
+/// out of count, so the two look like "one iteration against many" in the
+/// corpus and are not. The case that separates them is a `cs repne cmpsb` that
+/// finds its match with 31 of 78 still in CX: 47 iterations and a flag exit, and
+/// it is a clock shorter than the count exits beside it.
+pub(crate) fn string_repeat_cycles(
+    opcode: u8,
+    rep: Option<super::RepPrefix>,
+    again: bool,
+    stopped_on_flag: bool,
+) -> u8 {
+    if rep.is_none() {
+        return 0;
     }
+    // `CMPS`, `LODS` and `SCAS` take their last byte off the bus with a read;
+    // `MOVS` and `STOS` finish with a write.
+    let tail = if matches!(opcode, 0xA6 | 0xA7 | 0xAC..=0xAF) {
+        READ_ITERATION_TAIL.saturating_sub(string_clocks(opcode).after)
+    } else {
+        2
+    };
+    if again {
+        return tail;
+    }
+    tail.saturating_sub(1 + u8::from(stopped_on_flag))
 }
 
-/// Whether this iteration spends the operation's entry line.
+/// What a repeated string iteration spends behind its last read, RNI included.
 ///
-/// **`rep_start` runs it once and not once per iteration.** `rep_init` gates the
-/// whole of that function: the first entry spends 0x11c (or 0x120, or 0x12c) and
-/// then RPTS, and every iteration after it returns having spent nothing at all.
+/// See [`string_repeat_cycles`], where the three iterations this was counted off
+/// are written out.
+const READ_ITERATION_TAIL: u8 = 6;
+
+/// The clocks this iteration spends in front of its first bus cycle.
+///
+/// **`rep_start` runs the entry line once and not once per iteration.**
+/// `rep_init` gates it: the first entry spends 0x11c (or 0x120, or 0x12c) and
+/// then RPTS, and every iteration after it returns having spent nothing there.
 /// So a continuing iteration of a repeat drops the entry line and adds
 /// [`string_repeat_cycles`], for one clock more than a single iteration and not
 /// two.
 ///
-/// `cs rep stosb` is the check: the part writes every ten cycles and this core
-/// wrote every nine before the two were put where the reference has them.
-pub(crate) fn string_spends_entry_line(first_iteration: bool) -> bool {
-    first_iteration
+/// **It drops that one line and not the whole of `before`.** For the three
+/// operations whose `before` is the entry line alone the two are the same thing,
+/// which is why dropping all of it was right for `MOVS`, `STOS` and `LODS` and
+/// wrong for the two that count more. Whole iterations off the reference:
+///
+/// - `rep stosb` and `rep lodsb` open on the bus request itself, spending
+///   nothing in front of it, and their `before` is 1.
+/// - `ds repne cmpsb` opens on `121: M -> tmpa` and requests the bus on the
+///   clock after, spending one, and its `before` is 2.
+/// - `cs repne scasb` opens on `121` and a jump and requests on the third clock,
+///   spending two, and its `before` is 3.
+///
+/// In each case what a continuing iteration spends is `before` less one. `CMPS`
+/// and `SCAS` were short by exactly that: a `cs repne scasb` iteration is
+/// fifteen clocks and this core ran twelve.
+///
+/// `cs rep stosb` is the check at the other end: the part writes every ten
+/// cycles and this core wrote every nine before the entry line and the loop
+/// control were put where the reference has them.
+pub(crate) fn string_before_cycles(opcode: u8, first_iteration: bool) -> u8 {
+    let before = string_clocks(opcode).before;
+    if first_iteration {
+        before
+    } else {
+        before.saturating_sub(1)
+    }
 }
 
 /// Clocks a `REP` prefix spends before its first iteration.
@@ -1325,9 +1393,32 @@ pub(crate) fn string_spends_entry_line(first_iteration: bool) -> bool {
 /// for the prefix and the opcode behind it. A repeated operation whose count is
 /// already zero spends this and nothing else, which is the one way a string
 /// operation runs no bus cycle at all.
-pub(crate) fn string_entry_cycles(repeated: bool) -> u8 {
-    if repeated { 7 } else { 0 }
+///
+/// **`RPTS` leaves three lines earlier when the count is already zero**, and
+/// that is the whole of the difference. The reference runs `120`, a jump, then
+/// `112: BC -> tmpc`, `113: SIGMA-> no dest` and `114`, and there it either
+/// falls out or carries on. A `repne cmpsb` with CX at zero retires on the clock
+/// after `114`, five clocks in all; one with a count to run spends a jump, `116`
+/// and `RET` behind it and only then reaches `121`, which is where the operation
+/// proper starts and where [`string_clocks`]'s `before` picks it up.
+///
+/// So the zero-count entry is three shorter than the other. This core charged
+/// the full one either way and ran a zero-count repeat three clocks long, with a
+/// code fetch to match: `repne cmpsb` from an empty queue took fourteen cycles
+/// against the part's eleven and put a third fetch on the bus.
+pub(crate) fn string_entry_cycles(repeated: bool, count_is_zero: bool) -> u8 {
+    match (repeated, count_is_zero) {
+        (false, _) => 0,
+        (true, false) => 7,
+        (true, true) => 7 - RPTS_EARLY_EXIT,
+    }
 }
+
+/// The jump, `116` and `RET` that a repeat with a count to run spends after
+/// `114` and one with an empty count does not.
+///
+/// See [`string_entry_cycles`].
+const RPTS_EARLY_EXIT: u8 = 3;
 
 /// Extra clocks a shift or rotate by `CL` spends, one per bit shifted.
 ///

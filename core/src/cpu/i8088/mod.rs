@@ -2414,7 +2414,10 @@ impl I8088 {
             // or an immediate, so it comes down to whether a prefix stood in
             // front of it. A `REP` is a prefix, so every repeated string
             // operation is owed one too. See [`Self::loader_lead_in`].
-            let entry = timing::string_entry_cycles(self.rep_prefix.is_some())
+            // A count of zero is settled inside `RPTS`, which is why it is asked
+            // here rather than by `begin_string_iteration`: it decides how much
+            // of the entry runs at all. See [`timing::string_entry_cycles`].
+            let entry = timing::string_entry_cycles(self.rep_prefix.is_some(), self.cx == 0)
                 + u8::from(self.loader_lead_in());
             self.eu = if entry > 0 {
                 Eu::StringEntry(entry)
@@ -3745,7 +3748,14 @@ impl I8088 {
         // pointers and taken CX down, so the answer is the one the part's
         // `0x1f0` is about to jump on.
         let again = self.string_repeats_again(opcode);
-        timing::string_clocks(opcode).after + timing::string_repeat_cycles(self.rep_prefix, again)
+        // And *why* it stopped, which the tail also depends on. A repeat leaves
+        // through one line when its count runs out and another when its flag
+        // says stop, and the second is a clock shorter.
+        // [`Self::string_repeats_again`] refuses for one of exactly two reasons,
+        // so CX still standing means it was the flag.
+        let stopped_on_flag = !again && self.rep_prefix.is_some() && self.cx != 0;
+        timing::string_clocks(opcode).after
+            + timing::string_repeat_cycles(opcode, self.rep_prefix, again, stopped_on_flag)
     }
 
     /// Start a string operation, or the next iteration of one.
@@ -3774,16 +3784,12 @@ impl I8088 {
             self.string_iteration(opcode);
             StringPart::Write
         };
-        // The clocks in front of the first access, which are the operation's
-        // entry line and belong to `rep_start`. **It runs once**: `rep_init`
-        // gates the whole of that function, so every iteration after the first
-        // returns from it having spent nothing. See
-        // [`timing::string_spends_entry_line`].
-        let before = if timing::string_spends_entry_line(first) {
-            timing::string_clocks(opcode).before
-        } else {
-            0
-        };
+        // The clocks in front of the first access. The operation's entry line is
+        // one of them and belongs to `rep_start`, which **runs once**: `rep_init`
+        // gates it, so every iteration after the first returns from it having
+        // spent nothing there. The rest of `before` is spent every time. See
+        // [`timing::string_before_cycles`].
+        let before = timing::string_before_cycles(opcode, first);
         match before {
             // **`string_next` is the entry's hand-off and nothing else takes
             // it.** Only the `Eu::StringEntry` countdown does, so an access that
