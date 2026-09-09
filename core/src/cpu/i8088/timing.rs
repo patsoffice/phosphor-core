@@ -256,21 +256,28 @@ pub(crate) fn eu_cycles(opcode: u8, modrm: u8) -> u8 {
             // at 0x04c and 0x050, which are `INC r/m`'s shape with different
             // line numbers. See `microcode::routine`.
             2 | 3 => 0,
-            // The four multiplies and divides are functions of their operands
-            // rather than of their encoding, so the caller computes them, from
-            // [`multiply_cycles`], [`signed_multiply_cycles`],
-            // [`divide_cycles`] and [`signed_divide_cycles`]. Those four rules
-            // are calibrated on the register forms, which read +0.
+            // **`MUL` and `DIV` have no rows.** They run the transcribed
+            // routines at 0x150, 0x158, 0x160 and 0x168, whose `CORX` and `CORD`
+            // clocks and whose sixteen and eight around them come off the
+            // co-routines. `DIV`'s faulting operands run one too: `CORD` leaves
+            // for `INT 0` at 0x18a and the instruction walks the same INTR list
+            // `INT n` does, vector read and all.
+            4 | 6 => 0,
+            // `IMUL` and `IDIV` have none either, for the same reason one line
+            // up: they are the same co-routines wrapped in `PREIMUL`,
+            // `PREIDIV`, `NEGATE` and `POSTIDIV`, and those are branches that
+            // can be counted rather than a table that has to be measured.
             //
-            // **A memory operand costs one clock more than the register form
-            // plus its bus cycles and its effective address**, on all eight of
-            // `F6`/`F7` `/4` through `/7` and all 24 memory modes. Table 1-16's
-            // memory rows imply *two*: `MUL r/m8` is 70-77 in a register and
-            // (76-83)+EA in memory, and the difference less the one transfer is
-            // 2 at both widths. The recording says 1, at both widths, which is
-            // the byte-and-word agreement that makes it a row rather than a
-            // fudge.
-            _ => u8::from(is_mem),
+            // **The row this replaces charged the memory form and the part
+            // charges the register form.** `mc_150` and `mc_160` spend a bare
+            // `self.cycle()` for a register operand; a memory operand spends the
+            // address routine's `RET` instead. They come to the same number,
+            // which is how a base calibrated on one form and a row on the other
+            // could look right and still be a clock out.
+            _ => {
+                let _ = is_mem;
+                0
+            }
         },
 
         // INC and DEC as the single-byte register forms. **Measured at 2**,
@@ -711,53 +718,25 @@ pub(crate) fn is_conditional_transfer(opcode: u8) -> bool {
     matches!(opcode, 0x60..=0x7F | 0xCE | 0xE0..=0xE3)
 }
 
-/// Clocks an unsigned multiply spends, given its multiplier.
-///
-/// `MUL` is the one instruction here whose time is a function of its operands
-/// rather than of its encoding, which is why Table 1-16 quotes it as a range.
-/// The mechanism is the microcode's own: a fixed loop, eight iterations for a
-/// byte and sixteen for a word, testing one bit of the multiplier per pass and
-/// skipping its `ADD` when that bit is zero. That structure comes from Ken
-/// Shirriff's reverse-engineering of the 8086 multiply microcode from die
-/// photographs, not from the vectors.
-///
-/// So the cost is a base plus one clock per set bit, and the multiplier is AL
-/// for the byte form and AX for the word form, because the microcode begins by
-/// moving the accumulator into the register it shifts.
-///
-/// **Both rules land on Intel's published endpoints.** `MUL r/m8` is quoted at
-/// 70 to 77 clocks and a byte has one to eight set bits: `69 + 1` and
-/// `69 + 8`. `MUL r/m16` is quoted at 118 to 133 and a word has one to
-/// sixteen: `117 + 1` and `117 + 16`. Four endpoints from a document, four
-/// hits, from two constants.
-///
-/// **A known residual, stated rather than smoothed over.** The word form is
-/// exact on every comparable vector. The byte form is exact for five or more
-/// set bits and one clock low for some cases below that, and the cause is not
-/// the bit count: the same AL value appears at both counts, so it turns on
-/// something else in the microcode that is not identified yet.
-pub(crate) fn multiply_cycles(word: bool, multiplier: u16, product_high_zero: bool) -> u16 {
-    let (base, bits) = if word {
-        (117, multiplier.count_ones())
-    } else {
-        (69, (multiplier as u8).count_ones())
-    };
-    // `MUL` sets carry and overflow when the upper half of the product is
-    // nonzero, and that is a branch. The path that leaves them clear is the
-    // longer one by a clock, which is the opposite of what one would guess and
-    // is why it had to be measured rather than assumed. With this term the byte
-    // form is exact on every comparable vector, where the bit count alone left
-    // 400 of 636 running one clock over.
-    //
-    // The word form has no case in the suite whose product fits in sixteen
-    // bits, so this term is never exercised there. It is applied anyway: it is
-    // the same microcode step, and leaving it off would be asserting the
-    // opposite with no more evidence.
-    base + bits as u16 + u16::from(product_high_zero)
-}
+// `multiply_cycles` stood here, `69 + bits + high_zero` for the byte form and
+// `117 + bits + high_zero` for the word. Both bases were fitted, both landed on
+// Intel's published endpoints, and both were exactly three clocks above what
+// `CORX` and the lines around it actually spend. `MUL` runs the transcribed
+// routine now and prices from [`multiply_routine_cycles`], which counts them.
+//
+// The residual that base carried is gone with it. It was recorded here as "the
+// byte form is exact for five or more set bits and one clock low for some cases
+// below that, and the cause is not the bit count", and the cause was the base.
 
 /// What a signed multiply or divide pays for making its operands positive,
 /// beyond what the unsigned form of the same instruction pays.
+///
+/// **This is the measurement, kept as a cross-check rather than as the model.**
+/// `PREIMUL`, `PREIDIV`, `NEGATE` and `POSTIDIV` are counted off the reference
+/// now, in [`signed_multiply_routine_cycles`] and
+/// [`signed_divide_routine_cycles`], and the counts reproduce every number in
+/// the table below. That agreement is worth a test rather than a coincidence, so
+/// this and the two rules built on it stay, compiled only for one.
 ///
 /// `PREIMUL` and `PREIDIV` each test two operands and negate the ones that are
 /// negative, and the routine after the loop negates the result if exactly one
@@ -792,6 +771,7 @@ pub(crate) fn multiply_cycles(word: bool, multiplier: u16, product_high_zero: bo
 /// the word loop runs twice as long and pays the same correction. For `IDIV`
 /// they are also the same on all three of its populations, including the fault
 /// path that never reaches the loop at all.
+#[cfg(test)]
 fn sign_correction(left_negative: bool, right_negative: bool, cost: SignCost) -> i16 {
     let (left, right, result) = match cost {
         // IMUL: the multiplicand comes from the ModR/M byte and the multiplier
@@ -810,6 +790,7 @@ fn sign_correction(left_negative: bool, right_negative: bool, cost: SignCost) ->
 
 /// Which of the two signed routines [`sign_correction`] is being asked about.
 #[derive(Clone, Copy)]
+#[cfg(test)]
 enum SignCost {
     /// `PREIMUL`, whose left operand is the multiplicand and right the
     /// multiplier.
@@ -848,7 +829,8 @@ enum SignCost {
 /// applied at both widths anyway, for the reason it is there: it is one
 /// microcode step, and leaving it off at one width would be asserting the
 /// opposite with no more evidence.
-pub(crate) fn signed_multiply_cycles(
+#[cfg(test)]
+fn signed_multiply_cycles(
     word: bool,
     multiplicand: i32,
     multiplier: i32,
@@ -894,7 +876,8 @@ pub(crate) fn signed_multiply_cycles(
 /// What this returns is 31 clocks below the recorded span on the faulting
 /// paths, for the reason [`divide_cycles`] is: the pipeline itself spends 24 on
 /// the interrupt's six stack writes and 7 on the flush and reload.
-pub(crate) fn signed_divide_cycles(word: bool, dividend: i64, divisor: i64) -> u16 {
+#[cfg(test)]
+fn signed_divide_cycles(word: bool, dividend: i64, divisor: i64) -> u16 {
     let signs = sign_correction(dividend < 0, divisor < 0, SignCost::Divide);
     let width: u32 = if word { 16 } else { 8 };
     /// Six stack writes, the queue flush and the reload at the handler, which
@@ -920,61 +903,18 @@ pub(crate) fn signed_divide_cycles(word: bool, dividend: i64, divisor: i64) -> u
     (base + compared as i16 + 2 * i16::from(last_bit) + signs + late) as u16
 }
 
-/// Clocks an unsigned divide spends, given its operands.
-///
-/// Like `MUL`, quoted as a range because the microcode's loop is
-/// data-dependent, and like `MUL` the structure comes from Shirriff's
-/// reverse-engineering rather than from the vectors. `CORD` runs a long
-/// division, shifting the dividend left each pass and taking one of three
-/// paths: straight to the subtract when the bit shifted out of the top means
-/// the value must exceed the divisor; a compare and then a subtract; or a
-/// compare and no subtract.
-///
-/// **Only the middle path costs extra.** That is a measured fact and a
-/// surprising one: the jump-straight-to-subtract path costs the same as not
-/// subtracting at all, so the count follows the number of *compared* subtracts
-/// and is independent of how many immediate ones there were. A rule built on
-/// the quotient's bit count cannot express that, because the first two paths
-/// both set a quotient bit; this is why counting them separately is the only
-/// thing that works.
-///
-/// A divide error is a different path entirely. `CORD` compares before it
-/// loops and leaves for `INT 0` at once, so it costs the same whatever caused
-/// it, at either width: the recorded span is 79 clocks on every faulting case.
-///
-/// The number here is 48 rather than 79 because 31 of those clocks are ones
-/// the pipeline spends itself. A fault takes an interrupt, and this core writes
-/// its three words onto the stack over six MEMW bus cycles and then flushes and
-/// reloads the queue, which is 24 and 7. What is *not* subtracted is the
-/// interrupt vector read: a fault is conditional on the operands, so the
-/// pipeline cannot know to read the vector ahead of the instruction the way it
-/// does for `INT`, and the executor still reads it off the bus in no time.
-/// Sixteen clocks of that are inside this number.
-///
-/// **And the last pass costs two clocks more when it subtracts.** That was the
-/// residual this rule carried for a while: the compared-subtract count
-/// predicted the floor of every group and some cases ran up to two clocks over
-/// it. The quotient's top bit was tried and so was a zero remainder, and
-/// neither splits the groups; the quotient's *low* bit splits them exactly, at
-/// both widths, with every group uniform.
-///
-/// It is a rule rather than a fitted term because `AAM` confirms it
-/// independently. `AAM` divides AL by its immediate through this same `CORD`
-/// loop, and its spans follow `77 + compared + 2 x (quotient is odd)`, the same
-/// two clocks on the same condition, over a different opcode and a different
-/// operand range. See [`aam_cycles`].
-pub(crate) fn divide_cycles(word: bool, dividend: u32, divisor: u32) -> u16 {
-    let width = if word { 16 } else { 8 };
-    let limit = (1u64 << width) - 1;
-    if divisor == 0 || u64::from(dividend) / u64::from(divisor) > limit {
-        // The divide error, which never enters the loop.
-        return 48;
-    }
-
-    let (compared, last_bit) = cord(dividend, divisor, width);
-    let base = if word { 144 } else { 80 };
-    base + compared + 2 * u16::from(last_bit)
-}
+// `divide_cycles` stood here, `80 + compared + 2 * last` for the byte form and
+// `144 + ...` for the word, with 48 for the fault. All three were fitted, and
+// the two bases were exactly three clocks above what `CORD` and the lines around
+// it spend. `DIV` runs the transcribed routine now and prices from
+// [`divide_routine_cycles`], which counts them; the fault runs INTR.
+//
+// The fault's 48 was the clearest sign that a lump was the wrong shape. It was
+// the recorded 79 less 31 the pipeline spent on the pushes and the reload, and
+// the note beside it said the sixteen clocks of the vector read were still
+// inside the number because "the pipeline cannot know to read the vector ahead
+// of the instruction". It can: the fault is decided by a compare `CORD` makes
+// before its loop, and the pipeline can make the same one.
 
 /// Step the microcode's long division and report what its cost depends on: how
 /// many passes compared before subtracting, and whether the last pass set its
@@ -1010,34 +950,17 @@ fn cord(dividend: u32, divisor: u32, width: u32) -> (u16, bool) {
     (compared, qbit == 1)
 }
 
-/// Clocks `AAM` spends, given AL and the immediate it divides by.
-///
-/// `AAM` is a divide wearing a BCD adjust's name: it puts `AL / imm` in AH and
-/// `AL mod imm` in AL, through the same `CORD` loop [`divide_cycles`] walks.
-/// So it follows the same rule with its own base, and the recording says so
-/// over the whole `D4` file with every group uniform:
-///
-/// ```text
-/// 77 + compared subtracts + 2 x (the quotient is odd)
-/// ```
-///
-/// **That is what makes the two-clock term a rule rather than a fudge.** It was
-/// found here, on an opcode with an 8-bit dividend and a range of immediates,
-/// and it then predicted `DIV`'s residual at both widths without adjustment.
-///
-/// A zero immediate is a divide error, which never enters the loop: the
-/// recorded span is 77, the same as the base, and 46 is what is left after the
-/// 31 clocks the pipeline spends pushing, flushing and reloading. See
-/// [`divide_cycles`], whose fault path is the same one two clocks up.
-///
-/// Table 1-16 quotes the whole instruction at 83.
-pub(crate) fn aam_cycles(al: u8, imm: u8) -> u16 {
-    if imm == 0 {
-        return 46;
-    }
-    let (compared, last_bit) = cord(u32::from(al), u32::from(imm), 8);
-    77 + compared + 2 * u16::from(last_bit)
-}
+// `AAM` had a row here, `77 + compared + 2 * (the quotient is odd)`, and a
+// second number, 46, for the zero immediate that faults. Both were fitted. It
+// runs the transcribed routine at 0x174 now, whose `CORD` clocks come from
+// [`cord_cycles`], and its fault walks the same INTR list `INT n` does rather
+// than being priced as a lump with the vector read hidden inside it.
+//
+// The two-clock term survived the move, which is the point worth keeping: it was
+// found on this opcode as "the quotient is odd", and reading `CORD` off the
+// reference shows why. The last pass costs one more than a middle pass when it
+// subtracts and one less when it does not, and whether it subtracted is exactly
+// what the quotient's low bit records.
 
 // `AAD` had a row here, `59 + imm.count_ones()`, fitted to the recording. It
 // runs the transcribed routine at 0x170 now, whose `CORX` clocks come from
@@ -1059,6 +982,233 @@ pub(crate) fn aam_cycles(al: u8, imm: u8) -> u16 {
 /// `6 * width + bits + 3`.
 pub(crate) fn corx_cycles(width: u16, bits: u32) -> u16 {
     6 * width + bits as u16 + 3
+}
+
+/// Clocks the `CORD` divide co-routine spends, or `None` when the operands
+/// fault before the loop.
+///
+/// Read off the routine the way [`corx_cycles`] is. `CORD` opens with 0x188,
+/// 0x189 and 0x18a, and 0x18a is `NCY INT0`: the compare in front of the loop
+/// leaves for `INT 0` through a jump when the high half of the dividend is
+/// already at least the divisor, which is the divide error and is why this
+/// returns `None` rather than a count.
+///
+/// Then one pass a bit, each spending 0x18b through 0x18e and one of three arms:
+///
+/// - the bit shifted out of the top says the value must exceed the divisor, so
+///   the subtract is immediate, at a jump, 0x195 and 0x196;
+/// - a compare at 0x18f and 0x190 that goes on to subtract, at a jump and
+///   0x196;
+/// - the same compare that does not, at 0x191.
+///
+/// Every pass but the last then spends a jump to get back to the top, and the
+/// last spends 0x197 and a jump instead when it subtracted and nothing at all
+/// when it did not. So a pass is eight clocks and a ninth when it compared
+/// before subtracting, and the last pass is one more or one less depending on
+/// whether it subtracted at all. 0x192, 0x193, 0x194 and the return close it:
+///
+/// ```text
+/// 8 * width + compared + 2 * (the last pass subtracted) + 6
+/// ```
+///
+/// **The two-clock term on the last pass is that arm structure, not a fudge.**
+/// It had been fitted here, keyed on the quotient's low bit after `COM1`, which
+/// is the same condition read off the answer instead of off the routine.
+pub(crate) fn cord_cycles(dividend: u32, divisor: u32, width: u32) -> Option<u16> {
+    // 0x188 and 0x189 compare, and 0x18a jumps to INT0 when it did not borrow.
+    if divisor == 0 || (dividend >> width) >= divisor {
+        return None;
+    }
+    let (compared, last_bit) = cord(dividend, divisor, width);
+    // 0x188, 0x189, 0x18a in front, and 0x192, 0x193, 0x194 and the return
+    // behind, with the loop's `8 * width + compared - 1 + 2 * last` between.
+    Some(8 * width as u16 + compared + 2 * u16::from(last_bit) + 6)
+}
+
+/// Clocks a `DIV` spends, and whether it divided.
+///
+/// `div8` and `div16` are the same three parts around `CORD`: 0x160, 0x161 and
+/// 0x162 (0x168 through 0x16a for the word form), then 0x163 and the jump into
+/// the co-routine, and 0x164 and 0x165 behind it. Seven clocks either width.
+///
+/// **Both forms then cost one more, for different reasons, which is why the row
+/// this replaces looked like it charged the memory form.** A register operand
+/// spends the bare `self.cycle()` `mc_160` runs for it, which the comment beside
+/// it calls an extra cycle "for some reason". A memory operand spends `RET`
+/// instead: `DIV` reads its operand, so the address routine leaves through
+/// `1E2: OPR -> tmpb` and the return stands in front of 0x160. Eight clocks
+/// either way, and the old base was calibrated on the register form with a row
+/// making up the difference on the other.
+///
+/// The unsigned form has one fault rather than `IDIV`'s two: `CORD`'s check
+/// before the loop is the unsigned one, so nothing that passes it can overflow
+/// the destination afterwards.
+pub(crate) fn divide_routine_cycles(word: bool, dividend: u32, divisor: u32) -> Loop {
+    let width = if word { 16 } else { 8 };
+    match cord_cycles(dividend, divisor, width) {
+        // 0x160, 0x161, 0x162, then 0x163 and the jump, then 0x164 and 0x165,
+        // and one for whichever front this form has.
+        Some(cord) => Loop::Completed(cord + 8),
+        // The front, the same three, 0x163 and the jump, `CORD`'s four, and
+        // `int0`'s two.
+        None => Loop::Faulted(1 + 3 + 2 + CORD_FAULT + INT0_ENTRY),
+    }
+}
+
+/// Clocks a `MUL` spends.
+///
+/// `mul8` and `mul16` are the same shape around `CORX`: 0x150 and 0x151 in
+/// front, 0x152 and the jump into the co-routine, then 0x153, 0x154, and 0x155,
+/// 0x156, a jump, 0x1d2, 0x1d3 and another jump into `MULCOF`. Fifteen clocks
+/// either width, counting `MULCOF`'s shorter arm.
+///
+/// `MULCOF` then sets carry and overflow from the product's high half, and the
+/// arm that *clears* them is the longer one: 0x1d0, a jump, 0x1cc and a jump
+/// against 0x1d0, 0x1d1 and a jump. That is the extra clock a product with a
+/// zero high half costs, and it comes out of the routine rather than out of the
+/// recording, which is where it was found.
+///
+/// The bit count is the accumulator's, because `CORX` rotates `tmpc` and `tmpc`
+/// is what `0x150: A -> tmpc` loaded. The byte form counts AL alone.
+///
+/// The sixteenth clock is the front, and both forms have one: a register operand
+/// spends the bare `self.cycle()` `mc_150` runs for it, and a memory operand
+/// spends `RET` instead, `MUL` having read its operand and so left the address
+/// routine through `1E2`. See [`divide_routine_cycles`], which is the same
+/// story.
+pub(crate) fn multiply_routine_cycles(word: bool, multiplier: u16, product_high_zero: bool) -> u16 {
+    let (width, bits) = if word {
+        (16, multiplier.count_ones())
+    } else {
+        (8, (multiplier as u8).count_ones())
+    };
+    corx_cycles(width, bits) + 16 + u16::from(product_high_zero)
+}
+
+/// Clocks `AAM` spends, and whether it divided.
+///
+/// `mc_174` spends 0x175, 0x176 and the jump into `CORD`, and 0x177 behind it.
+/// The same loop `DIV` runs, with AL over the immediate. A zero immediate faults
+/// at 0x18a, and `mc_174`'s `Err` arm goes straight to `int0`.
+pub(crate) fn aam_routine_cycles(al: u8, imm: u8) -> Loop {
+    match cord_cycles(u32::from(al), u32::from(imm), 8) {
+        // 0x175, 0x176 and the jump in front, 0x177 behind.
+        Some(cord) => Loop::Completed(cord + 4),
+        // The same three in front, `CORD`'s four, and `int0`'s two.
+        None => Loop::Faulted(3 + CORD_FAULT + INT0_ENTRY),
+    }
+}
+
+/// Clocks `IMUL` spends.
+///
+/// `MUL` with `PREIMUL` in front of the loop, `NEGATE` behind it when exactly
+/// one operand was negative, and `IMULCOF` in place of `MULCOF` at the end.
+/// Every one of those is a branch, and counting the arms reproduces the four
+/// sign combinations that had been measured into a table.
+///
+/// - **`PREIMUL`** spends the jump, 0x1c0 and 0x1c1, then either 0x1c2, 0x1c3
+///   and a jump when the accumulator is negative or a jump alone when it is not.
+///   It falls into `NEGATE` at line 7, which spends 0x1bb, 0x1bc and 0x1bd and
+///   then either a jump, 0x1bf and the return for a positive multiplicand or
+///   0x1be and the return for a negative one. So `10 + 2a - b`, for `a` and `b`
+///   the two signs.
+/// - **`NEGATE` behind the loop** costs twelve when it runs: a jump to reach it,
+///   then its full form, 0x1b6 through 0x1ba being five whichever arm it takes
+///   and the tail three more, the multiplicand being positive by then because
+///   `PREIMUL` made it so. It runs when exactly one operand was negative, each
+///   having flipped `F1` on its way past.
+/// - **`IMULCOF`** spends the jump, 0x1cd, 0x1ce and 0x1cf, then `MULCOF`'s own
+///   branch, then 0x15d and a jump.
+pub(crate) fn signed_multiply_routine_cycles(
+    word: bool,
+    multiplicand: i32,
+    multiplier: i32,
+    product_sign_extends: bool,
+) -> u16 {
+    let (width, bits) = if word {
+        (16, (multiplier.unsigned_abs() as u16).count_ones())
+    } else {
+        (8, (multiplier.unsigned_abs() as u8).count_ones())
+    };
+    let accumulator_negative = u16::from(multiplier < 0);
+    let multiplicand_negative = u16::from(multiplicand < 0);
+    // `PREIMUL` and the `NEGATE` it falls into.
+    let pre = 10 + 2 * accumulator_negative - multiplicand_negative;
+    // `NEGATE` behind the loop, when exactly one operand was negative.
+    let post = 12 * u16::from(accumulator_negative != multiplicand_negative);
+    // The front, 0x150 and 0x151, 0x152 and the jump, 0x153, 0x154, then
+    // `IMULCOF`'s jump, 0x1cd through 0x1cf, its shorter arm, and 0x15d and a
+    // jump.
+    corx_cycles(width, bits) + 16 + pre + post + u16::from(product_sign_extends)
+}
+
+/// Clocks `IDIV` spends, and whether it divided.
+///
+/// `DIV` with `PREIDIV` in front of the loop and `POSTIDIV` behind it, and it
+/// can leave for `INT 0` from either end.
+///
+/// - **`PREIDIV`** spends 0x1b4 and 0x1b5, then a jump into `NEGATE` at line 7
+///   for a positive dividend or a fall through into its whole form for a
+///   negative one. `NEGATE`'s tail then costs three for a positive divisor and
+///   two for a negative. So `9 + 4d - v`, for `d` and `v` the two signs, and
+///   those four offsets are exactly the table this replaces.
+/// - **`POSTIDIV`** is ten clocks flat when it returns: 0x1c4, then 0x1c5
+///   through 0x1c7, then one clock whichever way the divisor went, 0x1c9 and
+///   0x1ca, one more whichever way `F1` went, and 0x1cc and the return. Its
+///   branches all cost the same on both arms, which is why only `PREIDIV`'s
+///   signs show up in the total.
+/// - **The late fault** is `POSTIDIV`'s own: 0x1c4 tests the carry `CORD` left
+///   and jumps to `INT 0` when the quotient did not fit the signed half the
+///   destination holds. `CORD`'s check before the loop is the unsigned one, so a
+///   quotient between the two limits runs the whole loop and only then faults.
+pub(crate) fn signed_divide_routine_cycles(word: bool, dividend: i64, divisor: i64) -> Loop {
+    let width: u32 = if word { 16 } else { 8 };
+    let magnitude = dividend.unsigned_abs();
+    let divisor_magnitude = divisor.unsigned_abs();
+    // `PREIDIV`, and the `NEGATE` it enters at line 7 or falls into.
+    let pre = 9 + 4 * u16::from(dividend < 0) - u16::from(divisor < 0);
+    // The front, 0x160 through 0x162, the jump into `PREIDIV`, 0x163 and the
+    // jump into `CORD`.
+    let front = 1 + 3 + 1 + pre + 2;
+
+    let Some(cord) = cord_cycles(magnitude as u32, divisor_magnitude as u32, width) else {
+        // `CORD` left at 0x18a before its loop, and `mc_160`'s `Err` arm goes
+        // straight to `int0`.
+        return Loop::Faulted(front + CORD_FAULT + INT0_ENTRY);
+    };
+    // 0x164 and 0x165, then the jump into `POSTIDIV`.
+    let behind = front + cord + 2 + 1;
+    if magnitude / divisor_magnitude > (1 << (width - 1)) - 1 {
+        // 0x1c4 tests `CORD`'s carry and jumps out, then `int0`.
+        return Loop::Faulted(behind + POSTIDIV_FAULT + INT0_ENTRY);
+    }
+    Loop::Completed(behind + 10)
+}
+
+/// What `CORD` spends before leaving for `INT 0`: 0x188 and 0x189 compare and
+/// 0x18a jumps out, the loop never running.
+const CORD_FAULT: u16 = 4;
+
+/// What `POSTIDIV` spends before leaving for `INT 0`: 0x1c4 and its jump.
+const POSTIDIV_FAULT: u16 = 2;
+
+/// What `int0` spends reaching INTR: 0x1a7 and a jump. It enters one line down,
+/// so [`microcode::interrupt`] is asked not to spend 0x19d.
+const INT0_ENTRY: u16 = 2;
+
+/// What a multiply or divide's co-routine costs, and whether the instruction
+/// produced an answer or left for `INT 0`.
+///
+/// The two are different routines from the sequencer's point of view rather than
+/// two numbers: a fault does not retire, it walks the whole interrupt list, four
+/// vector-read bus cycles and three pushes and a flush. Handing the caller one
+/// integer and a flag is what lets [`microcode::routine`] pick between them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Loop {
+    /// The clocks it spends, having produced an answer.
+    Completed(u16),
+    /// The clocks it spends before `INT 0`, `int0`'s own two included.
+    Faulted(u16),
 }
 
 /// Where a string operation's microcode clocks fall around its bus cycles:
@@ -1277,8 +1427,8 @@ mod tests {
                 // differ by exactly one clock and nothing else. That is a
                 // property of the microcode rather than of the operand's width,
                 // which is why the rule above still holds for everything else.
-                let by = super::super::microcode::routine(byte_op, modrm, false, 0);
-                let wo = super::super::microcode::routine(word_op, modrm, false, 0);
+                let by = super::super::microcode::routine(byte_op, modrm, false, 0, None);
+                let wo = super::super::microcode::routine(word_op, modrm, false, 0, None);
                 if carries_immediate {
                     let (Some(by), Some(wo)) = (by, wo) else {
                         continue;
@@ -1315,15 +1465,17 @@ mod tests {
         // property is structural rather than arithmetic: `CMP` has no write
         // back, so it has neither the write step nor the two clocks the part
         // spends in front of one.
-        let add = super::super::microcode::routine(0x00, mem, false, 0).expect("ADD r/m8, reg8");
-        let cmp = super::super::microcode::routine(0x38, mem, false, 0).expect("CMP r/m8, reg8");
+        let add =
+            super::super::microcode::routine(0x00, mem, false, 0, None).expect("ADD r/m8, reg8");
+        let cmp =
+            super::super::microcode::routine(0x38, mem, false, 0, None).expect("CMP r/m8, reg8");
         assert_ne!(add, cmp, "CMP must not run the writing routine");
         // And in the immediate group, where the reg field picks the operation.
         use super::super::microcode::Step;
-        let add_imm =
-            super::super::microcode::routine(0x80, 0b00_000_100, false, 0).expect("ADD r/m8, imm8");
-        let cmp_imm =
-            super::super::microcode::routine(0x80, 0b00_111_100, false, 0).expect("CMP r/m8, imm8");
+        let add_imm = super::super::microcode::routine(0x80, 0b00_000_100, false, 0, None)
+            .expect("ADD r/m8, imm8");
+        let cmp_imm = super::super::microcode::routine(0x80, 0b00_111_100, false, 0, None)
+            .expect("CMP r/m8, imm8");
         assert!(add_imm.contains(Step::WriteOperand), "ADD writes back");
         assert!(
             !cmp_imm.contains(Step::WriteOperand),
@@ -1331,15 +1483,35 @@ mod tests {
         );
     }
 
-    /// A memory operand costs the multiplies and divides one clock beyond their
-    /// register form, its bus cycles and its effective address. Table 1-16's
-    /// memory rows imply two; the recording says one, at both widths.
+    /// **The two operand forms of a multiply or divide cost the same, and the
+    /// row this replaces said otherwise.**
+    ///
+    /// That row charged the memory form one clock beyond the register form, its
+    /// bus cycles and its effective address, and it was measured against bases
+    /// calibrated on the register form. The part charges the *register* form:
+    /// `mc_150` and `mc_160` spend a bare `self.cycle()` for a register operand,
+    /// which the reference's own comment calls an extra cycle "for some reason",
+    /// and a memory operand spends the address routine's `RET` instead, having
+    /// read its operand and so left through `1E2`. One clock either way, and a
+    /// base plus a one-sided row came to the same total on one form and a clock
+    /// out on the other.
+    ///
+    /// So none of the eight has a row at all now, and the clock is inside the
+    /// counted routine where the reference puts it.
     #[test]
-    fn a_memory_operand_costs_the_multiplies_one_clock() {
+    fn the_multiplies_and_divides_cost_both_operand_forms_alike() {
         for op in [0xF6u8, 0xF7] {
-            for reg in [4u8, 5, 6, 7] {
-                assert_eq!(eu_cycles(op, 0b11_000_000 | (reg << 3)), 0, "register form");
-                assert_eq!(eu_cycles(op, 0b00_000_100 | (reg << 3)), 1, "memory form");
+            for reg in 4u8..=7 {
+                assert_eq!(
+                    eu_cycles(op, 0b11_000_000 | (reg << 3)),
+                    0,
+                    "{op:#04X} /{reg} register form"
+                );
+                assert_eq!(
+                    eu_cycles(op, 0b00_000_100 | (reg << 3)),
+                    0,
+                    "{op:#04X} /{reg} memory form"
+                );
             }
         }
     }
@@ -1354,8 +1526,8 @@ mod tests {
     fn a_mov_store_does_more_than_a_load() {
         use super::super::microcode::{self, Step};
         let mem = 0b00_000_100;
-        let store = microcode::routine(0x88, mem, false, 0).expect("MOV r/m8, reg8");
-        let load = microcode::routine(0x8A, mem, false, 0).expect("MOV reg8, r/m8");
+        let store = microcode::routine(0x88, mem, false, 0, None).expect("MOV r/m8, reg8");
+        let load = microcode::routine(0x8A, mem, false, 0, None).expect("MOV reg8, r/m8");
         assert!(store.contains(Step::WriteOperand), "a store writes back");
         assert!(
             !load.contains(Step::WriteOperand),
@@ -1373,7 +1545,7 @@ mod tests {
     fn lea_is_two_clocks_and_no_transfers() {
         assert_eq!(eu_cycles(0x8D, 0b00_000_100), 0, "no row");
         assert_eq!(
-            super::super::microcode::routine(0x8D, 0b00_000_100, false, 0)
+            super::super::microcode::routine(0x8D, 0b00_000_100, false, 0, None)
                 .expect("LEA runs a routine")
                 .clocks(),
             2
@@ -1398,36 +1570,59 @@ mod tests {
         }
     }
 
-    /// A divide error never enters the loop, so no operand changes its cost,
-    /// and the width does not either. The recorded span is 79 at both; 48 is
-    /// what is left once the pipeline's own pushes, flush and reload come out.
+    /// A divide error never enters the loop, so no operand changes what `CORD`
+    /// spent before it left, and the width does not either. What follows is
+    /// `INT 0`, whose cost is the INTR routine's rather than a number here.
     #[test]
     fn a_divide_error_costs_the_same_however_it_was_caused() {
-        // Division by zero.
-        assert_eq!(divide_cycles(false, 0x1234, 0), 48);
-        assert_eq!(divide_cycles(true, 0x1234_5678, 0), 48);
-        // And a quotient too large for the destination.
-        assert_eq!(divide_cycles(false, 0xFF00, 1), 48);
-        assert_eq!(divide_cycles(true, 0xFFFF_0000, 1), 48);
-        // AAM's is the same path two clocks below it.
-        assert_eq!(aam_cycles(0x42, 0), 46);
+        // Division by zero, and a quotient too large for the destination, at
+        // both widths and for `AAM`.
+        for (word, dividend, divisor) in [
+            (false, 0x1234, 0),
+            (true, 0x1234_5678, 0),
+            (false, 0xFF00, 1),
+            (true, 0xFFFF_0000, 1),
+        ] {
+            assert!(
+                matches!(
+                    divide_routine_cycles(word, dividend, divisor),
+                    Loop::Faulted(_)
+                ),
+                "{dividend:#X}/{divisor}"
+            );
+        }
+        assert!(
+            matches!(aam_routine_cycles(0x42, 0), Loop::Faulted(_)),
+            "AAM by zero"
+        );
     }
 
     /// `AAM` and `DIV` walk the same long division, so over the same operands
-    /// they must differ by exactly the gap between their two bases, whatever
-    /// the operands do to the loop. That is the check that ties the two rules
-    /// together: the two-clock term for a last pass that subtracts was found on
-    /// `AAM` and is what closed `DIV`'s residual, and if either drifted this
-    /// would stop holding.
+    /// they must differ by exactly the gap between what each spends around it,
+    /// whatever the operands do to the loop. `DIV` spends eight and `AAM` four,
+    /// both read off the reference, so the gap is four and does not move.
+    ///
+    /// That is the check that ties the two transcriptions together. The
+    /// two-clock term for a last pass that subtracts was found on `AAM` when
+    /// both were fitted, and it survived the move to a counted `CORD` because
+    /// the routine's last-pass arms are what it was measuring all along.
     #[test]
     fn aam_and_divide_walk_the_same_loop() {
         for imm in 1..=255u8 {
             for al in [0u8, 1, 7, 8, 9, 10, 63, 64, 127, 128, 200, 255] {
-                assert_eq!(
-                    divide_cycles(false, u32::from(al), u32::from(imm)) - aam_cycles(al, imm),
-                    3,
-                    "AL={al} imm={imm}"
-                );
+                let div = divide_routine_cycles(false, u32::from(al), u32::from(imm));
+                let aam = aam_routine_cycles(al, imm);
+                match (div, aam) {
+                    (Loop::Completed(div), Loop::Completed(aam)) => {
+                        assert_eq!(div - aam, 4, "AL={al} imm={imm}");
+                    }
+                    // Both leave at 0x18a on the same operands, `AAM` three
+                    // clocks into its routine and `DIV` six.
+                    (Loop::Faulted(div), Loop::Faulted(aam)) => {
+                        assert_eq!(div - aam, 3, "AL={al} imm={imm}");
+                    }
+                    _ => panic!("AL={al} imm={imm}: one faulted and the other did not"),
+                }
             }
         }
     }
@@ -1441,10 +1636,13 @@ mod tests {
     /// than an arithmetic identity.
     #[test]
     fn the_odd_quotient_term_does_not_stand_on_its_own() {
-        assert_eq!(
-            divide_cycles(false, 202, 2),
-            divide_cycles(false, 200, 2) + 3
-        );
+        let (Loop::Completed(odd), Loop::Completed(even)) = (
+            divide_routine_cycles(false, 202, 2),
+            divide_routine_cycles(false, 200, 2),
+        ) else {
+            panic!("neither divide faults");
+        };
+        assert_eq!(odd, even + 3);
     }
 
     /// `AAD` multiplies by its immediate, one clock a set bit, which is the
@@ -1459,7 +1657,7 @@ mod tests {
         for (imm, bits) in [(0u8, 0u32), (0x0A, 2), (0xFF, 8)] {
             assert_eq!(imm.count_ones(), bits, "{imm:#04X}");
             assert_eq!(
-                super::super::microcode::routine(0xD5, imm, false, 0)
+                super::super::microcode::routine(0xD5, imm, false, 0, None)
                     .expect("AAD runs a routine")
                     .clocks(),
                 corx_cycles(8, bits) + 5,
@@ -1475,22 +1673,43 @@ mod tests {
 
     /// The count follows the compared subtracts and ignores the immediate
     /// ones, which is the measured fact a quotient-based rule cannot express.
+    ///
+    /// `DIV r/m8` is quoted at 80 to 90 clocks. What is counted here runs two
+    /// below that at both ends, for the reason [`PUBLISHED_OVERHEAD`] gives.
     #[test]
     fn divide_timing_lands_inside_the_published_range() {
-        // MUL r/m8's neighbour in the table is quoted at 80 to 90 clocks.
         for divisor in 1..=255u32 {
             for dividend in [1u32, 0x0100, 0x3FFF, 0x7F00] {
-                if dividend / divisor > 0xFF {
+                let Loop::Completed(c) = divide_routine_cycles(false, dividend, divisor) else {
                     continue;
-                }
-                let c = divide_cycles(false, dividend, divisor);
-                assert!((80..=90).contains(&c), "{dividend}/{divisor} gave {c}");
+                };
+                assert!(
+                    (80 - PUBLISHED_OVERHEAD..=90 - PUBLISHED_OVERHEAD).contains(&c),
+                    "{dividend}/{divisor} gave {c}"
+                );
             }
         }
     }
 
-    /// The multiply rules must land on the clock ranges Intel published, which
-    /// is the check that does not come from the vectors they were read off.
+    /// What Intel's table charges that a microcode count does not: the two bytes
+    /// of the instruction itself.
+    ///
+    /// The published figures are whole-instruction times and the transcriptions
+    /// are the execution unit's own clocks, so the two differ by a constant, and
+    /// it being the *same* constant across four independent endpoints at two
+    /// widths and two instructions is what makes the counts checkable against a
+    /// document at all.
+    const PUBLISHED_OVERHEAD: u16 = 2;
+
+    /// The multiply and divide counts must land on the ranges Intel published,
+    /// which is the check that comes from neither the reference nor the vectors.
+    ///
+    /// **These used to be exact and the bases were fitted to make them so.**
+    /// Reading `CORX` and the lines around it off the reference gives numbers
+    /// two lower, uniformly, and the two are the instruction's own bytes. The
+    /// old bases were the published endpoints with nothing between them and the
+    /// recording, which is why they hit four endpoints and still ran a clock
+    /// over on the bus.
     #[test]
     fn the_multiply_rules_reproduce_the_published_ranges() {
         // The published ranges are for a product whose high half is nonzero,
@@ -1498,12 +1717,19 @@ mod tests {
         // the word form.
         //
         // MUL r/m8 is quoted at 70 to 77 clocks; a byte has one to eight set
-        // bits.
-        assert_eq!(multiply_cycles(false, 0x0001, false), 70);
-        assert_eq!(multiply_cycles(false, 0x00FF, false), 77);
-        // MUL r/m16 at 118 to 133; a word has one to sixteen.
-        assert_eq!(multiply_cycles(true, 0x0001, false), 118);
-        assert_eq!(multiply_cycles(true, 0xFFFF, false), 133);
+        // bits. MUL r/m16 at 118 to 133; a word has one to sixteen.
+        for (word, multiplier, published) in [
+            (false, 0x0001u16, 70u16),
+            (false, 0x00FF, 77),
+            (true, 0x0001, 118),
+            (true, 0xFFFF, 133),
+        ] {
+            assert_eq!(
+                multiply_routine_cycles(word, multiplier, false) + PUBLISHED_OVERHEAD,
+                published,
+                "word={word} multiplier={multiplier:#06X}"
+            );
+        }
     }
 
     /// The four sign combinations, as they were measured, at both widths. The
@@ -1546,17 +1772,75 @@ mod tests {
 
     /// `IMUL` costs exactly ten clocks more than `MUL` when nothing needs
     /// negating, at both widths. Those ten are the two sign tests and the check
-    /// after the loop, all three falling through, and having them fall out of
-    /// two independently measured bases is what says the two rules describe the
-    /// same loop.
+    /// after the loop, all three falling through.
+    ///
+    /// The gap reads twelve against the counted `MUL` because the measured rule
+    /// is a whole-instruction time and the count is the execution unit's own.
+    /// The two between them are [`PUBLISHED_OVERHEAD`].
     #[test]
     fn the_signed_multiply_is_the_unsigned_one_plus_ten() {
         for (word, multiplier) in [(false, 0x0F), (true, 0x0FFF)] {
             assert_eq!(
                 signed_multiply_cycles(word, 1, multiplier, false),
-                multiply_cycles(word, multiplier as u16, false) + 10,
+                multiply_routine_cycles(word, multiplier as u16, false) + 10 + PUBLISHED_OVERHEAD,
                 "word={word}"
             );
+        }
+    }
+
+    /// **The counted signed routines reproduce the measured table, exactly.**
+    ///
+    /// `PREIMUL`, `PREIDIV` and `NEGATE` were four numbers per instruction per
+    /// width, solved out of grouped recorded spans over two passes, and the note
+    /// beside them says two of the four had to come out negative before the
+    /// groups would close. Counting the routines' arms off the reference gives
+    /// all sixteen without solving anything: `10 + 2a - b` for `PREIMUL` with
+    /// the `NEGATE` it falls into, twelve more when exactly one operand was
+    /// negative, and `9 + 4d - v` for `PREIDIV`.
+    ///
+    /// This is the check that the two describe the same part. It sweeps every
+    /// sign combination at both widths for both instructions, and the constant
+    /// between them is the instruction's own bytes and nothing else.
+    #[test]
+    fn the_counted_signed_routines_reproduce_the_measured_table() {
+        for word in [false, true] {
+            let (a, b) = if word {
+                (0x0FFFi32, 0x0033)
+            } else {
+                (0x0Fi32, 0x33)
+            };
+            for (multiplicand, multiplier) in [(b, a), (-b, a), (b, -a), (-b, -a)] {
+                assert_eq!(
+                    signed_multiply_routine_cycles(word, multiplicand, multiplier, false)
+                        + PUBLISHED_OVERHEAD,
+                    signed_multiply_cycles(word, multiplicand, multiplier, false),
+                    "IMUL word={word} {multiplicand}x{multiplier}"
+                );
+            }
+            // A dividend and divisor whose quotient fits the signed half, so
+            // neither fault path is taken and `POSTIDIV` returns.
+            let (dividend, divisor) = if word {
+                (0x4000i64, 0x1000i64)
+            } else {
+                (0x40, 0x10)
+            };
+            for (dividend, divisor) in [
+                (dividend, divisor),
+                (-dividend, divisor),
+                (dividend, -divisor),
+                (-dividend, -divisor),
+            ] {
+                let Loop::Completed(counted) =
+                    signed_divide_routine_cycles(word, dividend, divisor)
+                else {
+                    panic!("IDIV word={word} {dividend}/{divisor} should divide");
+                };
+                assert_eq!(
+                    counted + PUBLISHED_OVERHEAD,
+                    signed_divide_cycles(word, dividend, divisor),
+                    "IDIV word={word} {dividend}/{divisor}"
+                );
+            }
         }
     }
 
@@ -1607,28 +1891,35 @@ mod tests {
         }
     }
 
-    /// A product that fits in the low half costs one clock more, because the
-    /// microcode's path that leaves carry and overflow clear is the longer one.
+    /// A product that fits in the low half costs one clock more, because
+    /// `MULCOF`'s arm that leaves carry and overflow clear is the longer one:
+    /// 0x1d0, a jump, 0x1cc and a jump, against 0x1d0, 0x1d1 and a jump.
     #[test]
     fn a_product_with_a_zero_high_half_costs_one_more() {
-        assert_eq!(multiply_cycles(false, 0x0001, true), 71);
-        assert_eq!(multiply_cycles(false, 0x00FF, true), 78);
+        for multiplier in [0x0001u16, 0x00FF] {
+            assert_eq!(
+                multiply_routine_cycles(false, multiplier, true),
+                multiply_routine_cycles(false, multiplier, false) + 1,
+                "multiplier={multiplier:#06X}"
+            );
+        }
     }
 
-    /// The byte form looks at AL alone. Reading AX would make the high byte,
-    /// which the instruction overwrites with its result, change how long it
-    /// takes.
+    /// The byte form looks at AL alone. `CORX` rotates `tmpc`, and `0x150: A ->
+    /// tmpc` loads the accumulator one half wide. Reading AX would make the high
+    /// byte, which the instruction overwrites with its result, change how long
+    /// it takes.
     #[test]
     fn the_byte_multiply_ignores_the_high_half_of_the_accumulator() {
         assert_eq!(
-            multiply_cycles(false, 0x0001, false),
-            multiply_cycles(false, 0xFF01, false),
+            multiply_routine_cycles(false, 0x0001, false),
+            multiply_routine_cycles(false, 0xFF01, false),
             "AH must not affect a byte multiply"
         );
         // Whereas the word form counts the whole accumulator.
         assert_ne!(
-            multiply_cycles(true, 0x0001, false),
-            multiply_cycles(true, 0xFF01, false)
+            multiply_routine_cycles(true, 0x0001, false),
+            multiply_routine_cycles(true, 0xFF01, false)
         );
     }
 
@@ -1648,7 +1939,7 @@ mod tests {
         for opcode in 0..=u8::MAX {
             for modrm in [0x00u8, 0xC0, 0x10, 0xD0, 0x20, 0xE0, 0x30, 0xF0] {
                 for branch in [false, true] {
-                    if super::super::microcode::routine(opcode, modrm, branch, 0).is_none() {
+                    if super::super::microcode::routine(opcode, modrm, branch, 0, None).is_none() {
                         continue;
                     }
                     assert_eq!(
@@ -1697,7 +1988,7 @@ mod tests {
         for op in 0x40u8..=0x4F {
             assert_eq!(eu_cycles(op, 0), 2, "{op:#04X}");
             assert!(
-                super::super::microcode::routine(op, 0, false, 0).is_none(),
+                super::super::microcode::routine(op, 0, false, 0, None).is_none(),
                 "{op:#04X} is a row, not a routine"
             );
         }
@@ -1707,7 +1998,7 @@ mod tests {
             "the group form has no row"
         );
         assert_eq!(
-            super::super::microcode::routine(0xFE, 0b11_000_000, false, 0)
+            super::super::microcode::routine(0xFE, 0b11_000_000, false, 0, None)
                 .expect("INC reg8 runs a routine")
                 .clocks(),
             1,
@@ -1773,8 +2064,8 @@ mod tests {
     #[test]
     fn a_conditional_transfer_costs_more_when_it_transfers() {
         for opcode in [0x60u8, 0x70, 0x7F, 0xE0, 0xE1, 0xE2, 0xE3, 0xCE] {
-            let taken = super::super::microcode::routine(opcode, 0, true, 0);
-            let untaken = super::super::microcode::routine(opcode, 0, false, 0);
+            let taken = super::super::microcode::routine(opcode, 0, true, 0, None);
+            let untaken = super::super::microcode::routine(opcode, 0, false, 0, None);
             match (taken, untaken) {
                 (Some(taken), Some(untaken)) => {
                     assert!(taken.clocks() > untaken.clocks(), "{opcode:#04X} routine")
@@ -1794,7 +2085,7 @@ mod tests {
             // the microcode module and their rows went with them.
             assert!(
                 eu_cycles(opcode, 0) > 0
-                    || super::super::microcode::routine(opcode, 0, false, 0).is_some(),
+                    || super::super::microcode::routine(opcode, 0, false, 0, None).is_some(),
                 "{opcode:#04X}"
             );
         }
@@ -1841,7 +2132,7 @@ mod tests {
             // The store direction spends 0x066 and the load direction nothing.
             let stores = opcode & 0x02 != 0;
             assert_eq!(
-                super::super::microcode::routine(opcode, 0, false, 0)
+                super::super::microcode::routine(opcode, 0, false, 0, None)
                     .expect("a direct-address move runs a routine")
                     .clocks(),
                 u16::from(stores),
@@ -1866,8 +2157,8 @@ mod tests {
     fn the_return_aliases_run_what_they_alias() {
         for (alias, documented) in [(0xC0u8, 0xC2u8), (0xC1, 0xC3), (0xC8, 0xCA), (0xC9, 0xCB)] {
             assert_eq!(
-                super::super::microcode::routine(alias, 0, false, 0),
-                super::super::microcode::routine(documented, 0, false, 0),
+                super::super::microcode::routine(alias, 0, false, 0, None),
+                super::super::microcode::routine(documented, 0, false, 0, None),
                 "{alias:#04X} against {documented:#04X}"
             );
         }

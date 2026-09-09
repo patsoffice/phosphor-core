@@ -225,7 +225,24 @@ fn mc() -> Build {
 /// The group opcodes are asked for their reg field because the group is not one
 /// instruction: `FF` carries `INC` and `PUSH`, which go nowhere, beside the
 /// indirect calls and jumps, which are transfers.
-pub(crate) fn routine(opcode: u8, modrm: u8, branch: bool, cl: u8) -> Option<Routine> {
+///
+/// `muldiv` is the multiplies' and divides' co-routine time, which is a function
+/// of the operands and so cannot be worked out from an encoding at all. It is
+/// whichever of `timing`'s four routine-cycle counts the opcode asks for, and
+/// `None` for every other opcode, which ignores it. The shifts' `cl` is the same
+/// idea a step lighter: a loop whose length the encoding does not carry.
+///
+/// A [`timing::Loop::Faulted`] is not a shorter version of the same routine but
+/// a different one: the instruction leaves for `INT 0` and walks the whole
+/// interrupt list, vector read and pushes and flush.
+pub(crate) fn routine(
+    opcode: u8,
+    modrm: u8,
+    branch: bool,
+    cl: u8,
+    muldiv: Option<super::timing::Loop>,
+) -> Option<Routine> {
+    use super::timing::Loop;
     let register_form = modrm >> 6 == 3;
     match opcode {
         // The shifts and rotates: `r/m, 1` at 0x088 and `r/m, CL` at 0x08c,
@@ -358,6 +375,19 @@ pub(crate) fn routine(opcode: u8, modrm: u8, branch: bool, cl: u8) -> Option<Rou
                 .then(Step::Run)
                 .done(),
         ),
+
+        // `AAM` at 0x174, the divide behind the other BCD adjust's name.
+        // `mc_174` reads the immediate, spends 0x175, 0x176 and the jump into
+        // `CORD`, runs it on AL over that immediate, and spends 0x177.
+        //
+        // A zero immediate faults before the loop and runs `INT 0` instead, and
+        // that is the same INTR list the `INT` opcodes walk: `mc_174`'s `Err`
+        // arm goes straight to `int0`, which enters INTR one line down having
+        // spent 0x1a7 and a jump to get there.
+        0xD4 => muldiv.map(|loops| match loops {
+            Loop::Completed(clocks) => mc().spend(clocks).then(Step::Run).done(),
+            Loop::Faulted(clocks) => interrupt(clocks, false),
+        }),
 
         // The `LOOP` family at 0x134, 0x138 and 0x140, opcodes E0 through E3.
         // All three spend two clocks before reading their displacement, which
@@ -600,6 +630,36 @@ pub(crate) fn routine(opcode: u8, modrm: u8, branch: bool, cl: u8) -> Option<Rou
             }
             Some(r.done())
         }
+
+        // `MUL` at 0x150 and 0x158, and `DIV` at 0x160 and 0x168: the unsigned
+        // reg 4 and reg 6 forms of the unary group. Everything they spend is in
+        // `muldiv`, counted off `CORX` and `CORD` and the lines around them
+        // rather than fitted to the recording. See
+        // [`timing::multiply_routine_cycles`] and
+        // [`timing::divide_routine_cycles`].
+        //
+        // **Nothing stands in front of them.** Both read their operand, so the
+        // address routine leaves through `1E2` and the return would be next, but
+        // the return's clock is already inside the seven and fifteen those two
+        // functions count: `mc_160` and `mc_150` start spending the moment
+        // `read_operand` hands back.
+        //
+        // `IMUL` and `IDIV`, reg 5 and reg 7, are the same two wrapped in
+        // `PREIMUL`, `PREIDIV`, `NEGATE` and `POSTIDIV`, and those are branches
+        // counted the same way. `IDIV` can fault at either end: `CORD`'s check
+        // before the loop is the unsigned one, so a quotient that fits the full
+        // width but not the signed half of it runs the whole loop and then
+        // leaves from `POSTIDIV`'s 0x1c4 instead.
+        //
+        // **The vector read is the point of routing a fault here.** The part
+        // reads 00000 through 00003 over four MEMR cycles before it pushes
+        // anything, and this core used to read the vector inside the executor in
+        // no time at all, so those four bus cycles were missing from every
+        // faulting case of all four files.
+        0xF6 | 0xF7 if matches!((modrm >> 3) & 7, 4..=7) => muldiv.map(|loops| match loops {
+            Loop::Completed(clocks) => mc().spend(clocks).then(Step::Run).done(),
+            Loop::Faulted(clocks) => interrupt(clocks, false),
+        }),
 
         // `XCHG r/m, reg` at 0x0a4. `mc_0a4` spends 0x0a4 and 0x0a5 whichever
         // the operand, and 0x0a6 and 0x0a7 as well when the ModR/M operand is in
@@ -867,11 +927,11 @@ pub(crate) fn routine(opcode: u8, modrm: u8, branch: bool, cl: u8) -> Option<Rou
         // The published routine has a jump there and the reference skips it,
         // saying so: "Another cycle deviance here between observed timings and
         // microcode."
-        0xCD => Some(interrupt(0)),
+        0xCD => Some(interrupt(0, true)),
         // `INT 3` at 0x1b0 spends 0x1b1, 0x1b2 and the jump into INTR. The
         // published routine jumps over a blank line and the reference does not
         // reproduce that, for the same reason.
-        0xCC => Some(interrupt(3)),
+        0xCC => Some(interrupt(3, true)),
 
         // The indirect calls and jumps live in the `FF` group, beside `INC`,
         // `DEC` and `PUSH`, which do not transfer and keep their rows.
@@ -1019,10 +1079,15 @@ pub(crate) fn routine(opcode: u8, modrm: u8, branch: bool, cl: u8) -> Option<Rou
 /// for `INT n`, three clocks for `INT 3`. Everything behind it is shared, which
 /// is why one routine with an entry cost is the right shape rather than two
 /// lists to keep in step by hand.
-fn interrupt(entry: u16) -> Routine {
+///
+/// `first_line` is whether 0x19d is spent. `intr_routine` takes a `skip_first`
+/// and the faults pass it: `int0` enters INTR one line down, having spent 0x1a7
+/// and a jump of its own to get there. An instruction reaches this either way,
+/// so it is the same routine one clock shorter rather than a second list.
+fn interrupt(entry: u16, first_line: bool) -> Routine {
     mc().spend(entry)
-        // 0x19d, 0x19e, 0x19f.
-        .spend(3)
+        // 0x19d, when it is spent at all, then 0x19e and 0x19f.
+        .spend(2 + u16::from(first_line))
         // The handler's offset.
         .then(Step::ReadVectorWord)
         // 0x1a1, the clock the recording's code fetch uses.
@@ -1159,7 +1224,7 @@ mod tests {
         let mut out = Vec::new();
         for opcode in 0..=u8::MAX {
             for modrm in [0x00u8, 0xC0, 0x10, 0xD0, 0x20, 0xE0, 0x30, 0xF0] {
-                if let Some(r) = routine(opcode, modrm, false, 0) {
+                if let Some(r) = routine(opcode, modrm, false, 0, None) {
                     out.push((opcode, modrm, r));
                 }
             }
@@ -1172,12 +1237,14 @@ mod tests {
     /// writes a slot nothing filled.
     #[test]
     fn the_interrupt_routine_pushes_the_three_words_it_stages() {
-        for entry in [0, 3] {
-            assert_eq!(
-                count(&interrupt(entry), Step::Push),
-                3,
-                "the interrupt pushes the flags, the return segment and the return offset"
-            );
+        for entry in [0, 3, 9, 12] {
+            for first_line in [false, true] {
+                assert_eq!(
+                    count(&interrupt(entry, first_line), Step::Push),
+                    3,
+                    "the interrupt pushes the flags, the return segment and the return offset"
+                );
+            }
         }
     }
 
@@ -1187,8 +1254,8 @@ mod tests {
     /// lists that have to be kept in step by hand.
     #[test]
     fn int_3_is_the_interrupt_routine_with_an_entry_cost() {
-        let n = interrupt(0);
-        let three = interrupt(3);
+        let n = interrupt(0, true);
+        let three = interrupt(3, true);
         assert_eq!(
             three.steps()[0],
             Step::Spend(3),
@@ -1204,7 +1271,7 @@ mod tests {
     /// And reads both halves of the vector before it needs either.
     #[test]
     fn the_vector_is_read_before_the_transfer_is_computed() {
-        let r = interrupt(0);
+        let r = interrupt(0, true);
         let run = position(&r, Step::Run).expect("the routine runs the instruction");
         let reads = r.steps()[..run]
             .iter()
@@ -1217,7 +1284,7 @@ mod tests {
     /// one push still to go, so the reload beats the last write to the bus.
     #[test]
     fn the_flush_lands_between_the_second_push_and_the_third() {
-        let r = interrupt(0);
+        let r = interrupt(0, true);
         let flush = position(&r, Step::Flush).expect("the routine flushes");
         let before = r.steps()[..flush]
             .iter()

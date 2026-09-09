@@ -2643,7 +2643,13 @@ impl I8088 {
         // The shifts loop on CL, so the routine has to be told the count as well
         // as the branch. Both are read here rather than inside the transcription
         // so that a routine stays a pure function of the case it is built for.
-        let Some(steps) = microcode::routine(self.opcode(), modrm, branch, self.cl()) else {
+        // The multiplies' and divides' co-routines are the same idea a size
+        // larger: their length is a function of the operands, which the pipeline
+        // has already read by the time it gets here and an encoding never
+        // carries.
+        let muldiv = self.muldiv_cycles(modrm);
+        let Some(steps) = microcode::routine(self.opcode(), modrm, branch, self.cl(), muldiv)
+        else {
             return false;
         };
         self.mc = Some(microcode::Cursor::new(steps));
@@ -2652,13 +2658,102 @@ impl I8088 {
         true
     }
 
+    /// What this instruction's multiply or divide co-routine spends, for the
+    /// operands the pipeline has already read.
+    ///
+    /// `None` for everything that has no such loop. A faulting divide comes back
+    /// as [`timing::Loop::Faulted`] rather than as nothing: it is a different
+    /// routine, not a missing one, and the sequencer walks the interrupt list
+    /// for it.
+    ///
+    /// `modrm` is the byte behind the opcode, which for `AAM` is the immediate
+    /// it divides by rather than a ModR/M byte.
+    fn muldiv_cycles(&self, modrm: u8) -> Option<timing::Loop> {
+        let opcode = self.opcode();
+        if opcode == 0xD4 {
+            return Some(timing::aam_routine_cycles(self.al(), modrm));
+        }
+        if !matches!(opcode, 0xF6 | 0xF7) {
+            return None;
+        }
+        let word = opcode == 0xF7;
+        let shift = if word { 16 } else { 8 };
+        let operand = if word {
+            u32::from(self.unary_operand16())
+        } else {
+            u32::from(self.unary_operand8())
+        };
+        // The same operand read the other way, for the two signed forms. The
+        // multiplier and the dividend are the accumulator, one half wide for the
+        // byte form and two for the word form.
+        let (signed_operand, signed_accumulator) = if word {
+            (i32::from(operand as u16 as i16), i32::from(self.ax as i16))
+        } else {
+            (i32::from(operand as u8 as i8), i32::from(self.al() as i8))
+        };
+        let dividend = if word {
+            (u32::from(self.dx) << 16) | u32::from(self.ax)
+        } else {
+            u32::from(self.ax)
+        };
+        let signed_dividend = if word {
+            i64::from(dividend as i32)
+        } else {
+            i64::from(dividend as u16 as i16)
+        };
+        Some(match (modrm >> 3) & 7 {
+            4 => {
+                let product = if word {
+                    u64::from(self.ax) * u64::from(operand)
+                } else {
+                    u64::from(self.al()) * u64::from(operand)
+                };
+                timing::Loop::Completed(timing::multiply_routine_cycles(
+                    word,
+                    self.ax,
+                    product >> shift == 0,
+                ))
+            }
+            5 => {
+                // The flag branch is the signed form of `MUL`'s: the upper half
+                // carries no information because it is the sign extension of the
+                // lower.
+                let product = signed_operand * signed_accumulator;
+                let sign_extends = (product >> shift) == (product << (32 - shift)) >> 31;
+                timing::Loop::Completed(timing::signed_multiply_routine_cycles(
+                    word,
+                    signed_operand,
+                    signed_accumulator,
+                    sign_extends,
+                ))
+            }
+            6 => timing::divide_routine_cycles(word, dividend, operand),
+            7 => timing::signed_divide_routine_cycles(
+                word,
+                signed_dividend,
+                i64::from(signed_operand),
+            ),
+            _ => return None,
+        })
+    }
+
     /// The interrupt vector this instruction is going to take, when the
     /// pipeline can know it before the instruction runs.
     ///
     /// `INT 3` and `INTO` carry theirs in the opcode and `INT n` in its
-    /// immediate. The interrupts a fault raises are not here: `DIV`, `IDIV` and
-    /// `AAM` take one only on operands that fault, so their vector read stays
-    /// inside the executor and their timing rows carry its clocks.
+    /// immediate.
+    ///
+    /// **And a divide error carries one too, once the operands are read.** The
+    /// fault is not conditional on anything the instruction computes: `CORD`
+    /// compares the dividend's high half against the divisor before its loop and
+    /// leaves at 0x18a, and the pipeline can make that comparison at the same
+    /// point the part does, which is what [`Self::muldiv_cycles`] returning
+    /// `None` says. So `AAM` and unsigned `DIV` read their vector over the bus
+    /// like every other interrupt rather than out of memory in no time.
+    ///
+    /// `IDIV` faults at either end and both are here: `CORD`'s compare is the
+    /// unsigned one, so a quotient that fits the full width but not the signed
+    /// half of it runs the loop and leaves from `POSTIDIV` instead.
     fn staged_vector(&self) -> Option<u8> {
         // A hardware interrupt is not an instruction and has no opcode to ask.
         if let Some(servicing) = self.servicing {
@@ -2668,8 +2763,25 @@ impl I8088 {
             0xCC => Some(3),
             0xCD => Some(self.instr[self.opcode_at as usize + 1]),
             0xCE if flags::get(self.flags, flags::Flag::OF) => Some(4),
+            0xD4 | 0xF6 | 0xF7 => self.divide_fault().then_some(0),
             _ => None,
         }
+    }
+
+    /// Whether this instruction is a divide that faults before its loop.
+    ///
+    /// The condition is `CORD`'s own and the executor's: a zero divisor, or a
+    /// quotient too wide for the half the destination holds. Only the forms
+    /// whose microcode is transcribed are asked, because only those hand the
+    /// fault to [`microcode::interrupt`].
+    fn divide_fault(&self) -> bool {
+        let modrm = self.instr[self.opcode_at as usize + 1];
+        let divides = match self.opcode() {
+            0xD4 => true,
+            0xF6 | 0xF7 => matches!((modrm >> 3) & 7, 6 | 7),
+            _ => false,
+        };
+        divides && matches!(self.muldiv_cycles(modrm), Some(timing::Loop::Faulted(_)))
     }
 
     /// The unary group's byte operand, wherever it lives.
@@ -2828,81 +2940,17 @@ impl I8088 {
         if matches!(opcode, 0xD2 | 0xD3) {
             cycles += i32::from(timing::shift_count_cycles(self.cl()));
         }
-        // AAM and AAD are a divide and a multiply behind a BCD adjust's name,
-        // and their loops run on the immediate byte, which is in the
-        // instruction rather than in a register.
-        {
-            // The byte after the opcode, which for these two is the immediate
-            // rather than a ModR/M byte.
-            let imm = self.instr[self.opcode_at as usize + 1];
-            // `AAD` is not here: it runs the transcribed routine at 0x170, whose
-            // `CORX` clocks are derived from the co-routine rather than fitted
-            // to it. See [`microcode::routine`].
-            if opcode == 0xD4 {
-                cycles += i32::from(timing::aam_cycles(self.al(), imm));
-            }
-        }
-        // The multiplies and divides take a time that is a function of their
-        // operands rather than of their encoding, so it is computed here, where
-        // the operand is in hand and the pipeline has already read it.
-        if matches!(opcode, 0xF6 | 0xF7) {
-            let word = opcode == 0xF7;
-            let operand = if word {
-                u32::from(self.unary_operand16())
-            } else {
-                u32::from(self.unary_operand8())
-            };
-            // The same operand read the other way, for the two signed forms.
-            // The multiplier and the dividend are the accumulator, one half
-            // wide for the byte form and two for the word form.
-            let shift = if word { 16 } else { 8 };
-            let (signed_operand, signed_accumulator) = if word {
-                (i32::from(operand as u16 as i16), i32::from(self.ax as i16))
-            } else {
-                (i32::from(operand as u8 as i8), i32::from(self.al() as i8))
-            };
-            let dividend = if word {
-                (u32::from(self.dx) << 16) | u32::from(self.ax)
-            } else {
-                u32::from(self.ax)
-            };
-            let signed_dividend = if word {
-                i64::from(dividend as i32)
-            } else {
-                i64::from(dividend as u16 as i16)
-            };
-            cycles += match (modrm >> 3) & 7 {
-                4 => {
-                    let product = if word {
-                        u64::from(self.ax) * u64::from(operand)
-                    } else {
-                        u64::from(self.al()) * u64::from(operand)
-                    };
-                    let high_zero = product >> shift == 0;
-                    i32::from(timing::multiply_cycles(word, self.ax, high_zero))
-                }
-                5 => {
-                    // The flag branch is the signed form of MUL's: the upper
-                    // half carries no information because it is the sign
-                    // extension of the lower.
-                    let product = signed_operand * signed_accumulator;
-                    let sign_extends = (product >> shift) == (product << (32 - shift)) >> 31;
-                    i32::from(timing::signed_multiply_cycles(
-                        word,
-                        signed_operand,
-                        signed_accumulator,
-                        sign_extends,
-                    ))
-                }
-                6 => i32::from(timing::divide_cycles(word, dividend, operand)),
-                7 => i32::from(timing::signed_divide_cycles(
-                    word,
-                    signed_dividend,
-                    i64::from(signed_operand),
-                )),
-                _ => 0,
-            };
-        }
+        // `AAM` and `AAD` are not here. Both run transcribed routines, `AAD` at
+        // 0x170 around `CORX` and `AAM` at 0x174 around `CORD`, and both count
+        // their co-routine off the reference rather than fitting a base to the
+        // recording. So does `AAM`'s zero immediate, which faults and walks the
+        // same INTR list `INT n` does. See [`microcode::routine`].
+
+        // The multiplies and divides are not here at all, signed and unsigned
+        // and faulting operands alike. All eight run transcribed routines at
+        // 0x150, 0x158, 0x160 and 0x168, whose co-routine time
+        // [`Self::muldiv_cycles`] counts off `CORX` and `CORD` and the branches
+        // of `PREIMUL`, `PREIDIV`, `NEGATE` and `POSTIDIV` around them.
         let displacement = if format::format_of(opcode).modrm {
             format::displacement_len(modrm)
         } else {

@@ -656,15 +656,22 @@ impl I8088 {
             0xD4 => {
                 let base = self.fetch_byte();
                 let al = self.al();
+                // `AAM` is a divide, and it runs the same `CORD` the divides do
+                // with nothing in the high half: 0, the base, and AL. That is
+                // also how a base of zero faults, `0 - 0` being the one
+                // subtraction that does not borrow. See `cord8`.
+                //
+                // An `update_szp8` of a literal zero stood here for the faulting
+                // arm, which got SF, ZF and PF right by knowing the answer and
+                // left AF, OF and CF untouched. AF is the one that showed: the
+                // pushed flags came out `F056` against the part's `F046`.
+                self.cord8(0, base, al);
                 if let Some(quotient) = al.checked_div(base) {
                     self.set_ah(quotient);
                     self.set_al(al % base);
                     let result_al = self.al();
                     flags::update_szp8(&mut self.flags, result_al);
                 } else {
-                    // AAM with base=0: divide error (INT 0)
-                    // The 8088 updates SZP flags as if the result were 0.
-                    flags::update_szp8(&mut self.flags, 0);
                     self.divide_error(bus, master);
                 }
             }
@@ -882,6 +889,8 @@ impl I8088 {
                     6 => {
                         // DIV r/m8: AL = AX / r/m8, AH = AX % r/m8
                         let val = self.read_operand8(operand, bus, master) as u16;
+                        // `CORD` gets AH, the divisor and AL. See `cord8`.
+                        self.cord8(self.ah(), val as u8, self.al());
                         match self.ax.checked_div(val) {
                             Some(quotient) if quotient <= 0xFF => {
                                 let remainder = self.ax % val;
@@ -898,6 +907,15 @@ impl I8088 {
                         // 8088 quirk: quotient = -128 triggers divide error
                         // (valid range is -127..=127, not -128..=127).
                         let val = self.read_operand8(operand, bus, master) as i8;
+                        // `PREIDIV` makes the dividend and the divisor positive
+                        // before `CORD` runs, negating each only if it was
+                        // negative. See `cord8`.
+                        let magnitude = (self.ax as i16).wrapping_abs() as u16;
+                        self.cord8(
+                            (magnitude >> 8) as u8,
+                            val.wrapping_abs() as u8,
+                            magnitude as u8,
+                        );
                         if val != 0 {
                             let dividend = self.ax as i16;
                             let mut quotient = dividend / val as i16;
@@ -969,6 +987,8 @@ impl I8088 {
                         // DIV r/m16: AX = DX:AX / r/m16, DX = DX:AX % r/m16
                         let val = self.read_operand16(operand, bus, master) as u32;
                         let dividend = ((self.dx as u32) << 16) | self.ax as u32;
+                        // `CORD` gets DX, the divisor and AX. See `cord8`.
+                        self.cord16(self.dx, val as u16, self.ax);
                         match dividend.checked_div(val) {
                             Some(quotient) if quotient <= 0xFFFF => {
                                 let remainder = dividend % val;
@@ -984,6 +1004,14 @@ impl I8088 {
                         // 8088 quirk: REP/REPNE prefix negates the quotient.
                         // 8088 quirk: quotient = -32768 triggers divide error.
                         let val = self.read_operand16(operand, bus, master) as i16;
+                        // `PREIDIV` makes both positive first. See `cord8`.
+                        let signed = (((self.dx as u32) << 16) | self.ax as u32) as i32;
+                        let magnitude = signed.wrapping_abs() as u32;
+                        self.cord16(
+                            (magnitude >> 16) as u16,
+                            val.wrapping_abs() as u16,
+                            magnitude as u16,
+                        );
                         if val != 0 {
                             let dividend = (((self.dx as u32) << 16) | self.ax as u32) as i32;
                             let mut quotient = dividend / val as i32;
@@ -1202,7 +1230,132 @@ impl I8088 {
         bus: &mut B,
         master: BusMaster,
     ) {
+        // **A divide that faults always leaves CF clear**, and that is one rule
+        // rather than a special case per opcode: both ways out are the same
+        // branch. `CORD` asks `18a: NCY INT0` of the carry it has just put in
+        // the flag register at 189, and `POSTIDIV` asks `1c4: NCY INT0` of the
+        // carry `CORD` put there at 194 on its way out. Either way the flag
+        // holds the carry being tested, and the branch is taken when it is
+        // clear.
+        //
+        // This is what separates the two faults an `IDIV` can take. The rest of
+        // the word is `CORD`'s entry subtraction either way, which
+        // [`Self::cord_entry_flags8`] has already set; what the longer path
+        // moves is the carry, and it moves it to exactly the value that made it
+        // fault. Modeling only the entry left `F6.7` and `F7.7` with 2554 and
+        // 2602 failures apiece, which were precisely the cases that reach
+        // `POSTIDIV`.
+        flags::set(&mut self.flags, Flag::CF, false);
         self.interrupt(bus, master, 0);
+    }
+
+    /// The flags `CORD` leaves on its way in, which are the flags a divide
+    /// pushes when it faults.
+    ///
+    /// **The divide's flags are undefined and they are not arbitrary.** Intel
+    /// documents CF, OF, AF, SF, ZF and PF as undefined after `DIV` and `IDIV`,
+    /// and the suite's metadata masks all six, so neither the state gate nor the
+    /// vectors' flag comparison can see them. They are still on the bus: a
+    /// faulting divide walks the interrupt list and pushes FLAGS, and the
+    /// per-cycle gate compares that write. Four files, `F6.6`, `F6.7`, `F7.6`
+    /// and `F7.7`, held 25008 of the 25181 bus-cycle failures left before this,
+    /// and every one of them was this word.
+    ///
+    /// The reference is explicit about where they come from. `CORD` opens on
+    /// `188: SUBT tmpa`, a subtraction of the divisor from the high half of the
+    /// dividend, sets AF, OF and CF from it and then SZP from the result, and
+    /// only then asks `18a: NCY INT0`. So the fault is that subtraction not
+    /// borrowing, and the flags pushed are that subtraction's. `muldiv.rs`
+    /// marks the spot `// SET FLAGS HERE`.
+    ///
+    /// `tmpa` and `tmpb` are what the microcode has by then: for `DIV` the high
+    /// half and the divisor as they stand, and for `IDIV` both after `PREIDIV`
+    /// has made them positive. That is why this takes them rather than reading
+    /// the registers itself.
+    ///
+    /// **The entry subtraction is not the only one that sets them.** The loop
+    /// sets them again every pass it takes the no-carry branch on,
+    /// `18f: SIGMA->no dest | F`, so what a fault pushes is the *last* such
+    /// subtraction's flags and not the first. Charging the entry's alone left
+    /// `F6.7` and `F7.7` with 2130 and 2187 failures, which are the cases that
+    /// go round the loop and fault at the far end instead.
+    ///
+    /// So this runs the loop, for its flags rather than for its quotient: the
+    /// division itself is still done with Rust's operators beside it. The two
+    /// are checked against each other by the state gate, which holds the
+    /// quotient and remainder exactly.
+    ///
+    /// Returns `None` if `18a` faulted, and otherwise the carry `194` leaves,
+    /// which is what `POSTIDIV` tests at `1c4` and the only thing separating an
+    /// `IDIV` that fits from one that does not.
+    fn cord8(&mut self, mut tmpa: u8, tmpb: u8, mut tmpc: u8) -> Option<bool> {
+        // 188: SUBT tmpa, 189: SIGMA->. | MAXC, 18a: NCY INT0.
+        alu::sub8(&mut self.flags, tmpa, tmpb, false);
+        let mut carry = flags::get(self.flags, Flag::CF);
+        if !carry {
+            return None;
+        }
+        for _ in 0..8 {
+            // 18c: RCLY tmpc, 18d: RCLY tmpa. The pair shifts left as one.
+            let out_c = tmpc & 0x80 != 0;
+            tmpc = (tmpc << 1) | u8::from(carry);
+            let out_a = tmpa & 0x80 != 0;
+            tmpa = (tmpa << 1) | u8::from(out_c);
+            carry = out_a;
+            if carry {
+                // 18e taken: 195 clears the carry and 196 subtracts with no `F`
+                // on it, so the flags stand from whichever pass last set them.
+                carry = false;
+                tmpa = tmpa.wrapping_sub(tmpb);
+            } else {
+                // 18f, and this one carries the `F`.
+                let difference = alu::sub8(&mut self.flags, tmpa, tmpb, false);
+                carry = flags::get(self.flags, Flag::CF);
+                // 190: NCY 14. It keeps the difference only when it did not
+                // borrow; 191 is the pass that leaves `tmpa` alone.
+                if !carry {
+                    tmpa = difference;
+                }
+            }
+        }
+        // 192, 193 and 194: two more shifts of the quotient, the second only for
+        // the carry it puts out, which is the answer `POSTIDIV` wants.
+        let out_c = tmpc & 0x80 != 0;
+        tmpc = (tmpc << 1) | u8::from(carry);
+        carry = tmpc & 0x80 != 0;
+        let _ = out_c;
+        flags::set(&mut self.flags, Flag::CF, carry);
+        Some(carry)
+    }
+
+    /// The word form of [`Self::cord8`], sixteen passes instead of eight.
+    fn cord16(&mut self, mut tmpa: u16, tmpb: u16, mut tmpc: u16) -> Option<bool> {
+        alu::sub16(&mut self.flags, tmpa, tmpb, false);
+        let mut carry = flags::get(self.flags, Flag::CF);
+        if !carry {
+            return None;
+        }
+        for _ in 0..16 {
+            let out_c = tmpc & 0x8000 != 0;
+            tmpc = (tmpc << 1) | u16::from(carry);
+            let out_a = tmpa & 0x8000 != 0;
+            tmpa = (tmpa << 1) | u16::from(out_c);
+            carry = out_a;
+            if carry {
+                carry = false;
+                tmpa = tmpa.wrapping_sub(tmpb);
+            } else {
+                let difference = alu::sub16(&mut self.flags, tmpa, tmpb, false);
+                carry = flags::get(self.flags, Flag::CF);
+                if !carry {
+                    tmpa = difference;
+                }
+            }
+        }
+        tmpc = (tmpc << 1) | u16::from(carry);
+        carry = tmpc & 0x8000 != 0;
+        flags::set(&mut self.flags, Flag::CF, carry);
+        Some(carry)
     }
 
     // -----------------------------------------------------------------
