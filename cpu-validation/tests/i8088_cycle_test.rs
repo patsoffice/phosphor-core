@@ -162,7 +162,10 @@ fn recorded_bus_cycles(tc: &I8088TestCase) -> Vec<BusCycle> {
         // library states outright. Looking only at field 3 would mean no
         // recorded I/O cycle ever reached this comparison, and all eight of
         // `E4`-`E7` and `EC`-`EF` reading as this core inventing a bus cycle:
-        // `in al, 1Bh` would come out as "2 bus cycles, hardware ran 1".
+        // `in al, 1Bh` would come out as "2 bus cycles, hardware ran 1". The
+        // port data is never in doubt either way, `I8088TestCase::port_reads`
+        // keying off the status rather than the command lines, which is why the
+        // state gate cannot see this field at all.
         let commanded = !c.3.is_idle() || !c.4.is_idle();
         if c.t_state() == TState::T3
             && commanded
@@ -222,9 +225,19 @@ const CODE_FETCH_FILLER: u8 = 0x90;
 /// happen are a fetch that runs into the operand the case seeded, and a
 /// backwards branch that lands back on the instruction's own bytes.
 ///
+/// **The reference settles it rather than this reasoning.** `63.json.gz` case
+/// 241 is `jnb 0000h` encoded `63 FE`, a displacement of -2, so it jumps to
+/// itself; its bytes are seeded at `DEF4E`. Run live over that case under
+/// `tools/marty-probe` the reference fetches `DEF4E` after the flush and reads
+/// `63`, which is what this core reads and what memory holds. The recording
+/// says `90`. So the byte is the rig's, and comparing against it was measuring
+/// the rig.
+///
 /// A recorded byte that is *not* the filler is real and is still compared, so a
 /// fetch of an instruction's own bytes is held to the recording as before. This
-/// is the data on a code fetch only: reads and writes are compared whole.
+/// is the data on a code fetch only: reads and writes are compared whole, and
+/// the same `jnb` case shows why that is safe, its operand read carrying the
+/// true `63` in both.
 fn same_bus_cycle(ours: &BusCycle, theirs: &BusCycle) -> bool {
     if ours.kind != theirs.kind || ours.address != theirs.address {
         return false;
