@@ -938,10 +938,18 @@ pub(crate) fn routine(
 
         // `JMP far` at 0x0e0. No push and no correction: the target is absolute,
         // so it suspends, spends 0x0e4 and 0x0e5, flushes and spends 0x0e6.
+        //
+        // `Run` is behind the `SUSP` for the reason `FF.3` had to be moved
+        // there: it writes CS, and the part writes CS at `0E6: tmpa -> RC`,
+        // which is the flush's own line. `0E5: tmpb -> PC` is the line before.
+        // Running the body in front of `0E4` was harmless only because the
+        // fifth instruction byte holds the sequencer there until the suspend
+        // anyway, so no fetch was ever latched in between. That is an accident
+        // of this routine's length rather than a property of the placement.
         0xEA => Some(
-            mc().then(Step::Run)
-                .then(Step::Susp)
+            mc().then(Step::Susp)
                 .spend(2)
+                .then(Step::Run)
                 .then(Step::Flush)
                 .spend(1)
                 .done(),
@@ -951,13 +959,17 @@ pub(crate) fn routine(
         // before it reaches NEARCALL and the return offset after the flush.
         // That split is why the recording shows the reload at the target
         // between the two writes.
+        //
+        // This is the same FARCALL `FF.3` runs, so `Run` sits where it sits
+        // there: on 0x06d, the last line that still reads the old CS, one
+        // ahead of the 0x06e that overwrites it.
         0x9A => Some(
-            mc().then(Step::Run)
-                // The jump into FARCALL.
-                .spend(1)
+            // The jump into FARCALL.
+            mc().spend(1)
                 .then(Step::Susp)
                 // 0x06b, 0x06c, CORR, 0x06d.
                 .spend(4)
+                .then(Step::Run)
                 .then(Step::Push)
                 // 0x06e, 0x06f, then NEARCALL's jump.
                 .spend(3)
@@ -981,6 +993,18 @@ pub(crate) fn routine(
         // published routine jumps over a blank line and the reference does not
         // reproduce that, for the same reason.
         0xCC => Some(interrupt(3, true)),
+        // `INTO` at 0x1ac, which is an `INT 4` when the overflow flag is set and
+        // two clocks when it is not. `mc_1ac` spends 0x1ac and 0x1ad either way,
+        // and the taken arm adds the jump and 0x1af before `sw_interrupt`, which
+        // enters INTR through `intr_routine(.., false)` and so spends 0x19d.
+        //
+        // The row this replaces had the untaken arm at four rather than two.
+        0xCE => Some(if branch {
+            interrupt(4, true)
+        } else {
+            // 0x1ac and 0x1ad.
+            mc().spend(2).then(Step::Run).done()
+        }),
 
         // The indirect calls and jumps live in the `FF` group, beside `INC`,
         // `DEC` and `PUSH`, which do not transfer and keep their rows.
@@ -1042,15 +1066,27 @@ pub(crate) fn routine(
             // flush sits on, 0x077, 0x078, 0x079 and the return offset. The tail
             // from the flush down is `CALL rel16`'s, which is why the two agree
             // clock for clock once the pointer is in hand.
+            //
+            // **`Run` belongs behind the `SUSP`, not in front of it.** `Run` is
+            // atomic and writes CS, and the part does not: it writes CS at
+            // 0x06e, one line after 0x06d has put the old CS on the stack. The
+            // prefetcher is stopped by then, which is what `SUSP` is for here,
+            // so no code fetch can be latched on the new segment. With `Run` in
+            // front of the `SUSP` one still could, and did: the fetch begun
+            // three clocks earlier reached T1 with the new CS and the old
+            // stream's offset, putting `B8590 + 3100` on the bus where the part
+            // drives `4E8E0`. That is every case of `FF.3` in all three
+            // populations. `Run` therefore sits at the last line that still
+            // reads the old pointer, which is 0x06d itself.
             3 if !register_form => Some(
                 mc().spend(2)
                     .then(Step::ReadPointerSegment)
-                    .then(Step::Run)
                     // MC_JUMP into FARCALL, which is the read's release clock.
                     .spend(1)
                     .then(Step::Susp)
                     // 0x06b, 0x06c, CORR, 0x06d.
                     .spend(4)
+                    .then(Step::Run)
                     .then(Step::Push)
                     // 0x06e, 0x06f, then NEARCALL's jump.
                     .spend(3)

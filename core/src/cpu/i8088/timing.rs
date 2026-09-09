@@ -433,16 +433,11 @@ pub(crate) fn branch_cycles(opcode: u8, taken: bool) -> u8 {
         // 0x140 and 0x141 are the loader's pause and whose taken arm is RELJMP.
         0xE2 => 0,
         0xE3 => 0,
-        // INTO, which is an INT 4 when the overflow flag is set and four clocks
-        // when it is not. Documented 53 and 4, and one clock dearer than `INT`
-        // taken, which is the flag test.
-        0xCE => {
-            if taken {
-                25
-            } else {
-                4
-            }
-        }
+        // `INTO` has no row either: it runs the transcribed routine at 0x1ac,
+        // whose taken arm is the same INTR list `INT n` walks with four clocks
+        // in front of it. The row had 25 taken and 4 not, and the part spends
+        // two on the untaken arm.
+        0xCE => 0,
         _ => 0,
     }
 }
@@ -533,9 +528,13 @@ pub(crate) enum LoaderStall {
     /// displacement. Given back by [`super::access::address_phase_cycles`],
     /// where the displacement's own read time already lives.
     BeforeDisplacement(u8),
-    /// It pauses after the ModR/M byte of a **register** form, before the
-    /// immediate. Given back by [`eu_cycles`]'s caller.
-    BeforeImmediate(u8),
+    // A `BeforeImmediate(u8)` stood here, one T-state after the ModR/M byte of a
+    // register form. `TEST r/m, imm` was the only opcode that reached it and the
+    // part does not pause there at all: `mc_098` reads its two operands one
+    // after the other, and `test ax, 5594h` takes its four queue reads on four
+    // consecutive T-states. The clock netted to nothing while `F6` and `F7` were
+    // rows, because `eu_cycles`'s caller gave it straight back; once every reg
+    // field of both became a routine, nothing subtracted it any more.
 }
 
 impl LoaderStall {
@@ -543,9 +542,7 @@ impl LoaderStall {
     pub(crate) fn clocks(self) -> u8 {
         match self {
             LoaderStall::None => 0,
-            LoaderStall::AfterOpcode(n)
-            | LoaderStall::BeforeDisplacement(n)
-            | LoaderStall::BeforeImmediate(n) => n,
+            LoaderStall::AfterOpcode(n) | LoaderStall::BeforeDisplacement(n) => n,
         }
     }
 
@@ -697,12 +694,18 @@ pub(crate) fn loader_stall(opcode: u8, modrm: u8) -> LoaderStall {
         };
         return LoaderStall::BeforeDisplacement(gap - 1);
     }
-    if matches!(f.imm, Imm::ByteIfTest | Imm::WordIfTest)
-        && modrm >> 6 == 3
-        && f.imm.len(Some(modrm)) > 0
-    {
-        return LoaderStall::BeforeImmediate(1);
-    }
+    // **`TEST r/m, imm`'s register form paused here and the part does not.**
+    // `mc_098` reads its ModR/M operand and its immediate one after the other
+    // with no `cycle_i` between them, and `test ax, 5594h` bears that out: the
+    // part's four queue reads are on four consecutive T-states.
+    //
+    // The pause was a `BeforeImmediate(1)` that `eu_cycles`'s caller gave back
+    // out of the row, so it netted to nothing while `F6` and `F7` were priced
+    // by rows. Every reg field of both is a transcribed routine now, and a
+    // routine never reaches that subtraction, so what had been a wash became a
+    // clock. `Imm::ByteIfTest` and `Imm::WordIfTest` belong to those two opcodes
+    // and nothing else, which is why the variant goes with it.
+    let _ = Imm::ByteIfTest;
     LoaderStall::None
 }
 

@@ -1305,7 +1305,6 @@ impl I8088 {
                     n
                 }
                 timing::LoaderStall::BeforeDisplacement(n) if stage_before == Stage::Modrm => n,
-                timing::LoaderStall::BeforeImmediate(n) if stage_before == Stage::Modrm => n,
                 _ => 0,
             };
         }
