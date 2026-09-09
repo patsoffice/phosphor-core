@@ -1125,7 +1125,9 @@ impl I8088 {
                     // has already chosen. See [`timing::string_clocks`].
                     Eu::StringAccess { part, byte: 0 }
                 } else {
-                    self.begin_string_iteration()
+                    // The `REP` entry's own clocks have run, so this is the
+                    // first iteration and it spends the entry line.
+                    self.begin_string_iteration(true)
                 };
             }
             Eu::StringDelay(_) => self.tick_string_delay(bus, master),
@@ -1268,6 +1270,21 @@ impl I8088 {
         // T-states here and two apart on the part, and `01C: Q -> tmpbL` is the
         // line standing between them.
         if !complete && stage_before == Stage::Opcode && matches!(self.stage, Stage::Immediate(_)) {
+            self.loader_stall += 1;
+        }
+        // **The same distinction again, for a prefix behind a prefix.** A prefix
+        // costs two T-states, the read and one more, and the one more is the
+        // return in the preload path above: a byte that is not a prefix falls
+        // through there and reads the next one on the same T-state, and a prefix
+        // cannot. Only an instruction's *first* byte comes from the preload, so
+        // a second prefix is read here instead, where nothing spent that clock.
+        //
+        // `cs rep stosb` is the instance. The part reads `2E` on the opening
+        // T-state, `F3` two later and `AA` two after that; this core read `F3`
+        // and `AA` on consecutive clocks. The stage says which byte it was
+        // without asking what a prefix is: a prefix is the one byte that leaves
+        // the loader in `Opcode` with the instruction still unfinished.
+        if !complete && stage_before == Stage::Opcode && self.stage == Stage::Opcode {
             self.loader_stall += 1;
         }
     }
@@ -2396,7 +2413,7 @@ impl I8088 {
             self.eu = if entry > 0 {
                 Eu::StringEntry(entry)
             } else {
-                self.begin_string_iteration()
+                self.begin_string_iteration(true)
             };
             return;
         }
@@ -3688,8 +3705,14 @@ impl I8088 {
 
     /// The microcode clocks one iteration of the current string operation
     /// spends, beyond its bus cycles.
+    ///
+    /// **A repeated iteration spends the loop control as well.** `mc_11c` runs
+    /// 0x11d and 0x11e whichever way, and only when `in_rep` does it go on to
+    /// 0x11f, which is the interrupt check, and 0x1f0, which decrements CX. The
+    /// jump behind them is there either way: to 1 to go round again, to 1f1 to
+    /// stop.
     fn string_iteration_cycles(&self) -> u8 {
-        timing::string_clocks(self.opcode()).after
+        timing::string_clocks(self.opcode()).after + timing::string_repeat_cycles(self.rep_prefix)
     }
 
     /// Start a string operation, or the next iteration of one.
@@ -3697,7 +3720,7 @@ impl I8088 {
     /// Returns the phase to be in. A repeated operation whose count is already
     /// zero does nothing at all, which is the one case with no iteration and no
     /// bus cycle.
-    fn begin_string_iteration(&mut self) -> Eu {
+    fn begin_string_iteration(&mut self, first: bool) -> Eu {
         let opcode = self.opcode();
         let access = access::string_access(opcode).expect("a string operation");
         if self.rep_prefix.is_some() && self.cx == 0 {
@@ -3718,12 +3741,38 @@ impl I8088 {
             self.string_iteration(opcode);
             StringPart::Write
         };
-        self.string_next = Some(part);
-        // The clocks in front of the first access. See
-        // [`timing::string_clocks`].
-        match timing::string_clocks(opcode).before {
-            0 => Eu::StringAccess { part, byte: 0 },
-            n => Eu::StringEntry(n),
+        // The clocks in front of the first access, which are the operation's
+        // entry line and belong to `rep_start`. **It runs once**: `rep_init`
+        // gates the whole of that function, so every iteration after the first
+        // returns from it having spent nothing. See
+        // [`timing::string_spends_entry_line`].
+        let before = if timing::string_spends_entry_line(first) {
+            timing::string_clocks(opcode).before
+        } else {
+            0
+        };
+        match before {
+            // **`string_next` is the entry's hand-off and nothing else takes
+            // it.** Only the `Eu::StringEntry` countdown does, so an access that
+            // starts now must not leave one behind: the next repeated string
+            // instruction begins on its `REP` entry, and a stale part there is
+            // taken in place of calling this function at all, which skips the
+            // addresses and the iteration and leaves the access pointed at the
+            // previous instruction's operands.
+            //
+            // It could not happen before every string opcode's entry line was
+            // conditional, because all five spend at least one clock on the
+            // first iteration and the countdown always cleared it. **No CPU
+            // vector can see it either**, a vector being one instruction from a
+            // clean state; Q*bert's golden frame is what caught it.
+            0 => {
+                self.string_next = None;
+                Eu::StringAccess { part, byte: 0 }
+            }
+            n => {
+                self.string_next = Some(part);
+                Eu::StringEntry(n)
+            }
         }
     }
 
@@ -3861,7 +3910,9 @@ impl I8088 {
                     return;
                 }
             }
-            self.eu = self.begin_string_iteration();
+            // Not the first: `rep_start` has already run and spends nothing
+            // from here on, so no entry line.
+            self.eu = self.begin_string_iteration(false);
             return;
         }
         // The executor never ran for this instruction, so the length it would

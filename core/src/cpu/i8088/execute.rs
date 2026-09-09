@@ -1738,7 +1738,7 @@ mod tests {
             cpu.instr_pos = 0;
             cpu.opcode_at = 0;
             cpu.operand_bytes = [0; 4];
-            cpu.eu = cpu.begin_string_iteration();
+            cpu.eu = cpu.begin_string_iteration(true);
             for _ in 0..200_000 {
                 if cpu.tick_with_bus(bus, M) {
                     break;

@@ -1275,6 +1275,35 @@ pub(crate) struct StringClocks {
     pub after: u8,
 }
 
+/// Clocks a repeated iteration spends on the loop control, which a single one
+/// does not.
+///
+/// `mc_11c` runs 0x11d and 0x11e whichever way and only reaches 0x11f and 0x1f0
+/// when `in_rep` is set: the interrupt check and the decrement of CX. The jump
+/// behind them is there either way, to 1 to go round again or to 1f1 to stop, so
+/// it is not part of the difference.
+///
+/// See [`string_clocks`] for the other half of the repeat's accounting, which is
+/// the entry line those two are paid for with.
+pub(crate) fn string_repeat_cycles(rep: Option<super::RepPrefix>) -> u8 {
+    if rep.is_some() { 2 } else { 0 }
+}
+
+/// Whether this iteration spends the operation's entry line.
+///
+/// **`rep_start` runs it once and not once per iteration.** `rep_init` gates the
+/// whole of that function: the first entry spends 0x11c (or 0x120, or 0x12c) and
+/// then RPTS, and every iteration after it returns having spent nothing at all.
+/// So a continuing iteration of a repeat drops the entry line and adds
+/// [`string_repeat_cycles`], for one clock more than a single iteration and not
+/// two.
+///
+/// `cs rep stosb` is the check: the part writes every ten cycles and this core
+/// wrote every nine before the two were put where the reference has them.
+pub(crate) fn string_spends_entry_line(first_iteration: bool) -> bool {
+    first_iteration
+}
+
 /// Clocks a `REP` prefix spends before its first iteration.
 ///
 /// The `9 +` in Table 1-16's `9 + 17/rep`, less the two bytes the loader pulls
