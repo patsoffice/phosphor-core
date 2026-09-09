@@ -49,6 +49,13 @@ use phosphor_cpu_validation::{I8088InitialState, I8088Metadata, I8088TestCase, T
 /// A skip list is a place work hides: these were invisible to both gates at
 /// once, this one because they were skipped and the per-cycle one because
 /// `is_modeled` kept them out of its denominator.
+///
+/// And four more, `D0.6` through `D3.6`, the undocumented `SETMO` and `SETMOC`.
+/// They hid the same way and the per-cycle gate is what found them, not as a
+/// timing difference but as a written value: `setmo byte [ss:bp-3D75h]` read
+/// `AA` and this core wrote `54`, which is `AA` shifted left, against the
+/// hardware's `FF`. Reg 6 aliases `SHL` on the 80186 and later and does not
+/// here. See `alu::setmo8`.
 fn should_skip(filename: &str) -> bool {
     // Strip .json.gz suffix to get the opcode identifier
     let stem = filename.strip_suffix(".json.gz").unwrap_or(filename);
@@ -59,8 +66,6 @@ fn should_skip(filename: &str) -> bool {
         "26" | "2E" | "36" | "3E" | "F0" | "F1" | "F2" | "F3"
         // HLT (0xF4) — blocks forever in test harness (no interrupts)
         | "F4"
-        // D0.6/D1.6/D2.6/D3.6 — undocumented SETMO/SETMOC
-        | "D0.6" | "D1.6" | "D2.6" | "D3.6"
         // 0x0F — POP CS (undocumented, rarely used)
         | "0F"
     )

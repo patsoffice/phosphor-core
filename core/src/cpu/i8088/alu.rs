@@ -208,8 +208,12 @@ pub fn xor16(flags: &mut u16, a: u16, b: u16) -> u16 {
 // ---------------------------------------------------------------------------
 
 /// Dispatch a shift/rotate on an 8-bit value.
-/// `op`: 0=ROL, 1=ROR, 2=RCL, 3=RCR, 4=SHL, 5=SHR, 6=SAL(=SHL), 7=SAR.
+/// `op`: 0=ROL, 1=ROR, 2=RCL, 3=RCR, 4=SHL, 5=SHR, 6=SETMO, 7=SAR.
 /// If `count` is 0, no flags are modified and the value is returned unchanged.
+///
+/// **Reg 6 is `SETMO` on this part, not an alias of `SHL`.** The alias is the
+/// 80186 and later; the 8088 drives its ALU to all ones and ignores the operand
+/// entirely. See [`setmo8`].
 pub fn shift_rotate8(flags: &mut u16, val: u8, count: u8, op: u8) -> u8 {
     if count == 0 {
         return val;
@@ -219,8 +223,9 @@ pub fn shift_rotate8(flags: &mut u16, val: u8, count: u8, op: u8) -> u8 {
         1 => ror8(flags, val, count),
         2 => rcl8(flags, val, count),
         3 => rcr8(flags, val, count),
-        4 | 6 => shl8(flags, val, count),
+        4 => shl8(flags, val, count),
         5 => shr8(flags, val, count),
+        6 => setmo8(flags),
         7 => sar8(flags, val, count),
         _ => unreachable!(),
     }
@@ -236,11 +241,47 @@ pub fn shift_rotate16(flags: &mut u16, val: u16, count: u8, op: u8) -> u16 {
         1 => ror16(flags, val, count),
         2 => rcl16(flags, val, count),
         3 => rcr16(flags, val, count),
-        4 | 6 => shl16(flags, val, count),
+        4 => shl16(flags, val, count),
         5 => shr16(flags, val, count),
+        6 => setmo16(flags),
         7 => sar16(flags, val, count),
         _ => unreachable!(),
     }
+}
+
+/// `SETMO` (`D0`/`D1` reg 6) and `SETMOC` (`D2`/`D3` reg 6): set the operand to
+/// all ones, whatever it held.
+///
+/// Undocumented, and the alias story the later parts tell is wrong for this one:
+/// reg 6 is not `SHL` here. The corpus says so directly. `setmo dh` leaves DX at
+/// `FF0F` from an operand that was not `7F`, `setmo cl` leaves CX at `04FF`, and
+/// the per-cycle gate sees the write go out as `FF` where this core wrote the
+/// operand shifted left.
+///
+/// The flags are a logical result on all ones, read off the recording the same
+/// way: CF, OF and AF clear, SF set, ZF clear, PF set, and DF untouched.
+/// `setmo byte [ss:bx+di]` takes flags `F093` to `F086`, clearing the CF and AF
+/// it began with; `setmo byte [ss:bp-3D75h]` takes `FCD6` to `F486`, clearing OF
+/// and ZF and keeping DF.
+///
+/// The count still gates it, which is what makes `SETMOC` a separate mnemonic: a
+/// `CL` of zero leaves the operand and every flag alone, and that is the early
+/// return in the two dispatchers above rather than anything here.
+fn setmo8(flags: &mut u16) -> u8 {
+    flags::set(flags, Flag::CF, false);
+    flags::set(flags, Flag::OF, false);
+    flags::set(flags, Flag::AF, false);
+    flags::update_szp8(flags, 0xFF);
+    0xFF
+}
+
+/// The word form of [`setmo8`].
+fn setmo16(flags: &mut u16) -> u16 {
+    flags::set(flags, Flag::CF, false);
+    flags::set(flags, Flag::OF, false);
+    flags::set(flags, Flag::AF, false);
+    flags::update_szp16(flags, 0xFFFF);
+    0xFFFF
 }
 
 // --- Rotates (only CF and OF affected) ---
