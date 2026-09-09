@@ -2409,7 +2409,13 @@ impl I8088 {
         // REP prefix the iterations ask about.
         if access::string_access(opcode).is_some() {
             let _ = self.consume_prefixes();
-            let entry = timing::string_entry_cycles(self.rep_prefix.is_some());
+            // The loader's lead-in, which these owe on exactly the terms
+            // everything else does: a string opcode never carries a ModR/M byte
+            // or an immediate, so it comes down to whether a prefix stood in
+            // front of it. A `REP` is a prefix, so every repeated string
+            // operation is owed one too. See [`Self::loader_lead_in`].
+            let entry = timing::string_entry_cycles(self.rep_prefix.is_some())
+                + u8::from(self.loader_lead_in());
             self.eu = if entry > 0 {
                 Eu::StringEntry(entry)
             } else {
@@ -2688,11 +2694,32 @@ impl I8088 {
         // Charging it on every prefixed instruction rather than only these takes
         // the prefixed population from 93.53% to 37.92%.
         // See [`microcode::Cursor::new`].
-        let lead_in = self.opcode_at > 0 && self.instr_len == self.opcode_at + 1;
-        self.mc = Some(microcode::Cursor::new(steps, lead_in));
+        self.mc = Some(microcode::Cursor::new(steps, self.loader_lead_in()));
         self.stack_staged = true;
         self.stack_pos = 0;
         true
+    }
+
+    /// Whether the loader still owes this instruction its lead-in clock.
+    ///
+    /// The published `execute_instruction` spends a clock before the routine
+    /// when the last queue operation was a First Byte, which is its own note for
+    /// "nothing was read after the opcode". So a ModR/M byte, a displacement or
+    /// an immediate behind the opcode cancels it, whatever else is true.
+    ///
+    /// And it has to still be owed. The preload holds an instruction's first
+    /// byte, so an *unprefixed* opcode is taken a T-state before the instruction
+    /// begins and the lead-in is spent out there; a prefixed one is read out of
+    /// the queue on the instruction's own clock and the lead-in is still to
+    /// come. `opcode_at` is that distinction: it is zero only when nothing stood
+    /// in front of the opcode.
+    ///
+    /// **This is asked from two places and the string operations are the second
+    /// one.** They never build a [`microcode::Cursor`], so for as long as the
+    /// rule lived inside [`Self::begin_execute_phase`] every prefixed string
+    /// operation ran a clock early. See the call in [`Self::begin_instruction`].
+    fn loader_lead_in(&self) -> bool {
+        self.opcode_at > 0 && self.instr_len == self.opcode_at + 1
     }
 
     /// What this instruction's multiply or divide co-routine spends, for the
@@ -3712,7 +3739,13 @@ impl I8088 {
     /// jump behind them is there either way: to 1 to go round again, to 1f1 to
     /// stop.
     fn string_iteration_cycles(&self) -> u8 {
-        timing::string_clocks(self.opcode()).after + timing::string_repeat_cycles(self.rep_prefix)
+        let opcode = self.opcode();
+        // Asked here rather than in `tick_string_delay` because the length of
+        // the tail depends on it: `string_iteration` has already stepped the
+        // pointers and taken CX down, so the answer is the one the part's
+        // `0x1f0` is about to jump on.
+        let again = self.string_repeats_again(opcode);
+        timing::string_clocks(opcode).after + timing::string_repeat_cycles(self.rep_prefix, again)
     }
 
     /// Start a string operation, or the next iteration of one.

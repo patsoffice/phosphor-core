@@ -1285,8 +1285,23 @@ pub(crate) struct StringClocks {
 ///
 /// See [`string_clocks`] for the other half of the repeat's accounting, which is
 /// the entry line those two are paid for with.
-pub(crate) fn string_repeat_cycles(rep: Option<super::RepPrefix>) -> u8 {
-    if rep.is_some() { 2 } else { 0 }
+///
+/// **The last iteration spends one of the two, not both.** `after` is counted on
+/// the single form, where it is the operation's closing microcode line plus the
+/// RNI clock that retires the instruction: `AA` unrepeated spends `JMP:` and
+/// then the `FETCH_END` clock. A repeat's last iteration closes on `0x11f` and
+/// `0x1f0` and retires on the clock after, so it spends one clock more than the
+/// single form and not two. A continuing iteration does spend both, because the
+/// clock the last one gives to the RNI it gives to re-entering the loop.
+///
+/// `cs rep stosb` is the check at both ends: 45 writes, every one of them on the
+/// reference's clock, and the instruction retiring on its clock too.
+pub(crate) fn string_repeat_cycles(rep: Option<super::RepPrefix>, again: bool) -> u8 {
+    match (rep.is_some(), again) {
+        (false, _) => 0,
+        (true, true) => 2,
+        (true, false) => 1,
+    }
 }
 
 /// Whether this iteration spends the operation's entry line.
